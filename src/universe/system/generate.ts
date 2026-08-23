@@ -164,13 +164,23 @@ function resolveConfiguration(star: Star, companions: StellarCompanion[]): Confi
   };
 }
 
+/** Zero-albedo equilibrium temperature above which a planet photo-evaporates. */
+const EVAPORATION_LIMIT_K = 3000;
+
 /**
  * Post-main-sequence consequences: giant envelopes engulf close planets
  * (white-dwarf systems also keep the orbital expansion from mass loss),
- * and supernovae sterilize the system entirely.
+ * and supernovae sterilize the system entirely. Around very luminous
+ * stars the innermost orbits are too hot for any planet to survive.
  */
 function applyStellarEndState(star: Star, planets: StablePlanet[]): StablePlanet[] {
   if (star.stage === 'neutron-star' || star.stage === 'black-hole') return [];
+
+  planets = planets.filter(({ elements }) => {
+    const aAu = elements.semiMajorAxis / AU;
+    const rawEquilibriumK = 278.6 * (star.luminosity / aAu ** 2) ** 0.25;
+    return rawEquilibriumK < EVAPORATION_LIMIT_K;
+  });
 
   let engulfRadiusAu = 2 * star.radius * SOLAR_RADIUS_AU;
   let expansion = 1;

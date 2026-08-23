@@ -4,7 +4,9 @@ import { generateStar } from '../universe/star/generate';
 import { generateSystem } from '../universe/system/generate';
 import { Controls, type ViewMode } from './ui/controls';
 import { InfoPanel } from './ui/infoPanel';
+import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
+import { PlanetViewer } from './planetViewer';
 import { StarViewer } from './viewer';
 import { SystemViewer } from './systemViewer';
 
@@ -12,10 +14,12 @@ const viewElement = document.getElementById('view')!;
 const infoElement = document.getElementById('info')!;
 const starPanel = new InfoPanel(infoElement);
 const systemPanel = new SystemInfoPanel(infoElement);
+const planetPanel = new PlanetInfoPanel(infoElement);
 
 let viewMode: ViewMode = 'star';
 let seedHex = '';
-let viewer: StarViewer | SystemViewer | null = null;
+let planetIndex = 0;
+let viewer: StarViewer | SystemViewer | PlanetViewer | null = null;
 let exposure = 1;
 let timeScale: number | null = null;
 
@@ -36,12 +40,27 @@ function load(nextSeedHex: string): void {
     starViewer.setStar(star);
     starPanel.render(star);
     viewer = starViewer;
-  } else {
+  } else if (viewMode === 'system') {
     const system = generateSystem(seed);
     const systemViewer = new SystemViewer(viewElement);
     systemViewer.setSystem(system);
     systemPanel.render(system);
     viewer = systemViewer;
+  } else {
+    const system = generateSystem(seed);
+    const planetViewer = new PlanetViewer(viewElement);
+    viewer = planetViewer;
+    if (system.planets.length === 0) {
+      planetPanel.renderEmpty(system);
+      controls.planetLabel = '—';
+    } else {
+      const count = system.planets.length;
+      planetIndex = ((planetIndex % count) + count) % count;
+      const planet = system.planets[planetIndex];
+      planetViewer.setPlanet(system, planet);
+      planetPanel.render(system, planet, planetIndex);
+      controls.planetLabel = planet.name.split(' ').pop() ?? '';
+    }
   }
   viewer.exposure = exposure;
   if (timeScale !== null) viewer.timeScaleDaysPerSecond = timeScale;
@@ -51,6 +70,8 @@ function load(nextSeedHex: string): void {
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
   url.searchParams.set('view', viewMode);
+  if (viewMode === 'planet') url.searchParams.set('planet', String(planetIndex));
+  else url.searchParams.delete('planet');
   history.replaceState(null, '', url);
 }
 
@@ -61,6 +82,11 @@ const controls = new Controls(document.getElementById('controls')!, {
     if (mode === viewMode) return;
     viewMode = mode;
     timeScale = null;
+    load(seedHex);
+  },
+  onPlanetStep: (delta) => {
+    if (viewMode !== 'planet') return;
+    planetIndex += delta;
     load(seedHex);
   },
   onTimeScale: (daysPerSecond) => {
@@ -74,5 +100,7 @@ const controls = new Controls(document.getElementById('controls')!, {
 });
 
 const params = new URLSearchParams(location.search);
-viewMode = params.get('view') === 'system' ? 'system' : 'star';
+const viewParam = params.get('view');
+viewMode = viewParam === 'system' || viewParam === 'planet' ? viewParam : 'star';
+planetIndex = Number(params.get('planet') ?? 0) || 0;
 load(params.get('seed') ?? randomSeedHex());

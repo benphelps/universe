@@ -1,6 +1,6 @@
 import { ShaderMaterial, type DataTexture } from 'three';
 import type { Star } from '../../universe/star/types';
-import { SIMPLEX_NOISE_GLSL } from './glsl/simplexNoise';
+import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { seedOffset } from './seedOffset';
 
 const VERTEX = /* glsl */ `

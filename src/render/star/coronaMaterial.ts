@@ -1,6 +1,6 @@
 import { AdditiveBlending, ShaderMaterial } from 'three';
 import type { Star } from '../../universe/star/types';
-import { SIMPLEX_NOISE_GLSL } from './glsl/simplexNoise';
+import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { seedOffset } from './seedOffset';
 
 /** Corona billboard extent as a multiple of the stellar radius. */

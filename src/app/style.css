@@ -197,6 +197,27 @@ body {
   color: #a8bcf0;
 }
 
+.badge.bio {
+  background: rgba(120, 200, 90, 0.25);
+  color: #a8e88f;
+}
+
+#planet-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#planet-nav[hidden] {
+  display: none;
+}
+
+#planet-label {
+  min-width: 16px;
+  text-align: center;
+  color: #cfd4dc;
+}
+
 .belt-row {
   margin-top: 6px;
   color: #8b93a1;

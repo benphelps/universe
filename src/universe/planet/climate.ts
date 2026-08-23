@@ -48,7 +48,11 @@ export function computeClimate(
     const equilibriumK = T_EQ_1AU * instellation ** 0.25 * (1 - bondAlbedo) ** 0.25;
     surfaceMeanK = equilibriumK * (1 + 0.75 * atmosphere.opticalDepth) ** 0.25;
 
-    if (envelope) break;
+    if (envelope) {
+      // No surface: report the cloud-top temperature instead.
+      surfaceMeanK = equilibriumK;
+      break;
+    }
     if (interior.regime === 'magma') {
       hydrosphere = 'magma';
       break;
