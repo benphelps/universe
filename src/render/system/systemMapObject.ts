@@ -79,7 +79,7 @@ export class SystemMapObject {
         createOrbitLine(planet.elements, planet.inHabitableZone ? 0x4fbf7f : 0x6a7484, 0.45),
       );
       const markerAu = Math.max(
-        planet.radiusEarth * EARTH_RADIUS_AU,
+        planet.physical.bulk.radiusEarth * EARTH_RADIUS_AU,
         0.004 + 0.016 * (planet.elements.semiMajorAxis / AU) ** 0.6,
       );
       const mesh = new Mesh(

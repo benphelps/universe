@@ -1,14 +1,13 @@
 import type { OrbitalElements } from '../../core/math/orbit';
+import type { Characterization } from '../planet/types';
 import type { Star } from '../star/types';
 
-/** Bulk class assigned at system level; full characterization is the planet level's job. */
+/** Bulk class assigned at system level; the planet level characterizes it fully. */
 export type PlanetClass = 'rocky' | 'super-earth' | 'mini-neptune' | 'ice-giant' | 'gas-giant';
 
 export interface Planet {
   /** e.g. "SIM-00000001 b", letters outward from the star. */
   name: string;
-  massEarth: number;
-  radiusEarth: number;
   class: PlanetClass;
   /** SI elements referenced to the system invariable plane; epoch 0. */
   elements: OrbitalElements;
@@ -16,6 +15,8 @@ export interface Planet {
   tidallyLocked: boolean;
   /** Mean-motion resonance with the previous planet, e.g. "3:2". */
   resonanceWithInner: string | null;
+  /** Full physical characterization (bulk, interior, atmosphere, climate, appearance). */
+  physical: Characterization;
 }
 
 export interface BeltGap {

@@ -47,7 +47,7 @@ export class SystemInfoPanel {
         return `<tr>
           <td><span class="swatch" style="background:${CLASS_COLOR[planet.class]}"></span> ${letter}</td>
           <td>${CLASS_LABEL[planet.class]}</td>
-          <td>${fmt(planet.massEarth)} M⊕</td>
+          <td>${fmt(planet.physical.bulk.massEarth)} M⊕</td>
           <td>${fmt(aAu)} AU</td>
           <td>${fmtDays(periodDays)}</td>
           <td>${fmt(planet.elements.eccentricity, 2)}</td>

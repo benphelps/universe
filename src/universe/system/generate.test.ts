@@ -62,8 +62,8 @@ describe('generateSystem', () => {
         expect(aOuter).toBeGreaterThan(aInner);
         const hillAu =
           mutualHillFactor(
-            planets[j].massEarth,
-            planets[j + 1].massEarth,
+            planets[j].physical.bulk.massEarth,
+            planets[j + 1].physical.bulk.massEarth,
             system.centralMassSolar,
           ) *
           ((aInner + aOuter) / 2);

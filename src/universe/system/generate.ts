@@ -3,6 +3,7 @@ import { AU, G, SOLAR_MASS, EARTH_MASS } from '../../core/physics/constants';
 import { rayleigh } from '../../core/rng/distributions';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
+import { characterizePlanet } from '../planet/characterize';
 import { generateStar } from '../star/generate';
 import { radiusFromLT, msLuminosity } from '../star/mainSequence';
 import type { Star } from '../star/types';
@@ -47,8 +48,6 @@ export function generateSystem(seed: bigint): StarSystem {
   const zones = computeZones(centralLuminosity, star.tEff, star.ageGyr, centralMassSolar);
   const planets: Planet[] = stable.map(({ slot, elements: el }, i) => ({
     name: `${star.designation} ${PLANET_LETTERS[Math.min(i, PLANET_LETTERS.length - 1)]}`,
-    massEarth: slot.massEarth,
-    radiusEarth: estimateRadiusEarth(slot.massEarth, slot.class),
     class: slot.class,
     elements: el,
     inHabitableZone:
@@ -56,6 +55,12 @@ export function generateSystem(seed: bigint): StarSystem {
       el.semiMajorAxis / AU <= zones.habitableOuterAu,
     tidallyLocked: el.semiMajorAxis / AU < zones.tidalLockAu,
     resonanceWithInner: slot.resonanceWithInner,
+    physical: characterizePlanet(deriveSeed(seed, 'planet', i), slot.class, slot.massEarth, el, {
+      star,
+      centralLuminosity,
+      mu: G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS),
+      zones,
+    }),
   }));
 
   return {
@@ -73,7 +78,7 @@ export function generateSystem(seed: bigint): StarSystem {
 
 /** Gravitational parameter for planet propagation around the system center. */
 export function planetMu(system: StarSystem, planet: Planet): number {
-  return G * (system.centralMassSolar * SOLAR_MASS + planet.massEarth * EARTH_MASS);
+  return G * (system.centralMassSolar * SOLAR_MASS + planet.physical.bulk.massEarth * EARTH_MASS);
 }
 
 /** Full orbits for stellar companions (mildly inclined to the planet plane). */
@@ -188,16 +193,3 @@ function applyStellarEndState(star: Star, planets: StablePlanet[]): StablePlanet
     });
 }
 
-/** Placeholder mass–radius by class; the planet level (M3) supersedes this. */
-function estimateRadiusEarth(massEarth: number, planetClass: Planet['class']): number {
-  switch (planetClass) {
-    case 'gas-giant':
-      return Math.min(12.5, 11.2 * (massEarth / 318) ** 0.06);
-    case 'ice-giant':
-      return 3.9 * (massEarth / 17) ** 0.35;
-    case 'mini-neptune':
-      return 2.0 * (massEarth / 5) ** 0.35;
-    default:
-      return massEarth ** 0.28;
-  }
-}
