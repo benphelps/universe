@@ -72,7 +72,8 @@ export class SurfaceViewer {
       (e) => {
         e.preventDefault();
         this.altitudeKm *= 1.0016 ** e.deltaY;
-        this.altitudeKm = Math.min(this.radiusKm * 25, Math.max(0.004, this.altitudeKm));
+        // Floor comfortably above the max-LOD mesh interpolation error.
+        this.altitudeKm = Math.min(this.radiusKm * 25, Math.max(0.05, this.altitudeKm));
       },
       { passive: false },
     );
@@ -188,12 +189,13 @@ export class SurfaceViewer {
 
     if (this.system && this.planet && this.field && this.chunkManager) {
       // Drag sensitivity follows altitude so orbit and ground both feel right.
-      this.controls.rotateSpeed = Math.min(1.2, Math.max(0.004, (1.4 * this.altitudeKm) / this.radiusKm));
+      this.controls.rotateSpeed = Math.min(1.2, Math.max(0.012, (1.4 * this.altitudeKm) / this.radiusKm));
       this.controls.update();
 
       const up = this.camera.position.clone().normalize();
       const groundKm = Math.max(this.field.heightAt(up), this.field.seaLevelM) / 1000;
       const surfaceKm = this.radiusKm + Math.max(groundKm, -this.radiusKm * 0.01);
+      this.altitudeKm = Math.max(this.altitudeKm, 0.05);
       this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
 
       // Nadir gaze from orbit blending to a horizon gaze near the ground.
@@ -212,8 +214,10 @@ export class SurfaceViewer {
         this.camera.lookAt(this.camera.position.clone().add(forward));
       }
 
-      this.camera.near = Math.min(5, Math.max(0.002, this.altitudeKm * 0.2));
-      this.camera.far = Math.max(this.radiusKm * 10, this.camera.position.length() * 5);
+      // Keep the depth range tight: sky objects move inward as we descend.
+      const skyDistanceKm = this.skyObjectDistanceKm();
+      this.camera.near = Math.min(5, Math.max(0.006, this.altitudeKm * 0.15));
+      this.camera.far = Math.max(skyDistanceKm * 1.6, this.camera.position.length() * 2.5);
       this.camera.updateProjectionMatrix();
 
       this.updateSkyObjects(up);
@@ -222,6 +226,12 @@ export class SurfaceViewer {
 
     this.pipeline.render();
     requestAnimationFrame(() => this.frame());
+  }
+
+  /** Sky objects are angular-size-correct at any distance; keep them close
+   *  when low so the depth buffer never spans ten orders of magnitude. */
+  private skyObjectDistanceKm(): number {
+    return Math.min(SKY_OBJECT_DISTANCE_KM, Math.max(2500, this.altitudeKm * 60));
   }
 
   private updateSkyObjects(up: Vector3): void {
@@ -240,12 +250,11 @@ export class SurfaceViewer {
       -toStarModel.x * Math.sin(spin) + toStarModel.z * Math.cos(spin),
     );
 
+    const skyDistanceKm = this.skyObjectDistanceKm();
     const distanceM = Math.hypot(position.x, position.y, position.z);
     const angularRadius = (this.system.star.radius * SOLAR_RADIUS) / distanceM;
-    this.sunMesh.position
-      .copy(this.camera.position)
-      .addScaledVector(sunDir, SKY_OBJECT_DISTANCE_KM);
-    this.sunMesh.scale.setScalar(Math.max(SKY_OBJECT_DISTANCE_KM * angularRadius, 15));
+    this.sunMesh.position.copy(this.camera.position).addScaledVector(sunDir, skyDistanceKm);
+    this.sunMesh.scale.setScalar(Math.max(skyDistanceKm * angularRadius, skyDistanceKm * 4e-4));
     // Below the horizon the far side isn't loaded to occlude it: hide.
     this.sunMesh.visible = sunDir.dot(up) > -0.05;
 
@@ -257,8 +266,8 @@ export class SurfaceViewer {
       const distKm = toMoon.length();
       toMoon.divideScalar(distKm);
       const moonAngular = Math.max(moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000) / distKm, 0.0012);
-      mesh.position.copy(this.camera.position).addScaledVector(toMoon, SKY_OBJECT_DISTANCE_KM * 0.9);
-      mesh.scale.setScalar(SKY_OBJECT_DISTANCE_KM * 0.9 * moonAngular);
+      mesh.position.copy(this.camera.position).addScaledVector(toMoon, skyDistanceKm * 0.9);
+      mesh.scale.setScalar(skyDistanceKm * 0.9 * moonAngular);
       mesh.visible = toMoon.dot(up) > -0.05;
     }
 
