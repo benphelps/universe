@@ -1,13 +1,21 @@
-import { Color, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, SphereGeometry, Vector3 } from 'three';
+import { Color, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, SphereGeometry, Vector3 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState } from '../core/math/kepler';
-import { DAY, SOLAR_RADIUS } from '../core/physics/constants';
+import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
 import { PlanetObject } from '../render/planet/planetObject';
+import type { ShadowCaster } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
+import type { Moon } from '../universe/moon/types';
 import { planetMu } from '../universe/system/generate';
 import type { Planet, StarSystem } from '../universe/system/types';
 
 const STAR_DISTANCE_UNITS = 3000;
+
+interface MoonEntry {
+  moon: Moon;
+  object: PlanetObject;
+  mu: number;
+}
 
 /**
  * True-scale viewer for one planet (1 unit = 1 R⊕). The star is drawn at
@@ -24,6 +32,8 @@ export class PlanetViewer {
   private readonly pipeline: RenderPipeline;
   private readonly starMesh: Mesh;
   private planetObject: PlanetObject | null = null;
+  private moonGroup: Group | null = null;
+  private moons: MoonEntry[] = [];
   private system: StarSystem | null = null;
   private planet: Planet | null = null;
   private lastFrameMs = performance.now();
@@ -50,8 +60,28 @@ export class PlanetViewer {
       this.scene.remove(this.planetObject.group);
       this.planetObject.dispose();
     }
-    this.planetObject = new PlanetObject(planet);
+    if (this.moonGroup) {
+      this.scene.remove(this.moonGroup);
+      for (const entry of this.moons) entry.object.dispose();
+    }
+    this.planetObject = new PlanetObject(planet.physical, planet.rings);
     this.scene.add(this.planetObject.group);
+
+    // Regular moons orbit the equatorial plane, tilted with the planet.
+    this.moonGroup = new Group();
+    this.moonGroup.rotation.z = planet.physical.rotation.obliquityRad;
+    this.moons = planet.moons
+      .filter((moon) => moon.semiMajorAxisPlanetRadii < 100)
+      .map((moon) => {
+        const object = new PlanetObject(moon.physical, null);
+        this.moonGroup!.add(object.group);
+        return {
+          moon,
+          object,
+          mu: G * (planet.physical.bulk.massEarth + moon.physical.bulk.massEarth) * EARTH_MASS,
+        };
+      });
+    this.scene.add(this.moonGroup);
 
     const [r, g, b] = system.star.linearRgb;
     (this.starMesh.material as MeshBasicMaterial).color = new Color(r * 2.5, g * 2.5, b * 2.5);
@@ -83,6 +113,7 @@ export class PlanetViewer {
     window.removeEventListener('resize', this.onResize);
     this.controls.dispose();
     this.planetObject?.dispose();
+    for (const entry of this.moons) entry.object.dispose();
     this.starMesh.geometry.dispose();
     (this.starMesh.material as MeshBasicMaterial).dispose();
     this.pipeline.dispose();
@@ -122,11 +153,36 @@ export class PlanetViewer {
         this.simTimeDays * DAY,
       );
       const distanceM = Math.hypot(position.x, position.y, position.z);
-      const angularRadius = (this.system.star.radius * SOLAR_RADIUS) / distanceM;
+      const starAngularRadius = (this.system.star.radius * SOLAR_RADIUS) / distanceM;
       this.starMesh.position.copy(toStar).multiplyScalar(STAR_DISTANCE_UNITS);
-      this.starMesh.scale.setScalar(Math.max(STAR_DISTANCE_UNITS * angularRadius, 0.5));
+      this.starMesh.scale.setScalar(Math.max(STAR_DISTANCE_UNITS * starAngularRadius, 0.5));
 
-      this.planetObject.update(this.simTimeDays, toStar, this.system.star.linearRgb);
+      const lightColor = this.system.star.linearRgb;
+      this.planetObject.update(this.simTimeDays, toStar, lightColor);
+
+      // Moons move on their orbits; everyone shadows everyone.
+      const tSeconds = this.simTimeDays * DAY;
+      for (const { moon, object, mu } of this.moons) {
+        const state = elementsToState(moon.elements, mu, tSeconds);
+        object.group.position
+          .set(state.position.x, state.position.z, -state.position.y)
+          .divideScalar(EARTH_RADIUS);
+        object.update(this.simTimeDays, toStar, lightColor);
+      }
+      const moonCasters: ShadowCaster[] = this.moons
+        .map(({ object }) => ({
+          position: object.group.getWorldPosition(new Vector3()),
+          radius: object.radiusUnits,
+        }))
+        .sort((a, b) => a.position.length() - b.position.length());
+      this.planetObject.setOccluders(moonCasters, starAngularRadius);
+      const planetCaster: ShadowCaster = {
+        position: new Vector3(0, 0, 0),
+        radius: this.planetObject.radiusUnits,
+      };
+      for (const { object } of this.moons) {
+        object.setOccluders([planetCaster], starAngularRadius);
+      }
     }
 
     this.controls.update();

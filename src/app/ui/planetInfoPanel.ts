@@ -1,6 +1,14 @@
-import { AU } from '../../core/physics/constants';
+import { AU, EARTH_RADIUS } from '../../core/physics/constants';
+import type { Moon } from '../../universe/moon/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { fmt, fmtDays } from './format';
+
+const TIDAL_LABEL: Record<Moon['tidalState'], string> = {
+  dead: '',
+  'subsurface-ocean': 'subsurface ocean',
+  cryovolcanic: 'cryovolcanic',
+  volcanic: 'volcanic',
+};
 
 const ATMOSPHERE_LABEL: Record<string, string> = {
   none: 'airless',
@@ -72,10 +80,36 @@ export class PlanetInfoPanel {
         : '',
     ].join('');
 
+    const rings = planet.rings
+      ? `<div class="belt-row">${planet.rings.composition} rings ·
+         ${fmt(planet.rings.innerPlanetRadii, 2)}–${fmt(planet.rings.outerPlanetRadii, 2)} R_p${
+           planet.rings.gaps.length > 0 ? ` · ${planet.rings.gaps.length} gaps` : ''
+         }</div>`
+      : '';
+    const moons = planet.moons.filter((m) => m.semiMajorAxisPlanetRadii < 100);
+    const moonRows = moons
+      .map((moon) => {
+        const radiusKm = moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000);
+        const notes = [
+          TIDAL_LABEL[moon.tidalState],
+          moon.physical.atmosphere.class !== 'none' ? 'atmosphere' : '',
+          moon.resonanceWithInner ? `${moon.resonanceWithInner} resonance` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        return `<div class="companion">
+          ${moon.name.split(' ').pop()} · ${fmt(radiusKm, 3)} km ·
+          a ${fmt(moon.semiMajorAxisPlanetRadii, 3)} R_p${notes ? ` · ${notes}` : ''}
+        </div>`;
+      })
+      .join('');
+
     this.element.innerHTML = `
       <h1>${planet.name} ${badges}</h1>
       <div class="sub">planet ${index + 1} of ${system.planets.length} · ${system.star.spectralType}</div>
       <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
+      ${rings}
+      ${moonRows ? `<h2>Moons</h2>${moonRows}` : ''}
     `;
   }
 

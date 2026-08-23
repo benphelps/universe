@@ -70,6 +70,9 @@ export function computeAtmosphere(
 
   if (!retains(44)) return build('none', 0, rawEquilibriumK, bulk);
 
+  // Below ~40 K every candidate volatile condenses onto the surface.
+  if (rawEquilibriumK < 40) return build('none', 0, rawEquilibriumK, bulk);
+
   if (!retains(28)) {
     // Holds only heavy CO2, thinly (Mars-like).
     return build('thin-co2', logNormal(rng, Math.log(0.01), 1.2), rawEquilibriumK, bulk);

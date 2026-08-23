@@ -14,6 +14,7 @@ import type { Star } from '../../universe/star/types';
 import { planetMu } from '../../universe/system/generate';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { createBeltPointsForSystem } from './beltPoints';
+import { CometObject } from './cometObject';
 import { createOrbitLine } from './orbitLine';
 import { createZoneRings } from './zoneRings';
 
@@ -45,6 +46,7 @@ export class SystemMapObject {
   private readonly system: StarSystem;
   private readonly planetMeshes: OrbitingMesh[] = [];
   private readonly beltMaterials: ShaderMaterial[] = [];
+  private readonly cometObjects: CometObject[] = [];
   private readonly primaryGlyph: Mesh;
   private readonly companionGlyphs: Mesh[] = [];
 
@@ -97,6 +99,12 @@ export class SystemMapObject {
       this.beltMaterials.push(material);
       this.group.add(points);
     }
+
+    for (const comet of system.comets) {
+      const object = new CometObject(comet, system.centralMassSolar, this.extentAu);
+      this.cometObjects.push(object);
+      this.group.add(object.group);
+    }
   }
 
   update(simTimeDays: number): void {
@@ -110,6 +118,8 @@ export class SystemMapObject {
     for (const material of this.beltMaterials) {
       material.uniforms.uTimeYears.value = simTimeDays / 365.25;
     }
+
+    for (const comet of this.cometObjects) comet.update(tSeconds);
 
     this.updateStellarPositions(tSeconds);
   }
@@ -156,6 +166,7 @@ export class SystemMapObject {
   }
 
   dispose(): void {
+    for (const comet of this.cometObjects) comet.dispose();
     this.group.traverse((obj) => {
       if (obj instanceof Mesh || obj instanceof Points || obj instanceof Line) {
         obj.geometry.dispose();

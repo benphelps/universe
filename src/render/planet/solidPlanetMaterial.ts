@@ -1,8 +1,9 @@
 import { Color, ShaderMaterial } from 'three';
 import { seedFromHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
-import type { Planet } from '../../universe/system/types';
+import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
@@ -38,6 +39,7 @@ uniform float uLavaGlow;
 uniform float uTimeDays;
 
 ${SIMPLEX_NOISE_GLSL}
+${SHADOW_GLSL}
 
 vec3 rotateY(vec3 p, float a) {
   float c = cos(a);
@@ -76,10 +78,11 @@ void main() {
   float cloudMask = smoothstep(cloudThreshold - 0.12, cloudThreshold + 0.12, cloudField);
   surface = mix(surface, uCloudColor, cloudMask * 0.95);
 
-  // Lighting: star-lit day side, hard terminator softened slightly.
+  // Lighting: star-lit day side with eclipse/ring shadows.
   vec3 normal = normalize(vWorldNormal);
   float ndotl = dot(normal, uLightDir);
-  float diffuse = max(ndotl, 0.0);
+  float shadow = shadowFactor(vWorldPos, uLightDir);
+  float diffuse = max(ndotl, 0.0) * shadow;
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   vec3 halfDir = normalize(uLightDir + viewDir);
@@ -105,15 +108,16 @@ export function planetSeedOffset(seedHex: string): [number, number, number] {
   return [rng.range(0, 100), rng.range(0, 100), rng.range(0, 100)];
 }
 
-export function createSolidPlanetMaterial(planet: Planet): ShaderMaterial {
-  const { appearance, climate } = planet.physical;
+export function createSolidPlanetMaterial(physical: Characterization): ShaderMaterial {
+  const { appearance, climate } = physical;
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      ...createShadowUniforms(),
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
-      uSeedOffset: { value: planetSeedOffset(planet.physical.seedHex) },
+      uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
       uLandA: { value: appearance.landColorA },
       uLandB: { value: appearance.landColorB },
       uOcean: { value: appearance.oceanColor },

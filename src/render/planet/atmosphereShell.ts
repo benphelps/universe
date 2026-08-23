@@ -1,5 +1,5 @@
 import { AdditiveBlending, Color, Mesh, ShaderMaterial, SphereGeometry } from 'three';
-import type { Planet } from '../../universe/system/types';
+import type { Characterization } from '../../universe/planet/types';
 
 const VERTEX = /* glsl */ `
 varying vec3 vWorldNormal;
@@ -38,8 +38,11 @@ void main() {
  * thickness follows the scale height. Ground-level sky rendering arrives
  * with the surface milestone.
  */
-export function createAtmosphereShell(planet: Planet, planetRadiusUnits: number): Mesh | null {
-  const { atmosphere, bulk } = planet.physical;
+export function createAtmosphereShell(
+  physical: Characterization,
+  planetRadiusUnits: number,
+): Mesh | null {
+  const { atmosphere, bulk } = physical;
   if (atmosphere.class === 'none') return null;
 
   const relativeHeight = Math.min(0.12, Math.max(0.015, (8 * atmosphere.scaleHeightKm) / (bulk.radiusEarth * 6371)));

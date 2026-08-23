@@ -1,7 +1,8 @@
 import { Color, ShaderMaterial } from 'three';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
-import type { Planet } from '../../universe/system/types';
+import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 import { planetSeedOffset } from './solidPlanetMaterial';
 
 const VERTEX = /* glsl */ `
@@ -38,6 +39,7 @@ uniform float uTimeDays;
 uniform float uSpinRadPerDay;
 
 ${SIMPLEX_NOISE_GLSL}
+${SHADOW_GLSL}
 
 vec3 rotateY(vec3 p, float a) {
   float c = cos(a);
@@ -77,7 +79,7 @@ void main() {
 
   vec3 normal = normalize(vWorldNormal);
   float ndotl = dot(normal, uLightDir);
-  float diffuse = max(ndotl, 0.0);
+  float diffuse = max(ndotl, 0.0) * shadowFactor(vWorldPos, uLightDir);
 
   // Gentle limb darkening on the cloud deck.
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
@@ -94,17 +96,18 @@ void main() {
 }
 `;
 
-export function createGiantMaterial(planet: Planet): ShaderMaterial {
-  const banding = planet.physical.appearance.banding!;
-  const spin = (2 * Math.PI * 24) / planet.physical.rotation.periodHours;
+export function createGiantMaterial(physical: Characterization): ShaderMaterial {
+  const banding = physical.appearance.banding!;
+  const spin = (2 * Math.PI * 24) / physical.rotation.periodHours;
   const glowing = banding.thermalGlowK > 700;
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      ...createShadowUniforms(),
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
-      uSeedOffset: { value: planetSeedOffset(planet.physical.seedHex) },
+      uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
       uZoneColor: { value: banding.zoneColor },
       uBeltColor: { value: banding.beltColor },
       uStormColor: { value: banding.stormColor },
