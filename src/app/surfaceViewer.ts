@@ -1,44 +1,55 @@
-import { Color, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
+import { Color, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState } from '../core/math/kepler';
-import { DAY, SOLAR_RADIUS } from '../core/physics/constants';
+import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createOceanSphere } from '../render/terrain/oceanSphere';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
+import type { Moon } from '../universe/moon/types';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { planetMu } from '../universe/system/generate';
 import type { Planet, StarSystem } from '../universe/system/types';
 
-const SUN_DISTANCE_KM = 50000;
+const SKY_OBJECT_DISTANCE_KM = 40000;
+
+interface SkyMoon {
+  moon: Moon;
+  mesh: Mesh;
+  mu: number;
+}
 
 /**
- * Surface view: descend from orbit to the ground of any solid world in
- * one unbroken zoom. The camera lives in planet-local coordinates
- * (units: km) and everything renders camera-relative, so precision holds
- * from space to a few meters above the terrain. Drag orbits/pans, wheel
- * changes altitude; the sun tracks the planet's real spin and orbit.
+ * Surface view: descend from orbit to the ground in one unbroken zoom.
+ * OrbitControls drives rotation around the planet (drag speed scaled to
+ * altitude); the wheel changes altitude on a log scale; near the ground
+ * the gaze tilts from nadir to the horizon. Chunk vertices are
+ * anchor-relative, so precision holds without any origin rebasing —
+ * model-view matrices multiply in doubles on the CPU.
  */
 export class SurfaceViewer {
-  timeScaleDaysPerSecond = 0.02;
+  // Near-frozen by default: fast rotators would otherwise sweep the sun
+  // across the sky (and into night) within a minute of arriving.
+  timeScaleDaysPerSecond = 0.001;
   private simTimeDays = 0;
   private disposed = false;
   private readonly scene = new Scene();
   private readonly camera: PerspectiveCamera;
   private readonly pipeline: RenderPipeline;
+  private readonly controls: OrbitControls;
   private readonly sunMesh: Mesh;
   private readonly terrainMaterial = createTerrainMaterial();
   private chunkManager: TerrainChunkManager | null = null;
   private ocean: Mesh | null = null;
   private sky: Mesh | null = null;
+  private skyMoons: SkyMoon[] = [];
+  private readonly skyMoonGroup = new Group();
   private field: SurfaceField | null = null;
   private system: StarSystem | null = null;
   private planet: Planet | null = null;
   private radiusKm = 6371;
-  private latitude = 0.45;
-  private longitude = 0.8;
   private altitudeKm = 20000;
-  private dragging = false;
   private lastFrameMs = performance.now();
   private readonly onResize = () => this.resize();
 
@@ -46,19 +57,17 @@ export class SurfaceViewer {
     this.camera = new PerspectiveCamera(55, 1, 0.01, 1e6);
     this.pipeline = new RenderPipeline(container, this.scene, this.camera);
 
+    this.controls = new OrbitControls(this.camera, this.pipeline.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.enablePan = false;
+    this.controls.enableZoom = false;
+    this.controls.target.set(0, 0, 0);
+
     this.sunMesh = new Mesh(new SphereGeometry(1, 32, 16), new MeshBasicMaterial());
     this.scene.add(this.sunMesh);
+    this.scene.add(this.skyMoonGroup);
 
-    const canvas = this.pipeline.renderer.domElement;
-    canvas.addEventListener('pointerdown', () => (this.dragging = true));
-    window.addEventListener('pointerup', () => (this.dragging = false));
-    canvas.addEventListener('pointermove', (e) => {
-      if (!this.dragging) return;
-      const angularSpeed = (0.9 * Math.max(this.altitudeKm, 0.05)) / this.radiusKm / 500;
-      this.longitude -= e.movementX * angularSpeed;
-      this.latitude = Math.min(1.45, Math.max(-1.45, this.latitude + e.movementY * angularSpeed));
-    });
-    canvas.addEventListener(
+    this.pipeline.renderer.domElement.addEventListener(
       'wheel',
       (e) => {
         e.preventDefault();
@@ -80,11 +89,12 @@ export class SurfaceViewer {
     this.radiusKm = this.field.params.radiusM / 1000;
     this.altitudeKm = this.radiusKm * 2.2;
 
-    // Start over the lit face: aim the camera at the substellar point.
+    // Start over the lit face.
     const { position } = elementsToState(planet.elements, planetMu(system, planet), 0);
     const toStar = new Vector3(-position.x, -position.z, position.y).normalize();
-    this.latitude = Math.asin(Math.max(-1, Math.min(1, toStar.y))) * 0.6;
-    this.longitude = Math.atan2(toStar.z, toStar.x);
+    this.camera.position.copy(toStar).multiplyScalar(this.radiusKm * 3.2);
+    this.camera.up.set(0, 1, 0);
+    this.controls.update();
 
     this.chunkManager?.dispose();
     this.chunkManager = new TerrainChunkManager(
@@ -116,6 +126,36 @@ export class SurfaceViewer {
 
     const [r, g, b] = system.star.linearRgb;
     (this.sunMesh.material as MeshBasicMaterial).color = new Color(r * 2.5, g * 2.5, b * 2.5);
+
+    // Major moons appear in the sky at their true directions.
+    this.skyMoonGroup.clear();
+    for (const entry of this.skyMoons) {
+      entry.mesh.geometry.dispose();
+      (entry.mesh.material as MeshBasicMaterial).dispose();
+    }
+    this.skyMoons = planet.moons
+      .filter((moon) => moon.semiMajorAxisPlanetRadii < 100)
+      .map((moon) => {
+        const { landColorA, landColorB } = moon.physical.appearance;
+        const raw = [
+          ((landColorA[0] + landColorB[0]) / 2 + 0.3) * r,
+          ((landColorA[1] + landColorB[1]) / 2 + 0.3) * g,
+          ((landColorA[2] + landColorB[2]) / 2 + 0.3) * b,
+        ];
+        const peak = Math.max(...raw, 1e-3);
+        const mesh = new Mesh(
+          new SphereGeometry(1, 16, 8),
+          new MeshBasicMaterial({
+            color: new Color((raw[0] / peak) * 0.8, (raw[1] / peak) * 0.8, (raw[2] / peak) * 0.8),
+          }),
+        );
+        this.skyMoonGroup.add(mesh);
+        return {
+          moon,
+          mesh,
+          mu: G * (planet.physical.bulk.massEarth + moon.physical.bulk.massEarth) * EARTH_MASS,
+        };
+      });
   }
 
   set exposure(value: number) {
@@ -125,6 +165,7 @@ export class SurfaceViewer {
   dispose(): void {
     this.disposed = true;
     window.removeEventListener('resize', this.onResize);
+    this.controls.dispose();
     this.chunkManager?.dispose();
     this.terrainMaterial.dispose();
     this.pipeline.dispose();
@@ -146,53 +187,52 @@ export class SurfaceViewer {
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
     if (this.system && this.planet && this.field && this.chunkManager) {
-      const up = new Vector3(
-        Math.cos(this.latitude) * Math.cos(this.longitude),
-        Math.sin(this.latitude),
-        Math.cos(this.latitude) * Math.sin(this.longitude),
-      );
+      // Drag sensitivity follows altitude so orbit and ground both feel right.
+      this.controls.rotateSpeed = Math.min(1.2, Math.max(0.004, (1.4 * this.altitudeKm) / this.radiusKm));
+      this.controls.update();
 
-      // Hold the camera above both terrain and sea.
+      const up = this.camera.position.clone().normalize();
       const groundKm = Math.max(this.field.heightAt(up), this.field.seaLevelM) / 1000;
       const surfaceKm = this.radiusKm + Math.max(groundKm, -this.radiusKm * 0.01);
-      this.altitudeKm = Math.max(this.altitudeKm, 0.004);
-      const cameraKm = up.clone().multiplyScalar(surfaceKm + this.altitudeKm);
+      this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
 
       // Nadir gaze from orbit blending to a horizon gaze near the ground.
-      const north = new Vector3(0, 1, 0).addScaledVector(up, -up.y).normalize();
-      const horizonBlend = Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
-      const forward = north
-        .clone()
-        .multiplyScalar(1 - horizonBlend)
-        .addScaledVector(up, -0.15 - 0.85 * horizonBlend)
-        .normalize();
-      this.camera.position.set(0, 0, 0);
-      this.camera.up.copy(up);
-      this.camera.lookAt(forward);
+      const horizonBlend = 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
+      if (horizonBlend > 0.01) {
+        const north =
+          Math.abs(up.y) > 0.99
+            ? new Vector3(1, 0, 0)
+            : new Vector3(0, 1, 0).addScaledVector(up, -up.y).normalize();
+        const forward = north
+          .clone()
+          .multiplyScalar(horizonBlend)
+          .addScaledVector(up, -(1 - horizonBlend) - 0.12 * horizonBlend)
+          .normalize();
+        this.camera.up.copy(up);
+        this.camera.lookAt(this.camera.position.clone().add(forward));
+      }
+
       this.camera.near = Math.min(5, Math.max(0.002, this.altitudeKm * 0.2));
-      this.camera.far = Math.max(this.radiusKm * 8, cameraKm.length() * 4);
+      this.camera.far = Math.max(this.radiusKm * 10, this.camera.position.length() * 5);
       this.camera.updateProjectionMatrix();
 
-      this.updateLighting(cameraKm, up);
-      this.chunkManager.update(cameraKm);
-      if (this.ocean) this.ocean.position.copy(cameraKm).negate();
+      this.updateSkyObjects(up);
+      this.chunkManager.update(this.camera.position);
     }
 
     this.pipeline.render();
     requestAnimationFrame(() => this.frame());
   }
 
-  private updateLighting(cameraKm: Vector3, up: Vector3): void {
+  private updateSkyObjects(up: Vector3): void {
     if (!this.system || !this.planet) return;
     const { position } = elementsToState(
       this.planet.elements,
       planetMu(this.system, this.planet),
       this.simTimeDays * DAY,
     );
-    // World frame: model (x, y, z out-of-plane) → (x, z, −y); the ground
-    // stays fixed while the sun sweeps with the planet's spin.
-    const spin =
-      (2 * Math.PI * 24 * this.simTimeDays) / this.planet.physical.rotation.periodHours;
+    // The ground stays fixed; the sun sweeps with the planet's spin.
+    const spin = (2 * Math.PI * 24 * this.simTimeDays) / this.planet.physical.rotation.periodHours;
     const toStarModel = new Vector3(-position.x, -position.z, position.y).normalize();
     const sunDir = new Vector3(
       toStarModel.x * Math.cos(spin) + toStarModel.z * Math.sin(spin),
@@ -202,14 +242,30 @@ export class SurfaceViewer {
 
     const distanceM = Math.hypot(position.x, position.y, position.z);
     const angularRadius = (this.system.star.radius * SOLAR_RADIUS) / distanceM;
-    this.sunMesh.position.copy(sunDir).multiplyScalar(SUN_DISTANCE_KM);
-    this.sunMesh.scale.setScalar(Math.max(SUN_DISTANCE_KM * angularRadius, 20));
+    this.sunMesh.position
+      .copy(this.camera.position)
+      .addScaledVector(sunDir, SKY_OBJECT_DISTANCE_KM);
+    this.sunMesh.scale.setScalar(Math.max(SKY_OBJECT_DISTANCE_KM * angularRadius, 15));
+    // Below the horizon the far side isn't loaded to occlude it: hide.
+    this.sunMesh.visible = sunDir.dot(up) > -0.05;
+
+    const tSeconds = this.simTimeDays * DAY;
+    for (const { moon, mesh, mu } of this.skyMoons) {
+      const state = elementsToState(moon.elements, mu, tSeconds);
+      const moonKm = new Vector3(state.position.x, state.position.z, -state.position.y).divideScalar(1000);
+      const toMoon = moonKm.clone().sub(this.camera.position);
+      const distKm = toMoon.length();
+      toMoon.divideScalar(distKm);
+      const moonAngular = Math.max(moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000) / distKm, 0.0012);
+      mesh.position.copy(this.camera.position).addScaledVector(toMoon, SKY_OBJECT_DISTANCE_KM * 0.9);
+      mesh.scale.setScalar(SKY_OBJECT_DISTANCE_KM * 0.9 * moonAngular);
+      mesh.visible = toMoon.dot(up) > -0.05;
+    }
 
     const lightColor = this.system.star.linearRgb;
     const sunView = sunDir.clone().transformDirection(this.camera.matrixWorldInverse);
     const { atmosphere } = this.planet.physical;
     const sunElevation = Math.max(0, sunDir.dot(up));
-    // Aerial perspective belongs inside the atmosphere: fade with altitude.
     const scaleHeightKm = Math.max(atmosphere.scaleHeightKm, 3);
     const immersion = Math.exp(-this.altitudeKm / (8 * scaleHeightKm));
     const density =
@@ -232,11 +288,11 @@ export class SurfaceViewer {
     }
 
     if (this.sky) {
+      this.sky.position.copy(this.camera.position);
       const material = this.sky.material as ShaderMaterial;
       material.uniforms.uSunDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uUp.value = [up.x, up.y, up.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      const scaleHeightKm = Math.max(this.planet.physical.atmosphere.scaleHeightKm, 4);
       material.uniforms.uStrength.value = Math.exp(-this.altitudeKm / (10 * scaleHeightKm));
     }
   }

@@ -58,16 +58,21 @@ function load(nextSeedHex: string): void {
       planetIndex = ((planetIndex % count) + count) % count;
       const planet = system.planets[planetIndex];
       // The surface view needs solid ground; envelopes fall back to orbit.
-      if (viewMode === 'surface' && !planet.physical.appearance.banding) {
+      const solid = !planet.physical.appearance.banding;
+      let note: string | undefined;
+      if (viewMode === 'surface' && solid) {
         const surfaceViewer = new SurfaceViewer(viewElement);
         surfaceViewer.setPlanet(system, planet);
         viewer = surfaceViewer;
       } else {
+        if (viewMode === 'surface') {
+          note = 'gas envelope — no solid surface to land on; showing the orbital view';
+        }
         const planetViewer = new PlanetViewer(viewElement);
         planetViewer.setPlanet(system, planet);
         viewer = planetViewer;
       }
-      planetPanel.render(system, planet, planetIndex);
+      planetPanel.render(system, planet, planetIndex, note);
       controls.planetLabel = planet.name.split(' ').pop() ?? '';
     }
   }

@@ -39,7 +39,7 @@ const REGIME_LABEL: Record<string, string> = {
 export class PlanetInfoPanel {
   constructor(private readonly element: HTMLElement) {}
 
-  render(system: StarSystem, planet: Planet, index: number): void {
+  render(system: StarSystem, planet: Planet, index: number, note?: string): void {
     const { bulk, interior, rotation, atmosphere, climate } = planet.physical;
     const aAu = planet.elements.semiMajorAxis / AU;
 
@@ -107,6 +107,7 @@ export class PlanetInfoPanel {
     this.element.innerHTML = `
       <h1>${planet.name} ${badges}</h1>
       <div class="sub">planet ${index + 1} of ${system.planets.length} · ${system.star.spectralType}</div>
+      ${note ? `<div class="note">${note}</div>` : ''}
       <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
       ${rings}
       ${moonRows ? `<h2>Moons</h2>${moonRows}` : ''}

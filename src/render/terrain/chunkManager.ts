@@ -54,7 +54,7 @@ export class TerrainChunkManager {
     }
   }
 
-  /** cameraKm is planet-local; visible chunks are positioned camera-relative. */
+  /** cameraKm is the camera's planet-local position, used for LOD and culling. */
   update(cameraKm: Vector3): void {
     this.frame++;
     for (const record of this.chunks.values()) {
@@ -113,18 +113,12 @@ export class TerrainChunkManager {
         return;
       }
     }
-    this.draw(this.ensure(face, level, x, y), cameraKm);
+    this.draw(this.ensure(face, level, x, y));
   }
 
-  private draw(record: ChunkRecord, cameraKm: Vector3): void {
+  private draw(record: ChunkRecord): void {
     record.lastDrawn = this.frame;
-    if (!record.mesh || !record.centerKm) return;
-    record.mesh.visible = true;
-    record.mesh.position.set(
-      record.centerKm[0] - cameraKm.x,
-      record.centerKm[1] - cameraKm.y,
-      record.centerKm[2] - cameraKm.z,
-    );
+    if (record.mesh) record.mesh.visible = true;
   }
 
   private ensure(face: number, level: number, x: number, y: number): ChunkRecord {
@@ -165,6 +159,7 @@ export class TerrainChunkManager {
 
     const mesh = new Mesh(geometry, this.material);
     mesh.visible = false;
+    mesh.position.set(...response.centerKm);
     record.centerKm = response.centerKm;
     record.mesh = mesh;
     this.scene.add(mesh);

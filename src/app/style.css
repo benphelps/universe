@@ -222,3 +222,11 @@ body {
   margin-top: 6px;
   color: #8b93a1;
 }
+
+#info .note {
+  margin: 6px 0;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: rgba(220, 180, 90, 0.12);
+  color: #e0c080;
+}

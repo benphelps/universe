@@ -13,8 +13,10 @@ export interface ChunkMesh {
 /**
  * One quadtree tile: (res+1)² displaced grid vertices plus a skirt ring
  * dropped toward the planet center to hide cracks between LOD levels.
- * Positions are anchor-relative so float32 stays precise at ground level.
- * Pure — runs identically on the main thread or in a worker.
+ * The grid samples one extra border vertex on every side so normals get
+ * full neighborhoods — adjacent chunks light identically at their shared
+ * edge. Positions are anchor-relative so float32 stays precise at ground
+ * level. Pure — runs identically on the main thread or in a worker.
  */
 export function buildChunkMesh(
   field: SurfaceField,
@@ -26,6 +28,7 @@ export function buildChunkMesh(
 ): ChunkMesh {
   const radiusKm = field.params.radiusM / 1000;
   const tiles = 2 ** level;
+  const ext = res + 3;
   const gridCount = (res + 1) * (res + 1);
   const skirtCount = 4 * (res + 1);
   const positions = new Float32Array((gridCount + skirtCount) * 3);
@@ -39,40 +42,50 @@ export function buildChunkMesh(
     centerDir.z * radiusKm,
   ];
 
-  const heights = new Float64Array(gridCount);
-  const dirs = new Float64Array(gridCount * 3);
-  for (let j = 0; j <= res; j++) {
-    for (let i = 0; i <= res; i++) {
-      const index = j * (res + 1) + i;
-      const dir = faceUvToDir(face, (x + i / res) / tiles, (y + j / res) / tiles);
+  // Extended grid (border row/column on every side) for seamless normals.
+  const extPositions = new Float64Array(ext * ext * 3);
+  const extNormals = new Float64Array(ext * ext * 3);
+  const heights = new Float64Array(ext * ext);
+  const dirs = new Float64Array(ext * ext * 3);
+  for (let j = 0; j < ext; j++) {
+    for (let i = 0; i < ext; i++) {
+      const index = j * ext + i;
+      const dir = faceUvToDir(face, (x + (i - 1) / res) / tiles, (y + (j - 1) / res) / tiles);
       const h = field.heightAt(dir);
       heights[index] = h;
       dirs[index * 3] = dir.x;
       dirs[index * 3 + 1] = dir.y;
       dirs[index * 3 + 2] = dir.z;
       const rKm = radiusKm + h / 1000;
-      positions[index * 3] = dir.x * rKm - centerKm[0];
-      positions[index * 3 + 1] = dir.y * rKm - centerKm[1];
-      positions[index * 3 + 2] = dir.z * rKm - centerKm[2];
+      extPositions[index * 3] = dir.x * rKm - centerKm[0];
+      extPositions[index * 3 + 1] = dir.y * rKm - centerKm[1];
+      extPositions[index * 3 + 2] = dir.z * rKm - centerKm[2];
     }
   }
 
-  accumulateNormals(positions, normals, res);
+  accumulateNormals(extPositions, extNormals, ext);
 
   for (let j = 0; j <= res; j++) {
     for (let i = 0; i <= res; i++) {
-      const index = j * (res + 1) + i;
+      const outIndex = j * (res + 1) + i;
+      const extIndex = (j + 1) * ext + (i + 1);
+      for (let c = 0; c < 3; c++) {
+        positions[outIndex * 3 + c] = extPositions[extIndex * 3 + c];
+        normals[outIndex * 3 + c] = extNormals[extIndex * 3 + c];
+      }
       const dir = {
-        x: dirs[index * 3],
-        y: dirs[index * 3 + 1],
-        z: dirs[index * 3 + 2],
+        x: dirs[extIndex * 3],
+        y: dirs[extIndex * 3 + 1],
+        z: dirs[extIndex * 3 + 2],
       };
       const slopeCos =
-        normals[index * 3] * dir.x + normals[index * 3 + 1] * dir.y + normals[index * 3 + 2] * dir.z;
-      const [r, g, b] = field.colorAt(dir, heights[index], slopeCos);
-      colors[index * 3] = r;
-      colors[index * 3 + 1] = g;
-      colors[index * 3 + 2] = b;
+        extNormals[extIndex * 3] * dir.x +
+        extNormals[extIndex * 3 + 1] * dir.y +
+        extNormals[extIndex * 3 + 2] * dir.z;
+      const [r, g, b] = field.colorAt(dir, heights[extIndex], slopeCos);
+      colors[outIndex * 3] = r;
+      colors[outIndex * 3 + 1] = g;
+      colors[outIndex * 3 + 2] = b;
     }
   }
 
@@ -80,16 +93,15 @@ export function buildChunkMesh(
   return { centerKm, positions, normals, colors };
 }
 
-/** Area-weighted triangle normals accumulated over the grid. */
-function accumulateNormals(positions: Float32Array, normals: Float32Array, res: number): void {
-  const stride = res + 1;
+/** Area-weighted triangle normals accumulated over the extended grid. */
+function accumulateNormals(positions: Float64Array, normals: Float64Array, ext: number): void {
   const a = [0, 0, 0];
   const b = [0, 0, 0];
-  for (let j = 0; j < res; j++) {
-    for (let i = 0; i < res; i++) {
-      const i00 = (j * stride + i) * 3;
-      const i10 = (j * stride + i + 1) * 3;
-      const i01 = ((j + 1) * stride + i) * 3;
+  for (let j = 0; j < ext - 1; j++) {
+    for (let i = 0; i < ext - 1; i++) {
+      const i00 = (j * ext + i) * 3;
+      const i10 = (j * ext + i + 1) * 3;
+      const i01 = ((j + 1) * ext + i) * 3;
       for (let k = 0; k < 3; k++) {
         a[k] = positions[i10 + k] - positions[i00 + k];
         b[k] = positions[i01 + k] - positions[i00 + k];
@@ -97,14 +109,14 @@ function accumulateNormals(positions: Float32Array, normals: Float32Array, res: 
       const nx = a[1] * b[2] - a[2] * b[1];
       const ny = a[2] * b[0] - a[0] * b[2];
       const nz = a[0] * b[1] - a[1] * b[0];
-      for (const corner of [i00, i10, i01, ((j + 1) * stride + i + 1) * 3]) {
+      for (const corner of [i00, i10, i01, ((j + 1) * ext + i + 1) * 3]) {
         normals[corner] += nx;
         normals[corner + 1] += ny;
         normals[corner + 2] += nz;
       }
     }
   }
-  for (let v = 0; v < (res + 1) * (res + 1); v++) {
+  for (let v = 0; v < ext * ext; v++) {
     const length = Math.hypot(normals[v * 3], normals[v * 3 + 1], normals[v * 3 + 2]) || 1;
     normals[v * 3] /= length;
     normals[v * 3 + 1] /= length;
