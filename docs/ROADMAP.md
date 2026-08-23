@@ -74,7 +74,9 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M7 — Depth & Polish
 
-- [ ] **Unified body viewer**: merge the planet and surface views into one continuous scene — a single camera flying from system space to the ground, with each body choosing its representation by distance (shader sphere far, terrain chunks near, shared atmosphere/rings/moons throughout). The current split (planet = shader sphere, surface = terrain streamer sharing the shell/ring/moon modules) is the seam to remove.
+- [x] **Unified body viewer** (step 1 of the single universe renderer): planet + surface merged — solid worlds are streamed terrain at every altitude, envelopes are shader spheres, everything else (sun, moons, eclipses, rings, atmosphere, backdrop) shared in one scene.
+- [ ] **Single universe renderer, step 2**: fold the star view and system map into the body scene — camera ranges and a diagrammatic orbit-line overlay instead of separate renderers.
+- [ ] **Single universe renderer, step 3**: fold the galaxy in with scale-layer management — one unbroken zoom from galaxy to ground.
 - [ ] Clouds over terrain (the planet view's cloud layer has no surface-view counterpart yet)
 - [ ] Volumetric clouds; multiple-scattering atmospheres; black-hole lensing pass
 - [ ] Exotic showcases: circumbinary worlds, eyeball planets, Io-class volcanism, pulsar systems
