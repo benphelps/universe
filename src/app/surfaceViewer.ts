@@ -4,7 +4,7 @@ import { elementsToState } from '../core/math/kepler';
 import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
-import { createOceanSphere } from '../render/terrain/oceanSphere';
+import { createOceanMaterial } from '../render/terrain/oceanSphere';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import type { Moon } from '../universe/moon/types';
@@ -40,8 +40,8 @@ export class SurfaceViewer {
   private readonly controls: OrbitControls;
   private readonly sunMesh: Mesh;
   private readonly terrainMaterial = createTerrainMaterial();
+  private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
-  private ocean: Mesh | null = null;
   private sky: Mesh | null = null;
   private skyMoons: SkyMoon[] = [];
   private readonly skyMoonGroup = new Group();
@@ -90,33 +90,27 @@ export class SurfaceViewer {
     this.radiusKm = this.field.params.radiusM / 1000;
     this.altitudeKm = this.radiusKm * 2.2;
 
-    // Start over the lit face.
+    // Start over the lit face, offset so sunlight rakes and casts relief.
     const { position } = elementsToState(planet.elements, planetMu(system, planet), 0);
     const toStar = new Vector3(-position.x, -position.z, position.y).normalize();
-    this.camera.position.copy(toStar).multiplyScalar(this.radiusKm * 3.2);
+    const arrival = toStar
+      .clone()
+      .applyAxisAngle(new Vector3(0, 1, 0), 0.7)
+      .normalize();
+    this.camera.position.copy(arrival).multiplyScalar(this.radiusKm * 3.2);
     this.camera.up.set(0, 1, 0);
     this.controls.update();
 
+    this.oceanMaterial?.dispose();
+    this.oceanMaterial = createOceanMaterial(planet.physical.appearance.oceanColor);
     this.chunkManager?.dispose();
     this.chunkManager = new TerrainChunkManager(
       this.scene,
       this.terrainMaterial,
+      this.oceanMaterial,
       planet.physical.seedHex,
       planet.physical,
     );
-
-    if (this.ocean) {
-      this.scene.remove(this.ocean);
-      this.ocean.geometry.dispose();
-    }
-    this.ocean = null;
-    if (this.field.seaLevelM > -1e8) {
-      this.ocean = createOceanSphere(
-        this.radiusKm + this.field.seaLevelM / 1000,
-        planet.physical.appearance.oceanColor,
-      );
-      this.scene.add(this.ocean);
-    }
 
     if (this.sky) this.scene.remove(this.sky);
     this.sky = null;
@@ -278,9 +272,6 @@ export class SurfaceViewer {
     }
 
     const lightColor = this.system.star.linearRgb;
-    // Fresh view-space transform: the renderer's cached inverse matrix is a
-    // frame stale, which strobes the lighting while the camera rotates.
-    const sunView = sunDir.clone().applyQuaternion(this.camera.quaternion.clone().invert());
     const { atmosphere } = this.planet.physical;
     const sunElevation = Math.max(0, sunDir.dot(up));
     const scaleHeightKm = Math.max(atmosphere.scaleHeightKm, 3);
@@ -296,9 +287,10 @@ export class SurfaceViewer {
       new Color(...lightColor).multiplyScalar(0.35 + 0.65 * sunElevation),
     );
 
-    for (const material of [this.terrainMaterial, this.ocean?.material as ShaderMaterial]) {
+    // Terrain and water light in world space (their meshes never rotate).
+    for (const material of [this.terrainMaterial, this.oceanMaterial]) {
       if (!material) continue;
-      material.uniforms.uLightDir.value = [sunView.x, sunView.y, sunView.z];
+      material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
       material.uniforms.uFogColor.value.copy(fog);
       material.uniforms.uFogDensity.value = density;

@@ -24,6 +24,7 @@ interface ChunkRecord {
   y: number;
   centerKm: [number, number, number] | null;
   mesh: Mesh | null;
+  waterMesh: Mesh | null;
   requested: boolean;
   lastDrawn: number;
 }
@@ -55,6 +56,7 @@ export class TerrainChunkManager {
   constructor(
     private readonly scene: Scene,
     private readonly material: ShaderMaterial,
+    private readonly oceanMaterial: ShaderMaterial,
     seedHex: string,
     physical: Characterization,
   ) {
@@ -76,6 +78,7 @@ export class TerrainChunkManager {
     this.frame++;
     for (const record of this.chunks.values()) {
       if (record.mesh) record.mesh.visible = false;
+      if (record.waterMesh) record.waterMesh.visible = false;
     }
 
     const cameraDistance = cameraKm.length();
@@ -163,6 +166,7 @@ export class TerrainChunkManager {
     record.lastDrawn = this.frame;
     if (record.mesh) {
       record.mesh.visible = true;
+      if (record.waterMesh) record.waterMesh.visible = true;
       return;
     }
     this.wanted.push({ record, distanceKm });
@@ -174,6 +178,7 @@ export class TerrainChunkManager {
           if (child?.mesh) {
             child.lastDrawn = this.frame;
             child.mesh.visible = true;
+            if (child.waterMesh) child.waterMesh.visible = true;
           }
         }
       }
@@ -195,6 +200,7 @@ export class TerrainChunkManager {
       y,
       centerKm: null,
       mesh: null,
+      waterMesh: null,
       requested: false,
       lastDrawn: this.frame,
     };
@@ -223,6 +229,19 @@ export class TerrainChunkManager {
     record.centerKm = response.centerKm;
     record.mesh = mesh;
     this.scene.add(mesh);
+
+    if (response.waterPositions && response.waterNormals) {
+      const waterGeometry = new BufferGeometry();
+      waterGeometry.setAttribute('position', new BufferAttribute(response.waterPositions, 3));
+      waterGeometry.setAttribute('normal', new BufferAttribute(response.waterNormals, 3));
+      waterGeometry.setIndex(this.indexAttribute);
+      waterGeometry.computeBoundingSphere();
+      const waterMesh = new Mesh(waterGeometry, this.oceanMaterial);
+      waterMesh.visible = false;
+      waterMesh.position.set(...response.centerKm);
+      record.waterMesh = waterMesh;
+      this.scene.add(waterMesh);
+    }
   }
 
   private evict(): void {
@@ -233,23 +252,26 @@ export class TerrainChunkManager {
     let excess = this.chunks.size - MAX_CHUNKS;
     for (const record of evictable) {
       if (excess <= 0 || record.lastDrawn >= this.frame - EVICT_AGE_FRAMES) break;
-      if (record.mesh) {
-        this.scene.remove(record.mesh);
-        record.mesh.geometry.dispose();
-      }
-      this.chunks.delete(record.key);
+      this.remove(record);
       excess--;
     }
   }
 
+  private remove(record: ChunkRecord): void {
+    if (record.mesh) {
+      this.scene.remove(record.mesh);
+      record.mesh.geometry.dispose();
+    }
+    if (record.waterMesh) {
+      this.scene.remove(record.waterMesh);
+      record.waterMesh.geometry.dispose();
+    }
+    this.chunks.delete(record.key);
+  }
+
   dispose(): void {
     for (const worker of this.workers) worker.terminate();
-    for (const record of this.chunks.values()) {
-      if (record.mesh) {
-        this.scene.remove(record.mesh);
-        record.mesh.geometry.dispose();
-      }
-    }
+    for (const record of [...this.chunks.values()]) this.remove(record);
     this.chunks.clear();
   }
 }

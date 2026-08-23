@@ -11,7 +11,8 @@ varying vec3 vWorldPos;
 
 void main() {
   vColor = color;
-  vNormal = normalize(normalMatrix * normal);
+  // Chunk meshes never rotate: attribute normals are world-frame already.
+  vNormal = normal;
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPos = worldPos.xyz;
   vec4 mvPosition = viewMatrix * worldPos;
@@ -43,8 +44,20 @@ void main() {
     + 0.05 * snoise(dir * 26000.0);
   vec3 ground = vColor * mottle;
 
-  // Light direction arrives in view space alongside the normals.
-  float diffuse = max(dot(normalize(vNormal), uLightDir), 0.0);
+  // Micro-relief shading: perturb the normal with the same planet-frame
+  // noise so surface roughness looks uniform across LOD ring boundaries.
+  vec3 tangentA = normalize(abs(dir.y) > 0.98
+    ? cross(dir, vec3(1.0, 0.0, 0.0))
+    : cross(dir, vec3(0.0, 1.0, 0.0)));
+  vec3 tangentB = cross(dir, tangentA);
+  float bumpFade = 1.0 / (1.0 + length(vViewPos) * 0.0001);
+  vec3 normal = normalize(
+    normalize(vNormal)
+    + bumpFade * 0.22 * (tangentA * snoise(dir * 3100.0 + 7.0) + tangentB * snoise(dir * 3100.0 + 13.0))
+    + bumpFade * 0.12 * (tangentA * snoise(dir * 17000.0 + 3.0) + tangentB * snoise(dir * 17000.0 + 29.0))
+  );
+
+  float diffuse = max(dot(normal, uLightDir), 0.0);
   vec3 color = ground * uLightColor * (diffuse + 0.015);
 
   // Aerial perspective toward the sky's horizon tint.

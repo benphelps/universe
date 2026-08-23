@@ -8,6 +8,13 @@ export interface ChunkMesh {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
+  /**
+   * Sea surface on the same grid points projected to the sea-level
+   * radius — resolution-matched to the terrain, so the two surfaces
+   * cross only at real coastlines. Null when the tile is fully dry.
+   */
+  waterPositions: Float32Array | null;
+  waterNormals: Float32Array | null;
 }
 
 /**
@@ -50,12 +57,14 @@ export function buildChunkMesh(
   const extNormals = new Float64Array(ext * ext * 3);
   const heights = new Float64Array(ext * ext);
   const dirs = new Float64Array(ext * ext * 3);
+  let minHeight = Infinity;
   for (let j = 0; j < ext; j++) {
     for (let i = 0; i < ext; i++) {
       const index = j * ext + i;
       const dir = faceUvToDir(face, (x + (i - 1) / res) / tiles, (y + (j - 1) / res) / tiles);
       const h = field.heightAt(dir, lodAngularRad);
       heights[index] = h;
+      if (h < minHeight) minHeight = h;
       dirs[index * 3] = dir.x;
       dirs[index * 3 + 1] = dir.y;
       dirs[index * 3 + 2] = dir.z;
@@ -93,7 +102,28 @@ export function buildChunkMesh(
   }
 
   buildSkirt(positions, normals, colors, res, radiusKm / tiles, centerKm, radiusKm);
-  return { centerKm, positions, normals, colors };
+
+  let waterPositions: Float32Array | null = null;
+  let waterNormals: Float32Array | null = null;
+  if (field.seaLevelM > -1e8 && minHeight < field.seaLevelM + 5) {
+    const seaKm = radiusKm + field.seaLevelM / 1000;
+    waterPositions = new Float32Array((gridCount + skirtCount) * 3);
+    waterNormals = new Float32Array((gridCount + skirtCount) * 3);
+    for (let j = 0; j <= res; j++) {
+      for (let i = 0; i <= res; i++) {
+        const outIndex = j * (res + 1) + i;
+        const extIndex = (j + 1) * ext + (i + 1);
+        for (let c = 0; c < 3; c++) {
+          const d = dirs[extIndex * 3 + c];
+          waterPositions[outIndex * 3 + c] = d * seaKm - centerKm[c];
+          waterNormals[outIndex * 3 + c] = d;
+        }
+      }
+    }
+    buildSkirt(waterPositions, waterNormals, waterNormals, res, radiusKm / tiles, centerKm, radiusKm);
+  }
+
+  return { centerKm, positions, normals, colors, waterPositions, waterNormals };
 }
 
 /** Area-weighted triangle normals accumulated over the extended grid. */

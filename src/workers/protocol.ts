@@ -12,4 +12,7 @@ export interface TerrainResponse {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
+  /** Sea-surface tile on the same grid, present when the tile touches water. */
+  waterPositions: Float32Array | null;
+  waterNormals: Float32Array | null;
 }

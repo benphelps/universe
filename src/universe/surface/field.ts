@@ -97,7 +97,8 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       if (lodAngularRad > 0) {
         const wavelengthRatio = 1 / band.frequency / (2 * lodAngularRad);
         if (wavelengthRatio <= 1) break;
-        fade = Math.min(1, (wavelengthRatio - 1) / 1.5);
+        // Fade across ~two LOD levels so ring boundaries stay subtle.
+        fade = Math.min(1, (wavelengthRatio - 1) / 4);
       }
       const offset = 17.31 * (bandIndex + 1);
       let amplitude = band.amplitudeM * fade;
