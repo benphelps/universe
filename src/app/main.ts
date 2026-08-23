@@ -7,10 +7,9 @@ import { InfoPanel } from './ui/infoPanel';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
+import { BodyViewer } from './bodyViewer';
 import { GalaxyViewer } from './galaxyViewer';
-import { PlanetViewer } from './planetViewer';
 import { StarViewer } from './viewer';
-import { SurfaceViewer } from './surfaceViewer';
 import { SystemViewer } from './systemViewer';
 
 const viewElement = document.getElementById('view')!;
@@ -23,7 +22,7 @@ const galaxyPanel = new GalaxyInfoPanel(infoElement);
 let viewMode: ViewMode = 'star';
 let seedHex = '';
 let planetIndex = 0;
-let viewer: StarViewer | SystemViewer | PlanetViewer | SurfaceViewer | GalaxyViewer | null = null;
+let viewer: StarViewer | SystemViewer | BodyViewer | GalaxyViewer | null = null;
 let exposure = 1;
 let timeScale: number | null = null;
 
@@ -57,30 +56,17 @@ function load(nextSeedHex: string): void {
     viewer = galaxyViewer;
   } else {
     const system = generateSystem(seed);
+    const bodyViewer = new BodyViewer(viewElement);
+    viewer = bodyViewer;
     if (system.planets.length === 0) {
-      viewer = new PlanetViewer(viewElement);
       planetPanel.renderEmpty(system);
       controls.planetLabel = '—';
     } else {
       const count = system.planets.length;
       planetIndex = ((planetIndex % count) + count) % count;
       const planet = system.planets[planetIndex];
-      // The surface view needs solid ground; envelopes fall back to orbit.
-      const solid = !planet.physical.appearance.banding;
-      let note: string | undefined;
-      if (viewMode === 'surface' && solid) {
-        const surfaceViewer = new SurfaceViewer(viewElement);
-        surfaceViewer.setPlanet(system, planet);
-        viewer = surfaceViewer;
-      } else {
-        if (viewMode === 'surface') {
-          note = 'gas envelope — no solid surface to land on; showing the orbital view';
-        }
-        const planetViewer = new PlanetViewer(viewElement);
-        planetViewer.setPlanet(system, planet);
-        viewer = planetViewer;
-      }
-      planetPanel.render(system, planet, planetIndex, note);
+      bodyViewer.setPlanet(system, planet);
+      planetPanel.render(system, planet, planetIndex);
       controls.planetLabel = planet.name.split(' ').pop() ?? '';
     }
   }
@@ -92,7 +78,7 @@ function load(nextSeedHex: string): void {
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
   url.searchParams.set('view', viewMode);
-  if (viewMode === 'planet' || viewMode === 'surface') {
+  if (viewMode === 'planet') {
     url.searchParams.set('planet', String(planetIndex));
   } else {
     url.searchParams.delete('planet');
@@ -110,7 +96,7 @@ const controls = new Controls(document.getElementById('controls')!, {
     load(seedHex);
   },
   onPlanetStep: (delta) => {
-    if (viewMode !== 'planet' && viewMode !== 'surface') return;
+    if (viewMode !== 'planet') return;
     planetIndex += delta;
     load(seedHex);
   },
@@ -127,8 +113,10 @@ const controls = new Controls(document.getElementById('controls')!, {
 const params = new URLSearchParams(location.search);
 const viewParam = params.get('view');
 viewMode =
-  viewParam === 'system' || viewParam === 'planet' || viewParam === 'surface' || viewParam === 'galaxy'
+  viewParam === 'system' || viewParam === 'planet' || viewParam === 'galaxy'
     ? viewParam
-    : 'star';
+    : viewParam === 'surface'
+      ? 'planet'
+      : 'star';
 planetIndex = Number(params.get('planet') ?? 0) || 0;
 load(params.get('seed') ?? randomSeedHex());
