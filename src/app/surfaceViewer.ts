@@ -2,6 +2,9 @@ import { Color, Group, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Scen
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState } from '../core/math/kepler';
 import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
+import { createAtmosphereShell } from '../render/planet/atmosphereShell';
+import { createRingMesh } from '../render/planet/ringMaterial';
+import { applyOccluders } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
@@ -45,6 +48,8 @@ export class SurfaceViewer {
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private backdrop: StarfieldBackdrop | null = null;
+  private atmosphereShell: Mesh | null = null;
+  private ringMesh: Mesh | null = null;
   private sky: Mesh | null = null;
   private skyMoons: SkyMoon[] = [];
   private readonly skyMoonGroup = new Group();
@@ -131,6 +136,26 @@ export class SurfaceViewer {
     if (planet.physical.atmosphere.class !== 'none') {
       this.sky = createSkyDome(planet.physical.atmosphere.scatteringColor);
       this.scene.add(this.sky);
+    }
+
+    // The same atmosphere limb and rings the orbital planet view renders.
+    if (this.atmosphereShell) {
+      this.scene.remove(this.atmosphereShell);
+      this.atmosphereShell.geometry.dispose();
+      (this.atmosphereShell.material as ShaderMaterial).dispose();
+    }
+    this.atmosphereShell = createAtmosphereShell(planet.physical, this.radiusKm);
+    if (this.atmosphereShell) this.scene.add(this.atmosphereShell);
+    if (this.ringMesh) {
+      this.scene.remove(this.ringMesh);
+      this.ringMesh.geometry.dispose();
+      (this.ringMesh.material as ShaderMaterial).dispose();
+      this.ringMesh = null;
+    }
+    if (planet.rings) {
+      this.ringMesh = createRingMesh(planet.rings, this.radiusKm);
+      this.ringMesh.rotation.x = -Math.PI / 2;
+      this.scene.add(this.ringMesh);
     }
 
     const [r, g, b] = system.star.linearRgb;
@@ -292,7 +317,8 @@ export class SurfaceViewer {
       const toMoon = moonKm.clone().sub(this.camera.position);
       const distKm = toMoon.length();
       toMoon.divideScalar(distKm);
-      const moonAngular = Math.max(moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000) / distKm, 0.0012);
+      // Floor keeps distant moons a few pixels, matching the planet view.
+      const moonAngular = Math.max(moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000) / distKm, 0.004);
       mesh.position.copy(this.camera.position).addScaledVector(toMoon, skyDistanceKm * 0.9);
       mesh.scale.setScalar(skyDistanceKm * 0.9 * moonAngular);
       mesh.visible = toMoon.dot(up) > -0.05;
@@ -324,6 +350,23 @@ export class SurfaceViewer {
               sunElevation * Math.min(1, atmosphere.surfacePressureBar) * immersion * 3,
             );
       this.backdrop.intensity = 1 - dayWash * 0.97;
+    }
+
+    // Atmosphere limb and rings share the sun with everything else.
+    if (this.atmosphereShell) {
+      const material = this.atmosphereShell.material as ShaderMaterial;
+      material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
+      material.uniforms.uLightColor.value.setRGB(...lightColor);
+    }
+    if (this.ringMesh) {
+      const material = this.ringMesh.material as ShaderMaterial;
+      material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
+      material.uniforms.uLightColor.value.setRGB(...lightColor);
+      applyOccluders(
+        material,
+        [{ position: new Vector3(0, 0, 0), radius: this.radiusKm }],
+        angularRadius,
+      );
     }
 
     // Terrain and water light in world space (their meshes never rotate).
