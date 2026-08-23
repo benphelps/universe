@@ -6,8 +6,11 @@ import { buildChunkIndices } from './terrainMaterial';
 
 const RES = 48;
 const MAX_LEVEL = 17;
-const SPLIT_RATIO = 0.65;
-const MAX_CHUNKS = 1000;
+/** Never show tiles coarser than this within the horizon: they are pinned,
+ *  so the whole-planet base layer builds once per visit. */
+const MIN_LEVEL = 3;
+const SPLIT_RATIO = 0.45;
+const MAX_CHUNKS = 1400;
 const MAX_IN_FLIGHT = 24;
 /** Levels this coarse are never evicted: they cover zoom-out instantly. */
 const PINNED_LEVEL = 3;
@@ -136,7 +139,7 @@ export class TerrainChunkManager {
     const dz = dir.z * this.radiusKm - cameraKm.z;
     const distanceKm = Math.max(Math.hypot(dx, dy, dz), 0.02);
 
-    if (sizeKm / distanceKm > SPLIT_RATIO && level < MAX_LEVEL) {
+    if ((sizeKm / distanceKm > SPLIT_RATIO || level < MIN_LEVEL) && level < MAX_LEVEL) {
       const children: ChunkRecord[] = [];
       for (let cy = 0; cy < 2; cy++) {
         for (let cx = 0; cx < 2; cx++) {

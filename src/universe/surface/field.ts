@@ -190,19 +190,6 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       const depth = Math.min(1, Math.max(0, seaLevelM - heightM) / 600);
       ground = mixRgb(ground, mixRgb(sand, palette.seabed, depth ** 0.6), submersion);
     }
-    // Fine ground mottling, fading out toward LODs where it would alias
-    // (a hard gate would print chunk-shaped discontinuities).
-    const tintStrength =
-      lodAngularRad > 0 ? Math.max(0, Math.min(1, (1 / 900 - lodAngularRad) * 1800)) : 0;
-    if (tintStrength > 0) {
-      const tint =
-        1 + tintStrength * 0.2 * paletteNoise(dir.x * 640, dir.y * 640, dir.z * 640);
-      ground = [
-        Math.min(1, ground[0] * tint),
-        Math.min(1, ground[1] * tint),
-        Math.min(1, ground[2] * tint),
-      ];
-    }
     return ground;
   };
 

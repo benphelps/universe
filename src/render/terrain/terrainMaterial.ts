@@ -1,4 +1,5 @@
 import { Color, DoubleSide, ShaderMaterial } from 'three';
+import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 
 const VERTEX = /* glsl */ `
 attribute vec3 color;
@@ -6,11 +7,14 @@ attribute vec3 color;
 varying vec3 vColor;
 varying vec3 vNormal;
 varying vec3 vViewPos;
+varying vec3 vWorldPos;
 
 void main() {
   vColor = color;
   vNormal = normalize(normalMatrix * normal);
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vec4 worldPos = modelMatrix * vec4(position, 1.0);
+  vWorldPos = worldPos.xyz;
+  vec4 mvPosition = viewMatrix * worldPos;
   vViewPos = mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -20,16 +24,28 @@ const FRAGMENT = /* glsl */ `
 varying vec3 vColor;
 varying vec3 vNormal;
 varying vec3 vViewPos;
+varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 
+${SIMPLEX_NOISE_GLSL}
+
 void main() {
+  // Per-fragment ground mottling: color detail beyond vertex resolution,
+  // stable in the planet frame at any LOD.
+  vec3 dir = normalize(vWorldPos);
+  float mottle = 1.0
+    + 0.10 * snoise(dir * 900.0)
+    + 0.07 * snoise(dir * 5200.0)
+    + 0.05 * snoise(dir * 26000.0);
+  vec3 ground = vColor * mottle;
+
   // Light direction arrives in view space alongside the normals.
   float diffuse = max(dot(normalize(vNormal), uLightDir), 0.0);
-  vec3 color = vColor * uLightColor * (diffuse + 0.015);
+  vec3 color = ground * uLightColor * (diffuse + 0.015);
 
   // Aerial perspective toward the sky's horizon tint.
   float fog = 1.0 - exp(-length(vViewPos) * uFogDensity);
