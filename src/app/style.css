@@ -1,0 +1,134 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  background: #000;
+  color: #cfd4dc;
+  font: 13px/1.5 'SF Mono', ui-monospace, Menlo, monospace;
+  overflow: hidden;
+}
+
+#view {
+  position: absolute;
+  inset: 0;
+}
+
+#view canvas {
+  display: block;
+}
+
+#info {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  max-width: 340px;
+  padding: 14px 16px;
+  background: rgba(8, 10, 14, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+
+#info h1 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#info h2 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  color: #8b93a1;
+}
+
+#info table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+#info td {
+  padding: 1px 0;
+  vertical-align: top;
+}
+
+#info td:first-child {
+  color: #8b93a1;
+  padding-right: 14px;
+  white-space: nowrap;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.companion {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+#controls {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 10px 16px;
+  background: rgba(8, 10, 14, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+
+#controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8b93a1;
+}
+
+#controls input[type='text'] {
+  width: 150px;
+  background: #14171c;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  color: #cfd4dc;
+  font: inherit;
+  padding: 3px 6px;
+}
+
+#controls input[type='range'] {
+  width: 110px;
+  accent-color: #5a80c9;
+}
+
+#controls button {
+  background: #1a2233;
+  border: 1px solid rgba(120, 150, 220, 0.35);
+  border-radius: 4px;
+  color: #cfd4dc;
+  font: inherit;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+#controls button:hover {
+  background: #223050;
+}

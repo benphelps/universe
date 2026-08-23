@@ -34,7 +34,7 @@ export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
   const star: Star = {
     ...phys,
     seedHex: seedToHex(seed),
-    designation: `SIM-${seedToHex(seed).slice(0, 8).toUpperCase()}`,
+    designation: `SIM-${seedToHex(seed).slice(-8).toUpperCase()}`,
     massInitial,
     ageGyr,
     feH,

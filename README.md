@@ -28,3 +28,12 @@ A deep, science-grounded procedural universe: stars, planetary systems, planets,
 ## Stack
 
 TypeScript · Vite · Three.js (WebGL2, with a WebGPU path) · Web Workers for generation · Vitest for testing.
+
+## Running
+
+```sh
+npm install
+npm run dev        # star viewer at http://localhost:5173 (?seed=<hex> selects a star)
+npm test           # physics + determinism test suite
+npm run typecheck
+```
