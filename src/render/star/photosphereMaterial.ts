@@ -1,8 +1,7 @@
 import { ShaderMaterial, type DataTexture } from 'three';
 import type { Star } from '../../universe/star/types';
-import { seedFromHex } from '../../core/rng/hash';
-import { Rng } from '../../core/rng/rng';
 import { SIMPLEX_NOISE_GLSL } from './glsl/simplexNoise';
+import { seedOffset } from './seedOffset';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
@@ -84,12 +83,6 @@ void main() {
   gl_FragColor = vec4(hdr, 1.0);
 }
 `;
-
-/** Seed-stable noise-domain offset so each star's surface pattern is unique. */
-function seedOffset(star: Star): [number, number, number] {
-  const rng = new Rng(seedFromHex(star.seedHex)).fork('surface-offset');
-  return [rng.range(0, 100), rng.range(0, 100), rng.range(0, 100)];
-}
 
 export function createPhotosphereMaterial(star: Star, lut: DataTexture): ShaderMaterial {
   const granuleFrequency = Math.min(

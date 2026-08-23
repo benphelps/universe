@@ -11,11 +11,8 @@ import {
 } from 'three';
 import type { Star } from '../../universe/star/types';
 import { luminosityMultiplierAt } from '../../universe/star/variability';
-import { createCoronaMaterial } from './coronaMaterial';
+import { CORONA_SIZE_FACTOR, createCoronaMaterial } from './coronaMaterial';
 import { createPhotosphereMaterial } from './photosphereMaterial';
-
-/** Scene scale: 1 unit = 1 R☉. */
-const CORONA_SIZE_FACTOR = 8;
 
 /**
  * Renderable star: photosphere shader sphere plus a camera-facing corona
