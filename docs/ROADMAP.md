@@ -53,12 +53,15 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M5 — Surfaces ([plan](plan/07-surface.md))
 
-- [ ] Cube-sphere quadtree LOD + worker chunk generation + geomorphing
-- [ ] Layer stack: tectonics, craters, volcanism, erosion suites, hydrology
-- [ ] Ice/snow + biome palettes from climate; airless small-body mode
-- [ ] Determinism/border tests + world-type fixtures (Earth-like, Moon-like, Mars-like)
-- [ ] Render: splat PBR terrain, ocean, scatter instancing, ground-level sky
-- [ ] Demo: orbit → descend → stand on any solid world, unbroken
+- [x] Cube-sphere quadtree LOD + worker chunk generation (skirts hide LOD cracks; geomorphing still open)
+- [x] Layer stack: tectonics (Worley plate belts), craters, volcanic provinces, erosion smoothing
+- [ ] Deeper erosion suites: fluvial valley networks, glacial carving, dune fields
+- [x] Ice/snow + biome palettes from climate
+- [ ] Airless small-body surface mode (asteroid close-ups)
+- [x] Determinism/border tests + world-type fixtures (Earth-like, Moon-like, Mars-like)
+- [x] Render: vertex-colored lit terrain, ocean sphere, ground-level sky + aerial fog
+- [ ] Scatter instancing (boulders, ground cover)
+- [x] Demo: orbit → descend to the ground of any solid world, unbroken
 
 ## M6 — The Galaxy ([plan](plan/01-galaxy.md))
 
@@ -84,3 +87,5 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - **2026-08-23** — M2 system level landed: disk→slots→elements→stability generation with S/P-type binaries, zones, Kirkwood belts, reservoirs, and end-state effects (engulfment, supernova sterilization); system map view with live Keplerian motion and shearing belts. 45 tests green; verified in-browser on a circumbinary resonant chain and an M-dwarf eyeball-world system with a gapped asteroid belt.
 - **2026-08-23** — M3 planet level landed: full characterization (bulk, interior, rotation, atmosphere retention/greenhouse, climate fixpoint with snowballs and biospheres, appearance) plus planet rendering (solid worlds, banded giants, scattering limbs) and a true-scale planet view with exact phases. 54 tests green; verified in-browser on a biosphere crescent, a banded gas giant, a brown-dwarf-lit mini-Neptune, and a locked ocean world.
 - **2026-08-23** — M4 moons/rings/small bodies landed: satellite systems with Io-calibrated tidal heating (volcanic/cryovolcanic/subsurface-ocean states), Roche-limit rings with moon-resonance gaps, deterministic belt asteroid instantiation, and comets. Rendering: analytic eclipse shadows (moon transits, ring shadow bands), forward-scattering rings, live moons in the planet view, comet apparitions in the map. 67 tests green; verified on a ringed super-Jupiter around an L8 brown dwarf.
+- **2026-08-23** — Comet legibility and moon discoverability fixes: activity-capped comas, physical dust-tail lag, motion trails; moon orbit guides and adaptive marker dots in the planet view.
+- **2026-08-23** — M5 core landed: pure surface fields (plate-belt mountains, lattice-cell craters, erosion, solved sea levels, climate-driven color), worker-streamed cube-sphere quadtree terrain with floating-origin rendering, and the surface view descending from orbit to the ground. 75 tests green; verified on a crater-field Mercury analog and a locked habitable world. Open: fluvial/glacial erosion detail, scatter instancing, geomorphing, asteroid surface mode.
