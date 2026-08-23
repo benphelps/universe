@@ -1,4 +1,4 @@
-import { BackSide, Color, Mesh, ShaderMaterial, SphereGeometry } from 'three';
+import { AdditiveBlending, BackSide, Color, Mesh, ShaderMaterial, SphereGeometry } from 'three';
 
 const VERTEX = /* glsl */ `
 varying vec3 vDir;
@@ -29,8 +29,10 @@ void main() {
   vec3 sky = uSkyColor * uLightColor * sunElevation * (0.35 + 0.65 * horizon);
   sky += uLightColor * sunGlow * sunElevation * 0.55;
 
-  float alpha = uStrength * sunElevation * clamp(elevation + 0.4, 0.0, 1.0);
-  gl_FragColor = vec4(sky, clamp(alpha + uStrength * sunGlow * 0.4, 0.0, 1.0));
+  // Scattering adds light; it never occludes, so the sun's disc (and
+  // anything else bright enough) blazes through the daytime sky.
+  float weight = uStrength * sunElevation * clamp(elevation + 0.4, 0.0, 1.0);
+  gl_FragColor = vec4(sky * clamp(weight + uStrength * sunGlow * 0.4, 0.0, 1.0), 1.0);
 }
 `;
 
@@ -52,6 +54,7 @@ export function createSkyDome(scatteringColor: [number, number, number]): Mesh {
     },
     side: BackSide,
     transparent: true,
+    blending: AdditiveBlending,
     depthWrite: false,
   });
   const dome = new Mesh(new SphereGeometry(600, 48, 24), material);

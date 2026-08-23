@@ -1,16 +1,14 @@
 import './style.css';
 import { seedFromHex, seedToHex } from '../core/rng/hash';
-import { generateStar } from '../universe/star/generate';
 import { generateSystem } from '../universe/system/generate';
+import type { StarSystem } from '../universe/system/types';
 import { Controls, type ViewMode } from './ui/controls';
 import { InfoPanel } from './ui/infoPanel';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
-import { BodyViewer } from './bodyViewer';
 import { GalaxyViewer } from './galaxyViewer';
-import { StarViewer } from './viewer';
-import { SystemViewer } from './systemViewer';
+import { PRESET_TIME_SCALE, UnifiedViewer } from './unifiedViewer';
 
 const viewElement = document.getElementById('view')!;
 const infoElement = document.getElementById('info')!;
@@ -22,7 +20,8 @@ const galaxyPanel = new GalaxyInfoPanel(infoElement);
 let viewMode: ViewMode = 'star';
 let seedHex = '';
 let planetIndex = 0;
-let viewer: StarViewer | SystemViewer | BodyViewer | GalaxyViewer | null = null;
+let viewer: UnifiedViewer | GalaxyViewer | null = null;
+let system: StarSystem | null = null;
 let exposure = 1;
 let timeScale: number | null = null;
 
@@ -32,43 +31,52 @@ function randomSeedHex(): string {
   return words[0].toString(16).padStart(8, '0') + words[1].toString(16).padStart(8, '0');
 }
 
+/**
+ * Star, system, and planet are presets of the one unified viewer — the
+ * same scene focused and framed differently — so switching between them
+ * (or stepping planets) never rebuilds the renderer. Only the galaxy
+ * view still swaps viewers; folding it in is the renderer's last step.
+ */
 function load(nextSeedHex: string): void {
   seedHex = seedToHex(seedFromHex(nextSeedHex));
   const seed = seedFromHex(seedHex);
 
-  viewer?.dispose();
-  if (viewMode === 'star') {
-    const star = generateStar(seed);
-    const starViewer = new StarViewer(viewElement);
-    starViewer.setStar(star);
-    starPanel.render(star);
-    viewer = starViewer;
-  } else if (viewMode === 'system') {
-    const system = generateSystem(seed);
-    const systemViewer = new SystemViewer(viewElement);
-    systemViewer.setSystem(system);
-    systemPanel.render(system);
-    viewer = systemViewer;
-  } else if (viewMode === 'galaxy') {
+  if (viewMode === 'galaxy') {
+    viewer?.dispose();
+    system = null;
     const galaxyViewer = new GalaxyViewer(viewElement);
     galaxyViewer.setSeed(seedHex);
     galaxyPanel.render(seedHex, galaxyViewer.neighbors, (nextSeed) => load(nextSeed));
     viewer = galaxyViewer;
   } else {
-    const system = generateSystem(seed);
-    const bodyViewer = new BodyViewer(viewElement);
-    viewer = bodyViewer;
-    if (system.planets.length === 0) {
+    if (!(viewer instanceof UnifiedViewer)) {
+      viewer?.dispose();
+      viewer = new UnifiedViewer(viewElement);
+      system = null;
+    }
+    if (!system || system.seedHex !== seedHex) {
+      system = generateSystem(seed);
+      viewer.setSystem(system);
+    }
+    if (viewMode === 'star') {
+      viewer.setFocus('star', 'star');
+      starPanel.render(system.star);
+    } else if (viewMode === 'system') {
+      viewer.setFocus('star', 'system');
+      systemPanel.render(system);
+    } else if (system.planets.length === 0) {
+      viewer.setFocus('star', 'star');
       planetPanel.renderEmpty(system);
       controls.planetLabel = '—';
     } else {
       const count = system.planets.length;
       planetIndex = ((planetIndex % count) + count) % count;
       const planet = system.planets[planetIndex];
-      bodyViewer.setPlanet(system, planet);
+      viewer.setFocus(planetIndex, 'planet');
       planetPanel.render(system, planet, planetIndex);
       controls.planetLabel = planet.name.split(' ').pop() ?? '';
     }
+    viewer.timeScaleDaysPerSecond = timeScale ?? PRESET_TIME_SCALE[viewMode];
   }
   viewer.exposure = exposure;
   if (timeScale !== null) viewer.timeScaleDaysPerSecond = timeScale;
