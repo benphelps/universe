@@ -1,69 +1,66 @@
-import { PerspectiveCamera, Scene, type DataTexture } from 'three';
+import { PerspectiveCamera, Scene } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createTemperatureLutTexture } from '../render/color/temperatureLut';
 import { RenderPipeline } from '../render/fx/pipeline';
-import { StarObject } from '../render/star/starObject';
-import type { Star } from '../universe/star/types';
+import { SystemMapObject } from '../render/system/systemMapObject';
+import type { StarSystem } from '../universe/system/types';
 
 /**
- * Orbit-camera viewer around a single star at the origin.
- * Scene scale: 1 unit = 1 R☉. Simulation time advances in days.
+ * System-map viewer: tilted overhead camera over the orbital plane with
+ * pan/zoom, live Keplerian motion at the shared time scale.
  */
-export class StarViewer {
-  timeScaleDaysPerSecond = 0.05;
+export class SystemViewer {
+  timeScaleDaysPerSecond = 5;
   private simTimeDays = 0;
+  private disposed = false;
   private readonly scene = new Scene();
   private readonly camera: PerspectiveCamera;
   private readonly controls: OrbitControls;
   private readonly pipeline: RenderPipeline;
-  private readonly lut: DataTexture;
-  private starObject: StarObject | null = null;
+  private mapObject: SystemMapObject | null = null;
   private lastFrameMs = performance.now();
-  private disposed = false;
   private readonly onResize = () => this.resize();
 
   constructor(private readonly container: HTMLElement) {
-    this.camera = new PerspectiveCamera(45, 1, 0.01, 1e7);
+    this.camera = new PerspectiveCamera(50, 1, 0.001, 1e6);
     this.pipeline = new RenderPipeline(container, this.scene, this.camera);
     this.controls = new OrbitControls(this.camera, this.pipeline.renderer.domElement);
     this.controls.enableDamping = true;
-    this.lut = createTemperatureLutTexture();
+    this.controls.screenSpacePanning = false;
 
     window.addEventListener('resize', this.onResize);
     this.resize();
     requestAnimationFrame(() => this.frame());
   }
 
-  dispose(): void {
-    this.disposed = true;
-    window.removeEventListener('resize', this.onResize);
-    this.controls.dispose();
-    this.starObject?.dispose();
-    this.lut.dispose();
-    this.pipeline.dispose();
-  }
-
-  setStar(star: Star): void {
-    if (this.starObject) {
-      this.scene.remove(this.starObject.group);
-      this.starObject.dispose();
+  setSystem(system: StarSystem): void {
+    if (this.mapObject) {
+      this.scene.remove(this.mapObject.group);
+      this.mapObject.dispose();
     }
-    this.starObject = new StarObject(star, this.lut);
-    this.scene.add(this.starObject.group);
-    this.frameCamera(Math.max(star.radius, 1e-4));
+    this.mapObject = new SystemMapObject(system);
+    this.scene.add(this.mapObject.group);
+    this.frameCamera(this.mapObject.extentAu);
   }
 
   set exposure(value: number) {
     this.pipeline.exposure = value;
   }
 
-  private frameCamera(radius: number): void {
-    this.camera.near = radius * 0.005;
-    this.camera.far = radius * 1e5;
-    this.camera.position.set(0, radius * 0.7, radius * 4.2);
+  dispose(): void {
+    this.disposed = true;
+    window.removeEventListener('resize', this.onResize);
+    this.controls.dispose();
+    this.mapObject?.dispose();
+    this.pipeline.dispose();
+  }
+
+  private frameCamera(extentAu: number): void {
+    this.camera.near = extentAu * 1e-4;
+    this.camera.far = extentAu * 1e3;
+    this.camera.position.set(0, extentAu * 1.15, extentAu * 0.85);
     this.camera.updateProjectionMatrix();
-    this.controls.minDistance = radius * 1.3;
-    this.controls.maxDistance = radius * 5000;
+    this.controls.minDistance = extentAu * 0.02;
+    this.controls.maxDistance = extentAu * 20;
     this.controls.target.set(0, 0, 0);
     this.controls.update();
   }
@@ -84,7 +81,7 @@ export class StarViewer {
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
     this.controls.update();
-    this.starObject?.update(this.simTimeDays, this.camera);
+    this.mapObject?.update(this.simTimeDays);
     this.pipeline.render();
     requestAnimationFrame(() => this.frame());
   }

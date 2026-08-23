@@ -26,7 +26,7 @@ body {
   position: absolute;
   top: 16px;
   left: 16px;
-  max-width: 340px;
+  max-width: 480px;
   padding: 14px 16px;
   background: rgba(8, 10, 14, 0.78);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -131,4 +131,73 @@ body {
 
 #controls button:hover {
   background: #223050;
+}
+
+.view-toggle button {
+  border-radius: 0;
+}
+
+.view-toggle button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.view-toggle button:last-child {
+  border-radius: 0 4px 4px 0;
+  border-left: none;
+}
+
+.view-toggle button.active {
+  background: #35507f;
+  color: #fff;
+}
+
+#info .sub {
+  color: #8b93a1;
+  margin-bottom: 4px;
+}
+
+#info table.planets {
+  margin-top: 8px;
+  border-collapse: collapse;
+  width: 100%;
+}
+
+#info table.planets th {
+  text-align: left;
+  color: #6c7482;
+  font-weight: 500;
+  padding-right: 10px;
+}
+
+#info table.planets td {
+  padding: 1px 10px 1px 0;
+  white-space: nowrap;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 3px;
+}
+
+.badge.hz {
+  background: rgba(63, 175, 111, 0.25);
+  color: #6fdf9f;
+}
+
+.badge.lock {
+  background: rgba(204, 119, 102, 0.25);
+  color: #e8a294;
+}
+
+.badge.res {
+  background: rgba(127, 150, 220, 0.25);
+  color: #a8bcf0;
+}
+
+.belt-row {
+  margin-top: 6px;
+  color: #8b93a1;
 }
