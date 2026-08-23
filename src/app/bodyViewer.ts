@@ -33,7 +33,6 @@ import { planetMu } from '../universe/system/generate';
 import { getSkyField } from './skyService';
 import type { Planet, StarSystem } from '../universe/system/types';
 
-const SKY_OBJECT_DISTANCE_KM = 40000;
 const EARTH_RADIUS_KM = EARTH_RADIUS / 1000;
 
 interface MoonEntry {
@@ -87,6 +86,7 @@ export class BodyViewer {
   private minAltitudeKm = 0.05;
   private headingRad = 0;
   private pitchRad = 0;
+  private sunDistanceKm = 1e9;
   private lastFrameMs = performance.now();
   private readonly onResize = () => this.resize();
 
@@ -306,10 +306,6 @@ export class BodyViewer {
     }
   }
 
-  private skyObjectDistanceKm(): number {
-    return Math.min(SKY_OBJECT_DISTANCE_KM, Math.max(2500, this.altitudeKm * 60));
-  }
-
   private resize(): void {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
@@ -364,18 +360,11 @@ export class BodyViewer {
         this.camera.quaternion.setFromRotationMatrix(gaze);
       }
 
-      // Tight depth range; far reaches the outermost moon when present.
-      const skyDistanceKm = this.skyObjectDistanceKm();
-      const moonMaxKm = this.moons.reduce(
-        (max, { moon }) => Math.max(max, moon.elements.semiMajorAxis / 1000),
-        0,
-      );
+      // Near tracks altitude (nothing sits closer than the ground below);
+      // far reaches the star itself — every sky object is at its true
+      // position, so occlusion is plain depth testing.
       this.camera.near = Math.min(2000, Math.max(0.006, this.altitudeKm * 0.15));
-      this.camera.far = Math.max(
-        skyDistanceKm * 1.6,
-        this.camera.position.length() * 2.5,
-        moonMaxKm * 1.5,
-      );
+      this.camera.far = Math.max(this.camera.position.length() * 2.5, this.sunDistanceKm * 1.1);
       this.camera.updateProjectionMatrix();
 
       this.updateSky(up);
@@ -412,11 +401,14 @@ export class BodyViewer {
       -toStarModel.x * Math.sin(spin) + toStarModel.z * Math.cos(spin),
     );
 
-    const skyDistanceKm = this.skyObjectDistanceKm();
+    // The star at its true position and radius: angular size, parallax,
+    // and occlusion all come out right by construction.
     const distanceM = Math.hypot(position.x, position.y, position.z);
     const angularRadius = (this.system.star.radius * SOLAR_RADIUS) / distanceM;
-    this.sunMesh.position.copy(this.camera.position).addScaledVector(sunDir, skyDistanceKm);
-    this.sunMesh.scale.setScalar(Math.max(skyDistanceKm * angularRadius, skyDistanceKm * 4e-4));
+    this.sunDistanceKm = distanceM / 1000;
+    const sunRadiusKm = (this.system.star.radius * SOLAR_RADIUS) / 1000;
+    this.sunMesh.position.copy(sunDir).multiplyScalar(this.sunDistanceKm);
+    this.sunMesh.scale.setScalar(Math.max(sunRadiusKm, this.sunDistanceKm * 4e-4));
 
     const lightColor = this.system.star.linearRgb;
     this.bodyObject?.update(this.simTimeDays, sunDir, lightColor);
