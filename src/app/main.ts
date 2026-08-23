@@ -8,6 +8,7 @@ import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
 import { PlanetViewer } from './planetViewer';
 import { StarViewer } from './viewer';
+import { SurfaceViewer } from './surfaceViewer';
 import { SystemViewer } from './systemViewer';
 
 const viewElement = document.getElementById('view')!;
@@ -19,7 +20,7 @@ const planetPanel = new PlanetInfoPanel(infoElement);
 let viewMode: ViewMode = 'star';
 let seedHex = '';
 let planetIndex = 0;
-let viewer: StarViewer | SystemViewer | PlanetViewer | null = null;
+let viewer: StarViewer | SystemViewer | PlanetViewer | SurfaceViewer | null = null;
 let exposure = 1;
 let timeScale: number | null = null;
 
@@ -48,16 +49,24 @@ function load(nextSeedHex: string): void {
     viewer = systemViewer;
   } else {
     const system = generateSystem(seed);
-    const planetViewer = new PlanetViewer(viewElement);
-    viewer = planetViewer;
     if (system.planets.length === 0) {
+      viewer = new PlanetViewer(viewElement);
       planetPanel.renderEmpty(system);
       controls.planetLabel = '—';
     } else {
       const count = system.planets.length;
       planetIndex = ((planetIndex % count) + count) % count;
       const planet = system.planets[planetIndex];
-      planetViewer.setPlanet(system, planet);
+      // The surface view needs solid ground; envelopes fall back to orbit.
+      if (viewMode === 'surface' && !planet.physical.appearance.banding) {
+        const surfaceViewer = new SurfaceViewer(viewElement);
+        surfaceViewer.setPlanet(system, planet);
+        viewer = surfaceViewer;
+      } else {
+        const planetViewer = new PlanetViewer(viewElement);
+        planetViewer.setPlanet(system, planet);
+        viewer = planetViewer;
+      }
       planetPanel.render(system, planet, planetIndex);
       controls.planetLabel = planet.name.split(' ').pop() ?? '';
     }
@@ -70,8 +79,11 @@ function load(nextSeedHex: string): void {
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
   url.searchParams.set('view', viewMode);
-  if (viewMode === 'planet') url.searchParams.set('planet', String(planetIndex));
-  else url.searchParams.delete('planet');
+  if (viewMode === 'planet' || viewMode === 'surface') {
+    url.searchParams.set('planet', String(planetIndex));
+  } else {
+    url.searchParams.delete('planet');
+  }
   history.replaceState(null, '', url);
 }
 
@@ -85,7 +97,7 @@ const controls = new Controls(document.getElementById('controls')!, {
     load(seedHex);
   },
   onPlanetStep: (delta) => {
-    if (viewMode !== 'planet') return;
+    if (viewMode !== 'planet' && viewMode !== 'surface') return;
     planetIndex += delta;
     load(seedHex);
   },
@@ -101,6 +113,9 @@ const controls = new Controls(document.getElementById('controls')!, {
 
 const params = new URLSearchParams(location.search);
 const viewParam = params.get('view');
-viewMode = viewParam === 'system' || viewParam === 'planet' ? viewParam : 'star';
+viewMode =
+  viewParam === 'system' || viewParam === 'planet' || viewParam === 'surface'
+    ? viewParam
+    : 'star';
 planetIndex = Number(params.get('planet') ?? 0) || 0;
 load(params.get('seed') ?? randomSeedHex());
