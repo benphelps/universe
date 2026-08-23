@@ -1,9 +1,11 @@
 import { PerspectiveCamera, Scene, type DataTexture } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createTemperatureLutTexture } from '../render/color/temperatureLut';
+import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
 import type { Star } from '../universe/star/types';
+import { getSkyField } from './skyService';
 
 /**
  * Orbit-camera viewer around a single star at the origin.
@@ -18,6 +20,8 @@ export class StarViewer {
   private readonly pipeline: RenderPipeline;
   private readonly lut: DataTexture;
   private starObject: StarObject | null = null;
+  private backdrop: StarfieldBackdrop | null = null;
+  private currentSeedHex = '';
   private lastFrameMs = performance.now();
   private disposed = false;
   private readonly onResize = () => this.resize();
@@ -39,6 +43,7 @@ export class StarViewer {
     window.removeEventListener('resize', this.onResize);
     this.controls.dispose();
     this.starObject?.dispose();
+    this.backdrop?.dispose();
     this.lut.dispose();
     this.pipeline.dispose();
   }
@@ -50,6 +55,16 @@ export class StarViewer {
     }
     this.starObject = new StarObject(star, this.lut);
     this.scene.add(this.starObject.group);
+
+    this.currentSeedHex = star.seedHex;
+    this.backdrop?.dispose();
+    if (this.backdrop) this.scene.remove(this.backdrop.group);
+    this.backdrop = null;
+    getSkyField(star.seedHex).then((sky) => {
+      if (this.disposed || this.currentSeedHex !== star.seedHex) return;
+      this.backdrop = new StarfieldBackdrop(sky, Math.max(star.radius, 0.01) * 2e4);
+      this.scene.add(this.backdrop.group);
+    });
     this.frameCamera(Math.max(star.radius, 1e-4));
   }
 
@@ -84,6 +99,7 @@ export class StarViewer {
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
     this.controls.update();
+    this.backdrop?.group.position.copy(this.camera.position);
     this.starObject?.update(this.simTimeDays, this.camera);
     this.pipeline.render();
     requestAnimationFrame(() => this.frame());

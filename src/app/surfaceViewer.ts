@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState } from '../core/math/kepler';
 import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
 import { RenderPipeline } from '../render/fx/pipeline';
+import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
 import { createSkyDome } from '../render/terrain/skyDome';
@@ -10,6 +11,7 @@ import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import type { Moon } from '../universe/moon/types';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { planetMu } from '../universe/system/generate';
+import { getSkyField } from './skyService';
 import type { Planet, StarSystem } from '../universe/system/types';
 
 const SKY_OBJECT_DISTANCE_KM = 40000;
@@ -42,6 +44,7 @@ export class SurfaceViewer {
   private readonly terrainMaterial = createTerrainMaterial();
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
+  private backdrop: StarfieldBackdrop | null = null;
   private sky: Mesh | null = null;
   private skyMoons: SkyMoon[] = [];
   private readonly skyMoonGroup = new Group();
@@ -100,6 +103,17 @@ export class SurfaceViewer {
     this.camera.position.copy(arrival).multiplyScalar(this.radiusKm * 3.2);
     this.camera.up.set(0, 1, 0);
     this.controls.update();
+
+    if (this.backdrop) {
+      this.scene.remove(this.backdrop.group);
+      this.backdrop.dispose();
+      this.backdrop = null;
+    }
+    getSkyField(system.seedHex).then((sky) => {
+      if (this.disposed || this.system !== system) return;
+      this.backdrop = new StarfieldBackdrop(sky, 2000);
+      this.scene.add(this.backdrop.group);
+    });
 
     this.oceanMaterial?.dispose();
     this.oceanMaterial = createOceanMaterial(planet.physical.appearance.oceanColor);
@@ -162,6 +176,7 @@ export class SurfaceViewer {
     window.removeEventListener('resize', this.onResize);
     this.controls.dispose();
     this.chunkManager?.dispose();
+    this.backdrop?.dispose();
     this.terrainMaterial.dispose();
     this.pipeline.dispose();
   }
@@ -221,6 +236,7 @@ export class SurfaceViewer {
       this.camera.updateProjectionMatrix();
 
       this.updateSkyObjects(up);
+      this.backdrop?.group.position.copy(this.camera.position);
       this.chunkManager.update(this.camera.position);
     }
 
@@ -286,6 +302,18 @@ export class SurfaceViewer {
     const fog = new Color(...atmosphere.scatteringColor).multiply(
       new Color(...lightColor).multiplyScalar(0.35 + 0.65 * sunElevation),
     );
+
+    // Daylight washes the stars out; airless skies keep them at noon.
+    if (this.backdrop) {
+      const dayWash =
+        atmosphere.class === 'none'
+          ? 0
+          : Math.min(
+              1,
+              sunElevation * Math.min(1, atmosphere.surfacePressureBar) * immersion * 3,
+            );
+      this.backdrop.intensity = 1 - dayWash * 0.97;
+    }
 
     // Terrain and water light in world space (their meshes never rotate).
     for (const material of [this.terrainMaterial, this.oceanMaterial]) {

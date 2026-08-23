@@ -1,4 +1,4 @@
-export type ViewMode = 'star' | 'system' | 'planet' | 'surface';
+export type ViewMode = 'star' | 'system' | 'planet' | 'surface' | 'galaxy';
 
 export interface ControlsCallbacks {
   onSeed: (seedHex: string) => void;
@@ -9,7 +9,7 @@ export interface ControlsCallbacks {
   onExposure: (exposure: number) => void;
 }
 
-const VIEWS: ViewMode[] = ['star', 'system', 'planet', 'surface'];
+const VIEWS: ViewMode[] = ['star', 'system', 'planet', 'surface', 'galaxy'];
 
 /** Bottom control strip: view toggle, seed entry, planet stepper, time scale, exposure. */
 export class Controls {

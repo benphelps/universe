@@ -184,7 +184,7 @@ function buildGlow(viewpoint: GalacticPosition): {
       // Dust reddens as well as dims; warm population base color.
       const reddening = Math.exp(-opticalDepth * 0.25);
       const index = (row * width + column) * 4;
-      const scale = light * 6e-5;
+      const scale = light * 1.8e-5;
       data[index] = scale * 1.0;
       data[index + 1] = scale * 0.93 * (0.75 + 0.25 * reddening);
       data[index + 2] = scale * 0.85 * (0.55 + 0.45 * reddening);

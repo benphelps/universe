@@ -17,9 +17,11 @@ import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/
 import { PlanetObject } from '../render/planet/planetObject';
 import type { ShadowCaster } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
+import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import type { Moon } from '../universe/moon/types';
 import { planetMu } from '../universe/system/generate';
 import type { Planet, StarSystem } from '../universe/system/types';
+import { getSkyField } from './skyService';
 
 const STAR_DISTANCE_UNITS = 3000;
 
@@ -50,6 +52,7 @@ export class PlanetViewer {
   private readonly pipeline: RenderPipeline;
   private readonly starMesh: Mesh;
   private planetObject: PlanetObject | null = null;
+  private backdrop: StarfieldBackdrop | null = null;
   private moonGroup: Group | null = null;
   private moons: MoonEntry[] = [];
   private system: StarSystem | null = null;
@@ -84,6 +87,17 @@ export class PlanetViewer {
     }
     this.planetObject = new PlanetObject(planet.physical, planet.rings);
     this.scene.add(this.planetObject.group);
+
+    if (this.backdrop) {
+      this.scene.remove(this.backdrop.group);
+      this.backdrop.dispose();
+      this.backdrop = null;
+    }
+    getSkyField(system.seedHex).then((sky) => {
+      if (this.disposed || this.system !== system) return;
+      this.backdrop = new StarfieldBackdrop(sky, 4e5);
+      this.scene.add(this.backdrop.group);
+    });
 
     // Regular moons orbit the equatorial plane, tilted with the planet.
     this.moonGroup = new Group();
@@ -165,6 +179,7 @@ export class PlanetViewer {
     window.removeEventListener('resize', this.onResize);
     this.controls.dispose();
     this.planetObject?.dispose();
+    this.backdrop?.dispose();
     for (const entry of this.moons) entry.object.dispose();
     this.starMesh.geometry.dispose();
     (this.starMesh.material as MeshBasicMaterial).dispose();

@@ -4,8 +4,10 @@ import { generateStar } from '../universe/star/generate';
 import { generateSystem } from '../universe/system/generate';
 import { Controls, type ViewMode } from './ui/controls';
 import { InfoPanel } from './ui/infoPanel';
+import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
+import { GalaxyViewer } from './galaxyViewer';
 import { PlanetViewer } from './planetViewer';
 import { StarViewer } from './viewer';
 import { SurfaceViewer } from './surfaceViewer';
@@ -16,11 +18,12 @@ const infoElement = document.getElementById('info')!;
 const starPanel = new InfoPanel(infoElement);
 const systemPanel = new SystemInfoPanel(infoElement);
 const planetPanel = new PlanetInfoPanel(infoElement);
+const galaxyPanel = new GalaxyInfoPanel(infoElement);
 
 let viewMode: ViewMode = 'star';
 let seedHex = '';
 let planetIndex = 0;
-let viewer: StarViewer | SystemViewer | PlanetViewer | SurfaceViewer | null = null;
+let viewer: StarViewer | SystemViewer | PlanetViewer | SurfaceViewer | GalaxyViewer | null = null;
 let exposure = 1;
 let timeScale: number | null = null;
 
@@ -47,6 +50,11 @@ function load(nextSeedHex: string): void {
     systemViewer.setSystem(system);
     systemPanel.render(system);
     viewer = systemViewer;
+  } else if (viewMode === 'galaxy') {
+    const galaxyViewer = new GalaxyViewer(viewElement);
+    galaxyViewer.setSeed(seedHex);
+    galaxyPanel.render(seedHex, galaxyViewer.neighbors, (nextSeed) => load(nextSeed));
+    viewer = galaxyViewer;
   } else {
     const system = generateSystem(seed);
     if (system.planets.length === 0) {
@@ -119,7 +127,7 @@ const controls = new Controls(document.getElementById('controls')!, {
 const params = new URLSearchParams(location.search);
 const viewParam = params.get('view');
 viewMode =
-  viewParam === 'system' || viewParam === 'planet' || viewParam === 'surface'
+  viewParam === 'system' || viewParam === 'planet' || viewParam === 'surface' || viewParam === 'galaxy'
     ? viewParam
     : 'star';
 planetIndex = Number(params.get('planet') ?? 0) || 0;

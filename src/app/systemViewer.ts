@@ -1,8 +1,10 @@
 import { PerspectiveCamera, Scene } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RenderPipeline } from '../render/fx/pipeline';
+import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import { SystemMapObject } from '../render/system/systemMapObject';
 import type { StarSystem } from '../universe/system/types';
+import { getSkyField } from './skyService';
 
 /**
  * System-map viewer: tilted overhead camera over the orbital plane with
@@ -17,6 +19,8 @@ export class SystemViewer {
   private readonly controls: OrbitControls;
   private readonly pipeline: RenderPipeline;
   private mapObject: SystemMapObject | null = null;
+  private backdrop: StarfieldBackdrop | null = null;
+  private currentSystem: StarSystem | null = null;
   private lastFrameMs = performance.now();
   private readonly onResize = () => this.resize();
 
@@ -40,6 +44,18 @@ export class SystemViewer {
     this.mapObject = new SystemMapObject(system);
     this.scene.add(this.mapObject.group);
     this.frameCamera(this.mapObject.extentAu);
+
+    this.currentSystem = system;
+    if (this.backdrop) {
+      this.scene.remove(this.backdrop.group);
+      this.backdrop.dispose();
+      this.backdrop = null;
+    }
+    getSkyField(system.seedHex).then((sky) => {
+      if (this.disposed || this.currentSystem !== system) return;
+      this.backdrop = new StarfieldBackdrop(sky, this.mapObject!.extentAu * 40);
+      this.scene.add(this.backdrop.group);
+    });
   }
 
   set exposure(value: number) {
@@ -51,6 +67,7 @@ export class SystemViewer {
     window.removeEventListener('resize', this.onResize);
     this.controls.dispose();
     this.mapObject?.dispose();
+    this.backdrop?.dispose();
     this.pipeline.dispose();
   }
 
@@ -81,6 +98,7 @@ export class SystemViewer {
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
     this.controls.update();
+    this.backdrop?.group.position.copy(this.camera.position);
     this.mapObject?.update(this.simTimeDays);
     this.pipeline.render();
     requestAnimationFrame(() => this.frame());
