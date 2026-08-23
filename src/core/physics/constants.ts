@@ -1,0 +1,24 @@
+/** Physical constants (SI). */
+export const G = 6.6743e-11; // m³ kg⁻¹ s⁻²
+export const SIGMA_SB = 5.670374419e-8; // W m⁻² K⁻⁴
+export const K_B = 1.380649e-23; // J K⁻¹
+export const H_PLANCK = 6.62607015e-34; // J s
+export const C_LIGHT = 2.99792458e8; // m s⁻¹
+export const WIEN_B = 2.897771955e-3; // m K
+
+/** Astronomical scale anchors (SI). */
+export const AU = 1.495978707e11; // m
+export const PARSEC = 3.0856775814913673e16; // m
+export const SOLAR_MASS = 1.98892e30; // kg
+export const SOLAR_RADIUS = 6.957e8; // m
+export const SOLAR_LUMINOSITY = 3.828e26; // W
+export const SOLAR_TEFF = 5772; // K
+export const EARTH_MASS = 5.9722e24; // kg
+export const EARTH_RADIUS = 6.371e6; // m
+export const JUPITER_MASS = 1.89813e27; // kg
+export const JUPITER_RADIUS = 6.9911e7; // m
+
+/** Time (SI seconds). */
+export const DAY = 86400;
+export const YEAR = 3.15576e7; // Julian year
+export const GYR = 1e9 * YEAR;
