@@ -278,7 +278,9 @@ export class SurfaceViewer {
     }
 
     const lightColor = this.system.star.linearRgb;
-    const sunView = sunDir.clone().transformDirection(this.camera.matrixWorldInverse);
+    // Fresh view-space transform: the renderer's cached inverse matrix is a
+    // frame stale, which strobes the lighting while the camera rotates.
+    const sunView = sunDir.clone().applyQuaternion(this.camera.quaternion.clone().invert());
     const { atmosphere } = this.planet.physical;
     const sunElevation = Math.max(0, sunDir.dot(up));
     const scaleHeightKm = Math.max(atmosphere.scaleHeightKm, 3);

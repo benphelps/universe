@@ -34,7 +34,7 @@ export function createCraterField(
   seedHex: string,
   radiusM: number,
   amplitude: number,
-): (dir: Vec3) => number {
+): (dir: Vec3, lodAngularRad?: number) => number {
   if (amplitude <= 0.005) return () => 0;
   const rootSeed = deriveSeed(seedFromHex(seedHex), 'craters');
   const cache = new Map<string, Crater[]>();
@@ -74,9 +74,11 @@ export function createCraterField(
     return craters;
   };
 
-  return (dir) => {
+  return (dir, lodAngularRad = 0) => {
     let height = 0;
     for (let band = 0; band < BANDS.length; band++) {
+      // Skip bands whose craters are below the caller's resolution.
+      if (lodAngularRad > 0 && BANDS[band].maxRadius < lodAngularRad * 1.5) continue;
       const size = BANDS[band].cellSize;
       const ix = Math.floor(dir.x / size);
       const iy = Math.floor(dir.y / size);
@@ -85,13 +87,21 @@ export function createCraterField(
         for (let dy = -1; dy <= 1; dy++) {
           for (let dz = -1; dz <= 1; dz++) {
             for (const crater of cellCraters(band, ix + dx, iy + dy, iz + dz)) {
+              // Under-resolved craters fade out: a bowl spanning two or
+              // three vertices aliases into an angular blob.
+              let fade = 1;
+              if (lodAngularRad > 0) {
+                const samplesAcross = crater.angularRadius / lodAngularRad;
+                if (samplesAcross < 2.5) continue;
+                fade = Math.min(1, (samplesAcross - 2.5) / 6);
+              }
               const chordX = dir.x - crater.center.x;
               const chordY = dir.y - crater.center.y;
               const chordZ = dir.z - crater.center.z;
               const theta = Math.hypot(chordX, chordY, chordZ);
               const x = theta / crater.angularRadius;
               if (x >= 1.6) continue;
-              height += craterProfile(x, crater.angularRadius, radiusM);
+              height += craterProfile(x, crater.angularRadius, radiusM) * fade;
             }
           }
         }

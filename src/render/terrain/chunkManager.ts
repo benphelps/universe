@@ -4,21 +4,30 @@ import { chunkAngularSize, faceUvToDir } from '../../universe/surface/cubeSphere
 import type { TerrainRequest, TerrainResponse } from '../../workers/protocol';
 import { buildChunkIndices } from './terrainMaterial';
 
-const RES = 32;
-const MAX_LEVEL = 15;
-const SPLIT_RATIO = 1.3;
-const MAX_CHUNKS = 600;
-const MAX_IN_FLIGHT = 10;
+const RES = 48;
+const MAX_LEVEL = 17;
+const SPLIT_RATIO = 0.65;
+const MAX_CHUNKS = 1000;
+const MAX_IN_FLIGHT = 24;
 /** Levels this coarse are never evicted: they cover zoom-out instantly. */
 const PINNED_LEVEL = 3;
 const EVICT_AGE_FRAMES = 600;
 
 interface ChunkRecord {
   key: string;
+  face: number;
   level: number;
+  x: number;
+  y: number;
   centerKm: [number, number, number] | null;
   mesh: Mesh | null;
+  requested: boolean;
   lastDrawn: number;
+}
+
+interface WantedChunk {
+  record: ChunkRecord;
+  distanceKm: number;
 }
 
 /**
@@ -33,6 +42,7 @@ export class TerrainChunkManager {
   private readonly workers: Worker[] = [];
   private readonly chunks = new Map<string, ChunkRecord>();
   private readonly pending = new Map<number, string>();
+  private wanted: WantedChunk[] = [];
   private readonly indexAttribute = new BufferAttribute(buildChunkIndices(RES), 1);
   private readonly radiusKm: number;
   private nextRequestId = 1;
@@ -46,7 +56,7 @@ export class TerrainChunkManager {
     physical: Characterization,
   ) {
     this.radiusKm = (physical.bulk.radiusEarth * 6371000) / 1000;
-    const workerCount = 2;
+    const workerCount = Math.min(5, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
     for (let i = 0; i < workerCount; i++) {
       const worker = new Worker(new URL('../../workers/terrainWorker.ts', import.meta.url), {
         type: 'module',
@@ -71,10 +81,35 @@ export class TerrainChunkManager {
       Math.min(1, Math.max(-1, this.radiusKm / Math.max(cameraDistance, this.radiusKm))),
     );
 
+    this.wanted = [];
     for (let face = 0; face < 6; face++) {
       this.visit(face, 0, 0, 0, cameraKm, cameraDir, horizonAngle);
     }
+    this.dispatch();
     this.evict();
+  }
+
+  /** Send the nearest-needed tiles to the workers first, up to the budget. */
+  private dispatch(): void {
+    this.wanted.sort((a, b) => a.distanceKm - b.distanceKm);
+    for (const { record } of this.wanted) {
+      if (this.pending.size >= MAX_IN_FLIGHT) break;
+      if (record.requested || record.mesh) continue;
+      record.requested = true;
+      const id = this.nextRequestId++;
+      this.pending.set(id, record.key);
+      const request: TerrainRequest = {
+        type: 'chunk',
+        id,
+        face: record.face,
+        level: record.level,
+        x: record.x,
+        y: record.y,
+        res: RES,
+      };
+      this.workers[this.nextWorker].postMessage(request);
+      this.nextWorker = (this.nextWorker + 1) % this.workers.length;
+    }
   }
 
   private visit(
@@ -116,6 +151,9 @@ export class TerrainChunkManager {
         }
         return;
       }
+      for (const child of children) {
+        if (!child.mesh) this.wanted.push({ record: child, distanceKm });
+      }
     }
 
     const record = this.ensure(face, level, x, y);
@@ -124,6 +162,7 @@ export class TerrainChunkManager {
       record.mesh.visible = true;
       return;
     }
+    this.wanted.push({ record, distanceKm });
     // While this tile (re)builds, show any cached finer children instead of a hole.
     if (level < MAX_LEVEL) {
       for (let cy = 0; cy < 2; cy++) {
@@ -145,18 +184,18 @@ export class TerrainChunkManager {
       record.lastDrawn = this.frame;
       return record;
     }
-    record = { key, level, centerKm: null, mesh: null, lastDrawn: this.frame };
+    record = {
+      key,
+      face,
+      level,
+      x,
+      y,
+      centerKm: null,
+      mesh: null,
+      requested: false,
+      lastDrawn: this.frame,
+    };
     this.chunks.set(key, record);
-    if (this.pending.size < MAX_IN_FLIGHT) {
-      const id = this.nextRequestId++;
-      this.pending.set(id, key);
-      const request: TerrainRequest = { type: 'chunk', id, face, level, x, y, res: RES };
-      this.workers[this.nextWorker].postMessage(request);
-      this.nextWorker = (this.nextWorker + 1) % this.workers.length;
-    } else {
-      // Over budget: forget so a later frame can retry.
-      this.chunks.delete(key);
-    }
     return record;
   }
 
@@ -166,6 +205,7 @@ export class TerrainChunkManager {
     if (!key) return;
     const record = this.chunks.get(key);
     if (!record) return;
+    record.requested = false;
 
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(response.positions, 3));

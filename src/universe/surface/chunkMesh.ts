@@ -42,6 +42,9 @@ export function buildChunkMesh(
     centerDir.z * radiusKm,
   ];
 
+  // Vertex angular spacing: detail below its Nyquist limit is skipped.
+  const lodAngularRad = Math.PI / 2 / tiles / res;
+
   // Extended grid (border row/column on every side) for seamless normals.
   const extPositions = new Float64Array(ext * ext * 3);
   const extNormals = new Float64Array(ext * ext * 3);
@@ -51,7 +54,7 @@ export function buildChunkMesh(
     for (let i = 0; i < ext; i++) {
       const index = j * ext + i;
       const dir = faceUvToDir(face, (x + (i - 1) / res) / tiles, (y + (j - 1) / res) / tiles);
-      const h = field.heightAt(dir);
+      const h = field.heightAt(dir, lodAngularRad);
       heights[index] = h;
       dirs[index * 3] = dir.x;
       dirs[index * 3 + 1] = dir.y;
@@ -82,7 +85,7 @@ export function buildChunkMesh(
         extNormals[extIndex * 3] * dir.x +
         extNormals[extIndex * 3 + 1] * dir.y +
         extNormals[extIndex * 3 + 2] * dir.z;
-      const [r, g, b] = field.colorAt(dir, heights[extIndex], slopeCos);
+      const [r, g, b] = field.colorAt(dir, heights[extIndex], slopeCos, lodAngularRad);
       colors[outIndex * 3] = r;
       colors[outIndex * 3 + 1] = g;
       colors[outIndex * 3 + 2] = b;
