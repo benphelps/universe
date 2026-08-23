@@ -26,12 +26,12 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M2 — The System ([plan](plan/03-system.md))
 
-- [ ] Disk recipe, planet slots, element sampling, stability filter
-- [ ] Zones (HZ, frost line, lock radius); binary S/P-type placement
-- [ ] Belts + resonance structure (Kirkwood arithmetic), reservoirs
-- [ ] Fixtures + statistics tests (occurrence, period ratios, stability)
-- [ ] Render: system map view, live orbital motion, time controls
-- [ ] Demo: seed → explorable system map with placeholder planet spheres
+- [x] Disk recipe, planet slots, element sampling, stability filter
+- [x] Zones (HZ, frost line, lock radius); binary S/P-type placement
+- [x] Belts + resonance structure (Kirkwood arithmetic), reservoirs
+- [x] Fixtures + statistics tests (occurrence, period ratios, stability)
+- [x] Render: system map view, live orbital motion, time controls
+- [x] Demo: seed → explorable system map with placeholder planet spheres
 
 ## M3 — Worlds ([plan](plan/04-planet.md))
 
@@ -80,3 +80,5 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 - **2026-08-23** — Repository created; architecture and all level plans (00–08) written.
 - **2026-08-23** — M0 core landed (seed tree, RNG/distributions, Kepler solver, noise, spectral color pipeline) and M1 star level landed (full generator with evolution/classification/activity/multiplicity, HDR photosphere+corona rendering, interactive viewer). 33 tests green; verified in-browser across K/M/A dwarfs and a red giant.
+- **2026-08-23** — Corona reworked into a star-anchored 3D field: true parallax when orbiting, co-rotation with the surface, activity-driven structure over spot bands.
+- **2026-08-23** — M2 system level landed: disk→slots→elements→stability generation with S/P-type binaries, zones, Kirkwood belts, reservoirs, and end-state effects (engulfment, supernova sterilization); system map view with live Keplerian motion and shearing belts. 45 tests green; verified in-browser on a circumbinary resonant chain and an M-dwarf eyeball-world system with a gapped asteroid belt.
