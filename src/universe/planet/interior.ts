@@ -23,6 +23,7 @@ export function computeInterior(
   ageGyr: number,
   aAu: number,
   eccentricity: number,
+  extraHeatFluxWm2 = 0,
 ): PlanetInterior {
   const gas = planetClass === 'gas-giant' || planetClass === 'ice-giant';
   const areaRel = bulk.radiusEarth ** 2;
@@ -35,7 +36,7 @@ export function computeInterior(
     (1e-5 * eccentricity ** 2 * bulk.radiusEarth ** 3) / aAu ** 6 / areaRel,
   );
   const primordial = gas ? 0.3 * bulk.massEarth ** 0.5 : 0;
-  const heatFluxWm2 = radiogenic + tidal + primordial;
+  const heatFluxWm2 = radiogenic + tidal + primordial + extraHeatFluxWm2;
 
   const regime = geologicalRegime(rng, planetClass, bulk, heatFluxWm2);
 

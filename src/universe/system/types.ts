@@ -1,5 +1,8 @@
 import type { OrbitalElements } from '../../core/math/orbit';
+import type { Moon } from '../moon/types';
 import type { Characterization } from '../planet/types';
+import type { RingSystem } from '../rings/types';
+import type { Comet } from '../smallbody/types';
 import type { Star } from '../star/types';
 
 /** Bulk class assigned at system level; the planet level characterizes it fully. */
@@ -17,6 +20,8 @@ export interface Planet {
   resonanceWithInner: string | null;
   /** Full physical characterization (bulk, interior, atmosphere, climate, appearance). */
   physical: Characterization;
+  moons: Moon[];
+  rings: RingSystem | null;
 }
 
 export interface BeltGap {
@@ -69,6 +74,7 @@ export interface StarSystem {
   centralMassSolar: number;
   planets: Planet[];
   belts: Belt[];
+  comets: Comet[];
   reservoirs: Reservoirs;
   zones: SystemZones;
 }

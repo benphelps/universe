@@ -3,7 +3,10 @@ import { AU, G, SOLAR_MASS, EARTH_MASS } from '../../core/physics/constants';
 import { rayleigh } from '../../core/rng/distributions';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
+import { generateMoons } from '../moon/generate';
 import { characterizePlanet } from '../planet/characterize';
+import { generateRings } from '../rings/generate';
+import { generateComets } from '../smallbody/comets';
 import { generateStar } from '../star/generate';
 import { radiusFromLT, msLuminosity } from '../star/mainSequence';
 import type { Star } from '../star/types';
@@ -46,23 +49,41 @@ export function generateSystem(seed: bigint): StarSystem {
   stable = applyStellarEndState(star, stable);
 
   const zones = computeZones(centralLuminosity, star.tEff, star.ageGyr, centralMassSolar);
-  const planets: Planet[] = stable.map(({ slot, elements: el }, i) => ({
-    name: `${star.designation} ${PLANET_LETTERS[Math.min(i, PLANET_LETTERS.length - 1)]}`,
-    class: slot.class,
-    elements: el,
-    inHabitableZone:
-      el.semiMajorAxis / AU >= zones.habitableInnerAu &&
-      el.semiMajorAxis / AU <= zones.habitableOuterAu,
-    tidallyLocked: el.semiMajorAxis / AU < zones.tidalLockAu,
-    resonanceWithInner: slot.resonanceWithInner,
-    physical: characterizePlanet(deriveSeed(seed, 'planet', i), slot.class, slot.massEarth, el, {
+  const planets: Planet[] = stable.map(({ slot, elements: el }, i) => {
+    const planet: Planet = {
+      name: `${star.designation} ${PLANET_LETTERS[Math.min(i, PLANET_LETTERS.length - 1)]}`,
+      class: slot.class,
+      elements: el,
+      inHabitableZone:
+        el.semiMajorAxis / AU >= zones.habitableInnerAu &&
+        el.semiMajorAxis / AU <= zones.habitableOuterAu,
+      tidallyLocked: el.semiMajorAxis / AU < zones.tidalLockAu,
+      resonanceWithInner: slot.resonanceWithInner,
+      physical: characterizePlanet(deriveSeed(seed, 'planet', i), slot.class, slot.massEarth, el, {
+        star,
+        centralLuminosity,
+        mu: G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS),
+        zones,
+      }),
+      moons: [],
+      rings: null,
+    };
+    planet.moons = generateMoons(deriveSeed(seed, 'moons', i), planet, {
       star,
       centralLuminosity,
-      mu: G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS),
       zones,
-    }),
-  }));
+    });
+    planet.rings = generateRings(
+      rng.fork('rings', i),
+      planet,
+      planet.moons,
+      zones,
+      el.semiMajorAxis / AU,
+    );
+    return planet;
+  });
 
+  const reservoirs = generateReservoirs(rng.fork('reservoirs'), stable);
   return {
     seedHex: seedToHex(seed),
     star,
@@ -71,7 +92,8 @@ export function generateSystem(seed: bigint): StarSystem {
     centralMassSolar,
     planets,
     belts: generateBelts(rng.fork('belts'), stable),
-    reservoirs: generateReservoirs(rng.fork('reservoirs'), stable),
+    comets: generateComets(rng.fork('comets'), star.designation, reservoirs),
+    reservoirs,
     zones,
   };
 }
