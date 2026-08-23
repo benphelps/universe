@@ -57,6 +57,22 @@ export function brokenPowerLaw(rng: Rng, segments: PowerLawSegment[]): number {
   return powerLaw(rng, seg.alpha, seg.min, seg.max);
 }
 
+/** Poisson-distributed count: Knuth for small rates, normal approximation above. */
+export function poisson(rng: Rng, lambda: number): number {
+  if (lambda <= 0) return 0;
+  if (lambda > 30) {
+    return Math.max(0, Math.round(rng.normal(lambda, Math.sqrt(lambda))));
+  }
+  const threshold = Math.exp(-lambda);
+  let count = 0;
+  let product = rng.float();
+  while (product > threshold) {
+    count++;
+    product *= rng.float();
+  }
+  return count;
+}
+
 /** Index drawn with probability proportional to its weight. */
 export function weightedIndex(rng: Rng, weights: number[]): number {
   let total = 0;
