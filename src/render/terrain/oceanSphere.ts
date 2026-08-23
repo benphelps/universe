@@ -45,8 +45,10 @@ void main() {
 /**
  * Sea-surface material for chunk-aligned water tiles: fresnel-brightened
  * at grazing angles with a sun glint, sharing the terrain's aerial fog.
- * All lighting is world-frame (tiles never rotate); a slight polygon
- * offset wins depth ties against near-sea-level ground.
+ * All lighting is world-frame (tiles never rotate). No polygon offset:
+ * a slope-scaled depth bias floods shorelines at grazing view angles —
+ * the shared-grid geometry and the altitude-scaled near plane make the
+ * true depth test reliable on their own.
  */
 export function createOceanMaterial(oceanColor: [number, number, number]): ShaderMaterial {
   return new ShaderMaterial({
@@ -59,8 +61,5 @@ export function createOceanMaterial(oceanColor: [number, number, number]): Shade
       uFogColor: { value: new Color(0, 0, 0) },
       uFogDensity: { value: 0 },
     },
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -2,
   });
 }

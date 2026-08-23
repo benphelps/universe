@@ -16,7 +16,8 @@ import { starPhotometry } from '../universe/galaxy/photometry';
 import { starsNear, viewpointForSeed } from '../universe/galaxy/sectors';
 import { getSkyField } from './skyService';
 
-const NEIGHBOR_RADIUS_PC = 20;
+/** Matches the sky field's near radius so 3D points hand off to the backdrop. */
+const NEIGHBOR_RADIUS_PC = 30;
 
 export interface Neighbor {
   seedHex: string;
@@ -89,6 +90,7 @@ export class GalaxyViewer {
     const lut = buildTemperatureLut(96);
 
     const slots = starsNear(viewpoint, NEIGHBOR_RADIUS_PC);
+    this.controls.maxDistance = NEIGHBOR_RADIUS_PC * 1.5;
     const positions: number[] = [0, 0, 0];
     const colors: number[] = [1, 0.95, 0.9];
     const luminosities: number[] = [starPhotometry(seed).luminosity];
@@ -143,7 +145,8 @@ export class GalaxyViewer {
     }
     getSkyField(seedHex).then((sky) => {
       if (this.disposed || this.currentSeedHex !== seedHex) return;
-      this.backdrop = new StarfieldBackdrop(sky, 2000);
+      // Skip the near field: those stars fly by as real 3D points here.
+      this.backdrop = new StarfieldBackdrop(sky, 2000, sky.nearStarCount);
       this.scene.add(this.backdrop.group);
     });
   }

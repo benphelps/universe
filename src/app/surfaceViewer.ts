@@ -229,14 +229,25 @@ export class SurfaceViewer {
         this.camera.quaternion.setFromRotationMatrix(gaze);
       }
 
-      // Keep the depth range tight: sky objects move inward as we descend.
+      // Keep the depth range tight: sky objects move inward as we descend,
+      // and the near plane tracks altitude (nothing sits closer than the
+      // ground below), keeping depth quanta small enough that terrain and
+      // sea never z-fight even from orbit.
       const skyDistanceKm = this.skyObjectDistanceKm();
-      this.camera.near = Math.min(5, Math.max(0.006, this.altitudeKm * 0.15));
+      this.camera.near = Math.min(2000, Math.max(0.006, this.altitudeKm * 0.15));
       this.camera.far = Math.max(skyDistanceKm * 1.6, this.camera.position.length() * 2.5);
       this.camera.updateProjectionMatrix();
 
       this.updateSkyObjects(up);
-      this.backdrop?.group.position.copy(this.camera.position);
+      if (this.backdrop) {
+        this.backdrop.group.position.copy(this.camera.position);
+        // The backdrop must enclose every visible surface point, or stars
+        // depth-test in front of the planet from orbit. Farthest visible
+        // ground lies at the tangent distance.
+        const centerDistSq = this.camera.position.lengthSq();
+        const tangentKm = Math.sqrt(Math.max(0, centerDistSq - this.radiusKm * this.radiusKm));
+        this.backdrop.group.scale.setScalar(Math.max(1, (tangentKm * 1.35) / 2000));
+      }
       this.chunkManager.update(this.camera.position);
     }
 

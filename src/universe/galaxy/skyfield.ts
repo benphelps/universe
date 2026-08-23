@@ -16,6 +16,9 @@ import { starsNear } from './sectors';
  */
 export interface SkyField {
   starCount: number;
+  /** The first nearStarCount entries are the resolved 30 pc neighborhood
+   *  (a 3D view of the same region should skip them to avoid doubling). */
+  nearStarCount: number;
   /** Unit view directions, xyz per star. */
   starDirs: Float32Array;
   /** Linear sRGB hue per star. */
@@ -99,6 +102,8 @@ export function buildSkyField(viewpoint: GalacticPosition): SkyField {
     );
   }
 
+  const nearStarCount = brightness.length;
+
   // Far shells: statistical bright-star population, density-weighted.
   const localDensity = stellarDensity(viewpoint);
   for (let shellIndex = 0; shellIndex < SHELLS.length; shellIndex++) {
@@ -137,6 +142,7 @@ export function buildSkyField(viewpoint: GalacticPosition): SkyField {
 
   return {
     starCount: brightness.length,
+    nearStarCount,
     starDirs: new Float32Array(dirs),
     starColors: new Float32Array(colors),
     starBrightness: new Float32Array(brightness),

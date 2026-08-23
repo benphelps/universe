@@ -93,8 +93,11 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       const band = detailBands[bandIndex];
       // Fade each band in across a LOD level: a hard Nyquist cut would
       // print visible patches wherever neighboring tiles differ in level.
+      // The landscape-scale band never fades: it moves coastlines, and
+      // those must agree across every LOD. Smaller bands sit well inside
+      // the shoreline blend window, so their fading is invisible there.
       let fade = 1;
-      if (lodAngularRad > 0) {
+      if (lodAngularRad > 0 && bandIndex > 0) {
         const wavelengthRatio = 1 / band.frequency / (2 * lodAngularRad);
         if (wavelengthRatio <= 1) break;
         // Fade across ~two LOD levels so ring boundaries stay subtle.

@@ -85,18 +85,27 @@ export class StarfieldBackdrop {
   readonly group = new Group();
   private readonly materials: ShaderMaterial[] = [];
 
-  constructor(sky: SkyField, radius: number) {
-    const positions = new Float32Array(sky.starCount * 3);
-    for (let i = 0; i < sky.starCount; i++) {
+  /** skipStars omits the first N sky entries (a 3D view of the near field). */
+  constructor(sky: SkyField, radius: number, skipStars = 0) {
+    const count = sky.starCount - skipStars;
+    const positions = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const s = i + skipStars;
       // Galactic (x, y, z-disk) → scene (x, z, y): the band lies on the horizon.
-      positions[i * 3] = sky.starDirs[i * 3] * radius;
-      positions[i * 3 + 1] = sky.starDirs[i * 3 + 2] * radius;
-      positions[i * 3 + 2] = sky.starDirs[i * 3 + 1] * radius;
+      positions[i * 3] = sky.starDirs[s * 3] * radius;
+      positions[i * 3 + 1] = sky.starDirs[s * 3 + 2] * radius;
+      positions[i * 3 + 2] = sky.starDirs[s * 3 + 1] * radius;
     }
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(positions, 3));
-    geometry.setAttribute('starColor', new BufferAttribute(sky.starColors, 3));
-    geometry.setAttribute('brightness', new BufferAttribute(sky.starBrightness, 1));
+    geometry.setAttribute(
+      'starColor',
+      new BufferAttribute(sky.starColors.subarray(skipStars * 3), 3),
+    );
+    geometry.setAttribute(
+      'brightness',
+      new BufferAttribute(sky.starBrightness.subarray(skipStars), 1),
+    );
 
     const pointsMaterial = new ShaderMaterial({
       vertexShader: POINTS_VERTEX,
