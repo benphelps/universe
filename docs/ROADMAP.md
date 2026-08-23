@@ -4,24 +4,25 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M0 — Foundations ([plan](plan/00-foundations.md))
 
-- [ ] Vite + TypeScript + Vitest scaffold, layering lint rule (`universe/` free of DOM/Three)
-- [ ] Seed tree + PCG32 + distribution toolkit, determinism property tests
-- [ ] Units/constants, branded types
-- [ ] Kepler solver (elements ⇄ state, any-time propagation) + tests
-- [ ] Noise primitives (3D simplex, fBm, ridged, warp) seeded + worker-safe
-- [ ] Blackbody → CIE → sRGB pipeline + temperature-color LUT + tests
-- [ ] Worker protocol + scheduler skeleton
+- [x] Vite + TypeScript + Vitest scaffold, layering rule enforced by test (`core/`+`universe/` free of DOM/Three)
+- [x] Seed tree + PCG32 + distribution toolkit, determinism property tests
+- [x] Units/constants
+- [ ] Branded unit types at API boundaries
+- [x] Kepler solver (elements ⇄ state, any-time propagation) + tests
+- [x] Noise primitives (3D simplex, fBm, ridged, warp) seeded + worker-safe
+- [x] Blackbody → CIE → sRGB pipeline + temperature-color LUT + tests
+- [ ] Worker protocol + scheduler skeleton (deferred to M5, where terrain generation first needs it)
 
 ## M1 — The Star ([plan](plan/02-star.md))
 
-- [ ] IMF sampling, MS relations, evolution stages, compact objects, classification
-- [ ] Rotation/activity/variability (spots, flares, pulsators) as functions of `t`
-- [ ] Multiplicity → system hierarchy tree
-- [ ] Star model test fixtures (Sun, M-flare dwarf, red supergiant, white dwarf) + HR-diagram distribution test
-- [ ] Render: HDR pipeline + tone mapping + bloom
-- [ ] Render: photosphere shader (granulation, limb darkening, spots), corona
+- [x] IMF sampling, MS relations, evolution stages, compact objects, classification
+- [x] Rotation/activity/variability (spots, flares, pulsators) as functions of `t`
+- [x] Multiplicity (flat companion list; the full hierarchy tree lands with 03's system builder)
+- [x] Star model test fixtures (Sun, M dwarf, red supergiant, white dwarf, brown dwarf) + population distribution tests
+- [x] Render: HDR pipeline + tone mapping + bloom
+- [x] Render: photosphere shader (granulation, limb darkening, spots), corona
 - [ ] Render: photometric star sprites (distance fade to correct magnitude/color)
-- [ ] Demo: seed → star viewer (orbit camera around any generated star)
+- [x] Demo: seed → star viewer (orbit camera around any generated star)
 
 ## M2 — The System ([plan](plan/03-system.md))
 
@@ -78,3 +79,4 @@ Milestones build outward-in: foundations → one star → its system → its wor
 ## Log
 
 - **2026-08-23** — Repository created; architecture and all level plans (00–08) written.
+- **2026-08-23** — M0 core landed (seed tree, RNG/distributions, Kepler solver, noise, spectral color pipeline) and M1 star level landed (full generator with evolution/classification/activity/multiplicity, HDR photosphere+corona rendering, interactive viewer). 33 tests green; verified in-browser across K/M/A dwarfs and a red giant.
