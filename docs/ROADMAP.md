@@ -65,10 +65,12 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M6 — The Galaxy ([plan](plan/01-galaxy.md))
 
-- [ ] Density model + sector sampling + population gradients
-- [ ] Procedural skybox from local sampling (Milky Way band, dust, nebulae)
-- [ ] Clusters/associations; magnitude-count regression test
-- [ ] Demo: leave the system — starfield is the real neighborhood; travel to a neighbor star and find its system waiting
+- [x] Density model (disks, halo, arms, dust) + deterministic sector sampling
+- [ ] Population gradients feeding star properties (age/metallicity by galactic position)
+- [x] Procedural sky from local sampling (resolved shells + Milky Way glow with dust reddening) in every view
+- [ ] Clusters, OB associations, nebulae
+- [x] Magnitude-count regression test (naked-eye counts the right order of magnitude)
+- [x] Demo: galaxy view of the real 20 pc neighborhood; click a neighbor to travel — its system is waiting
 
 ## M7 — Depth & Polish
 
@@ -89,3 +91,5 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - **2026-08-23** — M4 moons/rings/small bodies landed: satellite systems with Io-calibrated tidal heating (volcanic/cryovolcanic/subsurface-ocean states), Roche-limit rings with moon-resonance gaps, deterministic belt asteroid instantiation, and comets. Rendering: analytic eclipse shadows (moon transits, ring shadow bands), forward-scattering rings, live moons in the planet view, comet apparitions in the map. 67 tests green; verified on a ringed super-Jupiter around an L8 brown dwarf.
 - **2026-08-23** — Comet legibility and moon discoverability fixes: activity-capped comas, physical dust-tail lag, motion trails; moon orbit guides and adaptive marker dots in the planet view.
 - **2026-08-23** — M5 core landed: pure surface fields (plate-belt mountains, lattice-cell craters, erosion, solved sea levels, climate-driven color), worker-streamed cube-sphere quadtree terrain with floating-origin rendering, and the surface view descending from orbit to the ground. 75 tests green; verified on a crater-field Mercury analog and a locked habitable world. Open: fluvial/glacial erosion detail, scatter instancing, geomorphing, asteroid surface mode.
+- **2026-08-23** — Surface shakedown from live testing: OrbitControls-based camera (no more flipped axes), seam-free border-ring normals, priority-ordered chunk requests, detail-band cascade to ~100 m features with LOD fading, chunk-aligned water tiles (ocean z-fighting gone), GPU mottling and micro-relief shading, relief-scaled color windows, minimum LOD floor for orbital views.
+- **2026-08-23** — M6 core landed: galactic density model with deterministic sectors, per-seed sky fields (resolved star shells + dust-reddened Milky Way glow) rendered as backdrops in every view with daylight washout on surfaces, and the galaxy view — the real 20 pc neighborhood, flyable, with click-to-travel to any neighbor system. 83 tests green. Open: population gradients into star properties, clusters/nebulae.
