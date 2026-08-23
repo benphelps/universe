@@ -1,4 +1,4 @@
-import { Color, Group, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
+import { AdditiveBlending, Color, Group, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState } from '../core/math/kepler';
 import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
@@ -58,6 +58,8 @@ export class SurfaceViewer {
   private planet: Planet | null = null;
   private radiusKm = 6371;
   private altitudeKm = 20000;
+  private headingRad = 0;
+  private pitchRad = 0;
   private lastFrameMs = performance.now();
   private readonly onResize = () => this.resize();
 
@@ -71,9 +73,23 @@ export class SurfaceViewer {
     this.controls.enableZoom = false;
     this.controls.target.set(0, 0, 0);
 
-    this.sunMesh = new Mesh(new SphereGeometry(1, 32, 16), new MeshBasicMaterial());
+    // Additive and late-ordered: the sun blazes through the daytime sky
+    // dome instead of being alpha-painted over by it.
+    this.sunMesh = new Mesh(
+      new SphereGeometry(1, 32, 16),
+      new MeshBasicMaterial({ transparent: true, blending: AdditiveBlending, depthWrite: false }),
+    );
+    this.sunMesh.renderOrder = 5;
     this.scene.add(this.sunMesh);
     this.scene.add(this.skyMoonGroup);
+
+    // Right-drag turns the head at low altitude (left-drag moves over
+    // the surface via OrbitControls).
+    this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
+      if ((e.buttons & 2) === 0) return;
+      this.headingRad -= e.movementX * 0.004;
+      this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.003));
+    });
 
     this.pipeline.renderer.domElement.addEventListener(
       'wheel',
@@ -108,6 +124,16 @@ export class SurfaceViewer {
     this.camera.position.copy(arrival).multiplyScalar(this.radiusKm * 3.2);
     this.camera.up.set(0, 1, 0);
     this.controls.update();
+
+    // Face the sun's azimuth on arrival so descending keeps it in view.
+    const north =
+      Math.abs(arrival.y) > 0.99
+        ? new Vector3(1, 0, 0)
+        : new Vector3(0, 1, 0).addScaledVector(arrival, -arrival.y).normalize();
+    const east = new Vector3().crossVectors(north, arrival);
+    const sunTangent = toStar.clone().addScaledVector(arrival, -toStar.dot(arrival));
+    this.headingRad = Math.atan2(sunTangent.dot(east), sunTangent.dot(north));
+    this.pitchRad = 0;
 
     if (this.backdrop) {
       this.scene.remove(this.backdrop.group);
@@ -232,19 +258,26 @@ export class SurfaceViewer {
       this.altitudeKm = Math.max(this.altitudeKm, 0.05);
       this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
 
-      // Nadir gaze from orbit blending to a horizon gaze near the ground.
-      // Orientation is set via quaternion only: camera.up must stay world-Y
-      // or OrbitControls' orbit math rolls over on the way back out.
+      // Nadir gaze from orbit blending to a steerable horizon gaze near the
+      // ground (right-drag sets heading and pitch). Orientation is set via
+      // quaternion only: camera.up must stay world-Y or OrbitControls'
+      // orbit math rolls over on the way back out.
       const horizonBlend = 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
       if (horizonBlend > 0.01) {
         const north =
           Math.abs(up.y) > 0.99
             ? new Vector3(1, 0, 0)
             : new Vector3(0, 1, 0).addScaledVector(up, -up.y).normalize();
-        const forward = north
+        const east = new Vector3().crossVectors(north, up);
+        const heading = north
           .clone()
+          .multiplyScalar(Math.cos(this.headingRad))
+          .addScaledVector(east, Math.sin(this.headingRad));
+        const vertical =
+          -(1 - horizonBlend) + (-0.12 + Math.sin(this.pitchRad)) * horizonBlend;
+        const forward = heading
           .multiplyScalar(horizonBlend)
-          .addScaledVector(up, -(1 - horizonBlend) - 0.12 * horizonBlend)
+          .addScaledVector(up, vertical)
           .normalize();
         const gaze = new Matrix4().lookAt(
           this.camera.position,
@@ -307,8 +340,20 @@ export class SurfaceViewer {
     const angularRadius = (this.system.star.radius * SOLAR_RADIUS) / distanceM;
     this.sunMesh.position.copy(this.camera.position).addScaledVector(sunDir, skyDistanceKm);
     this.sunMesh.scale.setScalar(Math.max(skyDistanceKm * angularRadius, skyDistanceKm * 4e-4));
-    // Below the horizon the far side isn't loaded to occlude it: hide.
-    this.sunMesh.visible = sunDir.dot(up) > -0.05;
+
+    // Hide sky objects only inside the planet's true occlusion cone (the
+    // far-side terrain isn't loaded to depth-occlude them). At ground the
+    // cone is the whole lower hemisphere; from orbit it is a narrow disc.
+    const cameraDistKm = this.camera.position.length();
+    const planetAngular = Math.asin(Math.min(1, this.radiusKm / Math.max(cameraDistKm, this.radiusKm)));
+    const tangentDistKm = Math.sqrt(Math.max(0, cameraDistKm ** 2 - this.radiusKm ** 2));
+    const toCenter = up.clone().negate();
+    const occludedByPlanet = (direction: Vector3, objectDistKm: number): boolean => {
+      if (objectDistKm < tangentDistKm) return false;
+      const angle = Math.acos(Math.min(1, Math.max(-1, direction.dot(toCenter))));
+      return angle < planetAngular;
+    };
+    this.sunMesh.visible = !occludedByPlanet(sunDir, Infinity);
 
     const tSeconds = this.simTimeDays * DAY;
     for (const { moon, mesh, mu } of this.skyMoons) {
@@ -321,7 +366,7 @@ export class SurfaceViewer {
       const moonAngular = Math.max(moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000) / distKm, 0.004);
       mesh.position.copy(this.camera.position).addScaledVector(toMoon, skyDistanceKm * 0.9);
       mesh.scale.setScalar(skyDistanceKm * 0.9 * moonAngular);
-      mesh.visible = toMoon.dot(up) > -0.05;
+      mesh.visible = !occludedByPlanet(toMoon, distKm);
     }
 
     const lightColor = this.system.star.linearRgb;
