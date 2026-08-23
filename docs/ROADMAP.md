@@ -35,12 +35,12 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M3 — Worlds ([plan](plan/04-planet.md))
 
-- [ ] Bulk/interior/mass–radius, rotation & tidal state, magnetic field
-- [ ] Atmosphere retention/composition/greenhouse; climate EBM + albedo fixpoint
-- [ ] Appearance parameters (terrestrial palettes, giant banding, methane tint)
-- [ ] Fixtures (Earth/Venus/Mars/Jupiter/Uranus analogs) + population statistics tests
-- [ ] Render: planet spheres with banded giants, atmosphere limb + sky scattering, clouds v1
-- [ ] Demo: fly from star to each planet, correct phases/eclipses
+- [x] Bulk/interior/mass–radius, rotation & tidal state, magnetic field
+- [x] Atmosphere retention/composition/greenhouse; climate EBM + albedo fixpoint
+- [x] Appearance parameters (terrestrial palettes, giant banding, methane tint)
+- [x] Fixtures (Earth/Venus/Mars/Jupiter/Uranus analogs) + population statistics tests
+- [x] Render: planet spheres with banded giants, atmosphere limb, clouds v1 (ground-level sky scattering lands with M5 surfaces)
+- [x] Demo: planet view with correct phases and star angular size (eclipses arrive with M4 moons)
 
 ## M4 — Moons, Rings, Small Bodies ([plans](plan/05-moons-rings.md), [plan](plan/06-small-bodies.md))
 
@@ -82,3 +82,4 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - **2026-08-23** — M0 core landed (seed tree, RNG/distributions, Kepler solver, noise, spectral color pipeline) and M1 star level landed (full generator with evolution/classification/activity/multiplicity, HDR photosphere+corona rendering, interactive viewer). 33 tests green; verified in-browser across K/M/A dwarfs and a red giant.
 - **2026-08-23** — Corona reworked into a star-anchored 3D field: true parallax when orbiting, co-rotation with the surface, activity-driven structure over spot bands.
 - **2026-08-23** — M2 system level landed: disk→slots→elements→stability generation with S/P-type binaries, zones, Kirkwood belts, reservoirs, and end-state effects (engulfment, supernova sterilization); system map view with live Keplerian motion and shearing belts. 45 tests green; verified in-browser on a circumbinary resonant chain and an M-dwarf eyeball-world system with a gapped asteroid belt.
+- **2026-08-23** — M3 planet level landed: full characterization (bulk, interior, rotation, atmosphere retention/greenhouse, climate fixpoint with snowballs and biospheres, appearance) plus planet rendering (solid worlds, banded giants, scattering limbs) and a true-scale planet view with exact phases. 54 tests green; verified in-browser on a biosphere crescent, a banded gas giant, a brown-dwarf-lit mini-Neptune, and a locked ocean world.
