@@ -52,6 +52,21 @@ export function elementsToState(el: OrbitalElements, mu: number, t: number): Sta
   };
 }
 
+/**
+ * Closed polyline tracing the orbit, swept uniformly in eccentric anomaly
+ * (denser near periapsis where curvature is highest). No Kepler solve needed.
+ */
+export function orbitPath(el: OrbitalElements, segments: number): Vec3[] {
+  const { semiMajorAxis: a, eccentricity: e } = el;
+  const b = a * Math.sqrt(1 - e * e);
+  const points: Vec3[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const E = (2 * Math.PI * i) / segments;
+    points.push(perifocalToReference(a * (Math.cos(E) - e), b * Math.sin(E), el));
+  }
+  return points;
+}
+
 /** Rotation Rz(Ω)·Rx(i)·Rz(ω) applied to a perifocal-plane vector. */
 function perifocalToReference(xP: number, yP: number, el: OrbitalElements): Vec3 {
   const cosO = Math.cos(el.longitudeOfAscendingNode);
