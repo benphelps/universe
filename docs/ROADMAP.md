@@ -44,12 +44,12 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M4 — Moons, Rings, Small Bodies ([plans](plan/05-moons-rings.md), [plan](plan/06-small-bodies.md))
 
-- [ ] Satellite budgets, channels, Hill/Roche placement, tidal heating states
-- [ ] Ring systems with resonance gaps; ring render (phase function, shadows)
-- [ ] Belt cell instantiation, asteroid shapes/spins, comet activity + tails
-- [ ] Fixtures (Earth–Moon, Galilean resonance, Saturn-class rings) + SFD tests
-- [ ] Render: instanced belt fields, comet apparitions, moon transits
-- [ ] Demo: full system tour — rings backlit, belt flythrough, comet at perihelion
+- [x] Satellite budgets, channels, Hill/Roche placement, tidal heating states
+- [x] Ring systems with resonance gaps; ring render (phase function, shadows)
+- [x] Belt cell instantiation, asteroid shapes/spins, comet activity + tails
+- [x] Fixtures (Io calibration, impact moons, resonant chains, Saturn-class rings) + SFD tests
+- [x] Render: comet apparitions, moon orbits with eclipse shadows, ring shadows (belt fields landed in M2)
+- [ ] Asteroid close-up rendering (shape meshes from the shape spec — lands with M5's small-body surface mode)
 
 ## M5 — Surfaces ([plan](plan/07-surface.md))
 
@@ -83,3 +83,4 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - **2026-08-23** — Corona reworked into a star-anchored 3D field: true parallax when orbiting, co-rotation with the surface, activity-driven structure over spot bands.
 - **2026-08-23** — M2 system level landed: disk→slots→elements→stability generation with S/P-type binaries, zones, Kirkwood belts, reservoirs, and end-state effects (engulfment, supernova sterilization); system map view with live Keplerian motion and shearing belts. 45 tests green; verified in-browser on a circumbinary resonant chain and an M-dwarf eyeball-world system with a gapped asteroid belt.
 - **2026-08-23** — M3 planet level landed: full characterization (bulk, interior, rotation, atmosphere retention/greenhouse, climate fixpoint with snowballs and biospheres, appearance) plus planet rendering (solid worlds, banded giants, scattering limbs) and a true-scale planet view with exact phases. 54 tests green; verified in-browser on a biosphere crescent, a banded gas giant, a brown-dwarf-lit mini-Neptune, and a locked ocean world.
+- **2026-08-23** — M4 moons/rings/small bodies landed: satellite systems with Io-calibrated tidal heating (volcanic/cryovolcanic/subsurface-ocean states), Roche-limit rings with moon-resonance gaps, deterministic belt asteroid instantiation, and comets. Rendering: analytic eclipse shadows (moon transits, ring shadow bands), forward-scattering rings, live moons in the planet view, comet apparitions in the map. 67 tests green; verified on a ringed super-Jupiter around an L8 brown dwarf.
