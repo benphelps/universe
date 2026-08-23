@@ -7,11 +7,15 @@ import { buildChunkIndices } from './terrainMaterial';
 const RES = 32;
 const MAX_LEVEL = 15;
 const SPLIT_RATIO = 1.3;
-const MAX_CHUNKS = 420;
+const MAX_CHUNKS = 600;
 const MAX_IN_FLIGHT = 10;
+/** Levels this coarse are never evicted: they cover zoom-out instantly. */
+const PINNED_LEVEL = 3;
+const EVICT_AGE_FRAMES = 600;
 
 interface ChunkRecord {
   key: string;
+  level: number;
   centerKm: [number, number, number] | null;
   mesh: Mesh | null;
   lastDrawn: number;
@@ -113,12 +117,25 @@ export class TerrainChunkManager {
         return;
       }
     }
-    this.draw(this.ensure(face, level, x, y));
-  }
 
-  private draw(record: ChunkRecord): void {
+    const record = this.ensure(face, level, x, y);
     record.lastDrawn = this.frame;
-    if (record.mesh) record.mesh.visible = true;
+    if (record.mesh) {
+      record.mesh.visible = true;
+      return;
+    }
+    // While this tile (re)builds, show any cached finer children instead of a hole.
+    if (level < MAX_LEVEL) {
+      for (let cy = 0; cy < 2; cy++) {
+        for (let cx = 0; cx < 2; cx++) {
+          const child = this.chunks.get(`${face}:${level + 1}:${x * 2 + cx}:${y * 2 + cy}`);
+          if (child?.mesh) {
+            child.lastDrawn = this.frame;
+            child.mesh.visible = true;
+          }
+        }
+      }
+    }
   }
 
   private ensure(face: number, level: number, x: number, y: number): ChunkRecord {
@@ -128,7 +145,7 @@ export class TerrainChunkManager {
       record.lastDrawn = this.frame;
       return record;
     }
-    record = { key, centerKm: null, mesh: null, lastDrawn: this.frame };
+    record = { key, level, centerKm: null, mesh: null, lastDrawn: this.frame };
     this.chunks.set(key, record);
     if (this.pending.size < MAX_IN_FLIGHT) {
       const id = this.nextRequestId++;
@@ -167,16 +184,18 @@ export class TerrainChunkManager {
 
   private evict(): void {
     if (this.chunks.size <= MAX_CHUNKS) return;
-    const records = [...this.chunks.values()].sort((a, b) => a.lastDrawn - b.lastDrawn);
-    const excess = this.chunks.size - MAX_CHUNKS;
-    for (let i = 0; i < excess; i++) {
-      const record = records[i];
-      if (record.lastDrawn >= this.frame - 60) break;
+    const evictable = [...this.chunks.values()]
+      .filter((record) => record.level > PINNED_LEVEL)
+      .sort((a, b) => a.lastDrawn - b.lastDrawn);
+    let excess = this.chunks.size - MAX_CHUNKS;
+    for (const record of evictable) {
+      if (excess <= 0 || record.lastDrawn >= this.frame - EVICT_AGE_FRAMES) break;
       if (record.mesh) {
         this.scene.remove(record.mesh);
         record.mesh.geometry.dispose();
       }
       this.chunks.delete(record.key);
+      excess--;
     }
   }
 

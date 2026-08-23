@@ -1,4 +1,4 @@
-import { Color, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
+import { Color, Group, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState } from '../core/math/kepler';
 import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
@@ -199,6 +199,8 @@ export class SurfaceViewer {
       this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
 
       // Nadir gaze from orbit blending to a horizon gaze near the ground.
+      // Orientation is set via quaternion only: camera.up must stay world-Y
+      // or OrbitControls' orbit math rolls over on the way back out.
       const horizonBlend = 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
       if (horizonBlend > 0.01) {
         const north =
@@ -210,8 +212,12 @@ export class SurfaceViewer {
           .multiplyScalar(horizonBlend)
           .addScaledVector(up, -(1 - horizonBlend) - 0.12 * horizonBlend)
           .normalize();
-        this.camera.up.copy(up);
-        this.camera.lookAt(this.camera.position.clone().add(forward));
+        const gaze = new Matrix4().lookAt(
+          this.camera.position,
+          this.camera.position.clone().add(forward),
+          up,
+        );
+        this.camera.quaternion.setFromRotationMatrix(gaze);
       }
 
       // Keep the depth range tight: sky objects move inward as we descend.
