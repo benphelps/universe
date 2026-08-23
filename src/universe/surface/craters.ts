@@ -111,6 +111,18 @@ export function createCraterField(
   };
 }
 
+/**
+ * Deepest possible crater excavation below the datum, meters — two of
+ * the largest band's bowls stacked. Anything (like a depth-occlusion
+ * proxy) that must sit below all terrain needs this budget on top of
+ * the continental relief.
+ */
+export function maxCraterDepthM(radiusM: number, amplitude: number): number {
+  if (amplitude <= 0.005) return 0;
+  const maxDiameterM = 2 * BANDS[0].maxRadius * radiusM;
+  return 2 * Math.min(0.2 * maxDiameterM, 3500 + 0.015 * maxDiameterM);
+}
+
 /** Bowl plus rim, meters, for normalized radial distance x = θ/r. */
 function craterProfile(x: number, angularRadius: number, radiusM: number): number {
   const diameterM = 2 * angularRadius * radiusM;

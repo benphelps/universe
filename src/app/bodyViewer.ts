@@ -28,6 +28,7 @@ import { createOceanMaterial } from '../render/terrain/oceanSphere';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import type { Moon } from '../universe/moon/types';
+import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { planetMu } from '../universe/system/generate';
 import { getSkyField } from './skyService';
@@ -192,8 +193,14 @@ export class BodyViewer {
 
       // Depth-only globe: writes the planet body's depth even where
       // terrain isn't loaded, so sky objects eclipse per-fragment.
+      // Sized below the deepest terrain — crater excavation included, or
+      // bowls dip under it and render as black holes.
+      const depthBudgetKm =
+        (this.field.params.reliefM * 1.3 +
+          maxCraterDepthM(this.field.params.radiusM, this.field.params.craterAmplitude)) /
+        1000;
       this.occlusionGlobe = new Mesh(
-        new SphereGeometry(this.radiusKm - (this.field.params.reliefM * 1.2) / 1000, 96, 48),
+        new SphereGeometry(this.radiusKm - depthBudgetKm, 96, 48),
         new MeshBasicMaterial({ colorWrite: false }),
       );
       this.occlusionGlobe.renderOrder = -5;
