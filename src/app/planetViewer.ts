@@ -1,6 +1,18 @@
-import { Color, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, SphereGeometry, Vector3 } from 'three';
+import {
+  BufferGeometry,
+  Color,
+  Group,
+  Line,
+  LineBasicMaterial,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  Scene,
+  SphereGeometry,
+  Vector3,
+} from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { elementsToState } from '../core/math/kepler';
+import { elementsToState, orbitPath } from '../core/math/kepler';
 import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
 import { PlanetObject } from '../render/planet/planetObject';
 import type { ShadowCaster } from '../render/planet/shadows';
@@ -14,7 +26,13 @@ const STAR_DISTANCE_UNITS = 3000;
 interface MoonEntry {
   moon: Moon;
   object: PlanetObject;
+  marker: Mesh;
   mu: number;
+}
+
+/** Model frame (z out of plane) → viewer world frame. */
+function toWorld(p: { x: number; y: number; z: number }): Vector3 {
+  return new Vector3(p.x, p.z, -p.y);
 }
 
 /**
@@ -70,14 +88,48 @@ export class PlanetViewer {
     // Regular moons orbit the equatorial plane, tilted with the planet.
     this.moonGroup = new Group();
     this.moonGroup.rotation.z = planet.physical.rotation.obliquityRad;
+    const [lr, lg, lb] = system.star.linearRgb;
     this.moons = planet.moons
       .filter((moon) => moon.semiMajorAxisPlanetRadii < 100)
       .map((moon) => {
         const object = new PlanetObject(moon.physical, null);
         this.moonGroup!.add(object.group);
+
+        // Orbit guide so moons are findable at planetary distances.
+        const points = orbitPath(moon.elements, 128).map((p) =>
+          toWorld(p).divideScalar(EARTH_RADIUS),
+        );
+        this.moonGroup!.add(
+          new Line(
+            new BufferGeometry().setFromPoints(points),
+            new LineBasicMaterial({ color: 0x6a7a94, transparent: true, opacity: 0.22 }),
+          ),
+        );
+
+        // Adaptive marker: keeps distant moons visible as a lit dot.
+        // Star-tinted hue at fixed brightness so it reads on any host.
+        const { landColorA, landColorB } = moon.physical.appearance;
+        const raw = [
+          ((landColorA[0] + landColorB[0]) / 2 + 0.3) * lr,
+          ((landColorA[1] + landColorB[1]) / 2 + 0.3) * lg,
+          ((landColorA[2] + landColorB[2]) / 2 + 0.3) * lb,
+        ];
+        const peak = Math.max(...raw, 1e-3);
+        const marker = new Mesh(
+          new SphereGeometry(1, 12, 6),
+          new MeshBasicMaterial({
+            color: new Color(
+              (raw[0] / peak) * 0.85,
+              (raw[1] / peak) * 0.85,
+              (raw[2] / peak) * 0.85,
+            ),
+          }),
+        );
+        object.group.add(marker);
         return {
           moon,
           object,
+          marker,
           mu: G * (planet.physical.bulk.massEarth + moon.physical.bulk.massEarth) * EARTH_MASS,
         };
       });
@@ -162,12 +214,18 @@ export class PlanetViewer {
 
       // Moons move on their orbits; everyone shadows everyone.
       const tSeconds = this.simTimeDays * DAY;
-      for (const { moon, object, mu } of this.moons) {
+      for (const { moon, object, marker, mu } of this.moons) {
         const state = elementsToState(moon.elements, mu, tSeconds);
-        object.group.position
-          .set(state.position.x, state.position.z, -state.position.y)
-          .divideScalar(EARTH_RADIUS);
+        object.group.position.copy(toWorld(state.position)).divideScalar(EARTH_RADIUS);
         object.update(this.simTimeDays, toStar, lightColor);
+
+        // Swap in the marker dot when the true disc falls below ~4 px.
+        const cameraDistance = this.camera.position.distanceTo(
+          object.group.getWorldPosition(new Vector3()),
+        );
+        const angular = object.radiusUnits / cameraDistance;
+        marker.visible = angular < 0.004;
+        marker.scale.setScalar(cameraDistance * 0.0045);
       }
       const moonCasters: ShadowCaster[] = this.moons
         .map(({ object }) => ({

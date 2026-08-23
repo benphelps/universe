@@ -67,6 +67,25 @@ export function orbitPath(el: OrbitalElements, segments: number): Vec3[] {
   return points;
 }
 
+/**
+ * The orbit segment inside radius rMax, centered on periapsis — the
+ * interesting arc of a highly eccentric orbit. Returns the full path
+ * when rMax exceeds apoapsis.
+ */
+export function orbitArc(el: OrbitalElements, rMax: number, segments: number): Vec3[] {
+  const { semiMajorAxis: a, eccentricity: e } = el;
+  if (rMax >= a * (1 + e)) return orbitPath(el, segments);
+  const cosEMax = (1 - rMax / a) / e;
+  const eMax = Math.acos(Math.min(1, Math.max(-1, cosEMax)));
+  const b = a * Math.sqrt(1 - e * e);
+  const points: Vec3[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const E = -eMax + (2 * eMax * i) / segments;
+    points.push(perifocalToReference(a * (Math.cos(E) - e), b * Math.sin(E), el));
+  }
+  return points;
+}
+
 /** Rotation Rz(Ω)·Rx(i)·Rz(ω) applied to a perifocal-plane vector. */
 function perifocalToReference(xP: number, yP: number, el: OrbitalElements): Vec3 {
   const cosO = Math.cos(el.longitudeOfAscendingNode);
