@@ -68,7 +68,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Density model (disks, halo, arms, dust) + deterministic sector sampling
 - [x] Population gradients feeding star properties: thin-disk/thick-disk/halo mix drawn from the local density model, with disk radial metallicity gradient, old metal-poor thick disk, and ancient halo; shared draw sequence keeps sky photometry and generated stars in agreement.
 - [x] Procedural sky from local sampling (resolved shells + Milky Way glow with dust reddening) in every view
-- [x] Clusters, OB associations, nebulae: coeval open clusters and arm-favored OB associations as coherent knots in the far-field sky, with emission nebulae (procedural wisp dome) around the youngest; the Milky Way glow gained dust-lane clumping, double resolution, and a brightness shoulder so the galactic bulge reads as structure instead of a blown-out blob.
+- [x] Clusters, OB associations, nebulae — emergent from the model: giant molecular clouds are first-class objects (deterministic cells, dust- and arm-weighted); the Milky Way glow extinguishes through them so every dark rift is a specific cloud; young groups form inside clouds and the lit natal cloud is the nebula, colored by ionization physics from its hottest member (Hα → O III with temperature, blue reflection below the ionizing threshold); dispersed older clusters ride as bare coeval knots. Glow mean luminosity is IMF-derived; the galactic center sits dozens of optical depths deep, as observed.
 - [x] Magnitude-count regression test (naked-eye counts the right order of magnitude)
 - [x] Demo: galaxy view of the real 20 pc neighborhood; click a neighbor to travel — its system is waiting
 
