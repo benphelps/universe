@@ -1,7 +1,6 @@
 import { BufferAttribute, BufferGeometry, Mesh, Scene, ShaderMaterial, Vector3 } from 'three';
-import type { Characterization } from '../../universe/planet/types';
 import { chunkAngularSize, faceUvToDir } from '../../universe/surface/cubeSphere';
-import type { TerrainRequest, TerrainResponse } from '../../workers/protocol';
+import type { TerrainInit, TerrainRequest, TerrainResponse } from '../../workers/protocol';
 import { buildChunkIndices } from './terrainMaterial';
 
 const RES = 48;
@@ -56,18 +55,17 @@ export class TerrainChunkManager {
   constructor(
     private readonly scene: Scene,
     private readonly material: ShaderMaterial,
-    private readonly oceanMaterial: ShaderMaterial,
-    seedHex: string,
-    physical: Characterization,
+    private readonly oceanMaterial: ShaderMaterial | null,
+    init: TerrainInit,
+    radiusKm: number,
   ) {
-    this.radiusKm = (physical.bulk.radiusEarth * 6371000) / 1000;
+    this.radiusKm = radiusKm;
     const workerCount = Math.min(5, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
     for (let i = 0; i < workerCount; i++) {
       const worker = new Worker(new URL('../../workers/terrainWorker.ts', import.meta.url), {
         type: 'module',
       });
       worker.onmessage = (event: MessageEvent<TerrainResponse>) => this.receive(event.data);
-      const init: TerrainRequest = { type: 'init', seedHex, physical };
       worker.postMessage(init);
       this.workers.push(worker);
     }
@@ -230,7 +228,7 @@ export class TerrainChunkManager {
     record.mesh = mesh;
     this.scene.add(mesh);
 
-    if (response.waterPositions && response.waterNormals) {
+    if (response.waterPositions && response.waterNormals && this.oceanMaterial) {
       const waterGeometry = new BufferGeometry();
       waterGeometry.setAttribute('position', new BufferAttribute(response.waterPositions, 3));
       waterGeometry.setAttribute('normal', new BufferAttribute(response.waterNormals, 3));

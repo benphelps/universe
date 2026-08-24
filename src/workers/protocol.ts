@@ -1,8 +1,14 @@
 import type { Characterization } from '../universe/planet/types';
+import type { Asteroid } from '../universe/smallbody/types';
+
+/** Field selection for a terrain worker: a planet or a small body. */
+export type TerrainInit =
+  | { type: 'init'; seedHex: string; physical: Characterization }
+  | { type: 'init-asteroid'; asteroid: Asteroid };
 
 /** Main thread → worker. */
 export type TerrainRequest =
-  | { type: 'init'; seedHex: string; physical: Characterization }
+  | TerrainInit
   | { type: 'chunk'; id: number; face: number; level: number; x: number; y: number; res: number };
 
 /** Worker → main thread (arrays transferred, not copied). */

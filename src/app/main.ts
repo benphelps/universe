@@ -54,17 +54,31 @@ function load(nextSeedHex: string): void {
   } else if (viewMode === 'galaxy') {
     viewer.setFocus('star', 'galaxy');
     galaxyPanel.render(seedHex, viewer.neighbors, (nextSeed) => load(nextSeed));
-  } else if (system.planets.length === 0) {
-    viewer.setFocus('star', 'star');
-    planetPanel.renderEmpty(system);
-    controls.planetLabel = '—';
   } else {
-    const count = system.planets.length;
-    planetIndex = ((planetIndex % count) + count) % count;
-    const planet = system.planets[planetIndex];
-    viewer.setFocus(planetIndex, 'planet');
-    planetPanel.render(system, planet, planetIndex);
-    controls.planetLabel = planet.name.split(' ').pop() ?? '';
+    // The body stepper walks the planets, then the notable belt asteroids.
+    const count = system.planets.length + viewer.asteroids.length;
+    if (count === 0) {
+      viewer.setFocus('star', 'star');
+      planetPanel.renderEmpty(system);
+      controls.planetLabel = '—';
+    } else {
+      planetIndex = ((planetIndex % count) + count) % count;
+      viewer.setFocus(planetIndex, 'planet');
+      if (planetIndex < system.planets.length) {
+        const planet = system.planets[planetIndex];
+        planetPanel.render(system, planet, planetIndex);
+        controls.planetLabel = planet.name.split(' ').pop() ?? '';
+      } else {
+        const ordinal = planetIndex - system.planets.length;
+        planetPanel.renderAsteroid(
+          system,
+          viewer.asteroids[ordinal],
+          ordinal + 1,
+          viewer.asteroids.length,
+        );
+        controls.planetLabel = `A${ordinal + 1}`;
+      }
+    }
   }
   viewer.timeScaleDaysPerSecond = timeScale ?? PRESET_TIME_SCALE[viewMode];
   viewer.exposure = exposure;

@@ -1,7 +1,16 @@
 import { AU, EARTH_RADIUS } from '../../core/physics/constants';
 import type { Moon } from '../../universe/moon/types';
+import { asteroidDesignation } from '../../universe/smallbody/notable';
+import type { Asteroid } from '../../universe/smallbody/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { fmt, fmtDays } from './format';
+
+const TAXONOMY_LABEL: Record<Asteroid['taxonomy'], string> = {
+  S: 'S-type (silicaceous)',
+  C: 'C-type (carbonaceous)',
+  M: 'M-type (metallic)',
+  D: 'D-type (organic-rich)',
+};
 
 const TIDAL_LABEL: Record<Moon['tidalState'], string> = {
   dead: '',
@@ -111,6 +120,38 @@ export class PlanetInfoPanel {
       <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
       ${rings}
       ${moonRows ? `<h2>Moons</h2>${moonRows}` : ''}
+    `;
+  }
+
+  renderAsteroid(system: StarSystem, asteroid: Asteroid, ordinal: number, total: number): void {
+    const { shape } = asteroid;
+    const aAu = asteroid.elements.semiMajorAxis / AU;
+    const structure = [
+      asteroid.rubblePile ? 'rubble pile' : 'coherent body',
+      shape.contactBinary ? 'contact binary' : '',
+      asteroid.tumbling ? 'tumbling' : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    const rows: Array<[string, string]> = [
+      ['Type', TAXONOMY_LABEL[asteroid.taxonomy]],
+      ['Diameter', `${fmt(asteroid.diameterKm)} km`],
+      [
+        'Shape',
+        `elongation ${fmt(1 / shape.elongation, 2)} : 1 · flattening ${fmt(shape.flattening, 2)}`,
+      ],
+      ['Structure', structure],
+      ['Spin', fmtDays(asteroid.spinPeriodHours / 24)],
+      [
+        'Orbit',
+        `${fmt(aAu)} AU · e ${fmt(asteroid.elements.eccentricity, 2)} · i ${fmt((asteroid.elements.inclination * 180) / Math.PI, 2)}°`,
+      ],
+      ['Albedo', fmt(asteroid.albedo, 2)],
+    ];
+    this.element.innerHTML = `
+      <h1>${system.star.designation} ${asteroidDesignation(asteroid)}</h1>
+      <div class="sub">belt asteroid ${ordinal} of ${total} · ${system.star.spectralType}</div>
+      <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
     `;
   }
 

@@ -49,7 +49,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Belt cell instantiation, asteroid shapes/spins, comet activity + tails
 - [x] Fixtures (Io calibration, impact moons, resonant chains, Saturn-class rings) + SFD tests
 - [x] Render: comet apparitions, moon orbits with eclipse shadows, ring shadows (belt fields landed in M2)
-- [ ] Asteroid close-up rendering (shape meshes from the shape spec — lands with M5's small-body surface mode)
+- [x] Asteroid close-up rendering: notable belt asteroids are focusable bodies whose shape spec (ellipsoid axes, contact binaries, seeded lumps) becomes streamed terrain.
 
 ## M5 — Surfaces ([plan](plan/07-surface.md))
 
@@ -57,7 +57,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Layer stack: tectonics (Worley plate belts), craters, volcanic provinces, erosion smoothing
 - [x] Deeper erosion suites: fluvial valley networks (dendritic ridge-crest carving with tributaries, elevation-scaled depth), glacial carving (freeze-masked trough cutting plus fine-relief smoothing), and dune fields (wind-aligned draa-scale transverse ripples over erg patches with sand tinting) — all pure, LOD-faded, and climate-gated.
 - [x] Ice/snow + biome palettes from climate
-- [ ] Airless small-body surface mode (asteroid close-ups)
+- [x] Airless small-body surface mode: a dedicated asteroid surface field (shape lobes + saturated craters + regolith cascade to boulder scale) runs through the same cube-sphere streamer; the body stepper walks planets then each belt's landmark rocks.
 - [x] Determinism/border tests + world-type fixtures (Earth-like, Moon-like, Mars-like)
 - [x] Render: vertex-colored lit terrain, ocean sphere, ground-level sky + aerial fog
 - [ ] Scatter instancing (boulders, ground cover)

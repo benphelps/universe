@@ -55,7 +55,10 @@ import {
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
 import type { Moon } from '../universe/moon/types';
+import { notableAsteroids } from '../universe/smallbody/notable';
+import type { Asteroid } from '../universe/smallbody/types';
 import type { Star } from '../universe/star/types';
+import { createAsteroidField } from '../universe/surface/asteroidField';
 import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { planetMu } from '../universe/system/generate';
@@ -131,6 +134,8 @@ export class UnifiedViewer {
   timeScaleDaysPerSecond = PRESET_TIME_SCALE.planet;
   /** Travel list for the current system's stellar neighborhood. */
   neighbors: Neighbor[] = [];
+  /** Landmark belt asteroids, focusable after the planets. */
+  asteroids: Asteroid[] = [];
   private simTimeDays = 0;
   private disposed = false;
   private readonly scene = new Scene();
@@ -168,6 +173,7 @@ export class UnifiedViewer {
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
   private focusPlanet: Planet | null = null;
+  private focusAsteroid: Asteroid | null = null;
   private extentAu = 1;
   private extentKm = AU_KM;
   private radiusKm = SOLAR_RADIUS_KM;
@@ -315,6 +321,8 @@ export class UnifiedViewer {
     // The neighborhood rides in the scene as true 3D points: the night
     // sky's near field from the ground, the flyable galaxy layer from
     // interstellar altitude — the same objects, parallax-correct.
+    this.asteroids = notableAsteroids(system);
+
     const hood = computeNeighborhood(seedFromHex(system.seedHex));
     this.neighbors = hood.neighbors;
     this.neighborPoints = createNeighborStars(hood, PC_KM);
@@ -333,7 +341,16 @@ export class UnifiedViewer {
     if (!this.system) return;
     this.clearFocus();
     this.focus = target;
-    this.focusPlanet = typeof target === 'number' ? (this.system.planets[target] ?? null) : null;
+    // Numeric targets index the planets, then the notable asteroids.
+    const planetCount = this.system.planets.length;
+    this.focusPlanet =
+      typeof target === 'number' && target < planetCount
+        ? (this.system.planets[target] ?? null)
+        : null;
+    this.focusAsteroid =
+      typeof target === 'number' && target >= planetCount
+        ? (this.asteroids[target - planetCount] ?? null)
+        : null;
 
     if (this.focusPlanet) {
       const planet = this.focusPlanet;
@@ -350,8 +367,8 @@ export class UnifiedViewer {
           this.scene,
           this.terrainMaterial,
           this.oceanMaterial,
-          planet.physical.seedHex,
-          planet.physical,
+          { type: 'init', seedHex: planet.physical.seedHex, physical: planet.physical },
+          this.radiusKm,
         );
         if (planet.physical.atmosphere.class !== 'none') {
           this.skyDome = createSkyDome(planet.physical.atmosphere.scatteringColor);
@@ -393,6 +410,29 @@ export class UnifiedViewer {
         this.scene.add(this.bodyObject.group);
       }
       this.buildMoons(planet);
+    } else if (this.focusAsteroid) {
+      // Airless small body: the same streamed cube-sphere terrain, with
+      // the irregular shape carried as large height amplitudes.
+      const asteroid = this.focusAsteroid;
+      this.radiusKm = asteroid.diameterKm / 2;
+      this.minAltitudeKm = 0.02;
+      this.altitudeKm = this.radiusKm * 3;
+      this.field = createAsteroidField(asteroid);
+      this.chunkManager = new TerrainChunkManager(
+        this.scene,
+        this.terrainMaterial,
+        null,
+        { type: 'init-asteroid', asteroid },
+        this.radiusKm,
+      );
+      // The shape can dip well below the datum: keep the depth-only
+      // globe under the deepest lobe-valley-plus-crater excavation.
+      this.occlusionGlobe = new Mesh(
+        new SphereGeometry(this.radiusKm * 0.35, 64, 32),
+        new MeshBasicMaterial({ colorWrite: false }),
+      );
+      this.occlusionGlobe.renderOrder = -5;
+      this.scene.add(this.occlusionGlobe);
     } else {
       this.radiusKm = Math.max(this.system.star.radius, 1e-4) * SOLAR_RADIUS_KM;
       this.minAltitudeKm = this.radiusKm * 0.3;
@@ -525,6 +565,7 @@ export class UnifiedViewer {
       this.moons = [];
     }
     this.focusPlanet = null;
+    this.focusAsteroid = null;
   }
 
   private clearSystem(): void {
@@ -614,6 +655,14 @@ export class UnifiedViewer {
   private focusPositionKm(): Vector3 {
     if (!this.system) return new Vector3();
     const tSeconds = this.simTimeDays * DAY;
+    if (this.focusAsteroid) {
+      const { position } = elementsToState(
+        this.focusAsteroid.elements,
+        G * this.system.centralMassSolar * SOLAR_MASS,
+        tSeconds,
+      );
+      return toWorld(position).divideScalar(1000);
+    }
     if (!this.focusPlanet) return this.stellarPositionsKm(tSeconds)[0];
     const { position } = elementsToState(
       this.focusPlanet.elements,
@@ -649,7 +698,9 @@ export class UnifiedViewer {
       const groundKm = this.field
         ? Math.max(this.field.heightAt(up), this.field.seaLevelM) / 1000
         : 0;
-      const surfaceKm = this.radiusKm + Math.max(groundKm, -this.radiusKm * 0.01);
+      // Asteroid shapes legitimately dip far below the datum sphere.
+      const floorKm = this.focusAsteroid ? -this.radiusKm * 0.6 : -this.radiusKm * 0.01;
+      const surfaceKm = this.radiusKm + Math.max(groundKm, floorKm);
       this.altitudeKm = Math.max(this.altitudeKm, this.minAltitudeKm);
       this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
 
@@ -721,10 +772,10 @@ export class UnifiedViewer {
     // Ground-fixed frame: the heliocentric world (stars, planets, belts,
     // sky) sweeps around a spinning solid focus; envelopes spin their
     // cloud bands instead (mesh rotation inside PlanetObject).
+    const spinPeriodHours =
+      this.focusAsteroid?.spinPeriodHours ?? this.focusPlanet?.physical.rotation.periodHours;
     const spin =
-      solid && this.focusPlanet
-        ? (2 * Math.PI * 24 * this.simTimeDays) / this.focusPlanet.physical.rotation.periodHours
-        : 0;
+      solid && spinPeriodHours ? (2 * Math.PI * 24 * this.simTimeDays) / spinPeriodHours : 0;
     const focusPos = this.focusPositionKm();
     this.heliocentric.rotation.y = spin;
     this.heliocentric.position.copy(focusPos).negate().applyAxisAngle(yAxis, spin);

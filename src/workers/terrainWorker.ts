@@ -1,10 +1,11 @@
+import { createAsteroidField } from '../universe/surface/asteroidField';
 import { buildChunkMesh } from '../universe/surface/chunkMesh';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import type { TerrainRequest, TerrainResponse } from './protocol';
 
 /**
  * Terrain generation off the frame loop: one field per initialized
- * planet, chunk meshes built on demand and returned via transferables.
+ * body, chunk meshes built on demand and returned via transferables.
  */
 let field: SurfaceField | null = null;
 
@@ -12,6 +13,10 @@ self.onmessage = (event: MessageEvent<TerrainRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
     field = createSurfaceField(message.seedHex, message.physical);
+    return;
+  }
+  if (message.type === 'init-asteroid') {
+    field = createAsteroidField(message.asteroid);
     return;
   }
   if (!field) return;
