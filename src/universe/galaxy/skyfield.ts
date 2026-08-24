@@ -8,7 +8,7 @@ import { Rng } from '../../core/rng/rng';
 import { powerLaw } from '../../core/rng/distributions';
 import { KROUPA_SEGMENTS } from '../star/imf';
 import { evolve } from '../star/evolution';
-import { cloudFieldAt, cloudsNear } from './clouds';
+import { cloudFieldAt, cloudLocalDensity, cloudsNear, type MolecularCloud } from './clouds';
 import { dustDensity, stellarDensity, type GalacticPosition } from './density';
 import { starPhotometry } from './photometry';
 import { drawPopulation } from './population';
@@ -24,11 +24,21 @@ export interface NebulaPatch {
   /** Unit view direction (galactic frame, like starDirs). */
   dir: [number, number, number];
   angularRadius: number;
-  /** Linear sRGB emission hue. */
+  /** Linear sRGB emission hue (tile pixels carry the per-pixel mix). */
   color: [number, number, number];
   /** Peak brightness factor for the sky shader. */
   brightness: number;
+  /** Tangent-plane basis (galactic frame) matching the sprite tile. */
+  right: [number, number, number];
+  up: [number, number, number];
+  /** Tile index into the nebula sprite atlas. */
+  tile: number;
 }
+
+/** Nebula sprite atlas layout: NEBULA_TILE² RGBA tiles in a grid. */
+export const NEBULA_TILE = 48;
+export const NEBULA_ATLAS_COLS = 8;
+export const NEBULA_ATLAS_ROWS = 6;
 
 export interface SkyField {
   starCount: number;
@@ -43,6 +53,8 @@ export interface SkyField {
   starBrightness: Float32Array;
   /** Emission/reflection nebulae around the youngest groups. */
   nebulae: NebulaPatch[];
+  /** Ray-marched sprite per nebula (see NEBULA_TILE / atlas layout). */
+  nebulaAtlas: Float32Array;
   glowWidth: number;
   glowHeight: number;
   /** RGBA float lat-long map of unresolved background light. */
@@ -158,7 +170,7 @@ export function buildSkyField(viewpoint: GalacticPosition): SkyField {
     }
   }
 
-  const nebulae = buildGroups(viewpoint, localDensity, push);
+  const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
 
   return {
     starCount: brightness.length,
@@ -167,6 +179,7 @@ export function buildSkyField(viewpoint: GalacticPosition): SkyField {
     starColors: new Float32Array(colors),
     starBrightness: new Float32Array(brightness),
     nebulae,
+    nebulaAtlas,
     ...buildGlow(viewpoint),
   };
 }
@@ -233,6 +246,112 @@ function nebulaColor(maxTeff: number): [number, number, number] {
 }
 
 /**
+ * Ray-march one lit cloud into an atlas tile: the cloud's own turbulent
+ * density field, illuminated by the embedded group at its core with
+ * self-extinction along the view path. Filaments, the bright core, dark
+ * foreground lanes, and soft edges all come from the field itself. The
+ * pixel hue slides from the ionized emission color near the stars to
+ * scattered reflection light in the outskirts.
+ */
+function renderNebulaTile(
+  atlas: Float32Array,
+  tile: number,
+  cloud: MolecularCloud,
+  view: [number, number, number],
+  maxTeff: number,
+): { right: [number, number, number]; up: [number, number, number]; peak: number } {
+  const axis: [number, number, number] =
+    Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const right = normalize(cross(view, axis));
+  const up = cross(view, right);
+
+  const ionization = Math.max(0, Math.min(1, (maxTeff - 17000) / 13000));
+  const emission = nebulaColor(Math.max(maxTeff, 17000));
+  const scattered = nebulaColor(Math.min(maxTeff, 12000));
+
+  const extentPc = cloud.radiusPc * 1.6;
+  const steps = 16;
+  const dt = (2 * extentPc) / steps;
+  const extinction = 0.9 / (cloud.amplitude * cloud.radiusPc);
+  const atlasWidth = NEBULA_ATLAS_COLS * NEBULA_TILE;
+  const tileX = (tile % NEBULA_ATLAS_COLS) * NEBULA_TILE;
+  const tileY = Math.floor(tile / NEBULA_ATLAS_COLS) * NEBULA_TILE;
+
+  let peak = 1e-6;
+  const rgb = new Float32Array(NEBULA_TILE * NEBULA_TILE * 3);
+  for (let j = 0; j < NEBULA_TILE; j++) {
+    for (let i = 0; i < NEBULA_TILE; i++) {
+      // Border stays empty so the atlas samples to zero at tile edges.
+      if (i === 0 || j === 0 || i === NEBULA_TILE - 1 || j === NEBULA_TILE - 1) continue;
+      const u = ((i + 0.5) / NEBULA_TILE) * 2 - 1;
+      const v = ((j + 0.5) / NEBULA_TILE) * 2 - 1;
+      const ox = (right[0] * u + up[0] * v) * extentPc;
+      const oy = (right[1] * u + up[1] * v) * extentPc;
+      const oz = (right[2] * u + up[2] * v) * extentPc;
+
+      let tau = 0;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let s = 0; s < steps; s++) {
+        const t = -extentPc + (s + 0.5) * dt;
+        const px = ox + view[0] * t;
+        const py = oy + view[1] * t;
+        const pz = oz + view[2] * t;
+        const density = cloudLocalDensity(cloud, px, py, pz);
+        if (density <= 0) continue;
+        const coreSq = (px * px + py * py + pz * pz) / (0.35 * cloud.radiusPc) ** 2;
+        const illumination = 1 / (1 + coreSq);
+        const glow = density * illumination * Math.exp(-tau) * dt;
+        const ionLocal = ionization * Math.min(1, illumination * 2.2);
+        r += glow * (scattered[0] + (emission[0] - scattered[0]) * ionLocal);
+        g += glow * (scattered[1] + (emission[1] - scattered[1]) * ionLocal);
+        b += glow * (scattered[2] + (emission[2] - scattered[2]) * ionLocal);
+        tau += density * extinction * dt;
+      }
+      const out = (j * NEBULA_TILE + i) * 3;
+      rgb[out] = r;
+      rgb[out + 1] = g;
+      rgb[out + 2] = b;
+      peak = Math.max(peak, Math.max(r, g, b));
+    }
+  }
+
+  // Peak-normalize the tile; the photometric scale rides in brightness.
+  for (let j = 0; j < NEBULA_TILE; j++) {
+    for (let i = 0; i < NEBULA_TILE; i++) {
+      const src = (j * NEBULA_TILE + i) * 3;
+      const dst = ((tileY + j) * atlasWidth + tileX + i) * 4;
+      atlas[dst] = rgb[src] / peak;
+      atlas[dst + 1] = rgb[src + 1] / peak;
+      atlas[dst + 2] = rgb[src + 2] / peak;
+      atlas[dst + 3] = 1;
+    }
+  }
+  return { right, up, peak };
+}
+
+function cross(
+  a: [number, number, number],
+  b: [number, number, number],
+): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function normalize(a: [number, number, number]): [number, number, number] {
+  const length = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / length, a[1] / length, a[2] / length];
+}
+
+interface NebulaCandidate {
+  cloud: MolecularCloud;
+  view: [number, number, number];
+  distancePc: number;
+  maxTeff: number;
+  brightness: number;
+}
+
+/**
  * The young population forms where stars actually form: inside the
  * molecular clouds. A cloud currently forming stars contributes a
  * coeval group, and the natal cloud lit by its own newborns is the
@@ -244,8 +363,8 @@ function buildGroups(
   viewpoint: GalacticPosition,
   localDensity: number,
   push: PushStar,
-): NebulaPatch[] {
-  const nebulae: NebulaPatch[] = [];
+): { nebulae: NebulaPatch[]; nebulaAtlas: Float32Array } {
+  const candidates: NebulaCandidate[] = [];
 
   for (const cloud of cloudsNear(viewpoint, 750)) {
     const rng = new Rng(deriveSeed(cloud.seed, 'formation'));
@@ -263,15 +382,41 @@ function buildGroups(
     if (light.maxTeff < 6500) continue;
 
     const ionization = Math.max(0, Math.min(1, (light.maxTeff - 17000) / 13000));
-    nebulae.push({
-      dir: [dx / distance, dy / distance, dz / distance],
-      angularRadius: Math.min(0.35, cloud.radiusPc / distance),
-      color: nebulaColor(light.maxTeff),
+    candidates.push({
+      cloud,
+      view: [dx / distance, dy / distance, dz / distance],
+      distancePc: distance,
+      maxTeff: light.maxTeff,
       brightness:
         ((0.3 + 1.1 * ionization) * 95 * Math.sqrt(light.totalLuminosity)) /
         (distance * distance),
     });
   }
+
+  // The atlas holds the brightest; ray-march only those.
+  candidates.sort((a, b) => b.brightness - a.brightness);
+  const kept = candidates.slice(0, NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS);
+  const nebulaAtlas = new Float32Array(
+    NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4,
+  );
+  const nebulae: NebulaPatch[] = kept.map((candidate, tile) => {
+    const { right, up } = renderNebulaTile(
+      nebulaAtlas,
+      tile,
+      candidate.cloud,
+      candidate.view,
+      candidate.maxTeff,
+    );
+    return {
+      dir: candidate.view,
+      angularRadius: Math.min(0.35, candidate.cloud.radiusPc / candidate.distancePc),
+      color: nebulaColor(candidate.maxTeff),
+      brightness: candidate.brightness,
+      right,
+      up,
+      tile,
+    };
+  });
 
   // Dispersed open clusters: ~1.8e-7 per pc³ in the young disk.
   const rng = new Rng(deriveSeed(0x534b59n, 'groups'));
@@ -305,7 +450,7 @@ function buildGroups(
     );
   }
 
-  return nebulae;
+  return { nebulae, nebulaAtlas };
 }
 
 /**

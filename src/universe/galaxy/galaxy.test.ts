@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { Rng } from '../../core/rng/rng';
 import { generateStar } from '../star/generate';
 import { HOME_POSITION, stellarDensity } from './density';
 import { starPhotometry } from './photometry';
 import { drawPopulation } from './population';
 import { sectorStars, starsNear, viewpointForSeed } from './sectors';
-import { buildSkyField, imfFractionAbove } from './skyfield';
+import { buildSkyField, imfFractionAbove, type SkyField } from './skyfield';
 
 describe('galactic density', () => {
   it('matches the solar-neighborhood normalization', () => {
@@ -120,6 +120,13 @@ describe('population', () => {
 });
 
 describe('sky field', () => {
+  // One shared build: the full sky (sectors, shells, clouds, glow
+  // integral) is the expensive object every assertion inspects.
+  let sky: SkyField;
+  beforeAll(() => {
+    sky = buildSkyField(HOME_POSITION);
+  }, 60000);
+
   it('IMF fraction above mass cuts behaves sanely', () => {
     expect(imfFractionAbove(0.013)).toBeCloseTo(1, 5);
     const f1 = imfFractionAbove(1.3);
@@ -132,7 +139,6 @@ describe('sky field', () => {
   });
 
   it('naked-eye star counts from home are the right order of magnitude', () => {
-    const sky = buildSkyField(HOME_POSITION);
     expect(sky.starCount).toBeGreaterThan(5000);
     let nakedEye = 0;
     for (let i = 0; i < sky.starCount; i++) {
@@ -145,7 +151,6 @@ describe('sky field', () => {
   });
 
   it('carries clusters and nebulae in the far field', () => {
-    const sky = buildSkyField(HOME_POSITION);
     expect(sky.nebulae.length).toBeGreaterThan(3);
     expect(sky.nebulae.length).toBeLessThan(120);
     for (const nebula of sky.nebulae) {
@@ -159,7 +164,6 @@ describe('sky field', () => {
   });
 
   it('the glow map is brightest toward the midplane band', () => {
-    const sky = buildSkyField(HOME_POSITION);
     const rowMean = (row: number): number => {
       let sum = 0;
       for (let c = 0; c < sky.glowWidth; c++) sum += sky.glowData[(row * sky.glowWidth + c) * 4];

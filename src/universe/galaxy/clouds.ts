@@ -26,12 +26,20 @@ const CLOUD_ROOT = deriveSeed(0x474d43n, 'clouds');
 const DUST_HOME = dustDensity({ xPc: 8000, yPc: 0, zPc: 0 });
 
 const shapeNoise = createSimplex3(deriveSeed(CLOUD_ROOT, 'shape'));
+/** Kpc-scale complexes: clouds cluster along arm spurs, not uniformly. */
+const complexNoise = createSimplex3(deriveSeed(CLOUD_ROOT, 'complexes'));
 
-const cellCache = new Map<string, MolecularCloud[]>();
+const cellCache = new Map<number, MolecularCloud[]>();
+const neighborhoodCache = new Map<number, MolecularCloud[]>();
+
+/** Dense numeric cell key (the galaxy spans ≲ ±120 cells). */
+function cellKey(ix: number, iy: number, iz: number): number {
+  return (ix + 512) + (iy + 512) * 1024 + (iz + 512) * 1048576;
+}
 
 /** The clouds of one 250 pc cell — any cell, any order, always identical. */
 export function cloudsInCell(ix: number, iy: number, iz: number): MolecularCloud[] {
-  const key = `${ix}:${iy}:${iz}`;
+  const key = cellKey(ix, iy, iz);
   const cached = cellCache.get(key);
   if (cached) return cached;
 
@@ -55,19 +63,47 @@ export function cloudsInCell(ix: number, iy: number, iz: number): MolecularCloud
   const clouds: MolecularCloud[] = [];
   for (let i = 0; i < count; i++) {
     const radiusPc = 10 * (65 / 10) ** rng.float() ** 1.6;
-    clouds.push({
-      seed: deriveSeed(seed, 'cloud', i),
-      positionPc: {
+    // Clouds settle onto complexes: elongated cloud chains, so their
+    // shadows read as coherent rifts rather than isolated specks.
+    let positionPc: GalacticPosition = center;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      positionPc = {
         xPc: (ix + rng.float()) * CELL_PC,
         yPc: (iy + rng.float()) * CELL_PC,
         zPc: (iz + rng.float()) * CELL_PC,
-      },
+      };
+      const membership =
+        0.5 + 0.5 * complexNoise(positionPc.xPc / 420, positionPc.yPc / 420, positionPc.zPc / 160);
+      if (rng.float() < membership * membership) break;
+    }
+    clouds.push({
+      seed: deriveSeed(seed, 'cloud', i),
+      positionPc,
       radiusPc,
       amplitude: rng.range(2.5, 7) * (30 / radiusPc) ** 0.4,
     });
   }
   cellCache.set(key, clouds);
   if (cellCache.size > 20000) cellCache.clear();
+  return clouds;
+}
+
+/** Flattened 27-cell neighborhood, cached: sightline integration hits
+ *  the same neighborhood for many consecutive samples. */
+function neighborhoodClouds(ix: number, iy: number, iz: number): MolecularCloud[] {
+  const key = cellKey(ix, iy, iz);
+  const cached = neighborhoodCache.get(key);
+  if (cached) return cached;
+  const clouds: MolecularCloud[] = [];
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        clouds.push(...cloudsInCell(ix + dx, iy + dy, iz + dz));
+      }
+    }
+  }
+  neighborhoodCache.set(key, clouds);
+  if (neighborhoodCache.size > 8192) neighborhoodCache.clear();
   return clouds;
 }
 
@@ -101,40 +137,64 @@ export function cloudsNear(positionPc: GalacticPosition, radiusPc: number): Mole
 }
 
 /**
+ * A single cloud's turbulent density at a point: an elongated envelope
+ * (seeded stretch axis) carved by three octaves of seeded noise — the
+ * carve threshold shapes the boundary itself, so silhouettes are ragged
+ * filamentary forms, not spheres. The glow's extinction and the nebula
+ * sprites both sample exactly this field, so a rift's shadow and its
+ * nebula share one structure.
+ */
+export function cloudLocalDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  const stretchAxis = Number(cloud.seed >> 4n) % 3;
+  const stretch = Math.min(
+    1.3 + (Number((cloud.seed >> 6n) & 0x3fn) / 63) * 1.2,
+    200 / (1.6 * cloud.radiusPc),
+  );
+  const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
+  const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
+  const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
+  const dSq = ax * ax + ay * ay + az * az;
+  const reach = cloud.radiusPc * 1.6;
+  if (dSq > reach * reach) return 0;
+  const envelope = Math.exp((-1.8 * dSq) / (cloud.radiusPc * cloud.radiusPc));
+  const offset = Number(cloud.seed & 0xffn);
+  const x = ax / cloud.radiusPc + offset;
+  const y = ay / cloud.radiusPc;
+  const z = az / cloud.radiusPc;
+  const turbulence =
+    0.55 +
+    0.55 * shapeNoise(x * 1.6, y * 1.6, z * 1.6) +
+    0.3 * shapeNoise(x * 3.7, y * 3.7, z * 3.7) +
+    0.16 * shapeNoise(x * 8.1, y * 8.1, z * 8.1);
+  const carved = envelope * (Math.max(0, turbulence) + 0.12) - 0.18;
+  if (carved <= 0) return 0;
+  return cloud.amplitude * 1.35 * carved ** 1.4;
+}
+
+/**
  * Summed cloud overdensity at a point: the clumped component of the
  * interstellar medium. Zero in inter-cloud space; several inside a
- * cloud core. Cloud interiors are shaped by seeded noise so sightlines
- * through one vary — the same structure the nebula sprites show.
+ * cloud core.
  */
 export function cloudFieldAt(positionPc: GalacticPosition): number {
-  const ix = Math.floor(positionPc.xPc / CELL_PC);
-  const iy = Math.floor(positionPc.yPc / CELL_PC);
-  const iz = Math.floor(positionPc.zPc / CELL_PC);
+  const clouds = neighborhoodClouds(
+    Math.floor(positionPc.xPc / CELL_PC),
+    Math.floor(positionPc.yPc / CELL_PC),
+    Math.floor(positionPc.zPc / CELL_PC),
+  );
   let sum = 0;
-  for (let dx = -1; dx <= 1; dx++) {
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dz = -1; dz <= 1; dz++) {
-        for (const cloud of cloudsInCell(ix + dx, iy + dy, iz + dz)) {
-          const rx = positionPc.xPc - cloud.positionPc.xPc;
-          const ry = positionPc.yPc - cloud.positionPc.yPc;
-          const rz = positionPc.zPc - cloud.positionPc.zPc;
-          const dSq = rx * rx + ry * ry + rz * rz;
-          const reach = cloud.radiusPc * 1.6;
-          if (dSq > reach * reach) continue;
-          const envelope = Math.exp((-1.8 * dSq) / (cloud.radiusPc * cloud.radiusPc));
-          const offset = Number(cloud.seed & 0xffn);
-          const wisp =
-            0.6 +
-            0.5 *
-              shapeNoise(
-                rx / cloud.radiusPc + offset,
-                ry / cloud.radiusPc,
-                rz / cloud.radiusPc,
-              );
-          sum += cloud.amplitude * envelope * Math.max(0, wisp);
-        }
-      }
-    }
+  for (const cloud of clouds) {
+    sum += cloudLocalDensity(
+      cloud,
+      positionPc.xPc - cloud.positionPc.xPc,
+      positionPc.yPc - cloud.positionPc.yPc,
+      positionPc.zPc - cloud.positionPc.zPc,
+    );
   }
   return sum;
 }

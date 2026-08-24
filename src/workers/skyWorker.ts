@@ -10,8 +10,11 @@ export interface SkyRequest {
 self.onmessage = (event: MessageEvent<SkyRequest>) => {
   const { seedHex } = event.data;
   const sky = buildSkyField(viewpointForSeed(seedFromHex(seedHex)));
-  (self as unknown as Worker).postMessage(
-    { seedHex, sky },
-    [sky.starDirs.buffer, sky.starColors.buffer, sky.starBrightness.buffer, sky.glowData.buffer],
-  );
+  (self as unknown as Worker).postMessage({ seedHex, sky }, [
+    sky.starDirs.buffer,
+    sky.starColors.buffer,
+    sky.starBrightness.buffer,
+    sky.nebulaAtlas.buffer,
+    sky.glowData.buffer,
+  ]);
 };

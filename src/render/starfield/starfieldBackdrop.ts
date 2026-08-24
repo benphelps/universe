@@ -16,39 +16,42 @@ import {
   SphereGeometry,
   Vector4,
 } from 'three';
-import type { SkyField } from '../../universe/galaxy/skyfield';
-import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import {
+  NEBULA_ATLAS_COLS,
+  NEBULA_ATLAS_ROWS,
+  NEBULA_TILE,
+  type SkyField,
+} from '../../universe/galaxy/skyfield';
 
-const MAX_NEBULAE = 48;
+const MAX_NEBULAE = NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS;
 
 const NEBULA_FRAGMENT = /* glsl */ `
 varying vec3 vDir;
 
-uniform vec4 uNebulaA[${MAX_NEBULAE}]; // dir.xyz, angular radius
-uniform vec4 uNebulaB[${MAX_NEBULAE}]; // color.rgb, brightness
+uniform sampler2D uNebulaAtlas;
+uniform vec4 uNebulaA[${MAX_NEBULAE}]; // dir.xyz, tangent half-extent
+uniform vec4 uNebulaB[${MAX_NEBULAE}]; // right.xyz, brightness
+uniform vec4 uNebulaC[${MAX_NEBULAE}]; // up.xyz, tile index
 uniform int uNebulaCount;
 uniform float uIntensity;
 
-${SIMPLEX_NOISE_GLSL}
-
 void main() {
   vec3 dir = normalize(vDir);
-  // Two shared wisp fields, phase-shifted per nebula: structure without
-  // per-patch noise evaluation.
-  float broad = fbm(dir * 7.0);
-  float fine = fbm(dir * 19.0);
-
   vec3 sum = vec3(0.0);
   for (int i = 0; i < ${MAX_NEBULAE}; i++) {
     if (i >= uNebulaCount) break;
     vec4 a = uNebulaA[i];
-    // Small-angle chord metric avoids acos.
-    float dSq = 2.0 * (1.0 - dot(dir, a.xyz));
-    float radiusSq = a.w * a.w;
-    if (dSq > radiusSq * 5.0) continue;
-    float core = exp(-dSq / (radiusSq * 0.6));
-    float wisp = 0.55 + 0.45 * sin((broad * 3.0 + fine) * 6.2831 + float(i) * 2.39);
-    sum += uNebulaB[i].rgb * uNebulaB[i].w * core * wisp;
+    float cosD = dot(dir, a.xyz);
+    if (cosD < 0.2) continue;
+    // Project onto the sprite's tangent plane (matches the ray-march).
+    vec3 rel = dir / cosD - a.xyz;
+    float u = dot(rel, uNebulaB[i].xyz) / a.w * 0.5 + 0.5;
+    float v = dot(rel, uNebulaC[i].xyz) / a.w * 0.5 + 0.5;
+    if (u <= 0.0 || u >= 1.0 || v <= 0.0 || v >= 1.0) continue;
+    float tile = uNebulaC[i].w;
+    vec2 tileOrigin = vec2(mod(tile, ${NEBULA_ATLAS_COLS}.0), floor(tile / ${NEBULA_ATLAS_COLS}.0));
+    vec2 uv = (tileOrigin + vec2(u, v)) / vec2(${NEBULA_ATLAS_COLS}.0, ${NEBULA_ATLAS_ROWS}.0);
+    sum += texture2D(uNebulaAtlas, uv).rgb * uNebulaB[i].w;
   }
   gl_FragColor = vec4(sum * uIntensity, 1.0);
 }
@@ -186,28 +189,42 @@ export class StarfieldBackdrop {
     this.group.add(dome);
 
     if (sky.nebulae.length > 0) {
-      const patches = [...sky.nebulae]
-        .sort((a, b) => b.brightness - a.brightness)
-        .slice(0, MAX_NEBULAE);
+      const patches = sky.nebulae.slice(0, MAX_NEBULAE);
+      // Galactic (x, y, z-disk) → scene (x, z, y), like the stars.
+      const toScene = (v: [number, number, number], w: number): Vector4 =>
+        new Vector4(v[0], v[2], v[1], w);
       const nebulaA = Array.from({ length: MAX_NEBULAE }, (_, i) => {
         const patch = patches[i];
-        // Galactic (x, y, z-disk) → scene (x, z, y), like the stars.
-        return patch
-          ? new Vector4(patch.dir[0], patch.dir[2], patch.dir[1], patch.angularRadius)
-          : new Vector4(0, 1, 0, 0);
+        return patch ? toScene(patch.dir, patch.angularRadius * 1.6) : new Vector4(0, 1, 0, 1);
       });
       const nebulaB = Array.from({ length: MAX_NEBULAE }, (_, i) => {
         const patch = patches[i];
-        return patch
-          ? new Vector4(patch.color[0], patch.color[1], patch.color[2], patch.brightness)
-          : new Vector4(0, 0, 0, 0);
+        return patch ? toScene(patch.right, patch.brightness) : new Vector4(1, 0, 0, 0);
       });
+      const nebulaC = Array.from({ length: MAX_NEBULAE }, (_, i) => {
+        const patch = patches[i];
+        return patch ? toScene(patch.up, patch.tile) : new Vector4(0, 0, 1, 0);
+      });
+      const atlas = new DataTexture(
+        sky.nebulaAtlas,
+        NEBULA_ATLAS_COLS * NEBULA_TILE,
+        NEBULA_ATLAS_ROWS * NEBULA_TILE,
+        RGBAFormat,
+        FloatType,
+      );
+      atlas.minFilter = LinearFilter;
+      atlas.magFilter = LinearFilter;
+      atlas.wrapS = ClampToEdgeWrapping;
+      atlas.wrapT = ClampToEdgeWrapping;
+      atlas.needsUpdate = true;
       const nebulaMaterial = new ShaderMaterial({
         vertexShader: GLOW_VERTEX,
         fragmentShader: NEBULA_FRAGMENT,
         uniforms: {
+          uNebulaAtlas: { value: atlas },
           uNebulaA: { value: nebulaA },
           uNebulaB: { value: nebulaB },
+          uNebulaC: { value: nebulaC },
           uNebulaCount: { value: patches.length },
           uIntensity: { value: 1 },
         },
