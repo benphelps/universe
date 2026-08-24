@@ -3,6 +3,7 @@ import {
   BufferGeometry,
   Color,
   Group,
+  InstancedMesh,
   Line,
   LineBasicMaterial,
   Matrix4,
@@ -11,9 +12,12 @@ import {
   PerspectiveCamera,
   Points,
   Quaternion,
+  Raycaster,
   Scene,
+  Sphere,
   ShaderMaterial,
   SphereGeometry,
+  Vector2,
   Vector3,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -29,7 +33,8 @@ import {
   SOLAR_RADIUS,
 } from '../core/physics/constants';
 import { mu as muOf, seconds, type Mu, type Seconds } from '../core/physics/units';
-import { seedFromHex } from '../core/rng/hash';
+import { Rng } from '../core/rng/rng';
+import { deriveSeed, seedFromHex } from '../core/rng/hash';
 import { createTemperatureLutTexture } from '../render/color/temperatureLut';
 import { createAtmosphereShell } from '../render/planet/atmosphereShell';
 import { PlanetObject } from '../render/planet/planetObject';
@@ -49,7 +54,7 @@ import { createZoneRings } from '../render/system/zoneRings';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createCloudShell } from '../render/terrain/cloudShell';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
-import { createScatterMaterial } from '../render/terrain/scatterObjects';
+import { createRockGeometry, createScatterMaterial } from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import {
@@ -58,6 +63,12 @@ import {
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
 import type { Moon } from '../universe/moon/types';
+import {
+  bandMeanMotion,
+  BELT_SECTORS,
+  beltBandCount,
+  beltCellAsteroids,
+} from '../universe/smallbody/beltRegion';
 import { notableAsteroids } from '../universe/smallbody/notable';
 import type { Asteroid } from '../universe/smallbody/types';
 import type { Star } from '../universe/star/types';
@@ -186,6 +197,24 @@ export class UnifiedViewer {
   private headingRad = 0;
   private pitchRad = 0;
   private starDistanceKm = AU_KM;
+  private systemMu: Mu = muOf(1);
+  /** Materialized belt members near the camera (see updateBeltRegion). */
+  private readonly beltRockGeometry = createRockGeometry();
+  private beltRockMesh: InstancedMesh | null = null;
+  private beltRockPoints: Points | null = null;
+  private beltCandidates: Array<{
+    asteroid: Asteroid;
+    spinAxis: Vector3;
+    radiusKm: number;
+    pseudoLum: number;
+  }> = [];
+  private beltCellSignature = '';
+  private beltSlotToCandidate: number[] = [];
+  private beltPointToCandidate: number[] = [];
+  private readonly raycaster = new Raycaster();
+  private pointerDownAt: [number, number] | null = null;
+  /** Fired when a click promotes a materialized belt member to focus. */
+  onBodyFocus: ((asteroid: Asteroid) => void) | null = null;
   private lastFrameMs = performance.now();
   private readonly onResize = () => this.resize();
 
@@ -229,6 +258,36 @@ export class UnifiedViewer {
       },
       { passive: false },
     );
+
+    const BELT_ROCK_CAP = 320;
+    this.beltRockMesh = new InstancedMesh(this.beltRockGeometry, this.scatterMaterial, BELT_ROCK_CAP);
+    this.beltRockMesh.count = 0;
+    this.beltRockMesh.frustumCulled = false;
+    this.scene.add(this.beltRockMesh);
+    const pointGeometry = new BufferGeometry();
+    pointGeometry.setAttribute('position', new BufferAttribute(new Float32Array(900 * 3), 3));
+    pointGeometry.setAttribute('starColor', new BufferAttribute(new Float32Array(900 * 3), 3));
+    pointGeometry.setAttribute('luminosity', new BufferAttribute(new Float32Array(900), 1));
+    pointGeometry.setAttribute('aRadiusKm', new BufferAttribute(new Float32Array(900), 1));
+    pointGeometry.setDrawRange(0, 0);
+    // A permissive bound: positions rewrite every frame and the points
+    // must stay raycastable without per-frame sphere recomputation.
+    pointGeometry.boundingSphere = new Sphere(new Vector3(), 1e13);
+    this.beltRockPoints = new Points(pointGeometry, createStarPointsMaterial(PC_KM));
+    this.beltRockPoints.frustumCulled = false;
+    this.scene.add(this.beltRockPoints);
+
+    // Click promotes any materialized belt member to the focused body.
+    this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (e.button === 0) this.pointerDownAt = [e.clientX, e.clientY];
+    });
+    this.pipeline.renderer.domElement.addEventListener('pointerup', (e) => {
+      const down = this.pointerDownAt;
+      this.pointerDownAt = null;
+      if (!down || e.button !== 0) return;
+      if (Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+      this.pickBeltAsteroid(e.clientX, e.clientY);
+    });
 
     window.addEventListener('resize', this.onResize);
     this.resize();
@@ -326,6 +385,9 @@ export class UnifiedViewer {
     // sky's near field from the ground, the flyable galaxy layer from
     // interstellar altitude — the same objects, parallax-correct.
     this.asteroids = notableAsteroids(system);
+    this.systemMu = muOf(G * system.centralMassSolar * SOLAR_MASS);
+    this.beltCandidates = [];
+    this.beltCellSignature = '';
 
     const hood = computeNeighborhood(seedFromHex(system.seedHex));
     this.neighbors = hood.neighbors;
@@ -416,29 +478,7 @@ export class UnifiedViewer {
       }
       this.buildMoons(planet);
     } else if (this.focusAsteroid) {
-      // Airless small body: the same streamed cube-sphere terrain, with
-      // the irregular shape carried as large height amplitudes.
-      const asteroid = this.focusAsteroid;
-      this.radiusKm = asteroid.diameterKm / 2;
-      this.minAltitudeKm = 0.02;
-      this.altitudeKm = this.radiusKm * 3;
-      this.field = createAsteroidField(asteroid);
-      this.chunkManager = new TerrainChunkManager(
-        this.scene,
-        this.terrainMaterial,
-        null,
-        this.scatterMaterial,
-        { type: 'init-asteroid', asteroid },
-        this.radiusKm,
-      );
-      // The shape can dip well below the datum: keep the depth-only
-      // globe under the deepest lobe-valley-plus-crater excavation.
-      this.occlusionGlobe = new Mesh(
-        new SphereGeometry(this.radiusKm * 0.35, 64, 32),
-        new MeshBasicMaterial({ colorWrite: false }),
-      );
-      this.occlusionGlobe.renderOrder = -5;
-      this.scene.add(this.occlusionGlobe);
+      this.applyAsteroidFocus(this.focusAsteroid);
     } else {
       this.radiusKm = Math.max(this.system.star.radius, 1e-4) * SOLAR_RADIUS_KM;
       this.minAltitudeKm = this.radiusKm * 0.3;
@@ -450,17 +490,47 @@ export class UnifiedViewer {
             : this.radiusKm * 3.2;
     }
 
-    // Arrive over a planet's lit face, offset so sunlight rakes and
-    // casts relief; at the star, near-horizontal for the limb close-up,
+    this.arriveAtFocus(preset);
+  }
+
+  /** Focus-specific content for a small body: streamed irregular terrain. */
+  private applyAsteroidFocus(asteroid: Asteroid): void {
+    this.radiusKm = asteroid.diameterKm / 2;
+    this.minAltitudeKm = 0.02;
+    this.altitudeKm = this.radiusKm * 3;
+    this.field = createAsteroidField(asteroid);
+    this.chunkManager = new TerrainChunkManager(
+      this.scene,
+      this.terrainMaterial,
+      null,
+      this.scatterMaterial,
+      { type: 'init-asteroid', asteroid },
+      this.radiusKm,
+    );
+    // The shape can dip well below the datum: keep the depth-only
+    // globe under the deepest lobe-valley-plus-crater excavation.
+    this.occlusionGlobe = new Mesh(
+      new SphereGeometry(this.radiusKm * 0.35, 64, 32),
+      new MeshBasicMaterial({ colorWrite: false }),
+    );
+    this.occlusionGlobe.renderOrder = -5;
+    this.scene.add(this.occlusionGlobe);
+  }
+
+  /** Jump the camera to the arrival orbit for the current focus. */
+  private arriveAtFocus(preset: ScenePreset): void {
+    // Arrive over a body's lit face, offset so sunlight rakes and casts
+    // relief; at the star, near-horizontal for the limb close-up,
     // overhead for the system map, or oblique for the neighborhood.
     const focusPos = this.focusPositionKm();
-    const toStar = this.focusPlanet
-      ? focusPos.normalize().negate()
-      : preset === 'galaxy'
-        ? new Vector3(3, 5, 14).normalize()
-        : preset === 'system'
-          ? new Vector3(0.35, 1.15, 0.85).normalize()
-          : new Vector3(0.3, 0.17, 1).normalize();
+    const toStar =
+      this.focusPlanet || this.focusAsteroid
+        ? focusPos.normalize().negate()
+        : preset === 'galaxy'
+          ? new Vector3(3, 5, 14).normalize()
+          : preset === 'system'
+            ? new Vector3(0.35, 1.15, 0.85).normalize()
+            : new Vector3(0.3, 0.17, 1).normalize();
     const arrival = toStar.clone().applyAxisAngle(new Vector3(0, 1, 0), 0.7).normalize();
     this.camera.position.copy(arrival).multiplyScalar(this.radiusKm + this.altitudeKm);
     this.camera.up.set(0, 1, 0);
@@ -471,6 +541,189 @@ export class UnifiedViewer {
     // straight ahead instead of sweeping sideways. Right-drag turns.
     this.headingRad = 0;
     this.pitchRad = 0;
+  }
+
+  /** Promote any materialized belt member to the focused body. */
+  focusBeltAsteroid(asteroid: Asteroid): void {
+    if (!this.system) return;
+    this.clearFocus();
+    this.focus = -1;
+    this.focusAsteroid = asteroid;
+    this.applyAsteroidFocus(asteroid);
+    this.arriveAtFocus('planet');
+    this.onBodyFocus?.(asteroid);
+  }
+
+  /** Raycast the materialized belt members under a click. */
+  private pickBeltAsteroid(clientX: number, clientY: number): void {
+    if (!this.beltRockMesh || !this.beltRockPoints || this.beltCandidates.length === 0) return;
+    const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+    const ndc = new Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    this.raycaster.params.Points = { threshold: Math.max(80, this.altitudeKm * 0.02) };
+    const hits = this.raycaster.intersectObjects([this.beltRockMesh, this.beltRockPoints], false);
+    for (const hit of hits) {
+      const candidate =
+        hit.object === this.beltRockMesh && hit.instanceId !== undefined
+          ? this.beltSlotToCandidate[hit.instanceId]
+          : hit.object === this.beltRockPoints && hit.index !== undefined
+            ? this.beltPointToCandidate[hit.index]
+            : undefined;
+      if (candidate === undefined) continue;
+      this.focusBeltAsteroid(this.beltCandidates[candidate].asteroid);
+      return;
+    }
+  }
+
+  /**
+   * Materialize the belt population around the camera: the orbital
+   * cells whose Keplerian motion has carried members near the camera's
+   * belt position instantiate deterministically. Each member is a true
+   * body — a shaped, spinning rock instance when resolved, a
+   * reflected-sunlight photometric glint when subpixel — and a click
+   * promotes it to the focused body. The additive point cloud stays as
+   * the far-field statistical limit of the same population.
+   */
+  private updateBeltRegion(tSeconds: Seconds, focusPos: Vector3, spin: number): void {
+    const mesh = this.beltRockMesh;
+    const points = this.beltRockPoints;
+    if (!mesh || !points || !this.system) return;
+
+    const REACH_AU = 0.35;
+    const yAxis = new Vector3(0, 1, 0);
+    // Camera into the heliocentric model frame (undo spin and focus).
+    const helio = this.camera.position.clone().applyAxisAngle(yAxis, -spin).add(focusPos);
+    const mx = helio.x / AU_KM;
+    const my = -helio.z / AU_KM;
+    const rAu = Math.hypot(mx, my);
+    const phi = Math.atan2(my, mx);
+
+    const cells: Array<{ belt: number; band: number; sector: number }> = [];
+    this.system.belts.forEach((belt, beltIndex) => {
+      if (rAu < belt.innerAu - REACH_AU || rAu > belt.outerAu + REACH_AU) return;
+      const bands = beltBandCount(belt);
+      const inner2 = belt.innerAu ** 2;
+      const outer2 = belt.outerAu ** 2;
+      const bandOf = (a: number): number =>
+        Math.floor(((a * a - inner2) / (outer2 - inner2)) * bands);
+      const b0 = Math.max(0, bandOf(Math.max(belt.innerAu, rAu - REACH_AU)));
+      const b1 = Math.min(bands - 1, bandOf(Math.min(belt.outerAu, rAu + REACH_AU)));
+      for (let band = b0; band <= b1; band++) {
+        // Members now at the camera's azimuth started the epoch back
+        // along their mean motion; eccentricity widens the window.
+        const lambdaEpoch = phi - bandMeanMotion(belt, band, this.systemMu) * tSeconds;
+        const center = Math.round((lambdaEpoch / (2 * Math.PI)) * BELT_SECTORS);
+        const margin =
+          1 +
+          Math.ceil(
+            ((0.3 + REACH_AU / Math.max(rAu, 0.2)) / (2 * Math.PI)) * BELT_SECTORS,
+          );
+        for (let ds = -margin; ds <= margin; ds++) {
+          cells.push({ belt: beltIndex, band, sector: center + ds });
+        }
+      }
+    });
+
+    const signature = cells.map((c) => `${c.belt}:${c.band}:${c.sector}`).join('|');
+    if (signature !== this.beltCellSignature) {
+      this.beltCellSignature = signature;
+      // Instantiate the covered cells, then keep the nearest members —
+      // a naive cap would truncate the region's far side.
+      const drawn: Array<{ asteroid: Asteroid; distanceKm: number }> = [];
+      for (const cell of cells) {
+        const belt = this.system.belts[cell.belt];
+        const beltSeed = deriveSeed(seedFromHex(this.system.seedHex), 'belt-region', cell.belt);
+        for (const asteroid of beltCellAsteroids(beltSeed, belt, cell.band, cell.sector, 6)) {
+          const state = elementsToState(asteroid.elements, this.systemMu, tSeconds);
+          const posKm = toWorld(state.position).divideScalar(1000);
+          const distanceKm = Math.hypot(
+            posKm.x - helio.x,
+            posKm.y - helio.y,
+            posKm.z - helio.z,
+          );
+          if (distanceKm < REACH_AU * 1.4 * AU_KM) drawn.push({ asteroid, distanceKm });
+        }
+      }
+      drawn.sort((a, b) => a.distanceKm - b.distanceKm);
+      this.beltCandidates = drawn.slice(0, 900).map(({ asteroid }) => {
+        const radiusKm = asteroid.diameterKm / 2;
+        const axisRng = new Rng(deriveSeed(seedFromHex(asteroid.shape.noiseSeedHex), 'spin-axis'));
+        const axisZ = axisRng.range(-1, 1);
+        const axisAzimuth = axisRng.range(0, 2 * Math.PI);
+        const planar = Math.sqrt(Math.max(0, 1 - axisZ * axisZ));
+        // Reflected sunlight as a pseudo-luminosity for the glint shader.
+        const starDistanceKm = (asteroid.elements.semiMajorAxis / AU) * AU_KM;
+        const pseudoLum =
+          this.system!.star.luminosity *
+          (radiusKm / (2 * starDistanceKm)) ** 2 *
+          asteroid.albedo *
+          4;
+        return {
+          asteroid,
+          spinAxis: new Vector3(planar * Math.cos(axisAzimuth), axisZ, planar * Math.sin(axisAzimuth)),
+          radiusKm,
+          pseudoLum,
+        };
+      });
+    }
+
+    const positionAttr = points.geometry.getAttribute('position') as BufferAttribute;
+    const colorAttr = points.geometry.getAttribute('starColor') as BufferAttribute;
+    const lumAttr = points.geometry.getAttribute('luminosity') as BufferAttribute;
+    const radiusAttr = points.geometry.getAttribute('aRadiusKm') as BufferAttribute;
+    const [sr, sg, sb] = this.system.star.linearRgb;
+    const matrix = new Matrix4();
+    const spinQuat = new Quaternion();
+    const scale = new Vector3();
+    let meshCount = 0;
+    let pointCount = 0;
+    this.beltSlotToCandidate.length = 0;
+    this.beltPointToCandidate.length = 0;
+
+    for (let i = 0; i < this.beltCandidates.length; i++) {
+      const candidate = this.beltCandidates[i];
+      const state = elementsToState(candidate.asteroid.elements, this.systemMu, tSeconds);
+      const pos = toWorld(state.position)
+        .divideScalar(1000)
+        .sub(focusPos)
+        .applyAxisAngle(yAxis, spin);
+      const distanceKm = pos.distanceTo(this.camera.position);
+      if (distanceKm > REACH_AU * AU_KM * 1.5) continue;
+
+      if (pointCount < 900) {
+        positionAttr.setXYZ(pointCount, pos.x, pos.y, pos.z);
+        colorAttr.setXYZ(pointCount, sr, sg, sb);
+        // Physical reflected light when close; a faint marker floor
+        // otherwise — the moons-and-planets legibility convention, since
+        // a kilometers-scale rock at these ranges is honestly invisible.
+        const dPc = distanceKm / PC_KM;
+        lumAttr.setX(pointCount, Math.max(candidate.pseudoLum, 2.5e-5 * dPc * dPc));
+        radiusAttr.setX(pointCount, candidate.radiusKm);
+        this.beltPointToCandidate[pointCount] = i;
+        pointCount++;
+      }
+      if (meshCount < 320 && candidate.radiusKm / distanceKm > 4e-5) {
+        const { shape, spinPeriodHours } = candidate.asteroid;
+        const spinAngle = ((tSeconds / (spinPeriodHours * 3600)) * 2 * Math.PI) % (2 * Math.PI);
+        spinQuat.setFromAxisAngle(candidate.spinAxis, spinAngle);
+        const base = candidate.radiusKm / 0.65;
+        scale.set(base / shape.elongation, base * shape.flattening, base);
+        matrix.compose(pos, spinQuat, scale);
+        mesh.setMatrixAt(meshCount, matrix);
+        this.beltSlotToCandidate[meshCount] = i;
+        meshCount++;
+      }
+    }
+    mesh.count = meshCount;
+    mesh.instanceMatrix.needsUpdate = true;
+    points.geometry.setDrawRange(0, pointCount);
+    positionAttr.needsUpdate = true;
+    colorAttr.needsUpdate = true;
+    lumAttr.needsUpdate = true;
+    radiusAttr.needsUpdate = true;
   }
 
   set exposure(value: number) {
@@ -485,6 +738,7 @@ export class UnifiedViewer {
     this.clearSystem();
     this.terrainMaterial.dispose();
     this.scatterMaterial.dispose();
+    this.beltRockGeometry.dispose();
     this.lut.dispose();
     this.pipeline.dispose();
   }
@@ -610,6 +864,10 @@ export class UnifiedViewer {
         }
       });
     }
+    this.beltCandidates = [];
+    this.beltCellSignature = '';
+    if (this.beltRockMesh) this.beltRockMesh.count = 0;
+    this.beltRockPoints?.geometry.setDrawRange(0, 0);
     if (this.backdrop) {
       this.scene.remove(this.backdrop.group);
       this.backdrop.dispose();
@@ -847,6 +1105,7 @@ export class UnifiedViewer {
       material.uniforms.uTimeYears.value = this.simTimeDays / 365.25;
     }
     for (const comet of this.cometObjects) comet.update(tSeconds);
+    this.updateBeltRegion(tSeconds, focusPos, spin);
 
     this.bodyObject?.update(this.simTimeDays, sunDir, lightColor);
 

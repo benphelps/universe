@@ -40,7 +40,21 @@ function load(nextSeedHex: string): void {
   seedHex = seedToHex(seedFromHex(nextSeedHex));
   const seed = seedFromHex(seedHex);
 
-  if (!viewer) viewer = new UnifiedViewer(viewElement);
+  if (!viewer) {
+    viewer = new UnifiedViewer(viewElement);
+    // Dev/test hook: inspection access to the live viewer.
+    (window as unknown as { __sim: unknown }).__sim = {
+      get viewer() {
+        return viewer;
+      },
+    };
+    // Clicking a materialized belt member promotes it to the focus.
+    viewer.onBodyFocus = (asteroid) => {
+      if (!system) return;
+      planetPanel.renderAsteroid(system, asteroid, 'belt member');
+      controls.planetLabel = '·';
+    };
+  }
   if (!system || system.seedHex !== seedHex) {
     system = generateSystem(seed);
     viewer.setSystem(system);
@@ -73,8 +87,7 @@ function load(nextSeedHex: string): void {
         planetPanel.renderAsteroid(
           system,
           viewer.asteroids[ordinal],
-          ordinal + 1,
-          viewer.asteroids.length,
+          `belt asteroid ${ordinal + 1} of ${viewer.asteroids.length}`,
         );
         controls.planetLabel = `A${ordinal + 1}`;
       }

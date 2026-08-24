@@ -39,7 +39,7 @@ export function instantiateBeltCell(
   return asteroids;
 }
 
-function buildAsteroid(rng: Rng, belt: Belt, aAu: number, diameterKm: number): Asteroid {
+export function buildAsteroid(rng: Rng, belt: Belt, aAu: number, diameterKm: number): Asteroid {
   // Taxonomy by zone: silicaceous inner belt, carbonaceous outer, rare metallic.
   const zoneFraction = (aAu - belt.innerAu) / (belt.outerAu - belt.innerAu);
   let taxonomy: AsteroidTaxonomy;

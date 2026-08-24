@@ -123,7 +123,7 @@ export class PlanetInfoPanel {
     `;
   }
 
-  renderAsteroid(system: StarSystem, asteroid: Asteroid, ordinal: number, total: number): void {
+  renderAsteroid(system: StarSystem, asteroid: Asteroid, subtitle: string): void {
     const { shape } = asteroid;
     const aAu = asteroid.elements.semiMajorAxis / AU;
     const structure = [
@@ -150,7 +150,7 @@ export class PlanetInfoPanel {
     ];
     this.element.innerHTML = `
       <h1>${system.star.designation} ${asteroidDesignation(asteroid)}</h1>
-      <div class="sub">belt asteroid ${ordinal} of ${total} · ${system.star.spectralType}</div>
+      <div class="sub">${subtitle} · ${system.star.spectralType}</div>
       <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
     `;
   }
