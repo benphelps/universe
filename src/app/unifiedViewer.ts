@@ -10,6 +10,7 @@ import {
   MeshBasicMaterial,
   PerspectiveCamera,
   Points,
+  Quaternion,
   Scene,
   ShaderMaterial,
   SphereGeometry,
@@ -724,17 +725,20 @@ export class UnifiedViewer {
           .clone()
           .multiplyScalar(Math.cos(this.headingRad))
           .addScaledVector(east, Math.sin(this.headingRad));
-        const vertical = -(1 - horizonBlend) + (-0.12 + Math.sin(this.pitchRad)) * horizonBlend;
-        const forward = heading
-          .multiplyScalar(horizonBlend)
-          .addScaledVector(up, vertical)
-          .normalize();
+        // Slerp from the orbit gaze into the steerable horizon gaze:
+        // blending orientations (not look-at vectors) keeps the roll
+        // continuous through the transition — a radial-up look-at near
+        // nadir would snap screen-up from north to the heading, which
+        // reads as the whole surface suddenly rotating.
+        const forward = heading.addScaledVector(up, -0.12 + Math.sin(this.pitchRad)).normalize();
         const gaze = new Matrix4().lookAt(
           this.camera.position,
           this.camera.position.clone().add(forward),
           up,
         );
-        this.camera.quaternion.setFromRotationMatrix(gaze);
+        const groundQuat = new Quaternion().setFromRotationMatrix(gaze);
+        const t = horizonBlend * horizonBlend * (3 - 2 * horizonBlend);
+        this.camera.quaternion.slerp(groundQuat, t);
       }
 
       // Near tracks altitude (nothing sits closer than the ground below,
