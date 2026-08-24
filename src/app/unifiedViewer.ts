@@ -41,6 +41,7 @@ import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
 import { createZoneRings } from '../render/system/zoneRings';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
+import { createCloudShell } from '../render/terrain/cloudShell';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
@@ -151,6 +152,7 @@ export class UnifiedViewer {
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
+  private cloudShell: Mesh | null = null;
   private occlusionGlobe: Mesh | null = null;
   private ringMesh: Mesh | null = null;
   private bodyObject: PlanetObject | null = null;
@@ -337,6 +339,13 @@ export class UnifiedViewer {
         }
         this.atmosphereShell = createAtmosphereShell(planet.physical, this.radiusKm);
         if (this.atmosphereShell) this.scene.add(this.atmosphereShell);
+        this.cloudShell = createCloudShell(
+          planet.physical,
+          this.radiusKm,
+          this.field.seaLevelM / 1000,
+          this.field.params.reliefM / 1000,
+        );
+        if (this.cloudShell) this.scene.add(this.cloudShell);
         if (planet.rings) {
           this.ringMesh = createRingMesh(planet.rings, this.radiusKm);
           this.ringMesh.rotation.x = -Math.PI / 2;
@@ -461,13 +470,20 @@ export class UnifiedViewer {
     this.oceanMaterial?.dispose();
     this.oceanMaterial = null;
     this.field = null;
-    for (const mesh of [this.atmosphereShell, this.occlusionGlobe, this.ringMesh, this.skyDome]) {
+    for (const mesh of [
+      this.atmosphereShell,
+      this.cloudShell,
+      this.occlusionGlobe,
+      this.ringMesh,
+      this.skyDome,
+    ]) {
       if (!mesh) continue;
       this.scene.remove(mesh);
       mesh.geometry.dispose();
       if (!Array.isArray(mesh.material)) mesh.material.dispose();
     }
     this.atmosphereShell = null;
+    this.cloudShell = null;
     this.occlusionGlobe = null;
     this.ringMesh = null;
     this.skyDome = null;
@@ -787,6 +803,12 @@ export class UnifiedViewer {
       const material = this.atmosphereShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
+    }
+    if (this.cloudShell) {
+      const material = this.cloudShell.material as ShaderMaterial;
+      material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
+      material.uniforms.uLightColor.value.setRGB(...lightColor);
+      material.uniforms.uTimeDays.value = this.simTimeDays;
     }
     if (this.ringMesh) {
       const material = this.ringMesh.material as ShaderMaterial;
