@@ -8,7 +8,13 @@ import { Rng } from '../../core/rng/rng';
 import { powerLaw } from '../../core/rng/distributions';
 import { KROUPA_SEGMENTS } from '../star/imf';
 import { evolve } from '../star/evolution';
-import { cloudFieldAt, cloudLocalDensity, cloudsNear, type MolecularCloud } from './clouds';
+import {
+  cloudFieldAt,
+  cloudLocalDensity,
+  cloudReachPc,
+  cloudsNear,
+  type MolecularCloud,
+} from './clouds';
 import { dustDensity, stellarDensity, type GalacticPosition } from './density';
 import { starPhotometry } from './photometry';
 import { drawPopulation } from './population';
@@ -44,6 +50,23 @@ export const NEBULA_ATLAS_ROWS = 6;
 export const RIFT_WIDTH = 768;
 export const RIFT_HEIGHT = 384;
 
+/** Dark-cloud sprite atlas: transmission tiles, one per prominent cloud. */
+export const DARK_TILE = 64;
+export const DARK_ATLAS_COLS = 8;
+export const DARK_ATLAS_ROWS = 8;
+
+export interface DarkCloudPatch {
+  /** Unit view direction (galactic frame). */
+  dir: [number, number, number];
+  /** Tangent half-extent of the sprite, radians. */
+  halfExtent: number;
+  /** Tangent-plane basis (galactic frame) matching the sprite tile. */
+  right: [number, number, number];
+  up: [number, number, number];
+  /** Tile index into the dark-cloud transmission atlas. */
+  tile: number;
+}
+
 export interface SkyField {
   starCount: number;
   /** The first nearStarCount entries are the resolved 30 pc neighborhood
@@ -63,9 +86,13 @@ export interface SkyField {
   glowHeight: number;
   /** RGBA float lat-long map of unresolved background light. */
   glowData: Float32Array;
-  /** Lat-long transmission through nearby clouds (RIFT_WIDTH × HEIGHT,
-   *  one float per texel): sharp rift shadows multiplying the glow. */
+  /** Lat-long transmission through small distant clouds (RIFT_WIDTH ×
+   *  HEIGHT, one float per texel); the prominent ones ride as sprites. */
   riftData: Float32Array;
+  /** The prominent nearby dark clouds, sprite-projected like nebulae. */
+  darkClouds: DarkCloudPatch[];
+  /** Ray-marched transmission tile per dark cloud (DARK_TILE² each). */
+  darkAtlas: Float32Array;
 }
 
 interface Shell {
@@ -178,6 +205,7 @@ export function buildSkyField(viewpoint: GalacticPosition): SkyField {
   }
 
   const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
+  const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA);
 
   return {
     starCount: brightness.length,
@@ -187,7 +215,9 @@ export function buildSkyField(viewpoint: GalacticPosition): SkyField {
     starBrightness: new Float32Array(brightness),
     nebulae,
     nebulaAtlas,
-    ...buildGlow(viewpoint),
+    darkClouds,
+    darkAtlas,
+    ...buildGlow(viewpoint, spriteSeeds),
   };
 }
 
@@ -488,27 +518,112 @@ function meanPopulationLuminosity(viewpoint: GalacticPosition): number {
   return lumSum / Math.max(weightSum, 1e-9);
 }
 
-/** Clouds inside this radius shadow the sky via the sharp rift map. */
+/** Clouds inside this radius shadow the sky individually. */
 const RIFT_NEAR_PC = 1500;
 
-/**
- * Transmission through the nearby clouds, texel-exact: each cloud within
- * the near radius projects its footprint onto the lat-long map and only
- * those texels march through its density field. Nearby clouds are what
- * subtend degrees, so this map carries all the sharp rift structure at
- * four times the glow resolution for a fraction of a full-sky march.
- */
-function buildCloudTransmission(viewpoint: GalacticPosition, dustKappa: number): Float32Array {
-  const transmission = new Float32Array(RIFT_WIDTH * RIFT_HEIGHT).fill(1);
-  const rowRad = Math.PI / RIFT_HEIGHT;
-  const colRad = (2 * Math.PI) / RIFT_WIDTH;
+/** In-plane visual opacity, shared by every dust consumer. */
+const DUST_KAPPA = 0.045;
 
+/**
+ * The prominent nearby dark clouds, done exactly like the nebulae: each
+ * ray-marches a tangent-plane sprite through its own density field —
+ * accumulating optical depth instead of emission — so its shadow gets
+ * per-object resolution instead of lat-long texels.
+ */
+function buildDarkClouds(
+  viewpoint: GalacticPosition,
+  dustKappa: number,
+): { darkClouds: DarkCloudPatch[]; darkAtlas: Float32Array; spriteSeeds: Set<bigint> } {
+  const candidates: Array<{ cloud: MolecularCloud; angular: number; distance: number }> = [];
   for (const cloud of cloudsNear(viewpoint, RIFT_NEAR_PC)) {
     const dx = cloud.positionPc.xPc - viewpoint.xPc;
     const dy = cloud.positionPc.yPc - viewpoint.yPc;
     const dz = cloud.positionPc.zPc - viewpoint.zPc;
     const distance = Math.hypot(dx, dy, dz);
-    const reachPc = cloud.radiusPc * 1.6 * 2.5;
+    const reach = cloudReachPc(cloud);
+    if (distance < reach * 1.05) continue;
+    const angular = reach / distance;
+    if (angular > 1.0) continue;
+    candidates.push({ cloud, angular: angular * Math.sqrt(cloud.amplitude), distance });
+  }
+  candidates.sort((a, b) => b.angular - a.angular);
+  const kept = candidates.slice(0, DARK_ATLAS_COLS * DARK_ATLAS_ROWS);
+
+  const darkAtlas = new Float32Array(
+    DARK_ATLAS_COLS * DARK_TILE * DARK_ATLAS_ROWS * DARK_TILE,
+  ).fill(1);
+  const spriteSeeds = new Set<bigint>();
+  const atlasWidth = DARK_ATLAS_COLS * DARK_TILE;
+
+  const darkClouds: DarkCloudPatch[] = kept.map(({ cloud, distance }, tile) => {
+    spriteSeeds.add(cloud.seed);
+    const dx = cloud.positionPc.xPc - viewpoint.xPc;
+    const dy = cloud.positionPc.yPc - viewpoint.yPc;
+    const dz = cloud.positionPc.zPc - viewpoint.zPc;
+    const view: [number, number, number] = [dx / distance, dy / distance, dz / distance];
+    const axis: [number, number, number] = Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const right = normalize(cross(view, axis));
+    const up = cross(view, right);
+
+    const reachPc = cloudReachPc(cloud);
+    const dustFactor = dustDensity(cloud.positionPc) * 1.6 * dustKappa;
+    const steps = 12;
+    const ds = (2 * reachPc) / steps;
+    const tileX = (tile % DARK_ATLAS_COLS) * DARK_TILE;
+    const tileY = Math.floor(tile / DARK_ATLAS_COLS) * DARK_TILE;
+
+    for (let j = 1; j < DARK_TILE - 1; j++) {
+      for (let i = 1; i < DARK_TILE - 1; i++) {
+        const u = ((i + 0.5) / DARK_TILE) * 2 - 1;
+        const v = ((j + 0.5) / DARK_TILE) * 2 - 1;
+        const ox = (right[0] * u + up[0] * v) * reachPc;
+        const oy = (right[1] * u + up[1] * v) * reachPc;
+        const oz = (right[2] * u + up[2] * v) * reachPc;
+        let tau = 0;
+        for (let s = 0; s < steps; s++) {
+          const t = -reachPc + (s + 0.5) * ds;
+          tau += cloudLocalDensity(
+            cloud,
+            ox + view[0] * t,
+            oy + view[1] * t,
+            oz + view[2] * t,
+          );
+        }
+        tau *= dustFactor * ds;
+        if (tau > 0) {
+          darkAtlas[(tileY + j) * atlasWidth + tileX + i] = Math.exp(-tau);
+        }
+      }
+    }
+
+    return { dir: view, halfExtent: reachPc / distance, right, up, tile };
+  });
+
+  return { darkClouds, darkAtlas, spriteSeeds };
+}
+
+/**
+ * Transmission through the remaining small clouds, texel-exact on the
+ * lat-long map: each projects its footprint and only those texels march
+ * its density field. The prominent clouds are excluded — they carry
+ * their own sprites.
+ */
+function buildCloudTransmission(
+  viewpoint: GalacticPosition,
+  dustKappa: number,
+  excluded: Set<bigint>,
+): Float32Array {
+  const transmission = new Float32Array(RIFT_WIDTH * RIFT_HEIGHT).fill(1);
+  const rowRad = Math.PI / RIFT_HEIGHT;
+  const colRad = (2 * Math.PI) / RIFT_WIDTH;
+
+  for (const cloud of cloudsNear(viewpoint, RIFT_NEAR_PC)) {
+    if (excluded.has(cloud.seed)) continue;
+    const dx = cloud.positionPc.xPc - viewpoint.xPc;
+    const dy = cloud.positionPc.yPc - viewpoint.yPc;
+    const dz = cloud.positionPc.zPc - viewpoint.zPc;
+    const distance = Math.hypot(dx, dy, dz);
+    const reachPc = cloudReachPc(cloud);
     // Inside or engulfing the sky: no meaningful footprint to rasterize.
     if (distance < reachPc || distance < 1) continue;
     const angRad = Math.asin(Math.min(1, reachPc / distance));
@@ -568,7 +683,10 @@ function buildCloudTransmission(viewpoint: GalacticPosition, dustKappa: number):
  * molecular-cloud population: every dark rift in the band is a specific
  * cloud, the same objects that host the nebulae.
  */
-function buildGlow(viewpoint: GalacticPosition): {
+function buildGlow(
+  viewpoint: GalacticPosition,
+  spriteSeeds: Set<bigint>,
+): {
   glowWidth: number;
   glowHeight: number;
   glowData: Float32Array;
@@ -580,7 +698,7 @@ function buildGlow(viewpoint: GalacticPosition): {
   const startPc = 80;
   const endPc = 25000;
   const meanLuminosity = meanPopulationLuminosity(viewpoint);
-  const dustKappa = 0.045;
+  const dustKappa = DUST_KAPPA;
 
   for (let row = 0; row < height; row++) {
     const latitude = ((row + 0.5) / height - 0.5) * Math.PI;
@@ -625,6 +743,6 @@ function buildGlow(viewpoint: GalacticPosition): {
     glowWidth: width,
     glowHeight: height,
     glowData: data,
-    riftData: buildCloudTransmission(viewpoint, dustKappa),
+    riftData: buildCloudTransmission(viewpoint, dustKappa, spriteSeeds),
   };
 }

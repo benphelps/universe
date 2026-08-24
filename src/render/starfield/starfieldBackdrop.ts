@@ -18,6 +18,9 @@ import {
   Vector4,
 } from 'three';
 import {
+  DARK_ATLAS_COLS,
+  DARK_ATLAS_ROWS,
+  DARK_TILE,
   NEBULA_ATLAS_COLS,
   NEBULA_ATLAS_ROWS,
   NEBULA_TILE,
@@ -27,6 +30,7 @@ import {
 } from '../../universe/galaxy/skyfield';
 
 const MAX_NEBULAE = NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS;
+const MAX_DARK = DARK_ATLAS_COLS * DARK_ATLAS_ROWS;
 
 const NEBULA_FRAGMENT = /* glsl */ `
 varying vec3 vDir;
@@ -108,16 +112,39 @@ varying vec3 vDir;
 
 uniform sampler2D uGlow;
 uniform sampler2D uRift;
+uniform sampler2D uDarkAtlas;
+uniform vec4 uDarkA[${MAX_DARK}]; // dir.xyz, tangent half-extent
+uniform vec4 uDarkB[${MAX_DARK}]; // right.xyz, tile index
+uniform vec4 uDarkC[${MAX_DARK}]; // up.xyz, unused
+uniform int uDarkCount;
 uniform float uIntensity;
 
 void main() {
+  vec3 dir = normalize(vDir);
   // Scene frame → galactic frame: scene y is the disk normal.
-  float latitude = asin(clamp(vDir.y, -1.0, 1.0));
-  float longitude = atan(vDir.z, vDir.x);
+  float latitude = asin(clamp(dir.y, -1.0, 1.0));
+  float longitude = atan(dir.z, dir.x);
   vec2 uv = vec2(longitude / 6.2831853 + 0.5, latitude / 3.14159265 + 0.5);
-  // Smooth starlight base times the sharp nearby-cloud transmission.
-  float rift = texture2D(uRift, uv).r;
-  gl_FragColor = vec4(texture2D(uGlow, uv).rgb * rift * uIntensity, 1.0);
+
+  // Smooth starlight base, shadowed by the small-cloud map and by each
+  // prominent cloud's own ray-marched transmission sprite — projected
+  // exactly like the nebula sprites.
+  float transmission = texture2D(uRift, uv).r;
+  for (int i = 0; i < ${MAX_DARK}; i++) {
+    if (i >= uDarkCount) break;
+    vec4 a = uDarkA[i];
+    float cosD = dot(dir, a.xyz);
+    if (cosD < 0.2) continue;
+    vec3 rel = dir / cosD - a.xyz;
+    float u = dot(rel, uDarkB[i].xyz) / a.w * 0.5 + 0.5;
+    float v = dot(rel, uDarkC[i].xyz) / a.w * 0.5 + 0.5;
+    if (u <= 0.0 || u >= 1.0 || v <= 0.0 || v >= 1.0) continue;
+    float tile = uDarkB[i].w;
+    vec2 tileOrigin = vec2(mod(tile, ${DARK_ATLAS_COLS}.0), floor(tile / ${DARK_ATLAS_COLS}.0));
+    vec2 tuv = (tileOrigin + vec2(u, v)) / vec2(${DARK_ATLAS_COLS}.0, ${DARK_ATLAS_ROWS}.0);
+    transmission *= texture2D(uDarkAtlas, tuv).r;
+  }
+  gl_FragColor = vec4(texture2D(uGlow, uv).rgb * transmission * uIntensity, 1.0);
 }
 `;
 
@@ -191,12 +218,44 @@ export class StarfieldBackdrop {
     riftTexture.wrapS = RepeatWrapping;
     riftTexture.wrapT = ClampToEdgeWrapping;
     riftTexture.needsUpdate = true;
+    const darkTexture = new DataTexture(
+      sky.darkAtlas,
+      DARK_ATLAS_COLS * DARK_TILE,
+      DARK_ATLAS_ROWS * DARK_TILE,
+      RedFormat,
+      FloatType,
+    );
+    darkTexture.minFilter = LinearFilter;
+    darkTexture.magFilter = LinearFilter;
+    darkTexture.wrapS = ClampToEdgeWrapping;
+    darkTexture.wrapT = ClampToEdgeWrapping;
+    darkTexture.needsUpdate = true;
+    // Galactic (x, y, z-disk) → scene (x, z, y), like the stars.
+    const toScene = (v: [number, number, number], w: number): Vector4 =>
+      new Vector4(v[0], v[2], v[1], w);
+    const darkA = Array.from({ length: MAX_DARK }, (_, i) => {
+      const patch = sky.darkClouds[i];
+      return patch ? toScene(patch.dir, patch.halfExtent) : new Vector4(0, 1, 0, 1);
+    });
+    const darkB = Array.from({ length: MAX_DARK }, (_, i) => {
+      const patch = sky.darkClouds[i];
+      return patch ? toScene(patch.right, patch.tile) : new Vector4(1, 0, 0, 0);
+    });
+    const darkC = Array.from({ length: MAX_DARK }, (_, i) => {
+      const patch = sky.darkClouds[i];
+      return patch ? toScene(patch.up, 0) : new Vector4(0, 0, 1, 0);
+    });
     const glowMaterial = new ShaderMaterial({
       vertexShader: GLOW_VERTEX,
       fragmentShader: GLOW_FRAGMENT,
       uniforms: {
         uGlow: { value: texture },
         uRift: { value: riftTexture },
+        uDarkAtlas: { value: darkTexture },
+        uDarkA: { value: darkA },
+        uDarkB: { value: darkB },
+        uDarkC: { value: darkC },
+        uDarkCount: { value: sky.darkClouds.length },
         uIntensity: { value: 1 },
       },
       blending: AdditiveBlending,
@@ -212,9 +271,6 @@ export class StarfieldBackdrop {
 
     if (sky.nebulae.length > 0) {
       const patches = sky.nebulae.slice(0, MAX_NEBULAE);
-      // Galactic (x, y, z-disk) → scene (x, z, y), like the stars.
-      const toScene = (v: [number, number, number], w: number): Vector4 =>
-        new Vector4(v[0], v[2], v[1], w);
       const nebulaA = Array.from({ length: MAX_NEBULAE }, (_, i) => {
         const patch = patches[i];
         return patch ? toScene(patch.dir, patch.angularRadius * 1.6) : new Vector4(0, 1, 0, 1);

@@ -144,6 +144,19 @@ export function cloudsNear(positionPc: GalacticPosition, radiusPc: number): Mole
  * sprites both sample exactly this field, so a rift's shadow and its
  * nebula share one structure.
  */
+/** Seeded elongation factor, capped so reach stays within a cell. */
+export function cloudStretch(cloud: MolecularCloud): number {
+  return Math.min(
+    1.3 + (Number((cloud.seed >> 6n) & 0x3fn) / 63) * 1.2,
+    200 / (1.6 * cloud.radiusPc),
+  );
+}
+
+/** Maximum extent of a cloud's density field from its center, pc. */
+export function cloudReachPc(cloud: MolecularCloud): number {
+  return cloud.radiusPc * 1.6 * cloudStretch(cloud);
+}
+
 export function cloudLocalDensity(
   cloud: MolecularCloud,
   rxPc: number,
@@ -151,10 +164,7 @@ export function cloudLocalDensity(
   rzPc: number,
 ): number {
   const stretchAxis = Number(cloud.seed >> 4n) % 3;
-  const stretch = Math.min(
-    1.3 + (Number((cloud.seed >> 6n) & 0x3fn) / 63) * 1.2,
-    200 / (1.6 * cloud.radiusPc),
-  );
+  const stretch = cloudStretch(cloud);
   const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
   const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
   const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
