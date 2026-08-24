@@ -50,9 +50,40 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   const craters = createCraterField(seedHex, params.radiusM, params.craterAmplitude);
   const moistureNoise = fbm(createSimplex3(deriveSeed(seed, 'moisture')), { octaves: 3 });
   const paletteNoise = fbm(createSimplex3(deriveSeed(seed, 'palette')), { octaves: 4 });
+  const valleyRidge = ridged(createSimplex3(deriveSeed(seed, 'valleys')), { octaves: 1 });
+  const tributaryRidge = ridged(createSimplex3(deriveSeed(seed, 'tributaries')), { octaves: 1 });
+  const glacialRidge = ridged(createSimplex3(deriveSeed(seed, 'glacial')), { octaves: 1 });
+  const duneWarp = createSimplex3(deriveSeed(seed, 'dunes'));
+  const ergNoise = fbm(createSimplex3(deriveSeed(seed, 'ergs')), { octaves: 2 });
 
   const { reliefM, tectonics, erosion, volcanism } = params;
   const mountainStrength = tectonics === 'active' ? 1 : tectonics === 'stagnant' ? 0.25 : 0.1;
+
+  // Structured erosion regimes: rain carves dendritic valleys, ice
+  // grinds wide smooth troughs, wind builds dune fields on dry worlds.
+  const wetness = Math.min(1, params.oceanCoverage * 2.5 + (params.biosphere ? 0.4 : 0));
+  const fluvialStrength =
+    erosion > 0.2 && !params.globalIce ? erosion * (0.35 + 0.65 * wetness) : 0;
+  const coldestK =
+    params.surfaceMeanK - params.poleDeltaK - (params.lapseKPerKm * reliefM * 0.6) / 1000;
+  const glacialStrength =
+    erosion > 0.2 && (params.globalIce || coldestK < 268) ? erosion : 0;
+  const duneStrength =
+    erosion > 0.1 && !params.globalIce && params.oceanCoverage < 0.55
+      ? (1 - 0.8 * wetness) * Math.min(1, erosion * 1.6)
+      : 0;
+  const windAngle =
+    (Number(deriveSeed(seed, 'wind') & 0xffffn) / 0x10000) * 2 * Math.PI;
+  const windX = Math.cos(windAngle);
+  const windZ = Math.sin(windAngle);
+
+  /** Windswept sand-sea regions: lowland patches on dry worlds. */
+  const ergAt = (dir: Vec3, heightM: number): number => {
+    if (duneStrength <= 0.02) return 0;
+    const patch = smooth01((ergNoise(dir.x * 3.1, dir.y * 3.1, dir.z * 3.1) - 0.08) / 0.3);
+    const lowland = smooth01((reliefM * 0.3 - heightM) / (reliefM * 0.25));
+    return patch * lowland * duneStrength;
+  };
 
   // Roughness cascade below the continental scale, ~1/f amplitude falloff
   // down to ~100 m features. Erosion damps it; cratered dead worlds stay
@@ -87,7 +118,22 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       }
     }
 
-    h += detail(dir.x * 7, dir.y * 7, dir.z * 7) * reliefM * 0.16 * (1 - 0.75 * erosion);
+    // Freeze mask from the pre-detail elevation: where the local mean
+    // sits below freezing, ice smooths the fine relief and carves wide
+    // troughs instead of river valleys.
+    let glacial = 0;
+    if (glacialStrength > 0.02) {
+      const latitude = Math.asin(Math.max(-1, Math.min(1, dir.y)));
+      const provisionalK =
+        params.surfaceMeanK -
+        params.poleDeltaK * Math.sin(latitude) ** 2 -
+        (params.lapseKPerKm * Math.max(h, 0)) / 1000;
+      glacial =
+        glacialStrength * (params.globalIce ? 1 : smooth01((266 - provisionalK) / 9));
+    }
+
+    h += detail(dir.x * 7, dir.y * 7, dir.z * 7) * reliefM * 0.16 * (1 - 0.75 * erosion) *
+      (1 - 0.55 * glacial);
 
     for (let bandIndex = 0; bandIndex < detailBands.length; bandIndex++) {
       const band = detailBands[bandIndex];
@@ -104,7 +150,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
         fade = Math.min(1, (wavelengthRatio - 1) / 4);
       }
       const offset = 17.31 * (bandIndex + 1);
-      let amplitude = band.amplitudeM * fade;
+      let amplitude = band.amplitudeM * fade * (1 - 0.5 * glacial);
       let frequency = band.frequency;
       let sum = 0;
       for (let o = 0; o < band.octaves; o++) {
@@ -114,6 +160,50 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
         frequency *= 2.1;
       }
       h += sum;
+    }
+
+    // Dune fields: kilometer-scale transverse ripples across sand seas,
+    // aligned to the world's prevailing wind.
+    if (duneStrength > 0.02) {
+      const duneFade =
+        lodAngularRad > 0 ? Math.min(1, Math.max(0, 1 / 2400 / (2 * lodAngularRad) - 1) / 4) : 1;
+      if (duneFade > 0) {
+        const erg = ergAt(dir, h);
+        if (erg > 0.02) {
+          const phase =
+            (dir.x * windX + dir.z * windZ) * 2400 +
+            2.6 * duneWarp(dir.x * 90, dir.y * 90, dir.z * 90);
+          // Draa-scale transverse dunes: tens of meters at km spacing.
+          h += (22 + 50 * duneStrength) * Math.sin(phase) * erg * duneFade;
+        }
+      }
+    }
+
+    // Fluvial valleys: dendritic carving along ridge crests of a low-
+    // frequency field, tributaries one octave up. Depth scales with
+    // elevation (canyons in highlands, shallow washes on plains) and
+    // hands over to glacial troughs where the freeze mask takes hold.
+    if (fluvialStrength > 0.02) {
+      const rain = fluvialStrength * (1 - (glacialStrength > 0 ? glacial / glacialStrength : 0));
+      if (rain > 0.02) {
+        const major = valleyRidge(dir.x * 9, dir.y * 9, dir.z * 9);
+        let channel = smooth01((major - 0.78) / 0.14);
+        if (lodAngularRad < 0.006) {
+          const branch = tributaryRidge(dir.x * 34, dir.y * 34, dir.z * 34);
+          const tributaryFade =
+            lodAngularRad > 0 ? Math.min(1, Math.max(0, 1 / 34 / (2 * lodAngularRad) - 1) / 4) : 1;
+          channel = Math.max(channel, 0.55 * smooth01((branch - 0.8) / 0.12) * tributaryFade);
+        }
+        if (channel > 0.01) {
+          const depthM =
+            reliefM * 0.22 * (0.25 + 0.75 * smooth01(h / (reliefM * 0.45)));
+          h -= channel * depthM * rain;
+        }
+      }
+    }
+    if (glacial > 0.02) {
+      const trough = smooth01((glacialRidge(dir.x * 5, dir.y * 5, dir.z * 5) - 0.62) / 0.25);
+      h -= trough * reliefM * 0.16 * glacial;
     }
 
     h += craters(dir, lodAngularRad);
@@ -166,6 +256,12 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
         smooth01((0.32 - moisture) / 0.08),
       );
       ground = mixRgb(ground, palette.rock, 0.5 * bleakness);
+    }
+
+    // Sand seas read as sand whatever the biome underneath.
+    const erg = ergAt(dir, heightM);
+    if (erg > 0.02) {
+      ground = mixRgb(ground, sand, 0.6 * erg);
     }
 
     // Permanent ice fades in as the local mean drops below freezing.

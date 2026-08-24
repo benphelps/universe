@@ -55,7 +55,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 - [x] Cube-sphere quadtree LOD + worker chunk generation (skirts hide LOD cracks; geomorphing still open)
 - [x] Layer stack: tectonics (Worley plate belts), craters, volcanic provinces, erosion smoothing
-- [ ] Deeper erosion suites: fluvial valley networks, glacial carving, dune fields
+- [x] Deeper erosion suites: fluvial valley networks (dendritic ridge-crest carving with tributaries, elevation-scaled depth), glacial carving (freeze-masked trough cutting plus fine-relief smoothing), and dune fields (wind-aligned draa-scale transverse ripples over erg patches with sand tinting) — all pure, LOD-faded, and climate-gated.
 - [x] Ice/snow + biome palettes from climate
 - [ ] Airless small-body surface mode (asteroid close-ups)
 - [x] Determinism/border tests + world-type fixtures (Earth-like, Moon-like, Mars-like)
