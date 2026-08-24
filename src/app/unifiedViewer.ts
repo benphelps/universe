@@ -1,4 +1,5 @@
 import {
+  BufferAttribute,
   BufferGeometry,
   Color,
   Group,
@@ -35,7 +36,10 @@ import { applyOccluders } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
 import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
-import { createNeighborStars } from '../render/starfield/neighborStars';
+import {
+  createNeighborStars,
+  createStarPointsMaterial,
+} from '../render/starfield/neighborStars';
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
@@ -93,7 +97,6 @@ interface PlanetNode {
 
 interface StarNode {
   object: StarObject;
-  marker: Mesh;
   radiusKm: number;
 }
 
@@ -144,6 +147,8 @@ export class UnifiedViewer {
   /** Neighborhood stars (1 unit = 1 pc, already scene-frame) inside it. */
   private readonly pcGroup = new Group();
   private neighborPoints: Points | null = null;
+  /** Photometric glints for the system's own stars at unresolved range. */
+  private starSprites: Points | null = null;
   private starNodes: StarNode[] = [];
   private planetNodes: PlanetNode[] = [];
   private beltMaterials: ShaderMaterial[] = [];
@@ -236,20 +241,17 @@ export class UnifiedViewer {
     // Real photospheres at scene root: the corona billboard orients by
     // copying the camera quaternion, so star groups must not inherit the
     // heliocentric group's spin rotation. Positions are set every frame.
-    // Each carries an adaptive marker — a bloom-bright glint holding the
-    // star legible once its disc falls subpixel at map distances.
+    const spriteColors: number[] = [];
+    const spriteLuminosities: number[] = [];
+    const spriteRadii: number[] = [];
     const addStar = (star: Star): void => {
       const object = new StarObject(star, this.lut);
       object.group.scale.setScalar(SOLAR_RADIUS_KM);
       this.scene.add(object.group);
-      const [r, g, b] = star.linearRgb;
-      const peak = Math.max(r, g, b, 1e-3);
-      const marker = new Mesh(
-        new SphereGeometry(1, 12, 6),
-        new MeshBasicMaterial({ color: new Color((r / peak) * 3, (g / peak) * 3, (b / peak) * 3) }),
-      );
-      this.scene.add(marker);
-      this.starNodes.push({ object, marker, radiusKm: Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM });
+      this.starNodes.push({ object, radiusKm: Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM });
+      spriteColors.push(...star.linearRgb);
+      spriteLuminosities.push(star.luminosity);
+      spriteRadii.push(Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM);
     };
     addStar(system.star);
     for (const companion of system.companions) {
@@ -257,6 +259,24 @@ export class UnifiedViewer {
       addStar(companion.star);
       this.overlay.add(createOrbitLine(companion.elements, 0x8888aa, 0.25));
     }
+
+    // Photometric glints carry the stars once their discs fall subpixel
+    // — the same magnitude/color mapping as every other sky star.
+    const spriteGeometry = new BufferGeometry();
+    spriteGeometry.setAttribute(
+      'position',
+      new BufferAttribute(new Float32Array(this.starNodes.length * 3), 3),
+    );
+    spriteGeometry.setAttribute('starColor', new BufferAttribute(new Float32Array(spriteColors), 3));
+    spriteGeometry.setAttribute(
+      'luminosity',
+      new BufferAttribute(new Float32Array(spriteLuminosities), 1),
+    );
+    spriteGeometry.setAttribute('aRadiusKm', new BufferAttribute(new Float32Array(spriteRadii), 1));
+    this.starSprites = new Points(spriteGeometry, createStarPointsMaterial(PC_KM));
+    this.starSprites.frustumCulled = false;
+    this.starSprites.renderOrder = -2;
+    this.scene.add(this.starSprites);
 
     const starRgb = system.star.linearRgb;
     this.planetNodes = system.planets.map((planet) => {
@@ -508,14 +528,17 @@ export class UnifiedViewer {
   }
 
   private clearSystem(): void {
-    for (const { object, marker } of this.starNodes) {
+    for (const { object } of this.starNodes) {
       this.scene.remove(object.group);
       object.dispose();
-      this.scene.remove(marker);
-      marker.geometry.dispose();
-      (marker.material as MeshBasicMaterial).dispose();
     }
     this.starNodes = [];
+    if (this.starSprites) {
+      this.scene.remove(this.starSprites);
+      this.starSprites.geometry.dispose();
+      (this.starSprites.material as ShaderMaterial).dispose();
+      this.starSprites = null;
+    }
     for (const node of this.planetNodes) {
       this.heliocentric.remove(node.object.group);
       this.heliocentric.remove(node.marker);
@@ -551,7 +574,11 @@ export class UnifiedViewer {
     this.system = null;
   }
 
-  /** Daylight washout applied to everything stellar beyond the system. */
+  /**
+   * Daylight washout applied to everything stellar beyond the system.
+   * The system's own star glints stay full — an unresolved sun (or a
+   * bright companion) outshines any daytime sky.
+   */
   private setSkyIntensity(value: number): void {
     if (this.backdrop) this.backdrop.intensity = value;
     if (this.neighborPoints) {
@@ -709,15 +736,21 @@ export class UnifiedViewer {
     // The stars at their true positions and radii: angular size, phase
     // light, parallax, and eclipses all come out right by construction.
     const starPositions = this.stellarPositionsKm(tSeconds);
+    const spritePositions = this.starSprites?.geometry.getAttribute('position') as
+      | BufferAttribute
+      | undefined;
     for (let i = 0; i < this.starNodes.length; i++) {
       const node = this.starNodes[i];
       node.object.group.position.copy(toFocusWorld(starPositions[i]));
       node.object.update(this.simTimeDays, this.camera);
-      const cameraDistance = this.camera.position.distanceTo(node.object.group.position);
-      node.marker.visible = node.radiusKm / cameraDistance < 0.004;
-      node.marker.position.copy(node.object.group.position);
-      node.marker.scale.setScalar(cameraDistance * 0.005);
+      spritePositions?.setXYZ(
+        i,
+        node.object.group.position.x,
+        node.object.group.position.y,
+        node.object.group.position.z,
+      );
     }
+    if (spritePositions) spritePositions.needsUpdate = true;
     const primaryWorld = this.starNodes.length
       ? this.starNodes[0].object.group.position
       : new Vector3();

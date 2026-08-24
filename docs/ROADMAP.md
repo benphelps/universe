@@ -11,7 +11,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Kepler solver (elements ⇄ state, any-time propagation) + tests
 - [x] Noise primitives (3D simplex, fBm, ridged, warp) seeded + worker-safe
 - [x] Blackbody → CIE → sRGB pipeline + temperature-color LUT + tests
-- [ ] Worker protocol + scheduler skeleton (deferred to M5, where terrain generation first needs it)
+- [x] Worker protocol + scheduler skeleton (landed with M5: typed request/response protocol, terrain worker pool with transferables and nearest-first dispatch, sky worker with per-seed cache)
 
 ## M1 — The Star ([plan](plan/02-star.md))
 
@@ -21,7 +21,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Star model test fixtures (Sun, M dwarf, red supergiant, white dwarf, brown dwarf) + population distribution tests
 - [x] Render: HDR pipeline + tone mapping + bloom
 - [x] Render: photosphere shader (granulation, limb darkening, spots), corona
-- [ ] Render: photometric star sprites (distance fade to correct magnitude/color)
+- [x] Render: photometric star sprites — one magnitude/color mapping shared by the backdrop, the 3D neighborhood, and the system's own stars once their discs fall subpixel; brightness follows true camera distance everywhere
 - [x] Demo: seed → star viewer (orbit camera around any generated star)
 
 ## M2 — The System ([plan](plan/03-system.md))
