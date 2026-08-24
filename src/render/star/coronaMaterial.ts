@@ -7,27 +7,26 @@ import { seedOffset } from './seedOffset';
 export const CORONA_SIZE_FACTOR = 8;
 
 const VERTEX = /* glsl */ `
-varying vec3 vWorldPos;
-varying vec3 vCenter;
+varying vec3 vRel;
 
 void main() {
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPos = worldPos.xyz;
-  vCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+  // Normalized billboard offset, scale-free: the world half-width comes
+  // from the model matrix, so the shader works in any scene unit.
+  float halfWidth = 0.5 * length(vec3(modelMatrix[0]));
+  vRel = (worldPos.xyz - (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz) / halfWidth;
   gl_Position = projectionMatrix * viewMatrix * worldPos;
 }
 `;
 
 const FRAGMENT = /* glsl */ `
-varying vec3 vWorldPos;
-varying vec3 vCenter;
+varying vec3 vRel;
 
 uniform vec3 uColor;
 uniform vec3 uSeedOffset;
 uniform float uTimeDays;
 uniform float uDiscRadius;
 uniform float uIntensity;
-uniform float uPlaneHalfWidth;
 uniform float uAxialTilt;
 uniform float uRotationRadPerDay;
 uniform float uDifferentialRotation;
@@ -50,8 +49,8 @@ vec3 rotateZ(vec3 p, float a) {
 
 void main() {
   // The billboard cuts through the star's center perpendicular to the view,
-  // so world-space fragment positions sample a 3D field with true parallax.
-  vec3 rel = (vWorldPos - vCenter) / uPlaneHalfWidth;
+  // so its fragments sample a 3D star-anchored field with true parallax.
+  vec3 rel = vRel;
   float r = length(rel);
   vec3 dir = rel / max(r, 1e-4);
 
@@ -97,7 +96,6 @@ export function createCoronaMaterial(star: Star): ShaderMaterial {
       uTimeDays: { value: 0 },
       uDiscRadius: { value: 2 / CORONA_SIZE_FACTOR },
       uIntensity: { value: 0.35 },
-      uPlaneHalfWidth: { value: (star.radius * CORONA_SIZE_FACTOR) / 2 },
       uAxialTilt: { value: star.activity.axialTiltRad },
       uRotationRadPerDay: { value: (2 * Math.PI) / star.activity.rotationPeriodDays },
       uDifferentialRotation: { value: star.activity.differentialRotation },

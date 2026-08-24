@@ -33,6 +33,7 @@ uniform float uSpotLatitude;
 uniform float uLimbU;
 uniform float uIntensity;
 uniform float uLuminosityMultiplier;
+uniform float uDetailFade;
 uniform vec3 uSeedOffset;
 
 ${SIMPLEX_NOISE_GLSL}
@@ -58,10 +59,12 @@ void main() {
   float angle = uTimeDays * uRotationRadPerDay * (1.0 - uDifferentialRotation * sinLat * sinLat);
   vec3 ps = rotateY(p, angle);
 
-  // Granulation: temperature texture advected slowly in a fourth dimension.
+  // Granulation: temperature texture advected slowly in a fourth
+  // dimension. Detail fades with apparent size — subpixel granules only
+  // alias, so a receding disc settles to its flat photosphere color.
   vec3 granulePos = ps * uGranuleFrequency + uSeedOffset;
   float granule = fbm(granulePos + vec3(0.0, 0.0, uTimeDays * 0.5));
-  float deltaT = granule * 180.0;
+  float deltaT = granule * 180.0 * uDetailFade;
 
   // Spot bands at activity latitudes, mirrored across the equator.
   float bandDistance = (abs(latitude) - uSpotLatitude) / 0.25;
@@ -69,7 +72,7 @@ void main() {
   float spotField = fbm(ps * 4.0 + uSeedOffset.zxy) * 0.5 + 0.5;
   float threshold = 1.0 - uSpotCoverage * 2.2;
   float spot = smoothstep(threshold, threshold + 0.12, spotField) * band;
-  deltaT -= 1600.0 * spot;
+  deltaT -= 1600.0 * spot * uDetailFade;
 
   float localT = uTeff + deltaT;
   vec3 color = texture2D(uLut, vec2(lutCoord(localT), 0.5)).rgb;
@@ -104,6 +107,7 @@ export function createPhotosphereMaterial(star: Star, lut: DataTexture): ShaderM
       uLimbU: { value: star.activity.limbDarkeningU },
       uIntensity: { value: 1.05 },
       uLuminosityMultiplier: { value: 1 },
+      uDetailFade: { value: 1 },
       uSeedOffset: { value: seedOffset(star) },
     },
   });
