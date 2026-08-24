@@ -16,5 +16,6 @@ self.onmessage = (event: MessageEvent<SkyRequest>) => {
     sky.starBrightness.buffer,
     sky.nebulaAtlas.buffer,
     sky.glowData.buffer,
+    sky.riftData.buffer,
   ]);
 };

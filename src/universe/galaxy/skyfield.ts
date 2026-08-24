@@ -40,6 +40,10 @@ export const NEBULA_TILE = 48;
 export const NEBULA_ATLAS_COLS = 8;
 export const NEBULA_ATLAS_ROWS = 6;
 
+/** Cloud-shadow transmission map resolution (4× the glow map). */
+export const RIFT_WIDTH = 768;
+export const RIFT_HEIGHT = 384;
+
 export interface SkyField {
   starCount: number;
   /** The first nearStarCount entries are the resolved 30 pc neighborhood
@@ -59,6 +63,9 @@ export interface SkyField {
   glowHeight: number;
   /** RGBA float lat-long map of unresolved background light. */
   glowData: Float32Array;
+  /** Lat-long transmission through nearby clouds (RIFT_WIDTH × HEIGHT,
+   *  one float per texel): sharp rift shadows multiplying the glow. */
+  riftData: Float32Array;
 }
 
 interface Shell {
@@ -481,6 +488,76 @@ function meanPopulationLuminosity(viewpoint: GalacticPosition): number {
   return lumSum / Math.max(weightSum, 1e-9);
 }
 
+/** Clouds inside this radius shadow the sky via the sharp rift map. */
+const RIFT_NEAR_PC = 1500;
+
+/**
+ * Transmission through the nearby clouds, texel-exact: each cloud within
+ * the near radius projects its footprint onto the lat-long map and only
+ * those texels march through its density field. Nearby clouds are what
+ * subtend degrees, so this map carries all the sharp rift structure at
+ * four times the glow resolution for a fraction of a full-sky march.
+ */
+function buildCloudTransmission(viewpoint: GalacticPosition, dustKappa: number): Float32Array {
+  const transmission = new Float32Array(RIFT_WIDTH * RIFT_HEIGHT).fill(1);
+  const rowRad = Math.PI / RIFT_HEIGHT;
+  const colRad = (2 * Math.PI) / RIFT_WIDTH;
+
+  for (const cloud of cloudsNear(viewpoint, RIFT_NEAR_PC)) {
+    const dx = cloud.positionPc.xPc - viewpoint.xPc;
+    const dy = cloud.positionPc.yPc - viewpoint.yPc;
+    const dz = cloud.positionPc.zPc - viewpoint.zPc;
+    const distance = Math.hypot(dx, dy, dz);
+    const reachPc = cloud.radiusPc * 1.6 * 2.5;
+    // Inside or engulfing the sky: no meaningful footprint to rasterize.
+    if (distance < reachPc || distance < 1) continue;
+    const angRad = Math.asin(Math.min(1, reachPc / distance));
+    if (angRad > 1.0) continue;
+
+    const dustFactor = dustDensity(cloud.positionPc) * 1.6 * dustKappa;
+    const lat0 = Math.asin(dz / distance);
+    const lon0 = Math.atan2(dy, dx);
+    const row0 = Math.max(0, Math.floor((lat0 - angRad + Math.PI / 2) / rowRad));
+    const row1 = Math.min(RIFT_HEIGHT - 1, Math.ceil((lat0 + angRad + Math.PI / 2) / rowRad));
+    const steps = 9;
+    const ds = (2 * reachPc) / steps;
+
+    for (let row = row0; row <= row1; row++) {
+      const latitude = (row + 0.5) * rowRad - Math.PI / 2;
+      const cosLat = Math.cos(latitude);
+      const lonHalf = Math.min(Math.PI, angRad / Math.max(cosLat, 0.03));
+      const col0 = Math.floor((lon0 - lonHalf) / colRad);
+      const col1 = Math.ceil((lon0 + lonHalf) / colRad);
+      for (let c = col0; c <= col1; c++) {
+        const column = ((c % RIFT_WIDTH) + RIFT_WIDTH) % RIFT_WIDTH;
+        const longitude = (column + 0.5) * colRad;
+        const vx = cosLat * Math.cos(longitude);
+        const vy = cosLat * Math.sin(longitude);
+        const vz = Math.sin(latitude);
+        // Quick cone rejection before marching.
+        const cosSep = (vx * dx + vy * dy + vz * dz) / distance;
+        if (cosSep < Math.cos(angRad)) continue;
+
+        let tau = 0;
+        for (let k = 0; k < steps; k++) {
+          const s = distance - reachPc + (k + 0.5) * ds;
+          tau +=
+            cloudLocalDensity(
+              cloud,
+              viewpoint.xPc + vx * s - cloud.positionPc.xPc,
+              viewpoint.yPc + vy * s - cloud.positionPc.yPc,
+              viewpoint.zPc + vz * s - cloud.positionPc.zPc,
+            ) *
+            dustFactor *
+            ds;
+        }
+        if (tau > 0) transmission[row * RIFT_WIDTH + column] *= Math.exp(-tau);
+      }
+    }
+  }
+  return transmission;
+}
+
 /**
  * Line-of-sight integration of unresolved starlight through the dust
  * disk. The visible band is dominated by the nearest kiloparsec or two —
@@ -495,6 +572,7 @@ function buildGlow(viewpoint: GalacticPosition): {
   glowWidth: number;
   glowHeight: number;
   glowData: Float32Array;
+  riftData: Float32Array;
 } {
   const width = 192;
   const height = 96;
@@ -521,8 +599,11 @@ function buildGlow(viewpoint: GalacticPosition): {
           yPc: viewpoint.yPc + dirY * s,
           zPc: viewpoint.zPc + dirZ * s,
         };
-        // Diffuse dust plus the cloud population's clumped component.
-        const clump = 0.45 + 1.6 * cloudFieldAt(position);
+        // Diffuse dust here; nearby clouds are carried by the sharp
+        // per-cloud transmission map instead, so this base map stays
+        // smooth at its texel scale. Distant clumping is sub-texel and
+        // folds back in statistically.
+        const clump = s > RIFT_NEAR_PC ? 0.45 + 1.6 * cloudFieldAt(position) : 0.45;
         opticalDepth += dustDensity(position) * clump * dustKappa * stepPc;
         light +=
           stellarDensity(position) * meanLuminosity * stepPc * Math.exp(-opticalDepth);
@@ -540,5 +621,10 @@ function buildGlow(viewpoint: GalacticPosition): {
       data[index + 3] = 1;
     }
   }
-  return { glowWidth: width, glowHeight: height, glowData: data };
+  return {
+    glowWidth: width,
+    glowHeight: height,
+    glowData: data,
+    riftData: buildCloudTransmission(viewpoint, dustKappa),
+  };
 }

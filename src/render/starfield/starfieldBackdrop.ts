@@ -10,6 +10,7 @@ import {
   LinearFilter,
   Mesh,
   Points,
+  RedFormat,
   RepeatWrapping,
   RGBAFormat,
   ShaderMaterial,
@@ -20,6 +21,8 @@ import {
   NEBULA_ATLAS_COLS,
   NEBULA_ATLAS_ROWS,
   NEBULA_TILE,
+  RIFT_HEIGHT,
+  RIFT_WIDTH,
   type SkyField,
 } from '../../universe/galaxy/skyfield';
 
@@ -104,6 +107,7 @@ const GLOW_FRAGMENT = /* glsl */ `
 varying vec3 vDir;
 
 uniform sampler2D uGlow;
+uniform sampler2D uRift;
 uniform float uIntensity;
 
 void main() {
@@ -111,7 +115,9 @@ void main() {
   float latitude = asin(clamp(vDir.y, -1.0, 1.0));
   float longitude = atan(vDir.z, vDir.x);
   vec2 uv = vec2(longitude / 6.2831853 + 0.5, latitude / 3.14159265 + 0.5);
-  gl_FragColor = vec4(texture2D(uGlow, uv).rgb * uIntensity, 1.0);
+  // Smooth starlight base times the sharp nearby-cloud transmission.
+  float rift = texture2D(uRift, uv).r;
+  gl_FragColor = vec4(texture2D(uGlow, uv).rgb * rift * uIntensity, 1.0);
 }
 `;
 
@@ -173,10 +179,26 @@ export class StarfieldBackdrop {
     texture.wrapS = RepeatWrapping;
     texture.wrapT = ClampToEdgeWrapping;
     texture.needsUpdate = true;
+    const riftTexture = new DataTexture(
+      sky.riftData,
+      RIFT_WIDTH,
+      RIFT_HEIGHT,
+      RedFormat,
+      FloatType,
+    );
+    riftTexture.minFilter = LinearFilter;
+    riftTexture.magFilter = LinearFilter;
+    riftTexture.wrapS = RepeatWrapping;
+    riftTexture.wrapT = ClampToEdgeWrapping;
+    riftTexture.needsUpdate = true;
     const glowMaterial = new ShaderMaterial({
       vertexShader: GLOW_VERTEX,
       fragmentShader: GLOW_FRAGMENT,
-      uniforms: { uGlow: { value: texture }, uIntensity: { value: 1 } },
+      uniforms: {
+        uGlow: { value: texture },
+        uRift: { value: riftTexture },
+        uIntensity: { value: 1 },
+      },
       blending: AdditiveBlending,
       transparent: true,
       depthWrite: false,
