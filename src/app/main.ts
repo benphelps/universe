@@ -7,7 +7,6 @@ import { InfoPanel } from './ui/infoPanel';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
-import { GalaxyViewer } from './galaxyViewer';
 import { PRESET_TIME_SCALE, UnifiedViewer } from './unifiedViewer';
 
 const viewElement = document.getElementById('view')!;
@@ -20,7 +19,7 @@ const galaxyPanel = new GalaxyInfoPanel(infoElement);
 let viewMode: ViewMode = 'star';
 let seedHex = '';
 let planetIndex = 0;
-let viewer: UnifiedViewer | GalaxyViewer | null = null;
+let viewer: UnifiedViewer | null = null;
 let system: StarSystem | null = null;
 let exposure = 1;
 let timeScale: number | null = null;
@@ -32,54 +31,43 @@ function randomSeedHex(): string {
 }
 
 /**
- * Star, system, and planet are presets of the one unified viewer — the
- * same scene focused and framed differently — so switching between them
- * (or stepping planets) never rebuilds the renderer. Only the galaxy
- * view still swaps viewers; folding it in is the renderer's last step.
+ * Every view is a preset of the one unified viewer — the same scene
+ * focused and framed differently — so switching between them (or
+ * stepping planets, or travelling to a neighbor star) never rebuilds
+ * the renderer.
  */
 function load(nextSeedHex: string): void {
   seedHex = seedToHex(seedFromHex(nextSeedHex));
   const seed = seedFromHex(seedHex);
 
-  if (viewMode === 'galaxy') {
-    viewer?.dispose();
-    system = null;
-    const galaxyViewer = new GalaxyViewer(viewElement);
-    galaxyViewer.setSeed(seedHex);
-    galaxyPanel.render(seedHex, galaxyViewer.neighbors, (nextSeed) => load(nextSeed));
-    viewer = galaxyViewer;
-  } else {
-    if (!(viewer instanceof UnifiedViewer)) {
-      viewer?.dispose();
-      viewer = new UnifiedViewer(viewElement);
-      system = null;
-    }
-    if (!system || system.seedHex !== seedHex) {
-      system = generateSystem(seed);
-      viewer.setSystem(system);
-    }
-    if (viewMode === 'star') {
-      viewer.setFocus('star', 'star');
-      starPanel.render(system.star);
-    } else if (viewMode === 'system') {
-      viewer.setFocus('star', 'system');
-      systemPanel.render(system);
-    } else if (system.planets.length === 0) {
-      viewer.setFocus('star', 'star');
-      planetPanel.renderEmpty(system);
-      controls.planetLabel = '—';
-    } else {
-      const count = system.planets.length;
-      planetIndex = ((planetIndex % count) + count) % count;
-      const planet = system.planets[planetIndex];
-      viewer.setFocus(planetIndex, 'planet');
-      planetPanel.render(system, planet, planetIndex);
-      controls.planetLabel = planet.name.split(' ').pop() ?? '';
-    }
-    viewer.timeScaleDaysPerSecond = timeScale ?? PRESET_TIME_SCALE[viewMode];
+  if (!viewer) viewer = new UnifiedViewer(viewElement);
+  if (!system || system.seedHex !== seedHex) {
+    system = generateSystem(seed);
+    viewer.setSystem(system);
   }
+  if (viewMode === 'star') {
+    viewer.setFocus('star', 'star');
+    starPanel.render(system.star);
+  } else if (viewMode === 'system') {
+    viewer.setFocus('star', 'system');
+    systemPanel.render(system);
+  } else if (viewMode === 'galaxy') {
+    viewer.setFocus('star', 'galaxy');
+    galaxyPanel.render(seedHex, viewer.neighbors, (nextSeed) => load(nextSeed));
+  } else if (system.planets.length === 0) {
+    viewer.setFocus('star', 'star');
+    planetPanel.renderEmpty(system);
+    controls.planetLabel = '—';
+  } else {
+    const count = system.planets.length;
+    planetIndex = ((planetIndex % count) + count) % count;
+    const planet = system.planets[planetIndex];
+    viewer.setFocus(planetIndex, 'planet');
+    planetPanel.render(system, planet, planetIndex);
+    controls.planetLabel = planet.name.split(' ').pop() ?? '';
+  }
+  viewer.timeScaleDaysPerSecond = timeScale ?? PRESET_TIME_SCALE[viewMode];
   viewer.exposure = exposure;
-  if (timeScale !== null) viewer.timeScaleDaysPerSecond = timeScale;
 
   controls.seed = seedHex;
   controls.view = viewMode;

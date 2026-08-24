@@ -1,5 +1,5 @@
 import { seedFromHex } from '../../core/rng/hash';
-import type { Neighbor } from '../galaxyViewer';
+import { NEIGHBOR_RADIUS_PC, type Neighbor } from '../../universe/galaxy/neighborhood';
 import { generateStar } from '../../universe/star/generate';
 import { fmt } from './format';
 
@@ -23,7 +23,7 @@ export class GalaxyInfoPanel {
 
     this.element.innerHTML = `
       <h1>${current.designation}</h1>
-      <div class="sub">${current.spectralType} · the local neighborhood (${neighbors.length} stars within 20 pc)</div>
+      <div class="sub">${current.spectralType} · the local neighborhood (${neighbors.length} stars within ${NEIGHBOR_RADIUS_PC} pc)</div>
       <h2>Travel to</h2>
       ${rows.join('')}
     `;

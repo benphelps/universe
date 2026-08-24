@@ -22,9 +22,11 @@ import {
   EARTH_MASS,
   EARTH_RADIUS,
   G,
+  PARSEC,
   SOLAR_MASS,
   SOLAR_RADIUS,
 } from '../core/physics/constants';
+import { seedFromHex } from '../core/rng/hash';
 import { createTemperatureLutTexture } from '../render/color/temperatureLut';
 import { createAtmosphereShell } from '../render/planet/atmosphereShell';
 import { PlanetObject } from '../render/planet/planetObject';
@@ -33,6 +35,7 @@ import { applyOccluders } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
 import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
+import { createNeighborStars } from '../render/starfield/neighborStars';
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
@@ -41,6 +44,11 @@ import { TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
+import {
+  computeNeighborhood,
+  NEIGHBOR_RADIUS_PC,
+  type Neighbor,
+} from '../universe/galaxy/neighborhood';
 import type { Moon } from '../universe/moon/types';
 import type { Star } from '../universe/star/types';
 import { maxCraterDepthM } from '../universe/surface/craters';
@@ -52,9 +60,12 @@ import type { Planet, StarSystem } from '../universe/system/types';
 const EARTH_RADIUS_KM = EARTH_RADIUS / 1000;
 const SOLAR_RADIUS_KM = SOLAR_RADIUS / 1000;
 const AU_KM = AU / 1000;
+const PC_KM = PARSEC / 1000;
+const GALAXY_ARRIVAL_ALTITUDE_KM = 15 * PC_KM;
+const MAX_ALTITUDE_KM = NEIGHBOR_RADIUS_PC * 1.5 * PC_KM;
 
 export type FocusTarget = 'star' | number;
-export type ScenePreset = 'star' | 'system' | 'planet';
+export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 export const PRESET_TIME_SCALE: Record<ScenePreset, number> = {
   star: 0.05,
@@ -62,6 +73,7 @@ export const PRESET_TIME_SCALE: Record<ScenePreset, number> = {
   // Near-frozen: fast rotators would otherwise sweep the sun across the
   // sky (and into night) within a minute of arriving.
   planet: 0.001,
+  galaxy: 0,
 };
 
 interface MoonEntry {
@@ -113,6 +125,8 @@ function markerColor(
  */
 export class UnifiedViewer {
   timeScaleDaysPerSecond = PRESET_TIME_SCALE.planet;
+  /** Travel list for the current system's stellar neighborhood. */
+  neighbors: Neighbor[] = [];
   private simTimeDays = 0;
   private disposed = false;
   private readonly scene = new Scene();
@@ -126,6 +140,9 @@ export class UnifiedViewer {
   /** Map-frame subgroups (1 unit = 1 AU, z out of plane) inside it. */
   private readonly auGroup = new Group();
   private readonly overlay = new Group();
+  /** Neighborhood stars (1 unit = 1 pc, already scene-frame) inside it. */
+  private readonly pcGroup = new Group();
+  private neighborPoints: Points | null = null;
   private starNodes: StarNode[] = [];
   private planetNodes: PlanetNode[] = [];
   private beltMaterials: ShaderMaterial[] = [];
@@ -171,6 +188,8 @@ export class UnifiedViewer {
       group.scale.setScalar(AU_KM);
       this.heliocentric.add(group);
     }
+    this.pcGroup.scale.setScalar(PC_KM);
+    this.heliocentric.add(this.pcGroup);
     this.scene.add(this.heliocentric);
 
     // Right-drag turns the head at low altitude (left-drag moves over
@@ -271,9 +290,18 @@ export class UnifiedViewer {
       );
     }
 
+    // The neighborhood rides in the scene as true 3D points: the night
+    // sky's near field from the ground, the flyable galaxy layer from
+    // interstellar altitude — the same objects, parallax-correct.
+    const hood = computeNeighborhood(seedFromHex(system.seedHex));
+    this.neighbors = hood.neighbors;
+    this.neighborPoints = createNeighborStars(hood, PC_KM);
+    this.pcGroup.add(this.neighborPoints);
+
     getSkyField(system.seedHex).then((sky) => {
       if (this.disposed || this.system !== system) return;
-      this.backdrop = new StarfieldBackdrop(sky, 2000);
+      // Skip the near field: those stars are the 3D layer above.
+      this.backdrop = new StarfieldBackdrop(sky, 2000, sky.nearStarCount);
       this.scene.add(this.backdrop.group);
     });
   }
@@ -339,18 +367,25 @@ export class UnifiedViewer {
     } else {
       this.radiusKm = Math.max(this.system.star.radius, 1e-4) * SOLAR_RADIUS_KM;
       this.minAltitudeKm = this.radiusKm * 0.3;
-      this.altitudeKm = preset === 'system' ? this.extentKm : this.radiusKm * 3.2;
+      this.altitudeKm =
+        preset === 'system'
+          ? this.extentKm
+          : preset === 'galaxy'
+            ? GALAXY_ARRIVAL_ALTITUDE_KM
+            : this.radiusKm * 3.2;
     }
 
     // Arrive over a planet's lit face, offset so sunlight rakes and
-    // casts relief; at the star, near-horizontal for the limb close-up
-    // or overhead for the system map framing.
+    // casts relief; at the star, near-horizontal for the limb close-up,
+    // overhead for the system map, or oblique for the neighborhood.
     const focusPos = this.focusPositionKm();
     const toStar = this.focusPlanet
       ? focusPos.normalize().negate()
-      : preset === 'system'
-        ? new Vector3(0.35, 1.15, 0.85).normalize()
-        : new Vector3(0.3, 0.17, 1).normalize();
+      : preset === 'galaxy'
+        ? new Vector3(3, 5, 14).normalize()
+        : preset === 'system'
+          ? new Vector3(0.35, 1.15, 0.85).normalize()
+          : new Vector3(0.3, 0.17, 1).normalize();
     const arrival = toStar.clone().applyAxisAngle(new Vector3(0, 1, 0), 0.7).normalize();
     this.camera.position.copy(arrival).multiplyScalar(this.radiusKm + this.altitudeKm);
     this.camera.up.set(0, 1, 0);
@@ -383,7 +418,7 @@ export class UnifiedViewer {
   }
 
   private maxAltitudeKm(): number {
-    return Math.max(this.extentKm * 1.5, this.radiusKm * 60);
+    return MAX_ALTITUDE_KM;
   }
 
   private buildMoons(planet: Planet): void {
@@ -476,6 +511,13 @@ export class UnifiedViewer {
     for (const comet of this.cometObjects) comet.dispose();
     this.cometObjects = [];
     this.beltMaterials = [];
+    if (this.neighborPoints) {
+      this.pcGroup.remove(this.neighborPoints);
+      this.neighborPoints.geometry.dispose();
+      (this.neighborPoints.material as ShaderMaterial).dispose();
+      this.neighborPoints = null;
+    }
+    this.neighbors = [];
     for (const child of [...this.auGroup.children, ...this.overlay.children]) {
       child.parent?.remove(child);
       child.traverse((obj) => {
@@ -491,6 +533,14 @@ export class UnifiedViewer {
       this.backdrop = null;
     }
     this.system = null;
+  }
+
+  /** Daylight washout applied to everything stellar beyond the system. */
+  private setSkyIntensity(value: number): void {
+    if (this.backdrop) this.backdrop.intensity = value;
+    if (this.neighborPoints) {
+      (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
+    }
   }
 
   /**
@@ -587,14 +637,18 @@ export class UnifiedViewer {
         this.camera.quaternion.setFromRotationMatrix(gaze);
       }
 
-      // Near tracks altitude (nothing sits closer than the ground below);
-      // far reaches the stars and the system's rim — every object is at
-      // its true position, so occlusion is plain depth testing.
-      this.camera.near = Math.min(2000, Math.max(0.006, this.altitudeKm * 0.15));
+      // Near tracks altitude (nothing sits closer than the ground below,
+      // and at interstellar heights the nearest star is parsecs away);
+      // far always reaches the neighborhood — every object is at its
+      // true position, so occlusion is plain depth testing.
+      this.camera.near = Math.max(
+        0.006,
+        Math.min(2000, this.altitudeKm * 0.15),
+        this.altitudeKm * 1e-4,
+      );
       this.camera.far = Math.max(
         this.camera.position.length() * 2.5,
-        this.starDistanceKm * 1.1,
-        this.extentKm * 1.5,
+        NEIGHBOR_RADIUS_PC * PC_KM * 2.5,
       );
       this.camera.updateProjectionMatrix();
 
@@ -704,7 +758,10 @@ export class UnifiedViewer {
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
     }
 
-    if (!this.focusPlanet) return;
+    if (!this.focusPlanet) {
+      this.setSkyIntensity(1);
+      return;
+    }
     const { atmosphere } = this.focusPlanet.physical;
     const sunElevation = Math.max(0, sunDir.dot(up));
     const scaleHeightKm = Math.max(atmosphere.scaleHeightKm, 3);
@@ -720,13 +777,11 @@ export class UnifiedViewer {
       new Color(...lightColor).multiplyScalar(0.35 + 0.65 * sunElevation),
     );
 
-    if (this.backdrop) {
-      const dayWash =
-        atmosphere.class === 'none' || !solid
-          ? 0
-          : Math.min(1, sunElevation * Math.min(1, atmosphere.surfacePressureBar) * immersion * 3);
-      this.backdrop.intensity = 1 - dayWash * 0.97;
-    }
+    const dayWash =
+      atmosphere.class === 'none' || !solid
+        ? 0
+        : Math.min(1, sunElevation * Math.min(1, atmosphere.surfacePressureBar) * immersion * 3);
+    this.setSkyIntensity(1 - dayWash * 0.97);
 
     if (this.atmosphereShell) {
       const material = this.atmosphereShell.material as ShaderMaterial;

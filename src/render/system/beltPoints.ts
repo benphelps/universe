@@ -20,12 +20,19 @@ uniform float uTimeYears;
 uniform float uSqrtCentralMass;
 uniform float uPointScale;
 
+varying float vFade;
+
 void main() {
   // Keplerian mean motion per body: n = 2π√(M★)/a^1.5 (years, AU).
   float theta = theta0 + uTimeYears * 6.2831853 * uSqrtCentralMass / pow(aAu, 1.5);
   vec3 pos = vec3(aAu * cos(theta), aAu * sin(theta), yAmp * sin(theta + phase));
   vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-  gl_PointSize = clamp(uPointScale / -mvPosition.z, 0.5, 3.0);
+  float rawSize = uPointScale / -mvPosition.z;
+  // Sub-pixel points fade out: thousands of clamped additive points
+  // would otherwise stack into a saturated blob at extreme distances.
+  vFade = clamp(rawSize / 0.5, 0.0, 1.0);
+  vFade *= vFade;
+  gl_PointSize = clamp(rawSize, 0.5, 3.0);
   gl_Position = projectionMatrix * mvPosition;
 }
 `;
@@ -33,10 +40,12 @@ void main() {
 const FRAGMENT = /* glsl */ `
 uniform vec3 uColor;
 
+varying float vFade;
+
 void main() {
   vec2 c = gl_PointCoord * 2.0 - 1.0;
   float alpha = 1.0 - smoothstep(0.4, 1.0, length(c));
-  gl_FragColor = vec4(uColor * alpha * 0.55, 1.0);
+  gl_FragColor = vec4(uColor * alpha * 0.55 * vFade, 1.0);
 }
 `;
 
