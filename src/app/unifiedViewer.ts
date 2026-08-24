@@ -466,14 +466,10 @@ export class UnifiedViewer {
     this.camera.up.set(0, 1, 0);
     this.controls.update();
 
-    // Face the sun's azimuth on arrival so descending keeps it in view.
-    const north =
-      Math.abs(arrival.y) > 0.99
-        ? new Vector3(1, 0, 0)
-        : new Vector3(0, 1, 0).addScaledVector(arrival, -arrival.y).normalize();
-    const east = new Vector3().crossVectors(north, arrival);
-    const sunTangent = toStar.clone().addScaledVector(arrival, -toStar.dot(arrival));
-    this.headingRad = Math.atan2(sunTangent.dot(east), sunTangent.dot(north));
+    // Descending pitches toward screen-up: the orbit view keeps north
+    // at the top of the frame, so a zero heading makes the horizon rise
+    // straight ahead instead of sweeping sideways. Right-drag turns.
+    this.headingRad = 0;
     this.pitchRad = 0;
   }
 
