@@ -43,7 +43,11 @@ export function generateDisk(rng: Rng, star: Star): DiskModel {
     outerAu,
     sigma0,
     frostLineAu: 2.7 * Math.sqrt(zamsLuminosity),
-    metallicityBoost: 10 ** star.feH,
+    // Sub-linear in metal fraction: observed small-planet occurrence is
+    // nearly flat in [Fe/H] (planetesimal formation compensates), while
+    // giants stay steeply metallicity-dependent through the core-mass
+    // threshold downstream.
+    metallicityBoost: 10 ** (0.55 * star.feH),
   };
 }
 

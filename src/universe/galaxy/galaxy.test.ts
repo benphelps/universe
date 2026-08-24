@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { Rng } from '../../core/rng/rng';
 import { generateStar } from '../star/generate';
 import { HOME_POSITION, stellarDensity } from './density';
+import { sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
 import { drawPopulation } from './population';
 import { sectorStars, starsNear, viewpointForSeed } from './sectors';
@@ -49,11 +50,46 @@ describe('sectors', () => {
     }
   });
 
-  it('viewpoints are deterministic and near home', () => {
+  it('viewpoints are deterministic, spread across the disk', () => {
     const a = viewpointForSeed(0xabc123n);
     expect(viewpointForSeed(0xabc123n)).toEqual(a);
-    expect(Math.abs(a.xPc - 8000)).toBeLessThan(200);
     expect(viewpointForSeed(0xdef456n)).not.toEqual(a);
+    const radii = new Set<number>();
+    for (let i = 0; i < 40; i++) {
+      const v = viewpointForSeed(BigInt(1000 + i * 7919));
+      const radius = Math.hypot(v.xPc, v.yPc);
+      expect(radius).toBeGreaterThan(5000);
+      expect(radius).toBeLessThan(12100);
+      expect(Math.abs(v.zPc)).toBeLessThan(400);
+      radii.add(Math.round(radius / 1000));
+    }
+    // Locales genuinely differ: inner and outer disk both occur.
+    expect(radii.size).toBeGreaterThan(3);
+  });
+
+  it('sky orientations are deterministic proper rotations that vary', () => {
+    const m = sceneFromGalaxy(0xabc123n);
+    expect([...sceneFromGalaxy(0xabc123n)]).toEqual([...m]);
+    expect([...sceneFromGalaxy(0x123abcn)]).not.toEqual([...m]);
+    // Orthonormal rows and positive determinant.
+    for (const [a, b] of [
+      [0, 1],
+      [0, 2],
+      [1, 2],
+    ]) {
+      const dot =
+        m[a * 3] * m[b * 3] + m[a * 3 + 1] * m[b * 3 + 1] + m[a * 3 + 2] * m[b * 3 + 2];
+      expect(Math.abs(dot)).toBeLessThan(1e-5);
+    }
+    for (let row = 0; row < 3; row++) {
+      const norm = Math.hypot(m[row * 3], m[row * 3 + 1], m[row * 3 + 2]);
+      expect(norm).toBeCloseTo(1, 5);
+    }
+    const det =
+      m[0] * (m[4] * m[8] - m[5] * m[7]) -
+      m[1] * (m[3] * m[8] - m[5] * m[6]) +
+      m[2] * (m[3] * m[7] - m[4] * m[6]);
+    expect(det).toBeCloseTo(1, 4);
   });
 });
 

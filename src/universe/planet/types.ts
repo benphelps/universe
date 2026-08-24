@@ -67,6 +67,8 @@ export interface PlanetClimate {
   snowball: boolean;
   /** Photosynthetic oxygen atmosphere present. */
   biosphere: boolean;
+  /** Thermostat-regulated CO₂ column, bar (0 on unregulated worlds). */
+  co2Bar: number;
 }
 
 export interface GiantBanding {

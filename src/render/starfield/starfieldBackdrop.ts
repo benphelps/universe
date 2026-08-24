@@ -8,6 +8,7 @@ import {
   FloatType,
   Group,
   LinearFilter,
+  Matrix3,
   Mesh,
   Points,
   RedFormat,
@@ -17,6 +18,7 @@ import {
   SphereGeometry,
   Vector4,
 } from 'three';
+import { rotateToScene } from '../../universe/galaxy/orientation';
 import {
   DARK_ATLAS_COLS,
   DARK_ATLAS_ROWS,
@@ -110,6 +112,7 @@ void main() {
 const GLOW_FRAGMENT = /* glsl */ `
 varying vec3 vDir;
 
+uniform mat3 uSceneToGalaxy;
 uniform sampler2D uGlow;
 uniform sampler2D uRift;
 uniform sampler2D uDarkAtlas;
@@ -121,9 +124,10 @@ uniform float uIntensity;
 
 void main() {
   vec3 dir = normalize(vDir);
-  // Scene frame → galactic frame: scene y is the disk normal.
-  float latitude = asin(clamp(dir.y, -1.0, 1.0));
-  float longitude = atan(dir.z, dir.x);
+  // Into the galactic frame (per-system orientation); z is the disk normal.
+  vec3 g = uSceneToGalaxy * dir;
+  float latitude = asin(clamp(g.z, -1.0, 1.0));
+  float longitude = atan(g.y, g.x);
   vec2 uv = vec2(longitude / 6.2831853 + 0.5, latitude / 3.14159265 + 0.5);
 
   // Smooth starlight base, shadowed by the small-cloud map and by each
@@ -160,14 +164,21 @@ export class StarfieldBackdrop {
 
   /** skipStars omits the first N sky entries (a 3D view of the near field). */
   constructor(sky: SkyField, radius: number, skipStars = 0) {
+    const orientation = sky.sceneFromGalaxy;
     const count = sky.starCount - skipStars;
     const positions = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       const s = i + skipStars;
-      // Galactic (x, y, z-disk) → scene (x, z, y): the band lies on the horizon.
-      positions[i * 3] = sky.starDirs[s * 3] * radius;
-      positions[i * 3 + 1] = sky.starDirs[s * 3 + 2] * radius;
-      positions[i * 3 + 2] = sky.starDirs[s * 3 + 1] * radius;
+      // Galactic direction into this system's randomly-oriented frame.
+      const [x, y, z] = rotateToScene(
+        orientation,
+        sky.starDirs[s * 3],
+        sky.starDirs[s * 3 + 1],
+        sky.starDirs[s * 3 + 2],
+      );
+      positions[i * 3] = x * radius;
+      positions[i * 3 + 1] = y * radius;
+      positions[i * 3 + 2] = z * radius;
     }
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(positions, 3));
@@ -230,9 +241,9 @@ export class StarfieldBackdrop {
     darkTexture.wrapS = ClampToEdgeWrapping;
     darkTexture.wrapT = ClampToEdgeWrapping;
     darkTexture.needsUpdate = true;
-    // Galactic (x, y, z-disk) → scene (x, z, y), like the stars.
+    // Galactic vectors into this system's frame, like the stars.
     const toScene = (v: [number, number, number], w: number): Vector4 =>
-      new Vector4(v[0], v[2], v[1], w);
+      new Vector4(...rotateToScene(orientation, v[0], v[1], v[2]), w);
     const darkA = Array.from({ length: MAX_DARK }, (_, i) => {
       const patch = sky.darkClouds[i];
       return patch ? toScene(patch.dir, patch.halfExtent) : new Vector4(0, 1, 0, 1);
@@ -249,6 +260,13 @@ export class StarfieldBackdrop {
       vertexShader: GLOW_VERTEX,
       fragmentShader: GLOW_FRAGMENT,
       uniforms: {
+        uSceneToGalaxy: {
+          value: new Matrix3().set(
+            orientation[0], orientation[3], orientation[6],
+            orientation[1], orientation[4], orientation[7],
+            orientation[2], orientation[5], orientation[8],
+          ),
+        },
         uGlow: { value: texture },
         uRift: { value: riftTexture },
         uDarkAtlas: { value: darkTexture },

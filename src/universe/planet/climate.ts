@@ -43,10 +43,37 @@ export function computeClimate(
   let iceCapLatitudeRad = Math.PI / 2;
   let oceanCoverage = 0;
   let snowball = false;
+  let co2Bar = 0;
+
+  // Carbonate–silicate thermostat: on geologically active worlds with
+  // water, silicate weathering regulates volcanic CO₂ against
+  // temperature drift — it shuts off when cold so CO₂ accumulates, and
+  // accelerates when warm, drawing it down. This feedback is what makes
+  // the outer habitable zone habitable; dead worlds get no regulation,
+  // and far enough out the CO₂ itself condenses and the thermostat fails.
+  const thermostatActive =
+    !envelope &&
+    waterMassFraction > 3e-5 &&
+    (interior.regime === 'active-tectonics' || interior.regime === 'stagnant-lid') &&
+    (atmosphere.class === 'nitrogen' ||
+      atmosphere.class === 'nitrogen-oxygen' ||
+      atmosphere.class === 'thin-co2');
+  const thermostatTargetK = rng.range(279, 295);
+  const co2CapBar = 8;
 
   for (let iteration = 0; iteration < 12; iteration++) {
     const equilibriumK = T_EQ_1AU * instellation ** 0.25 * (1 - bondAlbedo) ** 0.25;
-    surfaceMeanK = equilibriumK * (1 + 0.75 * atmosphere.opticalDepth) ** 0.25;
+
+    if (thermostatActive && equilibriumK > 175) {
+      const targetTau =
+        ((thermostatTargetK / Math.max(equilibriumK, 1)) ** 4 - 1) / 0.75;
+      const neededBar =
+        (Math.max(0, targetTau - atmosphere.opticalDepth) / 5.8) ** (1 / 0.7);
+      co2Bar = co2Bar * 0.5 + Math.min(co2CapBar, neededBar) * 0.5;
+    }
+    const opticalDepth = atmosphere.opticalDepth + 5.8 * co2Bar ** 0.7;
+    const pressureBar = atmosphere.surfacePressureBar + co2Bar;
+    surfaceMeanK = equilibriumK * (1 + 0.75 * opticalDepth) ** 0.25;
 
     if (envelope) {
       // No surface: report the cloud-top temperature instead.
@@ -59,12 +86,12 @@ export function computeClimate(
     }
 
     // Polar temperature falls below the mean; thick atmospheres transport heat.
-    const transport = Math.min(1, atmosphere.surfacePressureBar) * 0.6;
+    const transport = Math.min(1, pressureBar) * 0.6;
     const poleDeltaK = 55 * (1 - 0.6 * transport);
     // Permanent ice needs annual means ~10 K below freezing.
     const capFreezeK = 263;
     const fullFreezeK = 266;
-    const boilK = 373 * Math.min(1.5, Math.max(0.75, atmosphere.surfacePressureBar ** 0.08));
+    const boilK = 373 * Math.min(1.5, Math.max(0.75, pressureBar ** 0.08));
 
     const hasWater = waterMassFraction > 3e-5;
     const wasHydrosphere: Hydrosphere = hydrosphere;
@@ -89,7 +116,7 @@ export function computeClimate(
     const cloudAlbedo =
       atmosphere.class === 'co2-hothouse'
         ? 0.5
-        : 0.18 * Math.min(1, atmosphere.surfacePressureBar) * (oceanCoverage > 0 ? 1 : 0.3);
+        : 0.18 * Math.min(1, pressureBar) * (oceanCoverage > 0 ? 1 : 0.3);
     const surfaceAlbedo = 0.15 * (1 - oceanCoverage) + 0.06 * oceanCoverage;
     const next = Math.min(
       0.75,
@@ -102,7 +129,7 @@ export function computeClimate(
   const equilibriumK = T_EQ_1AU * instellation ** 0.25 * (1 - bondAlbedo) ** 0.25;
 
   // Locked worlds: redistribution efficiency sets the day–night contrast.
-  const redistribution = Math.min(1, atmosphere.surfacePressureBar * 0.8);
+  const redistribution = Math.min(1, (atmosphere.surfacePressureBar + co2Bar) * 0.8);
   const dayNightDeltaK = rotation.locked ? equilibriumK * 0.9 * (1 - redistribution) : 0;
 
   const biosphere =
@@ -121,5 +148,6 @@ export function computeClimate(
     dayNightDeltaK,
     snowball,
     biosphere,
+    co2Bar,
   };
 }

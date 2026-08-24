@@ -91,6 +91,15 @@ export function characterizePlanet(
     star.ageGyr,
   );
   if (climate.biosphere) atmosphere = withOxygen(atmosphere);
+  if (climate.co2Bar > 0.005) {
+    // The thermostat's CO₂ is real mass: fold it into the column the
+    // rest of the pipeline (and the panel) sees.
+    atmosphere = {
+      ...atmosphere,
+      surfacePressureBar: atmosphere.surfacePressureBar + climate.co2Bar,
+      opticalDepth: atmosphere.opticalDepth + 5.8 * climate.co2Bar ** 0.7,
+    };
+  }
 
   return {
     seedHex: seedToHex(seed),

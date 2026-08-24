@@ -9,7 +9,8 @@ export interface SkyRequest {
 /** Builds a system's sky off the frame loop; arrays return as transferables. */
 self.onmessage = (event: MessageEvent<SkyRequest>) => {
   const { seedHex } = event.data;
-  const sky = buildSkyField(viewpointForSeed(seedFromHex(seedHex)));
+  const seed = seedFromHex(seedHex);
+  const sky = buildSkyField(viewpointForSeed(seed), seed);
   (self as unknown as Worker).postMessage({ seedHex, sky }, [
     sky.starDirs.buffer,
     sky.starColors.buffer,

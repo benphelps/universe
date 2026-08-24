@@ -16,6 +16,7 @@ import {
   type MolecularCloud,
 } from './clouds';
 import { dustDensity, stellarDensity, type GalacticPosition } from './density';
+import { sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
 import { drawPopulation } from './population';
 import { starsNear } from './sectors';
@@ -93,6 +94,9 @@ export interface SkyField {
   darkClouds: DarkCloudPatch[];
   /** Ray-marched transmission tile per dark cloud (DARK_TILE² each). */
   darkAtlas: Float32Array;
+  /** Row-major galactic→scene rotation: each system's frame sits at its
+   *  own random orientation within the galaxy. */
+  sceneFromGalaxy: Float32Array;
 }
 
 interface Shell {
@@ -137,7 +141,7 @@ export function imfFractionAbove(massCut: number): number {
   return above / total;
 }
 
-export function buildSkyField(viewpoint: GalacticPosition): SkyField {
+export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField {
   const lut = buildTemperatureLut(96);
   const dirs: number[] = [];
   const colors: number[] = [];
@@ -217,6 +221,7 @@ export function buildSkyField(viewpoint: GalacticPosition): SkyField {
     nebulaAtlas,
     darkClouds,
     darkAtlas,
+    sceneFromGalaxy: sceneFromGalaxy(seed),
     ...buildGlow(viewpoint, spriteSeeds),
   };
 }

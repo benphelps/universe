@@ -81,15 +81,21 @@ export function starsNear(positionPc: GalacticPosition, radiusPc: number): StarS
 }
 
 /**
- * Deterministic locale for an arbitrary star seed: a spot near the home
- * position, so every seed's sky is its own believable neighborhood.
+ * Deterministic locale for an arbitrary star seed: anywhere in the
+ * inhabited disk — any galactocentric radius in the stellar belt, any
+ * azimuth, settled toward the midplane. Band brightness, bulge
+ * prominence, rift patterns, and the population mix all follow from
+ * where the system actually sits.
  */
 export function viewpointForSeed(seed: bigint): GalacticPosition {
   const unit = (channel: number): number =>
     Number(mix64(seed ^ deriveSeed(UNIVERSE_SEED, 'viewpoint', channel)) & 0xfffffn) / 0xfffff;
+  const radius = 5200 + 6800 * unit(0);
+  const azimuth = unit(1) * 2 * Math.PI;
+  const settled = unit(2) * 2 - 1;
   return {
-    xPc: 8000 + (unit(0) - 0.5) * 300,
-    yPc: (unit(1) - 0.5) * 300,
-    zPc: 20 + (unit(2) - 0.5) * 80,
+    xPc: radius * Math.cos(azimuth),
+    yPc: radius * Math.sin(azimuth),
+    zPc: settled * Math.abs(settled) * 350 + 15,
   };
 }

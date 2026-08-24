@@ -1,5 +1,6 @@
 import { buildTemperatureLut, temperatureToLutCoord } from '../../core/color/blackbody';
 import { seedToHex } from '../../core/rng/hash';
+import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
 import { starsNear, viewpointForSeed } from './sectors';
 
@@ -16,7 +17,7 @@ export interface Neighbor {
 export interface Neighborhood {
   /** Travel list, nearest first. */
   neighbors: Neighbor[];
-  /** Scene-frame positions (disk normal up), pc, relative to home. */
+  /** Scene-frame positions (per-seed galaxy orientation), pc, relative to home. */
   positionsPc: Float32Array;
   colors: Float32Array;
   luminosities: Float32Array;
@@ -29,6 +30,7 @@ export interface Neighborhood {
  */
 export function computeNeighborhood(seed: bigint): Neighborhood {
   const viewpoint = viewpointForSeed(seed);
+  const orientation = sceneFromGalaxy(seed);
   const lut = buildTemperatureLut(96);
   const positions: number[] = [];
   const colors: number[] = [];
@@ -42,8 +44,8 @@ export function computeNeighborhood(seed: bigint): Neighborhood {
     const dy = slot.positionPc.yPc - viewpoint.yPc;
     const dz = slot.positionPc.zPc - viewpoint.zPc;
     if (dx * dx + dy * dy + dz * dz < 1e-6) continue;
-    // Galactic (x, y, z-disk) → scene (x, z, y), matching the backdrop.
-    positions.push(dx, dz, dy);
+    // Into this system's randomly-oriented scene frame, like the backdrop.
+    positions.push(...rotateToScene(orientation, dx, dy, dz));
     const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(physical.tEff) * 95)) * 4;
     colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
     luminosities.push(physical.luminosity);
