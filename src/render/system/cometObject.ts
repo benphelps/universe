@@ -7,7 +7,7 @@ import {
   Line,
   LineBasicMaterial,
   Mesh,
-  MeshBasicMaterial,
+  ShaderMaterial,
   SphereGeometry,
   Vector3,
 } from 'three';
@@ -17,18 +17,46 @@ import { AU, G, SOLAR_MASS } from '../../core/physics/constants';
 import type { Comet } from '../../universe/smallbody/types';
 
 const TAIL_POINTS = 32;
+const KM_PER_AU = 1.495978707e8;
+
+/** Optically thin gas ball: brightness follows the line-of-sight chord
+ *  through the sphere, center-bright with a soft limb. */
+const COMA_VERTEX = /* glsl */ `
+varying float vChord;
+
+void main() {
+  vec4 worldPos = modelMatrix * vec4(position, 1.0);
+  vec3 normal = normalize(mat3(modelMatrix) * normal);
+  vec3 viewDir = normalize(cameraPosition - worldPos.xyz);
+  vChord = abs(dot(normal, viewDir));
+  gl_Position = projectionMatrix * viewMatrix * worldPos;
+}
+`;
+
+const COMA_FRAGMENT = /* glsl */ `
+varying float vChord;
+
+uniform vec3 uColor;
+uniform float uIntensity;
+
+void main() {
+  gl_FragColor = vec4(uColor * vChord * vChord * uIntensity, 1.0);
+}
+`;
 
 /**
- * A comet in the system map: a faint orbit ellipse for context, and a
- * head group carrying the activity-scaled coma plus two physically
- * distinct tails — the straight blue ion tail pinned anti-solar, and
- * the broader dust tail lagging toward the reversed orbital motion.
+ * A comet at physical scale: the activity-driven coma is an optically
+ * thin gas glow of tens to hundreds of thousands of kilometers, the ion
+ * tail pins anti-solar at up to ~1 AU, and the broader dust tail lags
+ * toward the reversed orbital motion. A faint motion trail keeps the
+ * body discoverable when the head is between apparitions.
  */
 export class CometObject {
   readonly group = new Group();
   private readonly head = new Group();
   private readonly trail: Line;
   private readonly coma: Mesh;
+  private readonly comaMaterial: ShaderMaterial;
   private readonly ionTail: Line;
   private readonly dustTail: Line;
   private readonly mu: Mu;
@@ -36,7 +64,6 @@ export class CometObject {
   constructor(
     private readonly comet: Comet,
     centralMassSolar: number,
-    private readonly extentAu: number,
   ) {
     this.mu = muOf(G * centralMassSolar * SOLAR_MASS);
 
@@ -45,16 +72,18 @@ export class CometObject {
     this.group.add(this.trail);
     this.group.add(this.head);
 
-    this.coma = new Mesh(
-      new SphereGeometry(1, 16, 8),
-      new MeshBasicMaterial({
-        color: new Color(0.75, 0.82, 0.9),
-        transparent: true,
-        opacity: 0.7,
-        blending: AdditiveBlending,
-        depthWrite: false,
-      }),
-    );
+    this.comaMaterial = new ShaderMaterial({
+      vertexShader: COMA_VERTEX,
+      fragmentShader: COMA_FRAGMENT,
+      uniforms: {
+        uColor: { value: new Color(0.7, 0.78, 0.9) },
+        uIntensity: { value: 1 },
+      },
+      blending: AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+    });
+    this.coma = new Mesh(new SphereGeometry(1, 24, 12), this.comaMaterial);
     this.head.add(this.coma);
 
     this.ionTail = makeTail(new Color(0.45, 0.6, 1.0), 0.8);
@@ -86,14 +115,16 @@ export class CometObject {
     this.head.visible = visible;
     if (!visible) return;
 
-    // Coma stays well below the star glyph (extent × 0.012).
-    this.coma.scale.setScalar(
-      Math.min(0.007 * this.extentAu, 0.0025 * this.extentAu * Math.sqrt(activity)),
-    );
+    // Physical coma: gas envelope growing with activity, capped near
+    // the great-comet scale (~10⁶ km).
+    const comaKm = Math.min(1.2e6, 3e4 + 2.8e5 * Math.sqrt(activity));
+    this.coma.scale.setScalar(comaKm / KM_PER_AU);
+    this.comaMaterial.uniforms.uIntensity.value = Math.min(1.6, 0.5 + 0.4 * activity);
 
     const antiSolar = posAu.clone().normalize();
     const reverseMotion = new Vector3(-velocity.x, -velocity.y, -velocity.z).normalize();
-    const length = Math.min(0.3 * this.extentAu, 0.05 * this.extentAu * activity);
+    // Ion tails stretch to AU scale on strong apparitions.
+    const length = Math.min(1.1, 0.18 * activity);
 
     writeTail(this.ionTail, (t) => antiSolar.clone().multiplyScalar(length * t ** 0.9));
     const dustLength = length * 0.7 * (0.3 + this.comet.dustiness);

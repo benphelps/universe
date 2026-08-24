@@ -310,7 +310,7 @@ export class UnifiedViewer {
       this.auGroup.add(points);
     }
     for (const comet of system.comets) {
-      const object = new CometObject(comet, system.centralMassSolar, this.extentAu);
+      const object = new CometObject(comet, system.centralMassSolar);
       this.cometObjects.push(object);
       this.auGroup.add(object.group);
     }
