@@ -21,4 +21,6 @@ export interface TerrainResponse {
   /** Sea-surface tile on the same grid, present when the tile touches water. */
   waterPositions: Float32Array | null;
   waterNormals: Float32Array | null;
+  /** Packed surface-scatter instances (see SCATTER_STRIDE), tile-size gated. */
+  scatter: Float32Array | null;
 }

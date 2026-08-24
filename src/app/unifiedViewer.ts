@@ -47,6 +47,7 @@ import { createZoneRings } from '../render/system/zoneRings';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createCloudShell } from '../render/terrain/cloudShell';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
+import { createScatterMaterial } from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import {
@@ -144,6 +145,7 @@ export class UnifiedViewer {
   private readonly controls: OrbitControls;
   private readonly lut = createTemperatureLutTexture();
   private readonly terrainMaterial = createTerrainMaterial();
+  private readonly scatterMaterial = createScatterMaterial();
   /** Heliocentric content riding the focus translation and ground spin. */
   private readonly heliocentric = new Group();
   /** Map-frame subgroups (1 unit = 1 AU, z out of plane) inside it. */
@@ -367,6 +369,7 @@ export class UnifiedViewer {
           this.scene,
           this.terrainMaterial,
           this.oceanMaterial,
+          this.scatterMaterial,
           { type: 'init', seedHex: planet.physical.seedHex, physical: planet.physical },
           this.radiusKm,
         );
@@ -422,6 +425,7 @@ export class UnifiedViewer {
         this.scene,
         this.terrainMaterial,
         null,
+        this.scatterMaterial,
         { type: 'init-asteroid', asteroid },
         this.radiusKm,
       );
@@ -482,6 +486,7 @@ export class UnifiedViewer {
     this.clearFocus();
     this.clearSystem();
     this.terrainMaterial.dispose();
+    this.scatterMaterial.dispose();
     this.lut.dispose();
     this.pipeline.dispose();
   }
@@ -901,7 +906,7 @@ export class UnifiedViewer {
       applyOccluders(material, [planetCaster], angularRadius);
     }
 
-    for (const material of [this.terrainMaterial, this.oceanMaterial]) {
+    for (const material of [this.terrainMaterial, this.scatterMaterial, this.oceanMaterial]) {
       if (!material) continue;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);

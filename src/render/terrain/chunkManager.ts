@@ -1,6 +1,19 @@
-import { BufferAttribute, BufferGeometry, Mesh, Scene, ShaderMaterial, Vector3 } from 'three';
+import {
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  InstancedMesh,
+  Matrix4,
+  Mesh,
+  Quaternion,
+  Scene,
+  ShaderMaterial,
+  Vector3,
+} from 'three';
 import { chunkAngularSize, faceUvToDir } from '../../universe/surface/cubeSphere';
+import { SCATTER_STRIDE } from '../../universe/surface/scatter';
 import type { TerrainInit, TerrainRequest, TerrainResponse } from '../../workers/protocol';
+import { createRockGeometry, createShrubGeometry } from './scatterObjects';
 import { buildChunkIndices } from './terrainMaterial';
 
 const RES = 48;
@@ -24,6 +37,9 @@ interface ChunkRecord {
   centerKm: [number, number, number] | null;
   mesh: Mesh | null;
   waterMesh: Mesh | null;
+  scatterMeshes: InstancedMesh[];
+  /** Mean instance position: the surface can sit far off the datum anchor. */
+  scatterCenterKm: [number, number, number] | null;
   requested: boolean;
   lastDrawn: number;
 }
@@ -47,6 +63,8 @@ export class TerrainChunkManager {
   private readonly pending = new Map<number, string>();
   private wanted: WantedChunk[] = [];
   private readonly indexAttribute = new BufferAttribute(buildChunkIndices(RES), 1);
+  private readonly rockGeometry = createRockGeometry();
+  private readonly shrubGeometry = createShrubGeometry();
   private readonly radiusKm: number;
   private nextRequestId = 1;
   private nextWorker = 0;
@@ -56,6 +74,7 @@ export class TerrainChunkManager {
     private readonly scene: Scene,
     private readonly material: ShaderMaterial,
     private readonly oceanMaterial: ShaderMaterial | null,
+    private readonly scatterMaterial: ShaderMaterial | null,
     init: TerrainInit,
     radiusKm: number,
   ) {
@@ -77,6 +96,7 @@ export class TerrainChunkManager {
     for (const record of this.chunks.values()) {
       if (record.mesh) record.mesh.visible = false;
       if (record.waterMesh) record.waterMesh.visible = false;
+      for (const scatter of record.scatterMeshes) scatter.visible = false;
     }
 
     const cameraDistance = cameraKm.length();
@@ -89,6 +109,21 @@ export class TerrainChunkManager {
     for (let face = 0; face < 6; face++) {
       this.visit(face, 0, 0, 0, cameraKm, cameraDir, horizonAngle);
     }
+
+    // Scatter shows by proximity, not by which LOD tile is drawn: its
+    // host tile is often replaced by finer children exactly when the
+    // camera is close enough to see the instances.
+    for (const record of this.chunks.values()) {
+      if (record.scatterMeshes.length === 0 || !record.scatterCenterKm) continue;
+      const sizeKm = chunkAngularSize(record.level) * this.radiusKm;
+      const dx = record.scatterCenterKm[0] - cameraKm.x;
+      const dy = record.scatterCenterKm[1] - cameraKm.y;
+      const dz = record.scatterCenterKm[2] - cameraKm.z;
+      const visible = dx * dx + dy * dy + dz * dz < (3.5 * sizeKm) ** 2;
+      for (const scatter of record.scatterMeshes) scatter.visible = visible;
+      if (visible) record.lastDrawn = this.frame;
+    }
+
     this.dispatch();
     this.evict();
   }
@@ -199,6 +234,8 @@ export class TerrainChunkManager {
       centerKm: null,
       mesh: null,
       waterMesh: null,
+      scatterMeshes: [],
+      scatterCenterKm: null,
       requested: false,
       lastDrawn: this.frame,
     };
@@ -240,6 +277,72 @@ export class TerrainChunkManager {
       record.waterMesh = waterMesh;
       this.scene.add(waterMesh);
     }
+
+    if (response.scatter && this.scatterMaterial) {
+      record.scatterMeshes = this.buildScatter(response.scatter, response.centerKm);
+      const data = response.scatter;
+      const count = data.length / SCATTER_STRIDE;
+      const mean: [number, number, number] = [0, 0, 0];
+      for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
+        mean[0] += data[i];
+        mean[1] += data[i + 1];
+        mean[2] += data[i + 2];
+      }
+      record.scatterCenterKm = [
+        response.centerKm[0] + mean[0] / count,
+        response.centerKm[1] + mean[1] / count,
+        response.centerKm[2] + mean[2] / count,
+      ];
+    }
+  }
+
+  /** Two instanced draws per scattered tile: boulders and ground cover. */
+  private buildScatter(
+    data: Float32Array,
+    centerKm: [number, number, number],
+  ): InstancedMesh[] {
+    const anchor = new Vector3(...centerKm);
+    const matrix = new Matrix4();
+    const align = new Quaternion();
+    const spin = new Quaternion();
+    const up = new Vector3();
+    const position = new Vector3();
+    const scale = new Vector3();
+    const color = new Color();
+    const yAxis = new Vector3(0, 1, 0);
+
+    const meshes: InstancedMesh[] = [];
+    for (const wantShrub of [0, 1]) {
+      const rows: number[] = [];
+      for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
+        if ((data[i + 5] >= 0.5 ? 1 : 0) === wantShrub) rows.push(i);
+      }
+      if (rows.length === 0) continue;
+      const mesh = new InstancedMesh(
+        wantShrub ? this.shrubGeometry : this.rockGeometry,
+        this.scatterMaterial!,
+        rows.length,
+      );
+      rows.forEach((i, instance) => {
+        position.set(data[i], data[i + 1], data[i + 2]);
+        up.copy(position).add(anchor).normalize();
+        align.setFromUnitVectors(yAxis, up);
+        spin.setFromAxisAngle(yAxis, data[i + 4]);
+        align.multiply(spin);
+        scale.setScalar(data[i + 3]);
+        matrix.compose(position, align, scale);
+        mesh.setMatrixAt(instance, matrix);
+        mesh.setColorAt(instance, color.setRGB(data[i + 6], data[i + 7], data[i + 8]));
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.position.copy(anchor);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      this.scene.add(mesh);
+      meshes.push(mesh);
+    }
+    return meshes;
   }
 
   private evict(): void {
@@ -264,6 +367,11 @@ export class TerrainChunkManager {
       this.scene.remove(record.waterMesh);
       record.waterMesh.geometry.dispose();
     }
+    for (const scatter of record.scatterMeshes) {
+      this.scene.remove(scatter);
+      scatter.dispose();
+    }
+    record.scatterMeshes = [];
     this.chunks.delete(record.key);
   }
 
@@ -271,5 +379,7 @@ export class TerrainChunkManager {
     for (const worker of this.workers) worker.terminate();
     for (const record of [...this.chunks.values()]) this.remove(record);
     this.chunks.clear();
+    this.rockGeometry.dispose();
+    this.shrubGeometry.dispose();
   }
 }
