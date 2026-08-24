@@ -80,6 +80,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Clouds over terrain: a translucent deck shell above the highest terrain, sharing the shader-sphere planets' drifting cloud field (the focus view keeps the climate the far view promised), with close-range detail fade-in and a pass-through fade. Open: cloud shadows on the ground; volumetric decks stay a later item.
 - [ ] Volumetric clouds; multiple-scattering atmospheres; black-hole lensing pass
 - [ ] Galaxy population: the universe currently holds one Milky-Way-like spiral; derive multiple galaxies (ellipticals with smooth band-less glows, irregulars, dwarfs) from parameterized density models so a seed's sky depends on which galaxy — and where in it — the system lives
+- [ ] Belt materialization: instantiate cell asteroids as real bodies near the camera so any belt member can be flown to (the machinery exists — cells materialize deterministically); the point cloud stays as the far-field statistical appearance
 - [ ] Exotic showcases: circumbinary worlds, eyeball planets, Io-class volcanism, pulsar systems
 - [ ] Performance hardening (belt LOD, chunk budgets, memory eviction, terrain geomorphing)
 - [ ] WebGPU renderer evaluation

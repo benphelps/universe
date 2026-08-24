@@ -4,17 +4,20 @@ import { instantiateBeltCell } from './asteroids';
 import type { Asteroid } from './types';
 
 /**
- * The landmark rocks of a system: the largest members of each belt,
- * deterministically instantiated, offered as focusable bodies alongside
- * the planets.
+ * Each belt's biggest bodies — its Ceres and Vesta analogs: everything
+ * above ~150 km from the deterministic top of the size distribution.
+ * These are a navigation window into the belt's population, not a
+ * modeling distinction: any member can materialize identically from
+ * its cell.
  */
 export function notableAsteroids(system: StarSystem): Asteroid[] {
   const out: Asteroid[] = [];
   system.belts.forEach((belt, i) => {
     const beltSeed = deriveSeed(seedFromHex(system.seedHex), 'notable', i);
-    const sample = instantiateBeltCell(beltSeed, belt, 0, 14, 25);
+    const sample = instantiateBeltCell(beltSeed, belt, 0, 24, 90);
     sample.sort((a, b) => b.diameterKm - a.diameterKm);
-    out.push(...sample.slice(0, 2));
+    const large = sample.filter((asteroid) => asteroid.diameterKm >= 150).slice(0, 8);
+    out.push(...(large.length > 0 ? large : sample.slice(0, 1)));
   });
   return out;
 }
