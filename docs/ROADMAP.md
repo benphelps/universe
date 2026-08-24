@@ -66,9 +66,9 @@ Milestones build outward-in: foundations → one star → its system → its wor
 ## M6 — The Galaxy ([plan](plan/01-galaxy.md))
 
 - [x] Density model (disks, halo, arms, dust) + deterministic sector sampling
-- [ ] Population gradients feeding star properties (age/metallicity by galactic position)
+- [x] Population gradients feeding star properties: thin-disk/thick-disk/halo mix drawn from the local density model, with disk radial metallicity gradient, old metal-poor thick disk, and ancient halo; shared draw sequence keeps sky photometry and generated stars in agreement.
 - [x] Procedural sky from local sampling (resolved shells + Milky Way glow with dust reddening) in every view
-- [ ] Clusters, OB associations, nebulae
+- [x] Clusters, OB associations, nebulae: coeval open clusters and arm-favored OB associations as coherent knots in the far-field sky, with emission nebulae (procedural wisp dome) around the youngest; the Milky Way glow gained dust-lane clumping, double resolution, and a brightness shoulder so the galactic bulge reads as structure instead of a blown-out blob.
 - [x] Magnitude-count regression test (naked-eye counts the right order of magnitude)
 - [x] Demo: galaxy view of the real 20 pc neighborhood; click a neighbor to travel — its system is waiting
 

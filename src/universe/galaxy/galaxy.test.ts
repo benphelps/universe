@@ -144,6 +144,20 @@ describe('sky field', () => {
     expect(nakedEye).toBeLessThan(40000);
   });
 
+  it('carries clusters and nebulae in the far field', () => {
+    const sky = buildSkyField(HOME_POSITION);
+    expect(sky.nebulae.length).toBeGreaterThan(3);
+    expect(sky.nebulae.length).toBeLessThan(120);
+    for (const nebula of sky.nebulae) {
+      const norm = Math.hypot(...nebula.dir);
+      expect(norm).toBeGreaterThan(0.999);
+      expect(norm).toBeLessThan(1.001);
+      expect(nebula.angularRadius).toBeGreaterThan(0.003);
+      expect(nebula.angularRadius).toBeLessThanOrEqual(0.35);
+      expect(nebula.brightness).toBeGreaterThan(0);
+    }
+  });
+
   it('the glow map is brightest toward the midplane band', () => {
     const sky = buildSkyField(HOME_POSITION);
     const rowMean = (row: number): number => {

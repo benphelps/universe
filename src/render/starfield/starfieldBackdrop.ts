@@ -14,8 +14,45 @@ import {
   RGBAFormat,
   ShaderMaterial,
   SphereGeometry,
+  Vector4,
 } from 'three';
 import type { SkyField } from '../../universe/galaxy/skyfield';
+import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+
+const MAX_NEBULAE = 48;
+
+const NEBULA_FRAGMENT = /* glsl */ `
+varying vec3 vDir;
+
+uniform vec4 uNebulaA[${MAX_NEBULAE}]; // dir.xyz, angular radius
+uniform vec4 uNebulaB[${MAX_NEBULAE}]; // color.rgb, brightness
+uniform int uNebulaCount;
+uniform float uIntensity;
+
+${SIMPLEX_NOISE_GLSL}
+
+void main() {
+  vec3 dir = normalize(vDir);
+  // Two shared wisp fields, phase-shifted per nebula: structure without
+  // per-patch noise evaluation.
+  float broad = fbm(dir * 7.0);
+  float fine = fbm(dir * 19.0);
+
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < ${MAX_NEBULAE}; i++) {
+    if (i >= uNebulaCount) break;
+    vec4 a = uNebulaA[i];
+    // Small-angle chord metric avoids acos.
+    float dSq = 2.0 * (1.0 - dot(dir, a.xyz));
+    float radiusSq = a.w * a.w;
+    if (dSq > radiusSq * 5.0) continue;
+    float core = exp(-dSq / (radiusSq * 0.6));
+    float wisp = 0.55 + 0.45 * sin((broad * 3.0 + fine) * 6.2831 + float(i) * 2.39);
+    sum += uNebulaB[i].rgb * uNebulaB[i].w * core * wisp;
+  }
+  gl_FragColor = vec4(sum * uIntensity, 1.0);
+}
+`;
 
 const POINTS_VERTEX = /* glsl */ `
 attribute vec3 starColor;
@@ -147,6 +184,44 @@ export class StarfieldBackdrop {
     dome.frustumCulled = false;
     dome.renderOrder = -3;
     this.group.add(dome);
+
+    if (sky.nebulae.length > 0) {
+      const patches = [...sky.nebulae]
+        .sort((a, b) => b.brightness - a.brightness)
+        .slice(0, MAX_NEBULAE);
+      const nebulaA = Array.from({ length: MAX_NEBULAE }, (_, i) => {
+        const patch = patches[i];
+        // Galactic (x, y, z-disk) → scene (x, z, y), like the stars.
+        return patch
+          ? new Vector4(patch.dir[0], patch.dir[2], patch.dir[1], patch.angularRadius)
+          : new Vector4(0, 1, 0, 0);
+      });
+      const nebulaB = Array.from({ length: MAX_NEBULAE }, (_, i) => {
+        const patch = patches[i];
+        return patch
+          ? new Vector4(patch.color[0], patch.color[1], patch.color[2], patch.brightness)
+          : new Vector4(0, 0, 0, 0);
+      });
+      const nebulaMaterial = new ShaderMaterial({
+        vertexShader: GLOW_VERTEX,
+        fragmentShader: NEBULA_FRAGMENT,
+        uniforms: {
+          uNebulaA: { value: nebulaA },
+          uNebulaB: { value: nebulaB },
+          uNebulaCount: { value: patches.length },
+          uIntensity: { value: 1 },
+        },
+        blending: AdditiveBlending,
+        transparent: true,
+        depthWrite: false,
+        side: BackSide,
+      });
+      this.materials.push(nebulaMaterial);
+      const nebulaDome = new Mesh(new SphereGeometry(radius * 1.02, 48, 24), nebulaMaterial);
+      nebulaDome.frustumCulled = false;
+      nebulaDome.renderOrder = -3;
+      this.group.add(nebulaDome);
+    }
   }
 
   /** 1 = full night sky; approaches 0 under bright daylight. */
