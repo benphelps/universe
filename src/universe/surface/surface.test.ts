@@ -1,3 +1,4 @@
+import { mu } from '../../core/physics/units';
 import { describe, expect, it } from 'vitest';
 import { generateStar } from '../star/generate';
 import { characterizePlanet, type CharacterizeContext } from '../planet/characterize';
@@ -12,7 +13,7 @@ const SUN = generateStar(1n, { massInitial: 1, ageGyr: 4.6, feH: 0, withCompanio
 const CONTEXT: CharacterizeContext = {
   star: SUN,
   centralLuminosity: SUN.luminosity,
-  mu: G * SOLAR_MASS,
+  mu: mu(G * SOLAR_MASS),
   zones: computeZones(SUN.luminosity, SUN.tEff, SUN.ageGyr, 1),
 };
 

@@ -1,5 +1,6 @@
 import type { OrbitalElements } from '../../core/math/orbit';
 import { orbitalPeriod } from '../../core/math/orbit';
+import { mu as muOf } from '../../core/physics/units';
 import { AU, EARTH_MASS, EARTH_RADIUS, G } from '../../core/physics/constants';
 import { logNormal } from '../../core/rng/distributions';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
@@ -179,7 +180,7 @@ function buildMoon(seed: bigint, planet: Planet, context: MoonContext, spec: Moo
   const rawEquilibriumK = 278.6 * (centralLuminosity / aAu ** 2) ** 0.25 * 0.7 ** 0.25;
 
   const semiMajorAxisM = spec.aPlanetRadii * planetBulk.radiusEarth * EARTH_RADIUS;
-  const mu = G * (planetBulk.massEarth + spec.massEarth) * EARTH_MASS;
+  const mu = muOf(G * (planetBulk.massEarth + spec.massEarth) * EARTH_MASS);
   const periodHours = orbitalPeriod(mu, semiMajorAxisM) / 3600;
 
   const elements: OrbitalElements = {

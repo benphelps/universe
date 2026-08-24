@@ -1,3 +1,4 @@
+import { mu } from '../../core/physics/units';
 import { describe, expect, it } from 'vitest';
 import { AU, G, SOLAR_MASS } from '../../core/physics/constants';
 import { generateStar } from '../star/generate';
@@ -10,7 +11,7 @@ const SUN = generateStar(1n, { massInitial: 1, ageGyr: 4.6, feH: 0, withCompanio
 const SUN_CONTEXT: CharacterizeContext = {
   star: SUN,
   centralLuminosity: SUN.luminosity,
-  mu: G * SOLAR_MASS,
+  mu: mu(G * SOLAR_MASS),
   zones: computeZones(SUN.luminosity, SUN.tEff, SUN.ageGyr, 1),
 };
 
@@ -100,7 +101,7 @@ describe('locked worlds', () => {
     const context: CharacterizeContext = {
       star: mDwarf,
       centralLuminosity: mDwarf.luminosity,
-      mu: G * 0.2 * SOLAR_MASS,
+      mu: mu(G * 0.2 * SOLAR_MASS),
       zones: computeZones(mDwarf.luminosity, mDwarf.tEff, mDwarf.ageGyr, 0.2),
     };
     const planet = fixture(17n, 'rocky', 1, context.zones.habitableInnerAu * 1.05, context);

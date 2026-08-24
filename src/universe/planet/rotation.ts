@@ -1,4 +1,5 @@
 import { orbitalPeriod } from '../../core/math/orbit';
+import type { Mu } from '../../core/physics/units';
 import type { Rng } from '../../core/rng/rng';
 import { logNormal } from '../../core/rng/distributions';
 import type { PlanetClass } from '../system/types';
@@ -17,7 +18,7 @@ export function computeRotation(
   aAu: number,
   eccentricity: number,
   tidalLockAu: number,
-  mu: number,
+  mu: Mu,
   semiMajorAxisM: number,
 ): PlanetRotation {
   const orbitalHours = orbitalPeriod(mu, semiMajorAxisM) / 3600;

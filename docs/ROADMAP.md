@@ -7,7 +7,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Vite + TypeScript + Vitest scaffold, layering rule enforced by test (`core/`+`universe/` free of DOM/Three)
 - [x] Seed tree + PCG32 + distribution toolkit, determinism property tests
 - [x] Units/constants
-- [ ] Branded unit types at API boundaries
+- [x] Branded unit types at API boundaries: enforced `Mu`/`Seconds` brands on the Kepler/orbit functions (the AU-vs-SI and days-vs-seconds bug classes), producers branding once via `core/physics/units`; length/mass/time constants carry their unit types.
 - [x] Kepler solver (elements ⇄ state, any-time propagation) + tests
 - [x] Noise primitives (3D simplex, fBm, ridged, warp) seeded + worker-safe
 - [x] Blackbody → CIE → sRGB pipeline + temperature-color LUT + tests
@@ -53,14 +53,14 @@ Milestones build outward-in: foundations → one star → its system → its wor
 
 ## M5 — Surfaces ([plan](plan/07-surface.md))
 
-- [x] Cube-sphere quadtree LOD + worker chunk generation (skirts hide LOD cracks; geomorphing still open)
+- [x] Cube-sphere quadtree LOD + worker chunk generation (skirts hide LOD cracks; geomorphing remains the one open M5 polish item, tracked under M7 performance hardening)
 - [x] Layer stack: tectonics (Worley plate belts), craters, volcanic provinces, erosion smoothing
 - [x] Deeper erosion suites: fluvial valley networks (dendritic ridge-crest carving with tributaries, elevation-scaled depth), glacial carving (freeze-masked trough cutting plus fine-relief smoothing), and dune fields (wind-aligned draa-scale transverse ripples over erg patches with sand tinting) — all pure, LOD-faded, and climate-gated.
 - [x] Ice/snow + biome palettes from climate
 - [x] Airless small-body surface mode: a dedicated asteroid surface field (shape lobes + saturated craters + regolith cascade to boulder scale) runs through the same cube-sphere streamer; the body stepper walks planets then each belt's landmark rocks.
 - [x] Determinism/border tests + world-type fixtures (Earth-like, Moon-like, Mars-like)
 - [x] Render: vertex-colored lit terrain, ocean sphere, ground-level sky + aerial fog
-- [ ] Scatter instancing (boulders, ground cover)
+- [x] Scatter instancing: worker-placed deterministic boulders (with an airless large-block tail) and biosphere ground cover, instanced per tile with terrain lighting/fog and proximity-based visibility.
 - [x] Demo: orbit → descend to the ground of any solid world, unbroken
 
 ## M6 — The Galaxy ([plan](plan/01-galaxy.md))
@@ -80,7 +80,7 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [x] Clouds over terrain: a translucent deck shell above the highest terrain, sharing the shader-sphere planets' drifting cloud field (the focus view keeps the climate the far view promised), with close-range detail fade-in and a pass-through fade. Open: cloud shadows on the ground; volumetric decks stay a later item.
 - [ ] Volumetric clouds; multiple-scattering atmospheres; black-hole lensing pass
 - [ ] Exotic showcases: circumbinary worlds, eyeball planets, Io-class volcanism, pulsar systems
-- [ ] Performance hardening (belt LOD, chunk budgets, memory eviction)
+- [ ] Performance hardening (belt LOD, chunk budgets, memory eviction, terrain geomorphing)
 - [ ] WebGPU renderer evaluation
 
 ---
@@ -97,5 +97,6 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - **2026-08-23** — M5 core landed: pure surface fields (plate-belt mountains, lattice-cell craters, erosion, solved sea levels, climate-driven color), worker-streamed cube-sphere quadtree terrain with floating-origin rendering, and the surface view descending from orbit to the ground. 75 tests green; verified on a crater-field Mercury analog and a locked habitable world. Open: fluvial/glacial erosion detail, scatter instancing, geomorphing, asteroid surface mode.
 - **2026-08-23** — Surface shakedown from live testing: OrbitControls-based camera (no more flipped axes), seam-free border-ring normals, priority-ordered chunk requests, detail-band cascade to ~100 m features with LOD fading, chunk-aligned water tiles (ocean z-fighting gone), GPU mottling and micro-relief shading, relief-scaled color windows, minimum LOD floor for orbital views.
 - **2026-08-24** — Single-renderer step 2: star, system, and planet views unified into one focus-centric scene (km units, focused body at the origin, everything else translated in doubles). The real photosphere is now every planet's sun — the additive sun proxy is gone — with companions on barycentric orbits, other planets at true positions with adaptive markers, belts/comets/zone rings folded in, and the orbit-line map as an altitude-triggered overlay; the sky dome went additive (scattering adds light, never occludes) and scales with surface pressure. One wheel ride runs from the system's rim to any planet's ground. Verified on a 12-planet G system (all presets, click-through, planet→system zoom-out) and a circumbinary brown-dwarf pair.
+- **2026-08-24** — Milestone backlog cleared (every M0–M6 checkbox): galactic population mix feeding stellar age/metallicity; open clusters, OB associations, and nebulae in the sky (plus the galactic-bulge glow fix from live testing); photometric star sprites unified across all views; fluvial/glacial/dune erosion suites; asteroid close-ups as focusable streamed-terrain bodies; instanced boulder/ground-cover scatter; branded unit types at the orbital-mechanics boundary. Only M7 depth items remain.
 - **2026-08-24** — Single-renderer step 3: the galaxy view retired as a separate renderer. The neighborhood (every sector star within 30 pc) is now 3D content of the unified scene under a pc-scaled group, photometrically identical to the backdrop stars it replaces but parallax-correct at every altitude; the backdrop carries only far shells and dust glow. Galaxy is a camera preset (focus star, 15 pc altitude, time frozen); the travel panel swaps systems inside the same viewer. Belt point clouds fade below sub-pixel size so distant systems don't bloom into false blobs; near/far planes scale into the interstellar regime. Verified: galaxy preset, neighbor travel (G dwarf → L6 brown dwarf), system→interstellar wheel-out, and the ground night sky retaining its near field.
 - **2026-08-23** — M6 core landed: galactic density model with deterministic sectors, per-seed sky fields (resolved star shells + dust-reddened Milky Way glow) rendered as backdrops in every view with daylight washout on surfaces, and the galaxy view — the real 20 pc neighborhood, flyable, with click-to-travel to any neighbor system. 83 tests green. Open: population gradients into star properties, clusters/nebulae.

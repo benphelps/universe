@@ -11,12 +11,13 @@ import { computeClimate } from './climate';
 import { computeInterior, sampleIronCoreFraction } from './interior';
 import { computeRotation } from './rotation';
 import type { Characterization } from './types';
+import type { Mu } from '../../core/physics/units';
 
 export interface CharacterizeContext {
   star: Star;
   centralLuminosity: number;
   /** Gravitational parameter for this planet's orbit, m³/s². */
-  mu: number;
+  mu: Mu;
   zones: SystemZones;
 }
 

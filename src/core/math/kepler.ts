@@ -1,3 +1,4 @@
+import type { Mu, Seconds } from '../physics/units';
 import type { Vec3 } from './vec3';
 import { meanAnomalyAt, type OrbitalElements } from './orbit';
 
@@ -31,7 +32,7 @@ export function trueAnomalyFromEccentric(E: number, e: number): number {
  * Position and velocity at time t for elements around a body with
  * gravitational parameter mu = G(M+m). Closed-form: exact for any t.
  */
-export function elementsToState(el: OrbitalElements, mu: number, t: number): StateVectors {
+export function elementsToState(el: OrbitalElements, mu: Mu, t: Seconds): StateVectors {
   const { semiMajorAxis: a, eccentricity: e } = el;
   const E = solveEccentricAnomaly(meanAnomalyAt(el, mu, t), e);
   const cosE = Math.cos(E);

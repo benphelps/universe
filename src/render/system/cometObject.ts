@@ -12,6 +12,7 @@ import {
   Vector3,
 } from 'three';
 import { elementsToState } from '../../core/math/kepler';
+import { mu as muOf, seconds, type Mu, type Seconds } from '../../core/physics/units';
 import { AU, G, SOLAR_MASS } from '../../core/physics/constants';
 import type { Comet } from '../../universe/smallbody/types';
 
@@ -30,14 +31,14 @@ export class CometObject {
   private readonly coma: Mesh;
   private readonly ionTail: Line;
   private readonly dustTail: Line;
-  private readonly mu: number;
+  private readonly mu: Mu;
 
   constructor(
     private readonly comet: Comet,
     centralMassSolar: number,
     private readonly extentAu: number,
   ) {
-    this.mu = G * centralMassSolar * SOLAR_MASS;
+    this.mu = muOf(G * centralMassSolar * SOLAR_MASS);
 
     // Motion trail: recent path behind the nucleus, fading with age.
     this.trail = makeTail(new Color(0.6, 0.66, 0.75), 0.5);
@@ -61,7 +62,7 @@ export class CometObject {
     this.head.add(this.ionTail, this.dustTail);
   }
 
-  update(tSeconds: number): void {
+  update(tSeconds: Seconds): void {
     const { position, velocity } = elementsToState(this.comet.elements, this.mu, tSeconds);
     const posAu = new Vector3(position.x / AU, position.y / AU, position.z / AU);
     this.head.position.copy(posAu);
@@ -70,7 +71,11 @@ export class CometObject {
     const period = 2 * Math.PI * Math.sqrt(this.comet.elements.semiMajorAxis ** 3 / this.mu);
     const step = period / 2400;
     writeTail(this.trail, (t) => {
-      const past = elementsToState(this.comet.elements, this.mu, tSeconds - t * step * TAIL_POINTS);
+      const past = elementsToState(
+        this.comet.elements,
+        this.mu,
+        seconds(tSeconds - t * step * TAIL_POINTS),
+      );
       return new Vector3(past.position.x / AU, past.position.y / AU, past.position.z / AU);
     });
 

@@ -1,4 +1,5 @@
 import type { OrbitalElements } from '../../core/math/orbit';
+import { mu as muOf, type Mu } from '../../core/physics/units';
 import { AU, G, SOLAR_MASS, EARTH_MASS } from '../../core/physics/constants';
 import { rayleigh } from '../../core/rng/distributions';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
@@ -62,7 +63,7 @@ export function generateSystem(seed: bigint): StarSystem {
       physical: characterizePlanet(deriveSeed(seed, 'planet', i), slot.class, slot.massEarth, el, {
         star,
         centralLuminosity,
-        mu: G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS),
+        mu: muOf(G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS)),
         zones,
       }),
       moons: [],
@@ -99,8 +100,8 @@ export function generateSystem(seed: bigint): StarSystem {
 }
 
 /** Gravitational parameter for planet propagation around the system center. */
-export function planetMu(system: StarSystem, planet: Planet): number {
-  return G * (system.centralMassSolar * SOLAR_MASS + planet.physical.bulk.massEarth * EARTH_MASS);
+export function planetMu(system: StarSystem, planet: Planet): Mu {
+  return muOf(G * (system.centralMassSolar * SOLAR_MASS + planet.physical.bulk.massEarth * EARTH_MASS));
 }
 
 /** Full orbits for stellar companions (mildly inclined to the planet plane). */

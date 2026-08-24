@@ -9,6 +9,7 @@ import {
   SphereGeometry,
 } from 'three';
 import { elementsToState } from '../../core/math/kepler';
+import { mu as muOf, seconds, type Mu, type Seconds } from '../../core/physics/units';
 import { AU, DAY, G, SOLAR_MASS } from '../../core/physics/constants';
 import type { Star } from '../../universe/star/types';
 import { planetMu } from '../../universe/system/generate';
@@ -31,7 +32,7 @@ const EARTH_RADIUS_AU = 4.26e-5;
 interface OrbitingMesh {
   mesh: Mesh;
   planet: Planet;
-  mu: number;
+  mu: Mu;
 }
 
 /**
@@ -108,7 +109,7 @@ export class SystemMapObject {
   }
 
   update(simTimeDays: number): void {
-    const tSeconds = simTimeDays * DAY;
+    const tSeconds = seconds(simTimeDays * DAY);
 
     for (const { mesh, planet, mu } of this.planetMeshes) {
       const { position } = elementsToState(planet.elements, mu, tSeconds);
@@ -128,13 +129,13 @@ export class SystemMapObject {
    * Close pairs (p-type) orbit their barycenter at the origin; a wide
    * companion moves on its relative orbit around the primary.
    */
-  private updateStellarPositions(tSeconds: number): void {
+  private updateStellarPositions(tSeconds: Seconds): void {
     const { system } = this;
     if (system.companions.length === 0) return;
 
     const closest = system.companions[0];
     const glyph = this.companionGlyphs[0];
-    const pairMu = G * (system.star.mass + closest.star.mass) * SOLAR_MASS;
+    const pairMu = muOf(G * (system.star.mass + closest.star.mass) * SOLAR_MASS);
     const { position } = elementsToState(closest.elements, pairMu, tSeconds);
 
     if (system.configuration === 'p-type' && glyph) {

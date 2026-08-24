@@ -27,6 +27,7 @@ import {
   SOLAR_MASS,
   SOLAR_RADIUS,
 } from '../core/physics/constants';
+import { mu as muOf, seconds, type Mu, type Seconds } from '../core/physics/units';
 import { seedFromHex } from '../core/rng/hash';
 import { createTemperatureLutTexture } from '../render/color/temperatureLut';
 import { createAtmosphereShell } from '../render/planet/atmosphereShell';
@@ -89,14 +90,14 @@ interface MoonEntry {
   moon: Moon;
   object: PlanetObject;
   marker: Mesh;
-  mu: number;
+  mu: Mu;
 }
 
 interface PlanetNode {
   planet: Planet;
   object: PlanetObject;
   marker: Mesh;
-  mu: number;
+  mu: Mu;
 }
 
 interface StarNode {
@@ -523,7 +524,7 @@ export class UnifiedViewer {
           moon,
           object,
           marker,
-          mu: G * (planet.physical.bulk.massEarth + moon.physical.bulk.massEarth) * EARTH_MASS,
+          mu: muOf(G * (planet.physical.bulk.massEarth + moon.physical.bulk.massEarth) * EARTH_MASS),
         };
       });
     this.scene.add(this.moonGroup);
@@ -637,12 +638,12 @@ export class UnifiedViewer {
    * pair orbits its barycenter (which the planets orbit); a wide
    * companion moves on its relative orbit around the primary.
    */
-  private stellarPositionsKm(tSeconds: number): Vector3[] {
+  private stellarPositionsKm(tSeconds: Seconds): Vector3[] {
     const system = this.system!;
     const positions = [new Vector3()];
     for (let i = 0; i < this.starNodes.length - 1; i++) {
       const companion = system.companions[i];
-      const pairMu = G * (system.star.mass + companion.star.mass) * SOLAR_MASS;
+      const pairMu = muOf(G * (system.star.mass + companion.star.mass) * SOLAR_MASS);
       const { position } = elementsToState(companion.elements, pairMu, tSeconds);
       const relative = toWorld(position).divideScalar(1000);
       if (i === 0 && system.configuration === 'p-type') {
@@ -659,11 +660,11 @@ export class UnifiedViewer {
   /** Heliocentric position of the focus body at the current time, km. */
   private focusPositionKm(): Vector3 {
     if (!this.system) return new Vector3();
-    const tSeconds = this.simTimeDays * DAY;
+    const tSeconds = seconds(this.simTimeDays * DAY);
     if (this.focusAsteroid) {
       const { position } = elementsToState(
         this.focusAsteroid.elements,
-        G * this.system.centralMassSolar * SOLAR_MASS,
+        muOf(G * this.system.centralMassSolar * SOLAR_MASS),
         tSeconds,
       );
       return toWorld(position).divideScalar(1000);
@@ -771,7 +772,7 @@ export class UnifiedViewer {
   private updateWorld(up: Vector3): void {
     if (!this.system) return;
     const solid = this.field !== null;
-    const tSeconds = this.simTimeDays * DAY;
+    const tSeconds = seconds(this.simTimeDays * DAY);
     const yAxis = new Vector3(0, 1, 0);
 
     // Ground-fixed frame: the heliocentric world (stars, planets, belts,
