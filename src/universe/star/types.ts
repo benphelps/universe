@@ -64,6 +64,8 @@ export interface Companion {
   star: Star;
 }
 
+export type StellarPopulation = 'thin-disk' | 'thick-disk' | 'halo';
+
 export interface Star extends StellarPhysical {
   seedHex: string;
   designation: string;
@@ -72,6 +74,8 @@ export interface Star extends StellarPhysical {
   ageGyr: number;
   /** Metallicity [Fe/H], dex. */
   feH: number;
+  /** Galactic component the star was born into. */
+  population: StellarPopulation;
   /** e.g. "G2V", "M5III", "DA4". */
   spectralType: string;
   chromaticity: Chromaticity;

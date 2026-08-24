@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { Rng } from '../../core/rng/rng';
+import { generateStar } from '../star/generate';
 import { HOME_POSITION, stellarDensity } from './density';
+import { starPhotometry } from './photometry';
+import { drawPopulation } from './population';
 import { sectorStars, starsNear, viewpointForSeed } from './sectors';
 import { buildSkyField, imfFractionAbove } from './skyfield';
 
@@ -50,6 +54,68 @@ describe('sectors', () => {
     expect(viewpointForSeed(0xabc123n)).toEqual(a);
     expect(Math.abs(a.xPc - 8000)).toBeLessThan(200);
     expect(viewpointForSeed(0xdef456n)).not.toEqual(a);
+  });
+});
+
+describe('population', () => {
+  it('mixes components like the solar neighborhood', () => {
+    const counts = { 'thin-disk': 0, 'thick-disk': 0, halo: 0 };
+    let old = 0;
+    let metalPoor = 0;
+    const n = 4000;
+    for (let i = 0; i < n; i++) {
+      const draw = drawPopulation(new Rng(BigInt(50_000 + i)), HOME_POSITION);
+      counts[draw.component]++;
+      if (draw.ageGyr > 8) old++;
+      if (draw.feH < -1) metalPoor++;
+      expect(draw.ageGyr).toBeLessThan(13.5);
+      expect(draw.feH).toBeGreaterThanOrEqual(-2.5);
+      expect(draw.feH).toBeLessThanOrEqual(0.6);
+    }
+    expect(counts['thin-disk'] / n).toBeGreaterThan(0.8);
+    expect(counts['thick-disk'] / n).toBeGreaterThan(0.05);
+    expect(counts['thick-disk'] / n).toBeLessThan(0.2);
+    expect(counts.halo / n).toBeGreaterThan(0.001);
+    expect(counts.halo / n).toBeLessThan(0.03);
+    expect(old / n).toBeGreaterThan(0.15);
+    expect(old / n).toBeLessThan(0.45);
+    expect(metalPoor / n).toBeGreaterThan(0.002);
+    expect(metalPoor / n).toBeLessThan(0.04);
+  });
+
+  it('components shift with galactic position', () => {
+    const at = (zPc: number): number => {
+      let halo = 0;
+      for (let i = 0; i < 1500; i++) {
+        const draw = drawPopulation(new Rng(BigInt(90_000 + i)), { xPc: 8000, yPc: 0, zPc });
+        if (draw.component !== 'thin-disk') halo++;
+      }
+      return halo / 1500;
+    };
+    // Away from the midplane the thin disk thins out of the mix.
+    expect(at(1500)).toBeGreaterThan(at(20) * 3);
+  });
+
+  it('metallicity follows the disk radial gradient', () => {
+    const meanFeH = (xPc: number): number => {
+      let sum = 0;
+      for (let i = 0; i < 1500; i++) {
+        sum += drawPopulation(new Rng(BigInt(70_000 + i)), { xPc, yPc: 0, zPc: 20 }).feH;
+      }
+      return sum / 1500;
+    };
+    expect(meanFeH(4000)).toBeGreaterThan(meanFeH(8000) + 0.1);
+    expect(meanFeH(12000)).toBeLessThan(meanFeH(8000) - 0.1);
+  });
+
+  it('sky photometry mirrors the full generator', () => {
+    for (let i = 0; i < 40; i++) {
+      const seed = BigInt(123_000 + i * 17);
+      const fast = starPhotometry(seed);
+      const full = generateStar(seed, { withCompanions: false });
+      expect(fast.luminosity).toBe(full.luminosity);
+      expect(fast.tEff).toBe(full.tEff);
+    }
   });
 });
 

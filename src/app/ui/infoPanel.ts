@@ -25,7 +25,7 @@ export class InfoPanel {
       ['Luminosity', `${fmt(star.luminosity)} L☉`],
       ['T_eff', star.tEff > 0 ? `${fmt(star.tEff, 4)} K` : '—'],
       ['Age', fmtYears(star.ageGyr * 1e9)],
-      ['[Fe/H]', fmt(star.feH, 2)],
+      ['[Fe/H]', `${fmt(star.feH, 2)} · ${star.population.replace('-', ' ')}`],
       ['Rotation', fmtDays(star.activity.rotationPeriodDays)],
       ['Spots', `${fmt(star.activity.spotCoverage * 100, 2)}% coverage`],
     ];

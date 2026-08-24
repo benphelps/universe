@@ -44,8 +44,14 @@ export function armBoost(radiusPc: number, azimuthRad: number): number {
   return 1 + 1.2 * Math.exp(-((nearest / 700) ** 2));
 }
 
-/** Total stellar density, stars per pc³. */
-export function stellarDensity(position: GalacticPosition): number {
+export interface ComponentDensities {
+  thin: number;
+  thick: number;
+  halo: number;
+}
+
+/** Per-component stellar densities, stars per pc³. */
+export function componentDensities(position: GalacticPosition): ComponentDensities {
   const radius = Math.hypot(position.xPc, position.yPc);
   const azimuth = Math.atan2(position.yPc, position.xPc);
   const absZ = Math.abs(position.zPc);
@@ -60,6 +66,12 @@ export function stellarDensity(position: GalacticPosition): number {
   const sphericalR = Math.max(Math.hypot(radius, absZ), 500);
   const halo = 0.0008 * (sphericalR / 8000) ** -3.5;
 
+  return { thin, thick, halo };
+}
+
+/** Total stellar density, stars per pc³. */
+export function stellarDensity(position: GalacticPosition): number {
+  const { thin, thick, halo } = componentDensities(position);
   return thin + thick + halo;
 }
 
