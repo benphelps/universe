@@ -567,7 +567,11 @@ export class UnifiedViewer {
       // rifts, nebulae, dark clouds — which the galaxy volume replaces.
       this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
       this.scene.add(this.backdrop.group);
-      this.sectorChart = new SectorChart(sky.sectorBounds, sky.sectorHomeBounds);
+      this.sectorChart = new SectorChart(
+        sky.sectorBounds,
+        sky.sectorHomeBounds,
+        sky.sectorSkyBounds,
+      );
       this.pcGroup.add(this.sectorChart.group);
 
       const farCount = sky.starCount - sky.nearStarCount;
@@ -1489,10 +1493,14 @@ export class UnifiedViewer {
       );
       this.galaxyFade = fade * fade * (3 - 2 * fade);
       if (this.sectorChart) {
-        // The chart surfaces as the camera leaves the neighborhood and
-        // sector scale starts to mean something.
+        // The flat chart surfaces as the camera leaves the neighborhood;
+        // the constellation borders belong to the local sky and hand off
+        // to it — one gesture, star map to province map.
         const chart = Math.min(1, Math.max(0, (distancePc - 30) / 270));
-        this.sectorChart.opacity = chart * chart * (3 - 2 * chart);
+        const eased = chart * chart * (3 - 2 * chart);
+        this.sectorChart.opacity = eased;
+        this.sectorChart.skyOpacity = 1 - eased;
+        this.sectorChart.skyRadiusLimitPc = (this.camera.far / PC_KM) * 0.45;
       }
 
       this.updateWorld(up);

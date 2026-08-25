@@ -7,14 +7,15 @@ import { UNIVERSE_SEED } from './sectors';
 /**
  * The galactic gazetteer: names for the structure the model already
  * carries, the way human astronomy named the Orion Arm or the Perseus
- * Arm. Chart sectors are organic territories, not a grid: one seed
- * site per span cell (jittered across the whole cell), each locale
- * belonging to its nearest site through a noise-warped metric — so
- * boundaries meander like hand-drawn provinces, yet every chart of
- * this universe agrees on every border and every name.
+ * Arm. Chart sectors are organic 3D territories, not a grid: one seed
+ * site per span cell (jittered across the whole cell, in all three
+ * axes), each locale belonging to the nearest of its 27 neighboring
+ * sites through a noise-warped metric — so borders meander like
+ * hand-drawn provinces and stack in shells above the disk, yet every
+ * chart of this universe agrees on every border and every name.
  */
 
-/** Mean territory span; actual shapes are irregular Voronoi provinces. */
+/** Mean territory span; actual shapes are irregular Voronoi volumes. */
 export const SECTOR_SITE_SPAN_PC = 900;
 
 const warpNoise = createSimplex3(deriveSeed(UNIVERSE_SEED, 'sector-warp'));
@@ -44,6 +45,7 @@ const ARM_NAMES = [0, 1].map((arm) => generatedName(deriveSeed(UNIVERSE_SEED, 'a
 interface SectorSite {
   xPc: number;
   yPc: number;
+  zPc: number;
   seed: bigint;
 }
 
@@ -51,47 +53,57 @@ interface SectorSite {
 // sites; the per-cell derivation is BigInt-priced, so memoize.
 const siteCache = new Map<number, SectorSite>();
 
-function siteFor(ix: number, iy: number): SectorSite {
-  const key = (ix + 2048) * 4096 + (iy + 2048);
+function siteFor(ix: number, iy: number, iz: number): SectorSite {
+  const key = ((ix + 1024) * 2048 + (iy + 1024)) * 64 + (iz + 32);
   const cached = siteCache.get(key);
   if (cached) return cached;
-  const seed = mix64(SITE_SALT ^ ((BigInt(ix & 0xfffff) << 20n) | BigInt(iy & 0xfffff)));
+  const seed = mix64(
+    SITE_SALT ^
+      ((BigInt(ix & 0x3ffff) << 30n) | (BigInt(iy & 0x3ffff) << 12n) | BigInt(iz & 0xfff)),
+  );
   const rng = new Rng(seed);
   const site: SectorSite = {
     xPc: (ix + rng.float()) * SECTOR_SITE_SPAN_PC,
     yPc: (iy + rng.float()) * SECTOR_SITE_SPAN_PC,
+    zPc: (iz + rng.float()) * SECTOR_SITE_SPAN_PC,
     seed,
   };
   siteCache.set(key, site);
   return site;
 }
 
-/** Border-bending warp: territories meander instead of meeting on lines. */
-function warped(xPc: number, yPc: number): [number, number] {
+/** Border-bending warp: territories meander instead of meeting on planes. */
+function warped(xPc: number, yPc: number, zPc: number): [number, number, number] {
+  const sx = xPc / 750;
+  const sy = yPc / 750;
+  const sz = zPc / 750;
+  const fx = xPc / 270;
+  const fy = yPc / 270;
+  const fz = zPc / 270;
   return [
-    xPc +
-      190 * warpNoise(xPc / 750, yPc / 750, 0) +
-      75 * warpNoise(xPc / 270, yPc / 270, 11),
-    yPc +
-      190 * warpNoise(xPc / 750, yPc / 750, 101) +
-      75 * warpNoise(xPc / 270, yPc / 270, 112),
+    xPc + 190 * warpNoise(sx, sy, sz) + 75 * warpNoise(fx, fy, fz + 11),
+    yPc + 190 * warpNoise(sx, sy, sz + 101) + 75 * warpNoise(fx, fy, fz + 112),
+    zPc + 190 * warpNoise(sx, sy, sz + 203) + 75 * warpNoise(fx, fy, fz + 214),
   ];
 }
 
 /** The territory a locale belongs to: nearest site in the warped metric. */
 export function sectorSeedAt(positionPc: GalacticPosition): bigint {
-  const [wx, wy] = warped(positionPc.xPc, positionPc.yPc);
+  const [wx, wy, wz] = warped(positionPc.xPc, positionPc.yPc, positionPc.zPc);
   const cx = Math.floor(wx / SECTOR_SITE_SPAN_PC);
   const cy = Math.floor(wy / SECTOR_SITE_SPAN_PC);
+  const cz = Math.floor(wz / SECTOR_SITE_SPAN_PC);
   let best = 0n;
   let bestSq = Infinity;
-  for (let ix = cx - 2; ix <= cx + 2; ix++) {
-    for (let iy = cy - 2; iy <= cy + 2; iy++) {
-      const site = siteFor(ix, iy);
-      const dSq = (site.xPc - wx) ** 2 + (site.yPc - wy) ** 2;
-      if (dSq < bestSq) {
-        bestSq = dSq;
-        best = site.seed;
+  for (let ix = cx - 1; ix <= cx + 1; ix++) {
+    for (let iy = cy - 1; iy <= cy + 1; iy++) {
+      for (let iz = cz - 1; iz <= cz + 1; iz++) {
+        const site = siteFor(ix, iy, iz);
+        const dSq = (site.xPc - wx) ** 2 + (site.yPc - wy) ** 2 + (site.zPc - wz) ** 2;
+        if (dSq < bestSq) {
+          bestSq = dSq;
+          best = site.seed;
+        }
       }
     }
   }

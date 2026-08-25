@@ -109,6 +109,10 @@ export interface SkyField {
   sectorBounds: Float32Array;
   /** The borders of the home locale's own territory, same encoding. */
   sectorHomeBounds: Float32Array;
+  /** Constellation-style sky borders: where lines of sight from home
+   *  cross into different neighboring territories, at true exit
+   *  distances (scene-frame pc segments relative to home). */
+  sectorSkyBounds: Float32Array;
 }
 
 /** Keep far stars down to apparent magnitude ≈ 9. */
@@ -247,6 +251,7 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     darkAtlas,
     sceneFromGalaxy: sceneFromGalaxy(seed),
     ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
+    sectorSkyBounds: buildSectorSkyBounds(viewpoint, sceneFromGalaxy(seed)),
     ...buildGlow(viewpoint, spriteSeeds),
   };
 }
@@ -658,6 +663,162 @@ function buildSectorBounds(
     sectorBounds: new Float32Array(all),
     sectorHomeBounds: new Float32Array(home),
   };
+}
+
+/** Sky-map direction lattice and the reach of the exit march. */
+const SKY_LON_STEPS = 160;
+const SKY_LAT_STEPS = 80;
+const SKY_MARCH_STEP_PC = 130;
+const SKY_MARCH_MAX_PC = 2800;
+/** Border curves draw on a celestial sphere, star-map style: their
+ *  directions are honest (marched through the 3D territory field); the
+ *  drawing radius is presentation — exit distances are unstable where a
+ *  sight line grazes along a territory edge. */
+const SKY_DRAW_RADIUS_PC = 800;
+
+/**
+ * The territory borders as they cross the sky — the analog of the
+ * constellation boundaries on an Earth star map, except nothing is
+ * projected: every line of sight from home is marched to where it
+ * leaves the home territory, the sky partitions by which neighbor each
+ * direction enters, and the border curves live at their true 3D exit
+ * distances, so they parallax correctly when the camera flies.
+ */
+function buildSectorSkyBounds(
+  viewpoint: GalacticPosition,
+  orientation: Float32Array,
+): Float32Array {
+  const homeId = sectorSeedAt(viewpoint);
+  const idAtDistance = (dir: [number, number, number], s: number): bigint =>
+    sectorSeedAt({
+      xPc: viewpoint.xPc + dir[0] * s,
+      yPc: viewpoint.yPc + dir[1] * s,
+      zPc: viewpoint.zPc + dir[2] * s,
+    });
+
+  /** First neighbor a sight-line enters, and the refined exit distance. */
+  const exitFor = (dir: [number, number, number]): { id: bigint; distancePc: number } => {
+    let inside = 0;
+    for (let s = SKY_MARCH_STEP_PC; s <= SKY_MARCH_MAX_PC; s += SKY_MARCH_STEP_PC) {
+      const id = idAtDistance(dir, s);
+      if (id !== homeId) {
+        let lo = inside;
+        let hi = s;
+        for (let i = 0; i < 4; i++) {
+          const mid = (lo + hi) / 2;
+          if (idAtDistance(dir, mid) === homeId) lo = mid;
+          else hi = mid;
+        }
+        return { id, distancePc: (lo + hi) / 2 };
+      }
+      inside = s;
+    }
+    return { id: homeId, distancePc: SKY_MARCH_MAX_PC };
+  };
+
+  const dirAt = (i: number, j: number): [number, number, number] => {
+    const latitude = (((j + 0.5) / SKY_LAT_STEPS) - 0.5) * Math.PI;
+    const longitude = (((i % SKY_LON_STEPS) + 0.5) / SKY_LON_STEPS) * 2 * Math.PI;
+    const cosLat = Math.cos(latitude);
+    return [cosLat * Math.cos(longitude), cosLat * Math.sin(longitude), Math.sin(latitude)];
+  };
+
+  const ids: bigint[] = new Array(SKY_LON_STEPS * SKY_LAT_STEPS);
+  const dists = new Float32Array(SKY_LON_STEPS * SKY_LAT_STEPS);
+  for (let j = 0; j < SKY_LAT_STEPS; j++) {
+    for (let i = 0; i < SKY_LON_STEPS; i++) {
+      const exit = exitFor(dirAt(i, j));
+      ids[j * SKY_LON_STEPS + i] = exit.id;
+      dists[j * SKY_LON_STEPS + i] = exit.distancePc;
+    }
+  }
+
+  // Border crossing between two adjacent sight-lines: bisect the
+  // direction, then place the point on the exit surface itself.
+  const mix = (
+    a: [number, number, number],
+    b: [number, number, number],
+    t: number,
+  ): [number, number, number] => {
+    const x = a[0] + (b[0] - a[0]) * t;
+    const y = a[1] + (b[1] - a[1]) * t;
+    const z = a[2] + (b[2] - a[2]) * t;
+    const length = Math.hypot(x, y, z) || 1;
+    return [x / length, y / length, z / length];
+  };
+  const crossingPoint = (
+    a: [number, number, number],
+    idA: bigint,
+    b: [number, number, number],
+  ): [number, number, number] => {
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 4; i++) {
+      const mid = (lo + hi) / 2;
+      if (exitFor(mix(a, b, mid)).id === idA) lo = mid;
+      else hi = mid;
+    }
+    const dir = mix(a, b, (lo + hi) / 2);
+    return [
+      dir[0] * SKY_DRAW_RADIUS_PC,
+      dir[1] * SKY_DRAW_RADIUS_PC,
+      dir[2] * SKY_DRAW_RADIUS_PC,
+    ];
+  };
+
+  const crossLon: Array<[number, number, number] | null> = new Array(
+    SKY_LON_STEPS * SKY_LAT_STEPS,
+  ).fill(null);
+  const crossLat: Array<[number, number, number] | null> = new Array(
+    SKY_LON_STEPS * SKY_LAT_STEPS,
+  ).fill(null);
+  for (let j = 0; j < SKY_LAT_STEPS; j++) {
+    for (let i = 0; i < SKY_LON_STEPS; i++) {
+      const id = ids[j * SKY_LON_STEPS + i];
+      const right = ids[j * SKY_LON_STEPS + ((i + 1) % SKY_LON_STEPS)];
+      if (right !== id) {
+        crossLon[j * SKY_LON_STEPS + i] = crossingPoint(dirAt(i, j), id, dirAt(i + 1, j));
+      }
+      if (j + 1 < SKY_LAT_STEPS) {
+        const up = ids[(j + 1) * SKY_LON_STEPS + i];
+        if (up !== id) {
+          crossLat[j * SKY_LON_STEPS + i] = crossingPoint(dirAt(i, j), id, dirAt(i, j + 1));
+        }
+      }
+    }
+  }
+
+  const segments: number[] = [];
+  const push = (p: [number, number, number]): void => {
+    segments.push(...rotateToScene(orientation, p[0], p[1], p[2]));
+  };
+  for (let j = 0; j < SKY_LAT_STEPS - 1; j++) {
+    for (let i = 0; i < SKY_LON_STEPS; i++) {
+      const points = [
+        crossLon[j * SKY_LON_STEPS + i],
+        crossLon[(j + 1) * SKY_LON_STEPS + i],
+        crossLat[j * SKY_LON_STEPS + i],
+        crossLat[j * SKY_LON_STEPS + ((i + 1) % SKY_LON_STEPS)],
+      ].filter((p): p is [number, number, number] => p !== null);
+      if (points.length < 2) continue;
+      if (points.length === 2) {
+        push(points[0]);
+        push(points[1]);
+      } else {
+        const center: [number, number, number] = [0, 0, 0];
+        for (const p of points) {
+          center[0] += p[0] / points.length;
+          center[1] += p[1] / points.length;
+          center[2] += p[2] / points.length;
+        }
+        for (const p of points) {
+          push(p);
+          push(center);
+        }
+      }
+    }
+  }
+  return new Float32Array(segments);
 }
 
 /**

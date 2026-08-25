@@ -23,6 +23,7 @@ self.onmessage = (event: MessageEvent<SkyRequest>) => {
     sky.starSeeds.buffer,
     sky.sectorBounds.buffer,
     sky.sectorHomeBounds.buffer,
+    sky.sectorSkyBounds.buffer,
     sky.nebulaAtlas.buffer,
     sky.glowData.buffer,
     sky.riftData.buffer,
