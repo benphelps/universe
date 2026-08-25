@@ -57,6 +57,7 @@ import { createRockGeometry, createScatterMaterial } from '../render/terrain/sca
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
+import { SectorChart } from '../render/galaxy/sectorChart';
 import {
   computeNeighborhood,
   NEIGHBOR_RADIUS_PC,
@@ -254,6 +255,7 @@ export class UnifiedViewer {
    *  breaks down with distance from the system. */
   private galaxyVolume: GalaxyVolume | null = null;
   private galaxyFade = 0;
+  private sectorChart: SectorChart | null = null;
 
   /** Free flight: right-shift + drag pans the camera through space. */
   private rightShiftHeld = false;
@@ -556,6 +558,8 @@ export class UnifiedViewer {
     this.galaxyVolume = new GalaxyVolume(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity(viewpoint);
     this.scene.add(this.galaxyVolume.mesh);
+    this.sectorChart = new SectorChart(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
+    this.pcGroup.add(this.sectorChart.group);
 
     getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
@@ -1288,6 +1292,11 @@ export class UnifiedViewer {
       this.galaxyVolume.dispose();
       this.galaxyVolume = null;
     }
+    if (this.sectorChart) {
+      this.pcGroup.remove(this.sectorChart.group);
+      this.sectorChart.dispose();
+      this.sectorChart = null;
+    }
     this.skyData = null;
     this.system = null;
   }
@@ -1479,6 +1488,12 @@ export class UnifiedViewer {
         Math.max(0, (distancePc - GALAXY_FADE_NEAR_PC) / (GALAXY_FADE_FAR_PC - GALAXY_FADE_NEAR_PC)),
       );
       this.galaxyFade = fade * fade * (3 - 2 * fade);
+      if (this.sectorChart) {
+        // The chart surfaces as the camera leaves the neighborhood and
+        // sector scale starts to mean something.
+        const chart = Math.min(1, Math.max(0, (distancePc - 30) / 270));
+        this.sectorChart.opacity = chart * chart * (3 - 2 * chart);
+      }
 
       this.updateWorld(up);
       this.updateHover();
