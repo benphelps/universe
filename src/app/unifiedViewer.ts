@@ -231,6 +231,21 @@ export class UnifiedViewer {
    *   (or its inverse) directly.
    */
   private readonly frameQuat = new Quaternion();
+
+  /** Free flight: right-shift + drag pans the camera through space. */
+  private rightShiftHeld = false;
+  /** Wheel ride input, applied to the altitude during the next frame. */
+  private pendingWheelFactor = 1;
+  private readonly onKeyChange = (e: KeyboardEvent): void => {
+    if (e.code !== 'ShiftRight') return;
+    this.rightShiftHeld = e.type === 'keydown';
+    // Orbit rotation yields to panning while the modifier is held.
+    this.controls.enabled = !this.rightShiftHeld;
+  };
+  private readonly onWindowBlur = (): void => {
+    this.rightShiftHeld = false;
+    this.controls.enabled = true;
+  };
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
@@ -303,20 +318,40 @@ export class UnifiedViewer {
     // Right-drag turns the head at low altitude (left-drag moves over
     // the surface via OrbitControls).
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
-      if ((e.buttons & 2) === 0) return;
+      if ((e.buttons & 2) === 0 || this.rightShiftHeld) return;
       this.headingRad -= e.movementX * 0.004;
       this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.003));
     });
+
+    // Free flight in every view: right-shift + drag grabs space itself —
+    // a screen-plane pan scaled by altitude, so the same gesture slides
+    // meters over a ridge and parsecs across the neighborhood. Looking
+    // down it sweeps the horizontal plane; toward the horizon, vertical.
+    this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
+      if (!this.rightShiftHeld || e.buttons === 0) return;
+      const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+      const worldPerPixel =
+        (2 *
+          Math.tan((this.camera.fov * Math.PI) / 360) *
+          Math.max(this.altitudeKm, this.minAltitudeKm)) /
+        Math.max(rect.height, 1);
+      const right = new Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+      const upVec = new Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      const delta = right
+        .multiplyScalar(-e.movementX * worldPerPixel)
+        .addScaledVector(upVec, e.movementY * worldPerPixel);
+      this.camera.position.add(delta);
+      this.controls.target.add(delta);
+    });
+    window.addEventListener('keydown', this.onKeyChange);
+    window.addEventListener('keyup', this.onKeyChange);
+    window.addEventListener('blur', this.onWindowBlur);
 
     this.pipeline.renderer.domElement.addEventListener(
       'wheel',
       (e) => {
         e.preventDefault();
-        this.altitudeKm *= 1.0016 ** e.deltaY;
-        this.altitudeKm = Math.min(
-          this.maxAltitudeKm(),
-          Math.max(this.minAltitudeKm, this.altitudeKm),
-        );
+        this.pendingWheelFactor *= 1.0016 ** e.deltaY;
       },
       { passive: false },
     );
@@ -628,6 +663,10 @@ export class UnifiedViewer {
     arrival.normalize();
     this.camera.position.copy(arrival).multiplyScalar(this.radiusKm + this.altitudeKm);
     this.camera.up.set(0, 1, 0);
+    // Any free-flight wandering ends here: the orbit re-anchors on the
+    // new focus and pending ride input clears.
+    this.controls.target.set(0, 0, 0);
+    this.pendingWheelFactor = 1;
     this.controls.update();
 
     // Descending pitches toward screen-up: the orbit view keeps north
@@ -1024,6 +1063,9 @@ export class UnifiedViewer {
   dispose(): void {
     this.disposed = true;
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('keydown', this.onKeyChange);
+    window.removeEventListener('keyup', this.onKeyChange);
+    window.removeEventListener('blur', this.onWindowBlur);
     this.controls.dispose();
     this.clearFocus();
     this.clearSystem();
@@ -1254,7 +1296,18 @@ export class UnifiedViewer {
       // Asteroid shapes legitimately dip far below the datum sphere.
       const floorKm = this.focusAsteroid ? -this.radiusKm * 0.6 : -this.radiusKm * 0.01;
       const surfaceKm = this.radiusKm + Math.max(groundKm, floorKm);
-      this.altitudeKm = Math.max(this.altitudeKm, this.minAltitudeKm);
+      // Altitude derives from wherever free flight has put the camera;
+      // the wheel ride applies as a pending exponential factor, and the
+      // ground stays a hard floor.
+      const freeAltitudeKm = Math.max(
+        this.camera.position.length() - surfaceKm,
+        this.minAltitudeKm,
+      );
+      this.altitudeKm = Math.min(
+        this.maxAltitudeKm(),
+        Math.max(freeAltitudeKm * this.pendingWheelFactor, this.minAltitudeKm),
+      );
+      this.pendingWheelFactor = 1;
       this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
 
       // Nadir gaze from orbit blending to a steerable horizon gaze near
