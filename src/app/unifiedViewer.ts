@@ -212,7 +212,12 @@ export class UnifiedViewer {
   private cometObjects: CometObject[] = [];
   private backdrop: StarfieldBackdrop | null = null;
   private skyData: SkyField | null = null;
-  private currentSpin = 0;
+  /** Ground frame of the focused body: spin about Y composed with the
+   *  axial tilt, applied to everything heliocentric (sun, planets,
+   *  belts, sky). The equatorial plane stays world XZ — rings and moons
+   *  live there — while the ecliptic tilts by the obliquity, so seasons
+   *  and ring lighting fall out of the model's own axis. */
+  private readonly frameQuat = new Quaternion();
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
@@ -689,8 +694,7 @@ export class UnifiedViewer {
         // glint in the sky identifies itself and can be traveled to.
         if (this.skyData) {
           const sky = this.skyData;
-          const cosS = Math.cos(this.currentSpin);
-          const sinS = Math.sin(this.currentSpin);
+          const dir = new Vector3();
           let bestFar = -1;
           for (let i = sky.nearStarCount; i < sky.starCount; i++) {
             const [ox, oy, oz] = rotateToScene(
@@ -699,12 +703,11 @@ export class UnifiedViewer {
               sky.starDirs[i * 3 + 1],
               sky.starDirs[i * 3 + 2],
             );
-            const wx = cosS * ox + sinS * oz;
-            const wz = -sinS * ox + cosS * oz;
+            dir.set(ox, oy, oz).applyQuaternion(this.frameQuat);
             v.set(
-              this.camera.position.x + wx * 1e12,
-              this.camera.position.y + oy * 1e12,
-              this.camera.position.z + wz * 1e12,
+              this.camera.position.x + dir.x * 1e12,
+              this.camera.position.y + dir.y * 1e12,
+              this.camera.position.z + dir.z * 1e12,
             ).project(this.camera);
             if (v.z > 1 || v.z < -1) continue;
             const sx = (v.x * 0.5 + 0.5) * rect.width;
@@ -723,12 +726,13 @@ export class UnifiedViewer {
               sky.starDirs[bestFar * 3 + 1],
               sky.starDirs[bestFar * 3 + 2],
             );
+            dir.set(ox, oy, oz).applyQuaternion(this.frameQuat);
             const distance = sky.starDistances[bestFar];
             const starSeed = sky.starSeeds[bestFar];
             const position = {
-              x: this.camera.position.x + (cosS * ox + sinS * oz) * 1e12,
-              y: this.camera.position.y + oy * 1e12,
-              z: this.camera.position.z + (-sinS * ox + cosS * oz) * 1e12,
+              x: this.camera.position.x + dir.x * 1e12,
+              y: this.camera.position.y + dir.y * 1e12,
+              z: this.camera.position.z + dir.z * 1e12,
             };
             if (starSeed !== 0n) {
               const seedHex = seedToHex(starSeed);
@@ -818,15 +822,15 @@ export class UnifiedViewer {
    * promotes it to the focused body. The additive point cloud stays as
    * the far-field statistical limit of the same population.
    */
-  private updateBeltRegion(tSeconds: Seconds, focusPos: Vector3, spin: number): void {
+  private updateBeltRegion(tSeconds: Seconds, focusPos: Vector3): void {
     const mesh = this.beltRockMesh;
     const points = this.beltRockPoints;
     if (!mesh || !points || !this.system) return;
 
     const REACH_AU = 0.35;
-    const yAxis = new Vector3(0, 1, 0);
-    // Camera into the heliocentric model frame (undo spin and focus).
-    const helio = this.camera.position.clone().applyAxisAngle(yAxis, -spin).add(focusPos);
+    const frameInv = this.frameQuat.clone().invert();
+    // Camera into the heliocentric model frame (undo the ground frame).
+    const helio = this.camera.position.clone().applyQuaternion(frameInv).add(focusPos);
     const mx = helio.x / AU_KM;
     const my = -helio.z / AU_KM;
     const rAu = Math.hypot(mx, my);
@@ -936,7 +940,7 @@ export class UnifiedViewer {
       const pos = toWorld(state.position)
         .divideScalar(1000)
         .sub(focusPos)
-        .applyAxisAngle(yAxis, spin);
+        .applyQuaternion(this.frameQuat);
       const distanceKm = pos.distanceTo(this.camera.position);
       if (distanceKm > REACH_AU * AU_KM * 1.5) continue;
 
@@ -970,7 +974,7 @@ export class UnifiedViewer {
       const pos = toWorld(state.position)
         .divideScalar(1000)
         .sub(focusPos)
-        .applyAxisAngle(yAxis, spin);
+        .applyQuaternion(this.frameQuat);
       const distanceKm = pos.distanceTo(this.camera.position);
       const radiusKm = notable.diameterKm / 2;
       const starDistanceKm = (notable.elements.semiMajorAxis / AU) * AU_KM;
@@ -1313,14 +1317,20 @@ export class UnifiedViewer {
       this.focusAsteroid?.spinPeriodHours ?? this.focusPlanet?.physical.rotation.periodHours;
     const spin =
       solid && spinPeriodHours ? (2 * Math.PI * 24 * this.simTimeDays) / spinPeriodHours : 0;
-    this.currentSpin = spin;
+    // Terrain worlds put their spin axis on world Y, so their axial tilt
+    // lives in the frame: the ecliptic leans by the obliquity. Envelope
+    // focuses tilt the body instead (inside PlanetObject).
+    const tilt = solid && this.focusPlanet ? this.focusPlanet.physical.rotation.obliquityRad : 0;
+    this.frameQuat
+      .setFromAxisAngle(yAxis, spin)
+      .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), tilt));
     const focusPos = this.focusPositionKm();
-    this.heliocentric.rotation.y = spin;
-    this.heliocentric.position.copy(focusPos).negate().applyAxisAngle(yAxis, spin);
-    if (this.backdrop) this.backdrop.group.rotation.y = spin;
+    this.heliocentric.quaternion.copy(this.frameQuat);
+    this.heliocentric.position.copy(focusPos).negate().applyQuaternion(this.frameQuat);
+    if (this.backdrop) this.backdrop.group.quaternion.copy(this.frameQuat);
 
     const toFocusWorld = (heliocentricKm: Vector3): Vector3 =>
-      heliocentricKm.clone().sub(focusPos).applyAxisAngle(yAxis, spin);
+      heliocentricKm.clone().sub(focusPos).applyQuaternion(this.frameQuat);
 
     // The stars at their true positions and radii: angular size, phase
     // light, parallax, and eclipses all come out right by construction.
@@ -1418,7 +1428,7 @@ export class UnifiedViewer {
         });
       }
     }
-    this.updateBeltRegion(tSeconds, focusPos, spin);
+    this.updateBeltRegion(tSeconds, focusPos);
 
     this.bodyObject?.update(this.simTimeDays, sunDir, lightColor);
 
