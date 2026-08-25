@@ -1,6 +1,7 @@
 import './style.css';
 import { seedFromHex, seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
+import { galacticAddress } from '../universe/galaxy/regions';
 import { generateSystem } from '../universe/system/generate';
 import type { StarSystem } from '../universe/system/types';
 import { Controls, type ViewMode } from './ui/controls';
@@ -108,7 +109,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     systemPanel.render(system);
   } else if (viewMode === 'galaxy') {
     viewer.setFocus('star', 'galaxy');
-    galaxyPanel.render(system.star, viewer.neighbors, (neighbor) =>
+    galaxyPanel.render(system.star, galacticAddress(system.localePc), viewer.neighbors, (neighbor) =>
       load(neighbor.seedHex, neighbor.positionPc),
     );
   } else {

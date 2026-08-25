@@ -20,6 +20,7 @@ import {
 } from './density';
 import { sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
+import { galacticAddress, sectorName } from './regions';
 import { populationFromUnit, metallicityFor } from './population';
 import { viewpointForSeed } from './sectors';
 import { buildSkyField, imfFractionAbove, type SkyField } from './skyfield';
@@ -388,5 +389,41 @@ describe('sky field', () => {
     const equator = rowMean(Math.floor(sky.glowHeight / 2));
     const pole = rowMean(sky.glowHeight - 1);
     expect(equator).toBeGreaterThan(pole * 3);
+  });
+});
+
+describe('gazetteer', () => {
+  it('addresses are deterministic and structurally sane', () => {
+    const a = galacticAddress({ xPc: -7920, yPc: 7086, zPc: 382 });
+    expect(galacticAddress({ xPc: -7920, yPc: 7086, zPc: 382 })).toEqual(a);
+    expect(a.sector.length).toBeGreaterThan(2);
+    expect(a.label).toContain('Sector');
+
+    expect(galacticAddress({ xPc: 600, yPc: 300, zPc: 0 }).zone).toBe('core');
+    expect(galacticAddress({ xPc: 14500, yPc: 2000, zPc: 0 }).zone).toBe('rim');
+    expect(galacticAddress({ xPc: 8000, yPc: 0, zPc: 2000 }).zone).toBe('halo');
+    // A point on an arm ridge is in that arm.
+    const radius = 8000;
+    const ridgeAzimuth = Math.log(radius / 3000) / Math.tan((12 * Math.PI) / 180);
+    const onArm = galacticAddress({
+      xPc: radius * Math.cos(ridgeAzimuth),
+      yPc: radius * Math.sin(ridgeAzimuth),
+      zPc: 0,
+    });
+    expect(onArm.zone).toBe('arm');
+  });
+
+  it('sector names tile the grid distinctly and stably', () => {
+    const names = new Set<string>();
+    for (let ix = 0; ix < 6; ix++) {
+      for (let iy = 0; iy < 6; iy++) {
+        names.add(sectorName({ xPc: 5000 + ix * 400, yPc: iy * 400, zPc: 0 }));
+      }
+    }
+    expect(names.size).toBeGreaterThan(30);
+    // Within one 400 pc cell the name holds.
+    expect(sectorName({ xPc: 4810, yPc: 10, zPc: 0 })).toBe(
+      sectorName({ xPc: 5190, yPc: 390, zPc: 50 }),
+    );
   });
 });

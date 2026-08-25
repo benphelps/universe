@@ -31,7 +31,16 @@ const ARM_INNER_RADIUS = 3000;
 /** Spiral-arm density enhancement factor (1 between arms, up to ~2.2 on-arm). */
 export function armBoost(radiusPc: number, azimuthRad: number): number {
   if (radiusPc < ARM_INNER_RADIUS) return 1;
-  const armPhase = Math.log(radiusPc / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
+  return 1 + 1.2 * Math.exp(-((nearestArm(radiusPc, azimuthRad).distancePc / 700) ** 2));
+}
+
+/** Which spiral arm a locale is closest to, and how far off its ridge. */
+export function nearestArm(
+  radiusPc: number,
+  azimuthRad: number,
+): { index: number; distancePc: number } {
+  const armPhase = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
+  let index = 0;
   let nearest = Infinity;
   for (let arm = 0; arm < ARM_COUNT; arm++) {
     const armAzimuth = armPhase + (arm * 2 * Math.PI) / ARM_COUNT;
@@ -39,9 +48,13 @@ export function armBoost(radiusPc: number, azimuthRad: number): number {
     if (delta > Math.PI) delta -= 2 * Math.PI;
     if (delta < -Math.PI) delta += 2 * Math.PI;
     // Arc distance from the arm ridge.
-    nearest = Math.min(nearest, Math.abs(delta) * radiusPc);
+    const distance = Math.abs(delta) * radiusPc;
+    if (distance < nearest) {
+      nearest = distance;
+      index = arm;
+    }
   }
-  return 1 + 1.2 * Math.exp(-((nearest / 700) ** 2));
+  return { index, distancePc: nearest };
 }
 
 export interface ComponentDensities {

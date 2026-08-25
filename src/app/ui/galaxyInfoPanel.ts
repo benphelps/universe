@@ -1,5 +1,6 @@
 import { seedFromHex } from '../../core/rng/hash';
 import { NEIGHBOR_RADIUS_PC, type Neighbor } from '../../universe/galaxy/neighborhood';
+import type { GalacticAddress } from '../../universe/galaxy/regions';
 import { generateStar } from '../../universe/star/generate';
 import type { Star } from '../../universe/star/types';
 import { fmt } from './format';
@@ -11,7 +12,12 @@ import { fmt } from './format';
 export class GalaxyInfoPanel {
   constructor(private readonly element: HTMLElement) {}
 
-  render(current: Star, neighbors: Neighbor[], onTravel: (neighbor: Neighbor) => void): void {
+  render(
+    current: Star,
+    address: GalacticAddress,
+    neighbors: Neighbor[],
+    onTravel: (neighbor: Neighbor) => void,
+  ): void {
     const rows = neighbors.slice(0, 14).map((neighbor, i) => {
       // Each neighbor's star at its true position — the same locale the
       // sky point used and travel will carry.
@@ -28,6 +34,7 @@ export class GalaxyInfoPanel {
 
     this.element.innerHTML = `
       <h1>${current.designation}</h1>
+      <div class="sub">${address.label}</div>
       <div class="sub">${current.spectralType} · the local neighborhood (${neighbors.length} stars within ${NEIGHBOR_RADIUS_PC} pc)</div>
       <h2>Travel to</h2>
       ${rows.join('')}
