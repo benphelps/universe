@@ -21,7 +21,7 @@ import { dustDensity, stellarDensity, type GalacticPosition } from './density';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
-import { sectorSeedAt } from './regions';
+import { sectorNameForSeed, sectorSeedAt } from './regions';
 
 /**
  * The sky as seen from a point in the galaxy: every star bright enough
@@ -113,6 +113,19 @@ export interface SkyField {
    *  cross into different neighboring territories, at true exit
    *  distances (scene-frame pc segments relative to home). */
   sectorSkyBounds: Float32Array;
+  /** Names for the chart provinces around home (scene-frame pc). */
+  sectorLabels: SectorLabel[];
+  /** Names for the sky regions the borders enclose, on the same
+   *  celestial sphere as sectorSkyBounds. */
+  sectorSkyLabels: SectorLabel[];
+}
+
+export interface SectorLabel {
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+  home: boolean;
 }
 
 /** Keep far stars down to apparent magnitude ≈ 9. */
@@ -251,7 +264,7 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     darkAtlas,
     sceneFromGalaxy: sceneFromGalaxy(seed),
     ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
-    sectorSkyBounds: buildSectorSkyBounds(viewpoint, sceneFromGalaxy(seed)),
+    ...buildSectorSkyBounds(viewpoint, sceneFromGalaxy(seed)),
     ...buildGlow(viewpoint, spriteSeeds),
   };
 }
@@ -525,34 +538,42 @@ function buildGroups(
   return { nebulae, nebulaAtlas };
 }
 
-/** Chart border tracing: lattice over the disk, borders bisected sharp. */
-const CHART_RADIUS_PC = 15200;
-const CHART_STEP_PC = 110;
+/** Chart border tracing: a local patch around home, matching the reach
+ *  of the discrete star catalog — the chart maps where you can travel. */
+const CHART_RADIUS_PC = 2800;
+const CHART_STEP_PC = 90;
+/** The disk's edge; the patch clips there if home sits near the rim. */
+const DISK_EDGE_PC = 15200;
 
 /**
- * Trace the gazetteer's territory borders: a lattice over the disk
- * samples which territory each point belongs to, every border crossing
- * is sharpened by bisection along its lattice edge, and the crossings
- * connect through each lattice square — so the drawn curves follow the
- * warped Voronoi borders themselves, not the lattice. Segments arrive
- * in scene-frame parsecs; the home territory's own outline ships
- * separately so the chart can highlight "you are here".
+ * Trace the gazetteer's territory borders: a lattice over the local
+ * patch samples which territory each point belongs to, every border
+ * crossing is sharpened by bisection along its lattice edge, and the
+ * crossings connect through each lattice square — so the drawn curves
+ * follow the warped Voronoi borders themselves, not the lattice.
+ * Segments arrive in scene-frame parsecs; the home territory's own
+ * outline ships separately so the chart can highlight "you are here".
  */
 function buildSectorBounds(
   viewpoint: GalacticPosition,
   orientation: Float32Array,
-): { sectorBounds: Float32Array; sectorHomeBounds: Float32Array } {
+): {
+  sectorBounds: Float32Array;
+  sectorHomeBounds: Float32Array;
+  sectorLabels: SectorLabel[];
+} {
   const n = Math.floor((2 * CHART_RADIUS_PC) / CHART_STEP_PC) + 1;
-  const coord = (i: number): number => -CHART_RADIUS_PC + i * CHART_STEP_PC;
+  const coordX = (i: number): number => viewpoint.xPc - CHART_RADIUS_PC + i * CHART_STEP_PC;
+  const coordY = (j: number): number => viewpoint.yPc - CHART_RADIUS_PC + j * CHART_STEP_PC;
   const ids: bigint[] = new Array(n * n);
   const idAt = (i: number, j: number): bigint => {
     const key = j * n + i;
     let id = ids[key];
     if (id === undefined) {
-      const xPc = coord(i);
-      const yPc = coord(j);
+      const xPc = coordX(i);
+      const yPc = coordY(j);
       id =
-        xPc * xPc + yPc * yPc > CHART_RADIUS_PC * CHART_RADIUS_PC
+        xPc * xPc + yPc * yPc > DISK_EDGE_PC * DISK_EDGE_PC
           ? -1n
           : sectorSeedAt({ xPc, yPc, zPc: 0 });
       ids[key] = id;
@@ -591,7 +612,7 @@ function buildSectorBounds(
       if (i + 1 < n) {
         const right = idAt(i + 1, j);
         if (right !== id && right !== -1n) {
-          const [x, y] = bisect(coord(i), coord(j), CHART_STEP_PC, 0, id);
+          const [x, y] = bisect(coordX(i), coordY(j), CHART_STEP_PC, 0, id);
           crossH[(j * n + i) * 2] = x;
           crossH[(j * n + i) * 2 + 1] = y;
         }
@@ -599,7 +620,7 @@ function buildSectorBounds(
       if (j + 1 < n) {
         const up = idAt(i, j + 1);
         if (up !== id && up !== -1n) {
-          const [x, y] = bisect(coord(i), coord(j), 0, CHART_STEP_PC, id);
+          const [x, y] = bisect(coordX(i), coordY(j), 0, CHART_STEP_PC, id);
           crossV[(j * n + i) * 2] = x;
           crossV[(j * n + i) * 2 + 1] = y;
         }
@@ -659,9 +680,39 @@ function buildSectorBounds(
     }
   }
 
+  // Label each province the slice shows near home, at its visible
+  // centroid — naming exactly what the map draws.
+  const centroids = new Map<bigint, { x: number; y: number; count: number }>();
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const id = ids[j * n + i];
+      if (id === undefined || id === -1n) continue;
+      const entry = centroids.get(id) ?? { x: 0, y: 0, count: 0 };
+      entry.x += coordX(i);
+      entry.y += coordY(j);
+      entry.count++;
+      centroids.set(id, entry);
+    }
+  }
+  const labels: SectorLabel[] = [];
+  for (const [id, { x, y, count }] of centroids) {
+    if (count < 4) continue;
+    const cx = x / count;
+    const cy = y / count;
+    if (Math.hypot(cx - viewpoint.xPc, cy - viewpoint.yPc) > 2100 && id !== homeId) continue;
+    const [sx, sy, sz] = rotateToScene(
+      orientation,
+      cx - viewpoint.xPc,
+      cy - viewpoint.yPc,
+      -viewpoint.zPc,
+    );
+    labels.push({ name: sectorNameForSeed(id), x: sx, y: sy, z: sz, home: id === homeId });
+  }
+
   return {
     sectorBounds: new Float32Array(all),
     sectorHomeBounds: new Float32Array(home),
+    sectorLabels: labels,
   };
 }
 
@@ -687,7 +738,7 @@ const SKY_DRAW_RADIUS_PC = 800;
 function buildSectorSkyBounds(
   viewpoint: GalacticPosition,
   orientation: Float32Array,
-): Float32Array {
+): { sectorSkyBounds: Float32Array; sectorSkyLabels: SectorLabel[] } {
   const homeId = sectorSeedAt(viewpoint);
   const idAtDistance = (dir: [number, number, number], s: number): bigint =>
     sectorSeedAt({
@@ -724,13 +775,46 @@ function buildSectorSkyBounds(
   };
 
   const ids: bigint[] = new Array(SKY_LON_STEPS * SKY_LAT_STEPS);
-  const dists = new Float32Array(SKY_LON_STEPS * SKY_LAT_STEPS);
   for (let j = 0; j < SKY_LAT_STEPS; j++) {
     for (let i = 0; i < SKY_LON_STEPS; i++) {
-      const exit = exitFor(dirAt(i, j));
-      ids[j * SKY_LON_STEPS + i] = exit.id;
-      dists[j * SKY_LON_STEPS + i] = exit.distancePc;
+      ids[j * SKY_LON_STEPS + i] = exitFor(dirAt(i, j)).id;
     }
+  }
+
+  // A label per sky region: each neighboring territory's patch of sky,
+  // named at its solid-angle-weighted center direction.
+  const regionSums = new Map<
+    bigint,
+    { x: number; y: number; z: number; weight: number }
+  >();
+  let totalWeight = 0;
+  for (let j = 0; j < SKY_LAT_STEPS; j++) {
+    const weight = Math.cos((((j + 0.5) / SKY_LAT_STEPS) - 0.5) * Math.PI);
+    for (let i = 0; i < SKY_LON_STEPS; i++) {
+      const id = ids[j * SKY_LON_STEPS + i];
+      totalWeight += weight;
+      if (id === homeId) continue;
+      const dir = dirAt(i, j);
+      const entry = regionSums.get(id) ?? { x: 0, y: 0, z: 0, weight: 0 };
+      entry.x += dir[0] * weight;
+      entry.y += dir[1] * weight;
+      entry.z += dir[2] * weight;
+      entry.weight += weight;
+      regionSums.set(id, entry);
+    }
+  }
+  const sectorSkyLabels: SectorLabel[] = [];
+  for (const [id, sum] of regionSums) {
+    if (sum.weight < totalWeight * 0.015) continue;
+    const length = Math.hypot(sum.x, sum.y, sum.z);
+    if (length < 1e-6) continue;
+    const [sx, sy, sz] = rotateToScene(
+      orientation,
+      (sum.x / length) * SKY_DRAW_RADIUS_PC,
+      (sum.y / length) * SKY_DRAW_RADIUS_PC,
+      (sum.z / length) * SKY_DRAW_RADIUS_PC,
+    );
+    sectorSkyLabels.push({ name: sectorNameForSeed(id), x: sx, y: sy, z: sz, home: false });
   }
 
   // Border crossing between two adjacent sight-lines: bisect the
@@ -818,7 +902,7 @@ function buildSectorSkyBounds(
       }
     }
   }
-  return new Float32Array(segments);
+  return { sectorSkyBounds: new Float32Array(segments), sectorSkyLabels };
 }
 
 /**

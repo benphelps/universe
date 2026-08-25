@@ -367,6 +367,15 @@ describe('sky field', () => {
     expect(seeded).toBeGreaterThan(30);
   });
 
+  it('charts and letters the local territories', () => {
+    expect(sky.sectorBounds.length).toBeGreaterThan(60);
+    expect(sky.sectorSkyBounds.length).toBeGreaterThan(60);
+    expect(sky.sectorLabels.length).toBeGreaterThan(3);
+    expect(sky.sectorLabels.filter((l) => l.home).length).toBe(1);
+    expect(sky.sectorSkyLabels.length).toBeGreaterThan(2);
+    for (const label of sky.sectorLabels) expect(label.name.length).toBeGreaterThan(2);
+  });
+
   it('carries clusters and nebulae in the far field', () => {
     expect(sky.nebulae.length).toBeGreaterThan(3);
     expect(sky.nebulae.length).toBeLessThan(120);

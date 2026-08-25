@@ -567,11 +567,7 @@ export class UnifiedViewer {
       // rifts, nebulae, dark clouds — which the galaxy volume replaces.
       this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
       this.scene.add(this.backdrop.group);
-      this.sectorChart = new SectorChart(
-        sky.sectorBounds,
-        sky.sectorHomeBounds,
-        sky.sectorSkyBounds,
-      );
+      this.sectorChart = new SectorChart(sky);
       this.pcGroup.add(this.sectorChart.group);
 
       const farCount = sky.starCount - sky.nearStarCount;
@@ -1501,6 +1497,8 @@ export class UnifiedViewer {
         this.sectorChart.opacity = eased;
         this.sectorChart.skyOpacity = 1 - eased;
         this.sectorChart.skyRadiusLimitPc = (this.camera.far / PC_KM) * 0.45;
+        this.sectorChart.labelFade =
+          1 - Math.min(1, Math.max(0, (distancePc - 3500) / 3500));
       }
 
       this.updateWorld(up);

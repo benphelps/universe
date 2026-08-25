@@ -1,7 +1,8 @@
 import { deriveSeed, mix64 } from '../../core/rng/hash';
+import { poisson } from '../../core/rng/distributions';
 import { Rng } from '../../core/rng/rng';
 import { createSimplex3 } from '../../core/noise/simplex3';
-import { nearestArm, type GalacticPosition } from './density';
+import { nearestArm, stellarDensity, type GalacticPosition } from './density';
 import { UNIVERSE_SEED } from './sectors';
 
 /**
@@ -50,26 +51,44 @@ interface SectorSite {
 }
 
 // Border tracing sweeps thousands of lookups over the same few hundred
-// sites; the per-cell derivation is BigInt-priced, so memoize.
-const siteCache = new Map<number, SectorSite>();
+// cells; the per-cell derivation is BigInt-priced, so memoize.
+const siteCache = new Map<number, SectorSite[]>();
 
-function siteFor(ix: number, iy: number, iz: number): SectorSite {
+/**
+ * The sites of one span cell: at least one, plus extras where the
+ * stellar density runs high — so provinces come out small along the
+ * arms and in the inner disk, and sprawl in the rim and halo, the way
+ * human administrative maps subdivide where the population is.
+ */
+function sitesFor(ix: number, iy: number, iz: number): SectorSite[] {
   const key = ((ix + 1024) * 2048 + (iy + 1024)) * 64 + (iz + 32);
   const cached = siteCache.get(key);
   if (cached) return cached;
-  const seed = mix64(
+  const cellSeed = mix64(
     SITE_SALT ^
       ((BigInt(ix & 0x3ffff) << 30n) | (BigInt(iy & 0x3ffff) << 12n) | BigInt(iz & 0xfff)),
   );
-  const rng = new Rng(seed);
-  const site: SectorSite = {
-    xPc: (ix + rng.float()) * SECTOR_SITE_SPAN_PC,
-    yPc: (iy + rng.float()) * SECTOR_SITE_SPAN_PC,
-    zPc: (iz + rng.float()) * SECTOR_SITE_SPAN_PC,
-    seed,
-  };
-  siteCache.set(key, site);
-  return site;
+  const rng = new Rng(cellSeed);
+  const density = stellarDensity({
+    xPc: (ix + 0.5) * SECTOR_SITE_SPAN_PC,
+    yPc: (iy + 0.5) * SECTOR_SITE_SPAN_PC,
+    zPc: (iz + 0.5) * SECTOR_SITE_SPAN_PC,
+  });
+  const count = Math.min(
+    6,
+    1 + poisson(rng, Math.max(0, 2 * Math.sqrt(density / 0.1) - 1)),
+  );
+  const sites: SectorSite[] = [];
+  for (let k = 0; k < count; k++) {
+    sites.push({
+      xPc: (ix + rng.float()) * SECTOR_SITE_SPAN_PC,
+      yPc: (iy + rng.float()) * SECTOR_SITE_SPAN_PC,
+      zPc: (iz + rng.float()) * SECTOR_SITE_SPAN_PC,
+      seed: deriveSeed(cellSeed, 'site', k),
+    });
+  }
+  siteCache.set(key, sites);
+  return sites;
 }
 
 /** Border-bending warp: territories meander instead of meeting on planes. */
@@ -98,11 +117,12 @@ export function sectorSeedAt(positionPc: GalacticPosition): bigint {
   for (let ix = cx - 1; ix <= cx + 1; ix++) {
     for (let iy = cy - 1; iy <= cy + 1; iy++) {
       for (let iz = cz - 1; iz <= cz + 1; iz++) {
-        const site = siteFor(ix, iy, iz);
-        const dSq = (site.xPc - wx) ** 2 + (site.yPc - wy) ** 2 + (site.zPc - wz) ** 2;
-        if (dSq < bestSq) {
-          bestSq = dSq;
-          best = site.seed;
+        for (const site of sitesFor(ix, iy, iz)) {
+          const dSq = (site.xPc - wx) ** 2 + (site.yPc - wy) ** 2 + (site.zPc - wz) ** 2;
+          if (dSq < bestSq) {
+            bestSq = dSq;
+            best = site.seed;
+          }
         }
       }
     }
@@ -110,9 +130,14 @@ export function sectorSeedAt(positionPc: GalacticPosition): bigint {
   return best;
 }
 
+/** Proper name of the territory a site seed identifies. */
+export function sectorNameForSeed(seed: bigint): string {
+  return generatedName(deriveSeed(seed, 'name'));
+}
+
 /** Name of the territory containing a galactic position. */
 export function sectorName(positionPc: GalacticPosition): string {
-  return generatedName(deriveSeed(sectorSeedAt(positionPc), 'name'));
+  return sectorNameForSeed(sectorSeedAt(positionPc));
 }
 
 export interface GalacticAddress {
