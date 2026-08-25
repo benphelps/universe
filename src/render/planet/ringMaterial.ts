@@ -56,11 +56,15 @@ void main() {
   // Soft inner/outer edges.
   density *= smoothstep(0.0, 0.06, rNorm) * (1.0 - smoothstep(0.92, 1.0, rNorm));
 
-  float alpha = clamp(density * min(1.0, uOpticalDepth * 1.6), 0.0, 1.0);
+  // Legibility lift above strict photometry: optical depth enters on a
+  // compressive curve and the slab keeps a soft floor, so thin dusty
+  // rings read as a faint band instead of vanishing (the belt-glint
+  // marker-floor convention); dense icy rings are barely affected.
+  float alpha = clamp(density * min(1.0, pow(uOpticalDepth, 0.45) * 1.7), 0.0, 1.0);
 
   // Thin-slab illumination plus fine-particle forward scattering when backlit.
   vec3 normal = normalize(vWorldNormal);
-  float slab = abs(dot(normal, uLightDir)) * 0.85 + 0.05;
+  float slab = pow(abs(dot(normal, uLightDir)), 0.6) * 0.7 + 0.22;
   vec3 viewToFrag = normalize(vWorldPos - cameraPosition);
   float forward = pow(max(dot(viewToFrag, uLightDir), 0.0), 8.0) * uForwardScatter;
 

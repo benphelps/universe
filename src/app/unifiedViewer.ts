@@ -608,7 +608,11 @@ export class UnifiedViewer {
           : preset === 'system'
             ? new Vector3(0.35, 1.15, 0.85).normalize()
             : new Vector3(0.3, 0.17, 1).normalize();
-    const arrival = toStar.clone().applyAxisAngle(new Vector3(0, 1, 0), 0.7).normalize();
+    const arrival = toStar.clone().applyAxisAngle(new Vector3(0, 1, 0), 0.7);
+    // Ringed worlds greet the camera from above the ring plane — an
+    // edge-on arrival would collapse the rings to a one-pixel sliver.
+    if (this.focusPlanet?.rings) arrival.y += 0.55;
+    arrival.normalize();
     this.camera.position.copy(arrival).multiplyScalar(this.radiusKm + this.altitudeKm);
     this.camera.up.set(0, 1, 0);
     this.controls.update();
