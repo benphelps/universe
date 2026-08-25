@@ -75,6 +75,25 @@ export function stellarDensity(position: GalacticPosition): number {
   return thin + thick + halo;
 }
 
+/**
+ * Upper bound on stellar density anywhere inside an axis-aligned cell:
+ * every component decreases with cylindrical radius and |z|, so the
+ * bound evaluates at the cell point nearest the galactic center and
+ * midplane, with the arm enhancement at its maximum. Catalog cells
+ * thin against this ceiling, so looseness costs candidates, never stars.
+ */
+export function stellarDensityCeiling(minCorner: GalacticPosition, sizePc: number): number {
+  const nearest = (lo: number): number => Math.min(Math.max(0, lo), lo + sizePc);
+  const radius = Math.hypot(nearest(minCorner.xPc), nearest(minCorner.yPc));
+  const absZ = Math.abs(nearest(minCorner.zPc));
+  const thin =
+    THIN_NORM * Math.exp(-radius / THIN_SCALE_LENGTH) * Math.exp(-absZ / THIN_SCALE_HEIGHT) * 2.2;
+  const thick =
+    THICK_NORM * Math.exp(-radius / THICK_SCALE_LENGTH) * Math.exp(-absZ / THICK_SCALE_HEIGHT);
+  const sphericalR = Math.max(Math.hypot(radius, absZ), 500);
+  return thin + thick + 0.0008 * (sphericalR / 8000) ** -3.5;
+}
+
 /** Dust density for extinction, concentrated in a thin midplane layer. */
 export function dustDensity(position: GalacticPosition): number {
   const radius = Math.hypot(position.xPc, position.yPc);

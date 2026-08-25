@@ -1,8 +1,9 @@
 import { buildTemperatureLut, temperatureToLutCoord } from '../../core/color/blackbody';
 import { seedToHex } from '../../core/rng/hash';
+import { starsNear } from './catalog';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
-import { starsNear, viewpointForSeed } from './sectors';
+import { viewpointForSeed } from './sectors';
 
 /** Matches the sky field's near radius so 3D points hand off to the backdrop. */
 export const NEIGHBOR_RADIUS_PC = 30;

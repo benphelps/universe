@@ -32,7 +32,7 @@ import {
 } from '../core/physics/constants';
 import { mu as muOf, seconds, type Mu, type Seconds } from '../core/physics/units';
 import { Rng } from '../core/rng/rng';
-import { deriveSeed, seedFromHex } from '../core/rng/hash';
+import { deriveSeed, seedFromHex, seedToHex } from '../core/rng/hash';
 import { createTemperatureLutTexture } from '../render/color/temperatureLut';
 import { createAtmosphereShell } from '../render/planet/atmosphereShell';
 import { PlanetObject } from '../render/planet/planetObject';
@@ -685,8 +685,8 @@ export class UnifiedViewer {
           bestStar = i;
           best = null;
         }
-        // The statistical far field: population samples, not seeds —
-        // a glint can name its kind and distance but cannot be visited.
+        // The far field: catalog stars with seeds of their own — any
+        // glint in the sky identifies itself and can be traveled to.
         if (this.skyData) {
           const sky = this.skyData;
           const cosS = Math.cos(this.currentSpin);
@@ -723,19 +723,34 @@ export class UnifiedViewer {
               sky.starDirs[bestFar * 3 + 1],
               sky.starDirs[bestFar * 3 + 2],
             );
-            const tEff = sky.starTeffs[bestFar];
             const distance = sky.starDistances[bestFar];
-            const luminosity = sky.starBrightness[bestFar] * distance * distance;
-            const giant = luminosity > 20 && tEff < 5800;
-            best = {
+            const starSeed = sky.starSeeds[bestFar];
+            const position = {
               x: this.camera.position.x + (cosS * ox + sinS * oz) * 1e12,
               y: this.camera.position.y + oy * 1e12,
               z: this.camera.position.z + (-sinS * ox + cosS * oz) * 1e12,
-              name: 'field star',
-              info: `${spectralLetter(tEff)}-type${giant ? ' giant' : ''} · ≈${fmt(distance, 3)} pc · unresolved population`,
-              action: null,
-              target: null,
             };
+            if (starSeed !== 0n) {
+              const seedHex = seedToHex(starSeed);
+              best = {
+                ...position,
+                name: `SIM-${seedHex.slice(-8).toUpperCase()}`,
+                info: `${spectralType(starPhotometry(starSeed))} · ${fmt(distance, 3)} pc`,
+                action: 'click to travel',
+                target: { kind: 'neighbor', seedHex },
+              };
+            } else {
+              // Cluster members ride their group's stream, not a seed
+              // of their own — identifiable, not yet addressable.
+              const tEff = sky.starTeffs[bestFar];
+              best = {
+                ...position,
+                name: 'cluster member',
+                info: `${spectralLetter(tEff)}-type · ≈${fmt(distance, 3)} pc · coeval group`,
+                action: null,
+                target: null,
+              };
+            }
           }
         }
 

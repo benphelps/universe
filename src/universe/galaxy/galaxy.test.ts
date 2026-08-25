@@ -1,11 +1,21 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { mix64, unmix64 } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
+import { evolve } from '../star/evolution';
 import { generateStar } from '../star/generate';
-import { HOME_POSITION, stellarDensity } from './density';
+import {
+  ageBitsOf,
+  ageUnitOf,
+  initialMassOf,
+  massBitsOf,
+  seedForIdentity,
+} from '../star/identity';
+import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
+import { HOME_POSITION, stellarDensity, stellarDensityCeiling } from './density';
 import { sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
-import { drawPopulation } from './population';
-import { sectorStars, starsNear, viewpointForSeed } from './sectors';
+import { populationFromUnit, metallicityFor } from './population';
+import { viewpointForSeed } from './sectors';
 import { buildSkyField, imfFractionAbove, type SkyField } from './skyfield';
 
 describe('galactic density', () => {
@@ -23,21 +33,101 @@ describe('galactic density', () => {
   });
 });
 
-describe('sectors', () => {
-  it('are deterministic and hold plausible star counts', () => {
-    const a = sectorStars(800, 0, 2);
-    const b = sectorStars(800, 0, 2);
-    expect(JSON.stringify(a, (_, v) => (typeof v === 'bigint' ? v.toString() : v))).toBe(
-      JSON.stringify(b, (_, v) => (typeof v === 'bigint' ? v.toString() : v)),
-    );
-    // ~0.1/pc³ × 1000 pc³ → tens to a couple hundred stars.
-    let total = 0;
-    for (let i = 0; i < 10; i++) total += sectorStars(800 + i, 3, 1).length;
-    expect(total / 10).toBeGreaterThan(30);
-    expect(total / 10).toBeLessThan(400);
+describe('star identity', () => {
+  it('unmix64 exactly inverts mix64', () => {
+    const rng = new Rng(99n);
+    for (let i = 0; i < 200; i++) {
+      const x =
+        (BigInt(Math.floor(rng.float() * 2 ** 32)) << 32n) |
+        BigInt(Math.floor(rng.float() * 2 ** 32));
+      expect(unmix64(mix64(x))).toBe(x);
+      expect(mix64(unmix64(x))).toBe(x);
+    }
   });
 
-  it('starsNear respects the radius', () => {
+  it('constructed seeds decode to their identity bits', () => {
+    const rng = new Rng(7n);
+    for (let i = 0; i < 200; i++) {
+      const massBits = Math.floor(rng.float() * 2 ** 24);
+      const ageBits = Math.floor(rng.float() * 2 ** 24);
+      const entropy = Math.floor(rng.float() * 2 ** 16);
+      const seed = seedForIdentity(massBits, ageBits, entropy);
+      expect(massBitsOf(seed)).toBe(massBits);
+      expect(ageBitsOf(seed)).toBe(ageBits);
+    }
+  });
+
+  it('random seeds carry the Kroupa mass distribution', () => {
+    let above1 = 0;
+    let above7 = 0;
+    const n = 40000;
+    const rng = new Rng(5n);
+    for (let i = 0; i < n; i++) {
+      const seed =
+        (BigInt(Math.floor(rng.float() * 2 ** 32)) << 32n) |
+        BigInt(Math.floor(rng.float() * 2 ** 32));
+      const mass = initialMassOf(seed);
+      expect(mass).toBeGreaterThanOrEqual(0.013);
+      expect(mass).toBeLessThanOrEqual(120);
+      if (mass >= 1) above1++;
+      if (mass >= 7) above7++;
+    }
+    expect(above1 / n).toBeGreaterThan(0.05);
+    expect(above1 / n).toBeLessThan(0.08);
+    expect(above7 / n).toBeGreaterThan(0.002);
+    expect(above7 / n).toBeLessThan(0.008);
+  });
+
+  it('every seed belongs to exactly one catalog row', () => {
+    const rng = new Rng(11n);
+    for (let i = 0; i < 500; i++) {
+      const seed =
+        (BigInt(Math.floor(rng.float() * 2 ** 32)) << 32n) |
+        BigInt(Math.floor(rng.float() * 2 ** 32));
+      const massBits = massBitsOf(seed);
+      const ageBits = ageBitsOf(seed);
+      const homes = CATALOG_ROWS.filter(
+        (row) =>
+          massBits >= row.massBitsLo &&
+          massBits < row.massBitsHi &&
+          ageBits >= row.ageBitsLo &&
+          ageBits < row.ageBitsHi,
+      );
+      expect(homes.length).toBe(1);
+    }
+  });
+
+  it('the luminosity ceiling bounds every evolutionary state', () => {
+    const rng = new Rng(3n);
+    for (let i = 0; i < 3000; i++) {
+      const seed =
+        (BigInt(Math.floor(rng.float() * 2 ** 32)) << 32n) |
+        BigInt(Math.floor(rng.float() * 2 ** 32));
+      const mass = initialMassOf(seed);
+      const { ageGyr } = populationFromUnit(ageUnitOf(seed), viewpointForSeed(seed));
+      expect(evolve(mass, ageGyr).luminosity).toBeLessThanOrEqual(
+        luminosityCeiling(mass),
+      );
+    }
+  });
+});
+
+describe('catalog', () => {
+  it('materializes deterministically with plausible density', () => {
+    const a = starsNear(HOME_POSITION, 20);
+    const b = starsNear(HOME_POSITION, 20);
+    expect(a.length).toBe(b.length);
+    for (let i = 0; i < Math.min(a.length, 40); i++) {
+      expect(a[i].seed).toBe(b[i].seed);
+      expect(a[i].positionPc).toEqual(b[i].positionPc);
+    }
+    // ~0.1/pc³ over a 20 pc ball → a few thousand stars.
+    const volume = (4 / 3) * Math.PI * 20 ** 3;
+    expect(a.length).toBeGreaterThan(volume * 0.03);
+    expect(a.length).toBeLessThan(volume * 0.4);
+  });
+
+  it('starsNear respects the radius and the density ceiling holds', () => {
     const stars = starsNear(HOME_POSITION, 15);
     expect(stars.length).toBeGreaterThan(100);
     for (const star of stars.slice(0, 50)) {
@@ -47,6 +137,34 @@ describe('sectors', () => {
         star.positionPc.zPc - HOME_POSITION.zPc,
       );
       expect(d).toBeLessThanOrEqual(15);
+    }
+    const rng = new Rng(1n);
+    for (let i = 0; i < 300; i++) {
+      const corner = {
+        xPc: rng.range(-12000, 12000),
+        yPc: rng.range(-12000, 12000),
+        zPc: rng.range(-800, 800),
+      };
+      const size = [10, 40, 160, 640][i % 4];
+      const ceiling = stellarDensityCeiling(corner, size);
+      const probe = {
+        xPc: corner.xPc + rng.float() * size,
+        yPc: corner.yPc + rng.float() * size,
+        zPc: corner.zPc + rng.float() * size,
+      };
+      expect(stellarDensity(probe)).toBeLessThanOrEqual(ceiling * (1 + 1e-9));
+    }
+  });
+
+  it('a materialized catalog star mirrors its traveled-to system', () => {
+    const stars = starsNear(HOME_POSITION, 12);
+    for (const star of stars.slice(0, 12)) {
+      const full = generateStar(star.seed, { withCompanions: false });
+      expect(full.massInitial).toBeCloseTo(star.massInitial, 10);
+      const row = CATALOG_ROWS.find(
+        (r) => star.massInitial >= r.massLo && star.massInitial < r.massHi,
+      );
+      expect(row).toBeDefined();
     }
   });
 
@@ -100,13 +218,15 @@ describe('population', () => {
     let metalPoor = 0;
     const n = 4000;
     for (let i = 0; i < n; i++) {
-      const draw = drawPopulation(new Rng(BigInt(50_000 + i)), HOME_POSITION);
+      const rng = new Rng(BigInt(50_000 + i));
+      const draw = populationFromUnit(rng.float(), HOME_POSITION);
+      const feH = metallicityFor(rng, draw, HOME_POSITION);
       counts[draw.component]++;
       if (draw.ageGyr > 8) old++;
-      if (draw.feH < -1) metalPoor++;
+      if (feH < -1) metalPoor++;
       expect(draw.ageGyr).toBeLessThan(13.5);
-      expect(draw.feH).toBeGreaterThanOrEqual(-2.5);
-      expect(draw.feH).toBeLessThanOrEqual(0.6);
+      expect(feH).toBeGreaterThanOrEqual(-2.5);
+      expect(feH).toBeLessThanOrEqual(0.6);
     }
     expect(counts['thin-disk'] / n).toBeGreaterThan(0.8);
     expect(counts['thick-disk'] / n).toBeGreaterThan(0.05);
@@ -123,7 +243,11 @@ describe('population', () => {
     const at = (zPc: number): number => {
       let halo = 0;
       for (let i = 0; i < 1500; i++) {
-        const draw = drawPopulation(new Rng(BigInt(90_000 + i)), { xPc: 8000, yPc: 0, zPc });
+        const draw = populationFromUnit(new Rng(BigInt(90_000 + i)).float(), {
+          xPc: 8000,
+          yPc: 0,
+          zPc,
+        });
         if (draw.component !== 'thin-disk') halo++;
       }
       return halo / 1500;
@@ -136,7 +260,9 @@ describe('population', () => {
     const meanFeH = (xPc: number): number => {
       let sum = 0;
       for (let i = 0; i < 1500; i++) {
-        sum += drawPopulation(new Rng(BigInt(70_000 + i)), { xPc, yPc: 0, zPc: 20 }).feH;
+        const rng = new Rng(BigInt(70_000 + i));
+        const position = { xPc, yPc: 0, zPc: 20 };
+        sum += metallicityFor(rng, populationFromUnit(rng.float(), position), position);
       }
       return sum / 1500;
     };
@@ -184,6 +310,24 @@ describe('sky field', () => {
     }
     expect(nakedEye).toBeGreaterThan(1500);
     expect(nakedEye).toBeLessThan(40000);
+  });
+
+  it('every far glint with a seed mirrors the star behind it', () => {
+    let seeded = 0;
+    const step = Math.max(1, Math.floor((sky.starCount - sky.nearStarCount) / 60));
+    for (let i = sky.nearStarCount; i < sky.starCount; i += step) {
+      const starSeed = sky.starSeeds[i];
+      if (starSeed === 0n) continue;
+      seeded++;
+      const physical = starPhotometry(starSeed);
+      const distance = sky.starDistances[i];
+      const expected = physical.luminosity / (distance * distance);
+      expect(sky.starBrightness[i] / expected).toBeGreaterThan(0.999);
+      expect(sky.starBrightness[i] / expected).toBeLessThan(1.001);
+      expect(Math.abs(sky.starTeffs[i] - physical.tEff) / physical.tEff).toBeLessThan(1e-3);
+    }
+    // Cluster/group members lack seeds; catalog stars dominate the sky.
+    expect(seeded).toBeGreaterThan(30);
   });
 
   it('carries clusters and nebulae in the far field', () => {

@@ -1,19 +1,17 @@
-import { Rng } from '../../core/rng/rng';
 import { evolve } from '../star/evolution';
-import { sampleInitialMass } from '../star/imf';
+import { ageUnitOf, initialMassOf } from '../star/identity';
 import type { StellarPhysical } from '../star/types';
-import { drawPopulation } from './population';
+import { populationFromUnit } from './population';
 import { viewpointForSeed } from './sectors';
 
 /**
- * Fast luminosity/temperature for a star seed, drawing population and
- * mass through exactly the same stream as generateStar — so a sky point
- * and the full star a player travels to always agree — while skipping
- * activity, companions, and spectral color work.
+ * Fast luminosity/temperature for a star seed: mass and age resolve
+ * from the seed's identity bits through exactly the same maps as
+ * generateStar — so a sky point and the full star a player travels to
+ * always agree — while skipping metallicity, activity, companions, and
+ * spectral color work. No stream draws at all.
  */
 export function starPhotometry(seed: bigint): StellarPhysical {
-  const rng = new Rng(seed);
-  const { ageGyr } = drawPopulation(rng, viewpointForSeed(seed));
-  const massInitial = sampleInitialMass(rng.fork('imf'));
-  return evolve(massInitial, ageGyr);
+  const { ageGyr } = populationFromUnit(ageUnitOf(seed), viewpointForSeed(seed));
+  return evolve(initialMassOf(seed), ageGyr);
 }

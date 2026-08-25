@@ -1,12 +1,12 @@
 import { blackbodyChromaticity, blackbodyLinearRgb } from '../../core/color/blackbody';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
-import { drawPopulation } from '../galaxy/population';
+import { metallicityFor, populationFromUnit } from '../galaxy/population';
 import { viewpointForSeed } from '../galaxy/sectors';
 import { computeActivity } from './activity';
 import { classifyVariability } from './variability';
 import { evolve } from './evolution';
-import { sampleInitialMass } from './imf';
+import { ageUnitOf, initialMassOf } from './identity';
 import { generateCompanionSpecs } from './multiplicity';
 import { spectralType } from './classification';
 import type { Star, StellarPopulation } from './types';
@@ -22,9 +22,10 @@ export interface StarGenOptions {
 }
 
 /**
- * Complete star (with companions) from a seed. Age and metallicity come
- * from the galactic population mix at the seed's locale — thin disk,
- * thick disk, or halo by local density — unless overridden.
+ * Complete star (with companions) from a seed. Mass, age, and component
+ * resolve from the seed's identity bits through the IMF and the galactic
+ * population mix at the seed's locale — thin disk, thick disk, or halo
+ * by local density — unless overridden.
  */
 export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
   const rng = new Rng(seed);
@@ -32,13 +33,14 @@ export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
   let feH = options.feH;
   let population = options.population;
   if (ageGyr === undefined || feH === undefined) {
-    const draw = drawPopulation(rng, viewpointForSeed(seed));
+    const locale = viewpointForSeed(seed);
+    const draw = populationFromUnit(ageUnitOf(seed), locale);
     ageGyr ??= draw.ageGyr;
-    feH ??= draw.feH;
+    feH ??= metallicityFor(rng, draw, locale);
     population ??= draw.component;
   }
   population ??= feH < -1 ? 'halo' : feH < -0.35 ? 'thick-disk' : 'thin-disk';
-  const massInitial = options.massInitial ?? sampleInitialMass(rng.fork('imf'));
+  const massInitial = options.massInitial ?? initialMassOf(seed);
 
   const phys = evolve(massInitial, ageGyr);
   const dark = phys.stage === 'black-hole';

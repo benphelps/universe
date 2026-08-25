@@ -6,8 +6,10 @@ import {
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { powerLaw } from '../../core/rng/distributions';
-import { KROUPA_SEGMENTS } from '../star/imf';
+import { initialMassFromUnit, KROUPA_SEGMENTS } from '../star/imf';
 import { evolve } from '../star/evolution';
+import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
+import { CATALOG_ROWS, luminosityCeiling, sweepRowStars } from './catalog';
 import {
   cloudFieldAt,
   cloudLocalDensity,
@@ -18,8 +20,7 @@ import {
 import { dustDensity, stellarDensity, type GalacticPosition } from './density';
 import { sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
-import { drawPopulation } from './population';
-import { starsNear } from './sectors';
+import { populationFromUnit } from './population';
 
 /**
  * The sky as seen from a point in the galaxy: every star bright enough
@@ -79,10 +80,12 @@ export interface SkyField {
   starColors: Float32Array;
   /** Relative irradiance per star (L☉/pc²). */
   starBrightness: Float32Array;
-  /** Distance (pc) and effective temperature (K) per star — the far
-   *  field is statistical, so this is all a glint can say for itself. */
+  /** Distance (pc) and effective temperature (K) per star. */
   starDistances: Float32Array;
   starTeffs: Float32Array;
+  /** Seed per star: every catalog glint is a real, travelable star.
+   *  Zero marks cluster/group members, which are not yet addressable. */
+  starSeeds: BigUint64Array;
   /** Emission/reflection nebulae around the youngest groups. */
   nebulae: NebulaPatch[];
   /** Ray-marched sprite per nebula (see NEBULA_TILE / atlas layout). */
@@ -103,23 +106,7 @@ export interface SkyField {
   sceneFromGalaxy: Float32Array;
 }
 
-interface Shell {
-  innerPc: number;
-  outerPc: number;
-  minMass: number;
-  maxStars: number;
-}
-
-/** Resolved-star shells: farther shells keep only intrinsically bright stars.
- *  The 1.0 M☉ floor matters: evolved giants of modest mass carry much of
- *  the real naked-eye sky. */
-const SHELLS: Shell[] = [
-  { innerPc: 30, outerPc: 150, minMass: 1.0, maxStars: 60000 },
-  { innerPc: 150, outerPc: 600, minMass: 2.2, maxStars: 50000 },
-  { innerPc: 600, outerPc: 2500, minMass: 7, maxStars: 20000 },
-];
-
-/** Keep sampled far stars down to apparent magnitude ≈ 9. */
+/** Keep far stars down to apparent magnitude ≈ 9. */
 const MIN_FAR_IRRADIANCE = 1.5e-4;
 
 const NEAR_RADIUS_PC = 30;
@@ -145,88 +132,110 @@ export function imfFractionAbove(massCut: number): number {
   return above / total;
 }
 
+interface StarAccum {
+  dirs: number[];
+  colors: number[];
+  brightness: number[];
+  distances: number[];
+  teffs: number[];
+  seeds: bigint[];
+}
+
 export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField {
   const lut = buildTemperatureLut(96);
-  const dirs: number[] = [];
-  const colors: number[] = [];
-  const brightness: number[] = [];
-  const distances: number[] = [];
-  const teffs: number[] = [];
+  const makeAccum = (): StarAccum => ({
+    dirs: [],
+    colors: [],
+    brightness: [],
+    distances: [],
+    teffs: [],
+    seeds: [],
+  });
+  const near = makeAccum();
+  const far = makeAccum();
 
-  const push = (dx: number, dy: number, dz: number, luminosity: number, tEff: number): void => {
+  const pushTo = (
+    acc: StarAccum,
+    dx: number,
+    dy: number,
+    dz: number,
+    luminosity: number,
+    tEff: number,
+    starSeed: bigint,
+  ): void => {
     const distanceSq = dx * dx + dy * dy + dz * dz;
     if (distanceSq < 1e-6) return;
     const distance = Math.sqrt(distanceSq);
     const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(tEff) * 95)) * 4;
-    dirs.push(dx / distance, dy / distance, dz / distance);
-    colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
-    brightness.push(luminosity / distanceSq);
-    distances.push(distance);
-    teffs.push(tEff);
+    acc.dirs.push(dx / distance, dy / distance, dz / distance);
+    acc.colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
+    acc.brightness.push(luminosity / distanceSq);
+    acc.distances.push(distance);
+    acc.teffs.push(tEff);
+    acc.seeds.push(starSeed);
   };
+  const push: PushStar = (dx, dy, dz, luminosity, tEff) =>
+    pushTo(far, dx, dy, dz, luminosity, tEff, 0n);
 
-  // Near field: the actual sector population, every star.
-  for (const slot of starsNear(viewpoint, NEAR_RADIUS_PC)) {
-    const physical = starPhotometry(slot.seed);
-    if (physical.luminosity <= 0) continue;
-    push(
-      slot.positionPc.xPc - viewpoint.xPc,
-      slot.positionPc.yPc - viewpoint.yPc,
-      slot.positionPc.zPc - viewpoint.zPc,
-      physical.luminosity,
-      physical.tEff,
+  // The resolved sky is the catalog itself: within the near radius every
+  // star, beyond it every star of each survey row bright enough to see —
+  // a mass ceiling culls hopeless candidates before their seed is built.
+  const nearSq = NEAR_RADIUS_PC * NEAR_RADIUS_PC;
+  for (const row of CATALOG_ROWS) {
+    const skySq = row.skyRadiusPc * row.skyRadiusPc;
+    sweepRowStars(
+      row,
+      viewpoint,
+      Math.max(NEAR_RADIUS_PC, row.skyRadiusPc),
+      (x, y, z, massBits, ageBits, entropy) => {
+        const dx = x - viewpoint.xPc;
+        const dy = y - viewpoint.yPc;
+        const dz = z - viewpoint.zPc;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < 1e-6) return;
+        if (d2 <= nearSq) {
+          const starSeed = seedForIdentity(massBits, ageBits, entropy);
+          const physical = starPhotometry(starSeed);
+          if (physical.luminosity <= 0) return;
+          pushTo(near, dx, dy, dz, physical.luminosity, physical.tEff, starSeed);
+          return;
+        }
+        if (d2 > skySq) return;
+        const mass = initialMassFromUnit(unitFromBits(massBits, MASS_BIT_SPAN));
+        if (luminosityCeiling(mass) / d2 < MIN_FAR_IRRADIANCE) return;
+        const starSeed = seedForIdentity(massBits, ageBits, entropy);
+        const physical = starPhotometry(starSeed);
+        if (physical.luminosity / d2 < MIN_FAR_IRRADIANCE) return;
+        pushTo(far, dx, dy, dz, physical.luminosity, physical.tEff, starSeed);
+      },
     );
   }
+  const nearStarCount = near.brightness.length;
 
-  const nearStarCount = brightness.length;
-
-  // Far shells: statistical bright-star population, density-weighted.
   const localDensity = stellarDensity(viewpoint);
-  for (let shellIndex = 0; shellIndex < SHELLS.length; shellIndex++) {
-    const shell = SHELLS[shellIndex];
-    const rng = new Rng(deriveSeed(0x534b59n, 'shell', shellIndex));
-    const volume = (4 / 3) * Math.PI * (shell.outerPc ** 3 - shell.innerPc ** 3);
-    const expected = Math.min(
-      shell.maxStars,
-      volume * localDensity * imfFractionAbove(shell.minMass),
-    );
-    for (let i = 0; i < expected; i++) {
-      // Uniform in the shell, thinned by the density ratio (z falloff).
-      const u = rng.float();
-      const distance = Math.cbrt(
-        shell.innerPc ** 3 + u * (shell.outerPc ** 3 - shell.innerPc ** 3),
-      );
-      const z = rng.range(-1, 1);
-      const azimuth = rng.range(0, 2 * Math.PI);
-      const planar = Math.sqrt(Math.max(0, 1 - z * z));
-      const dx = distance * planar * Math.cos(azimuth);
-      const dy = distance * planar * Math.sin(azimuth);
-      const dz = distance * z;
-      const there = {
-        xPc: viewpoint.xPc + dx,
-        yPc: viewpoint.yPc + dy,
-        zPc: viewpoint.zPc + dz,
-      };
-      if (rng.float() > Math.min(1, stellarDensity(there) / localDensity)) continue;
-
-      const mass = powerLaw(rng, 2.3, shell.minMass, 120);
-      const physical = evolve(mass, rng.range(0.1, 10));
-      if (physical.luminosity / (distance * distance) < MIN_FAR_IRRADIANCE) continue;
-      push(dx, dy, dz, physical.luminosity, physical.tEff);
-    }
-  }
-
   const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
   const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA);
 
+  const join = (a: number[], b: number[]): Float32Array => {
+    const out = new Float32Array(a.length + b.length);
+    out.set(a);
+    out.set(b, a.length);
+    return out;
+  };
+  const starCount = nearStarCount + far.brightness.length;
+  const starSeeds = new BigUint64Array(starCount);
+  for (let i = 0; i < nearStarCount; i++) starSeeds[i] = near.seeds[i];
+  for (let i = 0; i < far.seeds.length; i++) starSeeds[nearStarCount + i] = far.seeds[i];
+
   return {
-    starCount: brightness.length,
+    starCount,
     nearStarCount,
-    starDirs: new Float32Array(dirs),
-    starColors: new Float32Array(colors),
-    starBrightness: new Float32Array(brightness),
-    starDistances: new Float32Array(distances),
-    starTeffs: new Float32Array(teffs),
+    starDirs: join(near.dirs, far.dirs),
+    starColors: join(near.colors, far.colors),
+    starBrightness: join(near.brightness, far.brightness),
+    starDistances: join(near.distances, far.distances),
+    starTeffs: join(near.teffs, far.teffs),
+    starSeeds,
     nebulae,
     nebulaAtlas,
     darkClouds,
@@ -515,7 +524,7 @@ function buildGroups(
 function meanPopulationLuminosity(viewpoint: GalacticPosition): number {
   const rng = new Rng(deriveSeed(0x534b59n, 'mean-luminosity'));
   const ages: number[] = [];
-  for (let i = 0; i < 12; i++) ages.push(drawPopulation(rng, viewpoint).ageGyr);
+  for (let i = 0; i < 12; i++) ages.push(populationFromUnit(rng.float(), viewpoint).ageGyr);
 
   const bins = 48;
   let weightSum = 0;

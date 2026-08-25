@@ -13,6 +13,12 @@ export function whiteDwarfMass(massInitial: number): number {
   return 0.109 * massInitial + 0.394;
 }
 
+/** Age at which the star fades to a remnant: main sequence plus the
+ *  post-main-sequence budget. The catalog's luminous age bands key on it. */
+export function luminousLifetimeGyr(massInitial: number): number {
+  return msLifetimeGyr(massInitial) * (1 + POST_MS_BUDGET);
+}
+
 /**
  * Physical state as a pure function of zero-age mass and age.
  * Parameterized track segments; luminosity/temperature are interpolated in

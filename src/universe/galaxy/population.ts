@@ -3,7 +3,6 @@ import { componentDensities, type GalacticPosition } from './density';
 
 export interface PopulationDraw {
   ageGyr: number;
-  feH: number;
   component: 'thin-disk' | 'thick-disk' | 'halo';
 }
 
@@ -11,36 +10,54 @@ export interface PopulationDraw {
 const GRADIENT_DEX_PER_PC = -0.06 / 1000;
 
 /**
- * Age and metallicity for a star born where it sits: the galactic
- * component is drawn from the local density mix (thin disk young and
- * near-solar with a radial gradient, thick disk old and metal-poor,
- * halo ancient and very metal-poor). One shared draw sequence — the
- * full generator and the sky photometry both call this, so a sky point
- * and the star a player travels to always agree.
+ * Component and age for a star born where it sits, as an explicit
+ * inverse CDF over one unit value: the local density mix partitions
+ * [0, 1) into thin disk, thick disk, and halo bands (in that fixed
+ * order), and the remainder maps monotonically through the component's
+ * age distribution — thin disk young and near-constant star formation,
+ * thick disk old, halo ancient. Because the map is explicit, the star
+ * catalog can address stars by age (a seed's age bits pass through this
+ * same function), and the young thin-disk band is a contiguous prefix.
  */
-export function drawPopulation(rng: Rng, position: GalacticPosition): PopulationDraw {
+export function populationFromUnit(u: number, position: GalacticPosition): PopulationDraw {
   const densities = componentDensities(position);
   const total = densities.thin + densities.thick + densities.halo;
-  const pick = rng.float() * total;
-  const radius = Math.hypot(position.xPc, position.yPc);
-  const diskFeH = GRADIENT_DEX_PER_PC * (radius - 8000);
+  const thinBand = densities.thin / total;
+  const thickBand = densities.thick / total;
 
-  if (pick < densities.thin) {
-    // Near-constant star formation with a mild recent-history bias.
-    const ageGyr = 0.03 + 9.97 * rng.float() ** 1.2;
-    const feH = rng.normal(diskFeH - 0.01 * ageGyr, 0.15);
-    return { ageGyr, feH: clampFeH(feH), component: 'thin-disk' };
+  if (u < thinBand) {
+    return { ageGyr: thinAgeForUnit(u / thinBand), component: 'thin-disk' };
   }
-  if (pick < densities.thin + densities.thick) {
-    const ageGyr = 8 + 4 * rng.float();
-    const feH = rng.normal(-0.55 + 0.3 * diskFeH, 0.25);
-    return { ageGyr, feH: clampFeH(feH), component: 'thick-disk' };
+  if (u < thinBand + thickBand) {
+    return { ageGyr: 8 + 4 * ((u - thinBand) / thickBand), component: 'thick-disk' };
   }
-  const ageGyr = 10 + 3.2 * rng.float();
-  const feH = rng.normal(-1.5, 0.45);
-  return { ageGyr, feH: clampFeH(feH), component: 'halo' };
+  const v = (u - thinBand - thickBand) / Math.max(1 - thinBand - thickBand, 1e-12);
+  return { ageGyr: 10 + 3.2 * Math.min(v, 1), component: 'halo' };
 }
 
-function clampFeH(feH: number): number {
+/** Thin-disk age CDF inverse: near-constant SFR, mild recent bias. */
+export function thinAgeForUnit(v: number): number {
+  return 0.03 + 9.97 * v ** 1.2;
+}
+
+/** Inverse of thinAgeForUnit: the thin-disk unit below an age. */
+export function thinUnitForAge(ageGyr: number): number {
+  return Math.min(1, Math.max(0, (ageGyr - 0.03) / 9.97)) ** (1 / 1.2);
+}
+
+/** Metallicity for a drawn population member (the stream-random part). */
+export function metallicityFor(
+  rng: Rng,
+  draw: PopulationDraw,
+  position: GalacticPosition,
+): number {
+  const radius = Math.hypot(position.xPc, position.yPc);
+  const diskFeH = GRADIENT_DEX_PER_PC * (radius - 8000);
+  const feH =
+    draw.component === 'thin-disk'
+      ? rng.normal(diskFeH - 0.01 * draw.ageGyr, 0.15)
+      : draw.component === 'thick-disk'
+        ? rng.normal(-0.55 + 0.3 * diskFeH, 0.25)
+        : rng.normal(-1.5, 0.45);
   return Math.min(0.6, Math.max(-2.5, feH));
 }
