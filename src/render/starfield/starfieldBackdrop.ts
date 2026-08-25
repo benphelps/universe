@@ -127,8 +127,12 @@ void main() {
   // Into the galactic frame (per-system orientation); z is the disk normal.
   vec3 g = uSceneToGalaxy * dir;
   float latitude = asin(clamp(g.z, -1.0, 1.0));
+  // The glow and rift maps are written with longitude in [0, 2pi)
+  // (skyfield's buildGlow); sample with the same origin, or the whole
+  // band lands rotated half a turn in galactic longitude.
   float longitude = atan(g.y, g.x);
-  vec2 uv = vec2(longitude / 6.2831853 + 0.5, latitude / 3.14159265 + 0.5);
+  if (longitude < 0.0) longitude += 6.2831853;
+  vec2 uv = vec2(longitude / 6.2831853, latitude / 3.14159265 + 0.5);
 
   // Smooth starlight base, shadowed by the small-cloud map and by each
   // prominent cloud's own ray-marched transmission sprite — projected

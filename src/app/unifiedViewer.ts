@@ -212,6 +212,11 @@ export class UnifiedViewer {
   /** Neighborhood stars (1 unit = 1 pc, already scene-frame) inside it. */
   private readonly pcGroup = new Group();
   private neighborPoints: Points | null = null;
+  /** The far catalog stars as true 3D points (direction × distance in
+   *  the neighborhood frame): parallax-correct at any altitude, they
+   *  persist through the backdrop→volume crossfade — only the
+   *  unresolved-glow representations swap. */
+  private farPoints: Points | null = null;
   private neighborSeedHexes: string[] = [];
   private neighborPositionsPc: Float32Array = new Float32Array(0);
   /** Photometric glints for the system's own stars at unresolved range. */
@@ -541,10 +546,46 @@ export class UnifiedViewer {
 
     getSkyField(system.seedHex).then((sky) => {
       if (this.disposed || this.system !== system) return;
-      // Skip the near field: those stars are the 3D layer above.
       this.skyData = sky;
-      this.backdrop = new StarfieldBackdrop(sky, 2000, sky.nearStarCount);
+      // Every resolved star is 3D content now (near field above, far
+      // field here); the backdrop keeps only the unresolved sky — glow,
+      // rifts, nebulae, dark clouds — which the galaxy volume replaces.
+      this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
       this.scene.add(this.backdrop.group);
+
+      const farCount = sky.starCount - sky.nearStarCount;
+      if (farCount > 0) {
+        const positions = new Float32Array(farCount * 3);
+        const luminosities = new Float32Array(farCount);
+        const radii = new Float32Array(farCount);
+        for (let i = 0; i < farCount; i++) {
+          const s = sky.nearStarCount + i;
+          const d = sky.starDistances[s];
+          const [x, y, z] = rotateToScene(
+            sky.sceneFromGalaxy,
+            sky.starDirs[s * 3] * d,
+            sky.starDirs[s * 3 + 1] * d,
+            sky.starDirs[s * 3 + 2] * d,
+          );
+          positions[i * 3] = x;
+          positions[i * 3 + 1] = y;
+          positions[i * 3 + 2] = z;
+          luminosities[i] = sky.starBrightness[s] * d * d;
+        }
+        const geometry = new BufferGeometry();
+        geometry.setAttribute('position', new BufferAttribute(positions, 3));
+        geometry.setAttribute(
+          'starColor',
+          new BufferAttribute(sky.starColors.slice(sky.nearStarCount * 3), 3),
+        );
+        geometry.setAttribute('luminosity', new BufferAttribute(luminosities, 1));
+        geometry.setAttribute('aRadiusKm', new BufferAttribute(radii, 1));
+        geometry.boundingSphere = new Sphere(new Vector3(), 1e13);
+        this.farPoints = new Points(geometry, createStarPointsMaterial(PC_KM));
+        this.farPoints.frustumCulled = false;
+        this.farPoints.renderOrder = -2;
+        this.pcGroup.add(this.farPoints);
+      }
     });
   }
 
@@ -769,23 +810,16 @@ export class UnifiedViewer {
         }
         // The far field: catalog stars with seeds of their own — any
         // glint in the sky identifies itself and can be traveled to.
-        if (this.skyData) {
+        // They are true 3D points; project their actual positions.
+        if (this.skyData && this.farPoints) {
           const sky = this.skyData;
-          const dir = new Vector3();
+          const farPositions = this.farPoints.geometry.getAttribute(
+            'position',
+          ) as BufferAttribute;
           let bestFar = -1;
-          for (let i = sky.nearStarCount; i < sky.starCount; i++) {
-            const [ox, oy, oz] = rotateToScene(
-              sky.sceneFromGalaxy,
-              sky.starDirs[i * 3],
-              sky.starDirs[i * 3 + 1],
-              sky.starDirs[i * 3 + 2],
-            );
-            dir.set(ox, oy, oz).applyQuaternion(this.frameQuat);
-            v.set(
-              this.camera.position.x + dir.x * 1e12,
-              this.camera.position.y + dir.y * 1e12,
-              this.camera.position.z + dir.z * 1e12,
-            ).project(this.camera);
+          for (let i = 0; i < farPositions.count; i++) {
+            v.fromBufferAttribute(farPositions, i).applyMatrix4(matrix);
+            v.project(this.camera);
             if (v.z > 1 || v.z < -1) continue;
             const sx = (v.x * 0.5 + 0.5) * rect.width;
             const sy = (-v.y * 0.5 + 0.5) * rect.height;
@@ -797,20 +831,13 @@ export class UnifiedViewer {
             bestStar = -1;
           }
           if (bestFar >= 0) {
-            const [ox, oy, oz] = rotateToScene(
-              sky.sceneFromGalaxy,
-              sky.starDirs[bestFar * 3],
-              sky.starDirs[bestFar * 3 + 1],
-              sky.starDirs[bestFar * 3 + 2],
-            );
-            dir.set(ox, oy, oz).applyQuaternion(this.frameQuat);
-            const distance = sky.starDistances[bestFar];
-            const starSeed = sky.starSeeds[bestFar];
-            const position = {
-              x: this.camera.position.x + dir.x * 1e12,
-              y: this.camera.position.y + dir.y * 1e12,
-              z: this.camera.position.z + dir.z * 1e12,
-            };
+            const s = sky.nearStarCount + bestFar;
+            const distance = sky.starDistances[s];
+            const starSeed = sky.starSeeds[s];
+            const world = v
+              .fromBufferAttribute(farPositions, bestFar)
+              .applyMatrix4(matrix);
+            const position = { x: world.x, y: world.y, z: world.z };
             if (starSeed !== 0n) {
               const seedHex = seedToHex(starSeed);
               best = {
@@ -823,7 +850,7 @@ export class UnifiedViewer {
             } else {
               // Cluster members ride their group's stream, not a seed
               // of their own — identifiable, not yet addressable.
-              const tEff = sky.starTeffs[bestFar];
+              const tEff = sky.starTeffs[s];
               best = {
                 ...position,
                 name: 'cluster member',
@@ -1208,6 +1235,12 @@ export class UnifiedViewer {
       (this.neighborPoints.material as ShaderMaterial).dispose();
       this.neighborPoints = null;
     }
+    if (this.farPoints) {
+      this.pcGroup.remove(this.farPoints);
+      this.farPoints.geometry.dispose();
+      (this.farPoints.material as ShaderMaterial).dispose();
+      this.farPoints = null;
+    }
     this.neighbors = [];
     for (const child of [...this.auGroup.children, ...this.overlay.children]) {
       child.parent?.remove(child);
@@ -1248,6 +1281,9 @@ export class UnifiedViewer {
     if (this.backdrop) this.backdrop.intensity = value * (1 - this.galaxyFade);
     if (this.neighborPoints) {
       (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
+    }
+    if (this.farPoints) {
+      (this.farPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
     }
   }
 
