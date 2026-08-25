@@ -76,6 +76,8 @@ import { createAsteroidField } from '../universe/surface/asteroidField';
 import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { planetMu } from '../universe/system/generate';
+import { rotateToScene } from '../universe/galaxy/orientation';
+import type { SkyField } from '../universe/galaxy/skyfield';
 import { getSkyField } from './skyService';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
@@ -141,6 +143,20 @@ function toWorld(p: { x: number; y: number; z: number }): Vector3 {
   return new Vector3(p.x, p.z, -p.y);
 }
 
+/** Spectral letter by effective temperature, for field-star tooltips. */
+function spectralLetter(tEff: number): string {
+  if (tEff > 30000) return 'O';
+  if (tEff > 10000) return 'B';
+  if (tEff > 7500) return 'A';
+  if (tEff > 6000) return 'F';
+  if (tEff > 5200) return 'G';
+  if (tEff > 3700) return 'K';
+  if (tEff > 2400) return 'M';
+  if (tEff > 1300) return 'L';
+  if (tEff > 600) return 'T';
+  return 'Y';
+}
+
 /** Star-tinted marker color at fixed brightness (peak-normalized). */
 function markerColor(
   appearance: { landColorA: [number, number, number]; landColorB: [number, number, number] },
@@ -195,6 +211,8 @@ export class UnifiedViewer {
   private beltMaterials: ShaderMaterial[] = [];
   private cometObjects: CometObject[] = [];
   private backdrop: StarfieldBackdrop | null = null;
+  private skyData: SkyField | null = null;
+  private currentSpin = 0;
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
@@ -450,6 +468,7 @@ export class UnifiedViewer {
     getSkyField(system.seedHex).then((sky) => {
       if (this.disposed || this.system !== system) return;
       // Skip the near field: those stars are the 3D layer above.
+      this.skyData = sky;
       this.backdrop = new StarfieldBackdrop(sky, 2000, sky.nearStarCount);
       this.scene.add(this.backdrop.group);
     });
@@ -666,6 +685,60 @@ export class UnifiedViewer {
           bestStar = i;
           best = null;
         }
+        // The statistical far field: population samples, not seeds —
+        // a glint can name its kind and distance but cannot be visited.
+        if (this.skyData) {
+          const sky = this.skyData;
+          const cosS = Math.cos(this.currentSpin);
+          const sinS = Math.sin(this.currentSpin);
+          let bestFar = -1;
+          for (let i = sky.nearStarCount; i < sky.starCount; i++) {
+            const [ox, oy, oz] = rotateToScene(
+              sky.sceneFromGalaxy,
+              sky.starDirs[i * 3],
+              sky.starDirs[i * 3 + 1],
+              sky.starDirs[i * 3 + 2],
+            );
+            const wx = cosS * ox + sinS * oz;
+            const wz = -sinS * ox + cosS * oz;
+            v.set(
+              this.camera.position.x + wx * 1e12,
+              this.camera.position.y + oy * 1e12,
+              this.camera.position.z + wz * 1e12,
+            ).project(this.camera);
+            if (v.z > 1 || v.z < -1) continue;
+            const sx = (v.x * 0.5 + 0.5) * rect.width;
+            const sy = (-v.y * 0.5 + 0.5) * rect.height;
+            const d = Math.hypot(sx - cx, sy - cy) * 1.45;
+            if (d >= bestPx) continue;
+            bestPx = d;
+            bestFar = i;
+            best = null;
+            bestStar = -1;
+          }
+          if (bestFar >= 0) {
+            const [ox, oy, oz] = rotateToScene(
+              sky.sceneFromGalaxy,
+              sky.starDirs[bestFar * 3],
+              sky.starDirs[bestFar * 3 + 1],
+              sky.starDirs[bestFar * 3 + 2],
+            );
+            const tEff = sky.starTeffs[bestFar];
+            const distance = sky.starDistances[bestFar];
+            const luminosity = sky.starBrightness[bestFar] * distance * distance;
+            const giant = luminosity > 20 && tEff < 5800;
+            best = {
+              x: this.camera.position.x + (cosS * ox + sinS * oz) * 1e12,
+              y: this.camera.position.y + oy * 1e12,
+              z: this.camera.position.z + (-sinS * ox + cosS * oz) * 1e12,
+              name: 'field star',
+              info: `${spectralLetter(tEff)}-type${giant ? ' giant' : ''} · ≈${fmt(distance, 3)} pc · unresolved population`,
+              action: null,
+              target: null,
+            };
+          }
+        }
+
         if (bestStar >= 0 && this.neighborSeedHexes[bestStar]) {
           const seedHex = this.neighborSeedHexes[bestStar];
           const physical = starPhotometry(seedFromHex(seedHex));
@@ -1055,6 +1128,7 @@ export class UnifiedViewer {
       this.backdrop.dispose();
       this.backdrop = null;
     }
+    this.skyData = null;
     this.system = null;
   }
 
@@ -1224,6 +1298,7 @@ export class UnifiedViewer {
       this.focusAsteroid?.spinPeriodHours ?? this.focusPlanet?.physical.rotation.periodHours;
     const spin =
       solid && spinPeriodHours ? (2 * Math.PI * 24 * this.simTimeDays) / spinPeriodHours : 0;
+    this.currentSpin = spin;
     const focusPos = this.focusPositionKm();
     this.heliocentric.rotation.y = spin;
     this.heliocentric.position.copy(focusPos).negate().applyAxisAngle(yAxis, spin);

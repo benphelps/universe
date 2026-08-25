@@ -79,6 +79,10 @@ export interface SkyField {
   starColors: Float32Array;
   /** Relative irradiance per star (L☉/pc²). */
   starBrightness: Float32Array;
+  /** Distance (pc) and effective temperature (K) per star — the far
+   *  field is statistical, so this is all a glint can say for itself. */
+  starDistances: Float32Array;
+  starTeffs: Float32Array;
   /** Emission/reflection nebulae around the youngest groups. */
   nebulae: NebulaPatch[];
   /** Ray-marched sprite per nebula (see NEBULA_TILE / atlas layout). */
@@ -146,6 +150,8 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
   const dirs: number[] = [];
   const colors: number[] = [];
   const brightness: number[] = [];
+  const distances: number[] = [];
+  const teffs: number[] = [];
 
   const push = (dx: number, dy: number, dz: number, luminosity: number, tEff: number): void => {
     const distanceSq = dx * dx + dy * dy + dz * dz;
@@ -155,6 +161,8 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     dirs.push(dx / distance, dy / distance, dz / distance);
     colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
     brightness.push(luminosity / distanceSq);
+    distances.push(distance);
+    teffs.push(tEff);
   };
 
   // Near field: the actual sector population, every star.
@@ -217,6 +225,8 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     starDirs: new Float32Array(dirs),
     starColors: new Float32Array(colors),
     starBrightness: new Float32Array(brightness),
+    starDistances: new Float32Array(distances),
+    starTeffs: new Float32Array(teffs),
     nebulae,
     nebulaAtlas,
     darkClouds,
