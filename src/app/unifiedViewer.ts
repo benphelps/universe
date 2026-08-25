@@ -6,6 +6,7 @@ import {
   InstancedMesh,
   Line,
   LineBasicMaterial,
+  Matrix3,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -55,12 +56,14 @@ import { createOceanMaterial } from '../render/terrain/oceanSphere';
 import { createRockGeometry, createScatterMaterial } from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
+import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import {
   computeNeighborhood,
   NEIGHBOR_RADIUS_PC,
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
 import { starPhotometry } from '../universe/galaxy/photometry';
+import { viewpointForSeed } from '../universe/galaxy/sectors';
 import { spectralType } from '../universe/star/classification';
 import type { Moon } from '../universe/moon/types';
 import {
@@ -76,8 +79,8 @@ import { createAsteroidField } from '../universe/surface/asteroidField';
 import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { planetMu } from '../universe/system/generate';
-import { rotateToScene } from '../universe/galaxy/orientation';
-import type { SkyField } from '../universe/galaxy/skyfield';
+import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
+import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
 import { getSkyField } from './skyService';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
@@ -87,7 +90,14 @@ const SOLAR_RADIUS_KM = SOLAR_RADIUS / 1000;
 const AU_KM = AU / 1000;
 const PC_KM = PARSEC / 1000;
 const GALAXY_ARRIVAL_ALTITUDE_KM = 15 * PC_KM;
-const MAX_ALTITUDE_KM = NEIGHBOR_RADIUS_PC * 1.5 * PC_KM;
+/** High enough to frame the whole galaxy from above the disk. */
+const MAX_ALTITUDE_KM = 45_000 * PC_KM;
+
+/** Crossfade band (distance from the system, pc) where the sky-sphere
+ *  backdrop hands off to the volumetric galaxy — the sphere's parallax
+ *  breaks down at these heights, the volume takes over. */
+const GALAXY_FADE_NEAR_PC = 60;
+const GALAXY_FADE_FAR_PC = 450;
 
 export type FocusTarget = 'star' | number;
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
@@ -231,6 +241,12 @@ export class UnifiedViewer {
    *   (or its inverse) directly.
    */
   private readonly frameQuat = new Quaternion();
+
+  /** The whole galaxy as a raymarched volume of the same density model
+   *  the sky integrates; crossfades in as the sky sphere's parallax
+   *  breaks down with distance from the system. */
+  private galaxyVolume: GalaxyVolume | null = null;
+  private galaxyFade = 0;
 
   /** Free flight: right-shift + drag pans the camera through space. */
   private rightShiftHeld = false;
@@ -517,6 +533,11 @@ export class UnifiedViewer {
     this.neighborPositionsPc = hood.positionsPc;
     this.neighborPoints = createNeighborStars(hood, PC_KM);
     this.pcGroup.add(this.neighborPoints);
+
+    const viewpoint = viewpointForSeed(seedFromHex(system.seedHex));
+    this.galaxyVolume = new GalaxyVolume(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
+    this.galaxyVolume.meanLuminosity = meanPopulationLuminosity(viewpoint);
+    this.scene.add(this.galaxyVolume.mesh);
 
     getSkyField(system.seedHex).then((sky) => {
       if (this.disposed || this.system !== system) return;
@@ -1206,6 +1227,11 @@ export class UnifiedViewer {
       this.backdrop.dispose();
       this.backdrop = null;
     }
+    if (this.galaxyVolume) {
+      this.scene.remove(this.galaxyVolume.mesh);
+      this.galaxyVolume.dispose();
+      this.galaxyVolume = null;
+    }
     this.skyData = null;
     this.system = null;
   }
@@ -1216,7 +1242,10 @@ export class UnifiedViewer {
    * bright companion) outshines any daytime sky.
    */
   private setSkyIntensity(value: number): void {
-    if (this.backdrop) this.backdrop.intensity = value;
+    // The backdrop fades out as the volumetric galaxy fades in — its
+    // sky-sphere geometry is wrong once the camera has real parallax.
+    // The neighborhood points are true 3D and stay: they simply recede.
+    if (this.backdrop) this.backdrop.intensity = value * (1 - this.galaxyFade);
     if (this.neighborPoints) {
       (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
     }
@@ -1296,19 +1325,39 @@ export class UnifiedViewer {
       // Asteroid shapes legitimately dip far below the datum sphere.
       const floorKm = this.focusAsteroid ? -this.radiusKm * 0.6 : -this.radiusKm * 0.01;
       const surfaceKm = this.radiusKm + Math.max(groundKm, floorKm);
-      // Altitude derives from wherever free flight has put the camera;
-      // the wheel ride applies as a pending exponential factor, and the
-      // ground stays a hard floor.
-      const freeAltitudeKm = Math.max(
-        this.camera.position.length() - surfaceKm,
-        this.minAltitudeKm,
-      );
-      this.altitudeKm = Math.min(
-        this.maxAltitudeKm(),
-        Math.max(freeAltitudeKm * this.pendingWheelFactor, this.minAltitudeKm),
-      );
+      // The wheel rides toward what the camera is anchored on: the focus
+      // body's surface when the orbit target sits there (altitude scales,
+      // buttery down to the ground), or the panned anchor when free
+      // flight has moved it — zoom goes where you look, not back home.
+      const anchor = this.controls.target;
+      if (anchor.lengthSq() < 1) {
+        const freeAltitudeKm = Math.max(
+          this.camera.position.length() - surfaceKm,
+          this.minAltitudeKm,
+        );
+        this.altitudeKm = Math.min(
+          this.maxAltitudeKm(),
+          Math.max(freeAltitudeKm * this.pendingWheelFactor, this.minAltitudeKm),
+        );
+        this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
+      } else {
+        if (this.pendingWheelFactor !== 1) {
+          const offset = this.camera.position.clone().sub(anchor);
+          const distance = Math.max(offset.length() * this.pendingWheelFactor, 1);
+          this.camera.position.copy(anchor).addScaledVector(offset.normalize(), distance);
+        }
+        // Altitude still derives from the focus body: floors and ceilings
+        // stay planetary even while the ride is anchored elsewhere.
+        const radial = this.camera.position.length();
+        this.altitudeKm = Math.min(
+          this.maxAltitudeKm(),
+          Math.max(radial - surfaceKm, this.minAltitudeKm),
+        );
+        if (radial - surfaceKm < this.minAltitudeKm || radial - surfaceKm > this.maxAltitudeKm()) {
+          this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
+        }
+      }
       this.pendingWheelFactor = 1;
-      this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
 
       // Nadir gaze from orbit blending to a steerable horizon gaze near
       // the ground. Orientation set via quaternion only: camera.up must
@@ -1355,6 +1404,15 @@ export class UnifiedViewer {
       );
       this.camera.updateProjectionMatrix();
 
+      // The sky sphere hands off to the volumetric galaxy with distance
+      // from the system: same model, inside view to outside view.
+      const distancePc = this.camera.position.length() / PC_KM;
+      const fade = Math.min(
+        1,
+        Math.max(0, (distancePc - GALAXY_FADE_NEAR_PC) / (GALAXY_FADE_FAR_PC - GALAXY_FADE_NEAR_PC)),
+      );
+      this.galaxyFade = fade * fade * (3 - 2 * fade);
+
       this.updateWorld(up);
       this.updateHover();
 
@@ -1363,6 +1421,20 @@ export class UnifiedViewer {
         const centerDistSq = this.camera.position.lengthSq();
         const tangentKm = Math.sqrt(Math.max(0, centerDistSq - this.radiusKm * this.radiusKm));
         this.backdrop.group.scale.setScalar(Math.max(1, (tangentKm * 1.35) / 2000));
+      }
+      if (this.galaxyVolume) {
+        const worldToScene = new Matrix3().setFromMatrix4(
+          new Matrix4().makeRotationFromQuaternion(new Quaternion().copy(this.frameQuat).invert()),
+        );
+        // Dome radius: inside the far plane, but capped — software
+        // rasterizers shred at 1e17-km clip coordinates.
+        this.galaxyVolume.update(
+          this.camera.position,
+          worldToScene,
+          PC_KM,
+          this.galaxyFade,
+          Math.min(this.camera.far * 0.3, 3e15),
+        );
       }
       this.chunkManager?.update(this.camera.position);
       // The diagrammatic orbit overlay appears at map heights.

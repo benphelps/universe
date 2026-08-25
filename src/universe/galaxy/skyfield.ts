@@ -521,7 +521,7 @@ function buildGroups(
  * stratified quadrature over a log-mass grid (IMF-weighted) crossed
  * with ages drawn from the population mix, not Monte Carlo.
  */
-function meanPopulationLuminosity(viewpoint: GalacticPosition): number {
+export function meanPopulationLuminosity(viewpoint: GalacticPosition): number {
   const rng = new Rng(deriveSeed(0x534b59n, 'mean-luminosity'));
   const ages: number[] = [];
   for (let i = 0; i < 12; i++) ages.push(populationFromUnit(rng.float(), viewpoint).ageGyr);
