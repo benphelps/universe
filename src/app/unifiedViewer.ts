@@ -260,13 +260,22 @@ export class UnifiedViewer {
   private readonly onKeyChange = (e: KeyboardEvent): void => {
     if (e.code !== 'ShiftRight') return;
     this.rightShiftHeld = e.type === 'keydown';
-    // Orbit rotation yields to panning while the modifier is held.
-    this.controls.enabled = !this.rightShiftHeld;
   };
   private readonly onWindowBlur = (): void => {
     this.rightShiftHeld = false;
     this.controls.enabled = true;
   };
+
+  /**
+   * Free flight belongs to the space views. On the ground — a solid
+   * body below the altitude where the horizon gaze engages — the
+   * original surface controls stand untouched until real WASD walking
+   * lands as its own feature.
+   */
+  private freeFlightAvailable(): boolean {
+    const grounded = this.field !== null || this.focusAsteroid !== null;
+    return !grounded || this.altitudeKm > this.radiusKm * 0.12;
+  }
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
@@ -349,7 +358,7 @@ export class UnifiedViewer {
     // meters over a ridge and parsecs across the neighborhood. Looking
     // down it sweeps the horizontal plane; toward the horizon, vertical.
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
-      if (!this.rightShiftHeld || e.buttons === 0) return;
+      if (!this.rightShiftHeld || e.buttons === 0 || !this.freeFlightAvailable()) return;
       const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
       const worldPerPixel =
         (2 *
@@ -1352,6 +1361,14 @@ export class UnifiedViewer {
         1.2,
         Math.max(0.012, (1.4 * this.altitudeKm) / this.radiusKm),
       );
+      // Orbit rotation yields to panning only where free flight applies;
+      // descending into the surface regime restores the classic controls
+      // and re-anchors the orbit (and the wheel ride) on the body.
+      const freeFlight = this.freeFlightAvailable();
+      this.controls.enabled = !(this.rightShiftHeld && freeFlight);
+      if (!freeFlight && this.controls.target.lengthSq() > 0) {
+        this.controls.target.set(0, 0, 0);
+      }
       this.controls.update();
 
       const up = this.camera.position.clone().normalize();
