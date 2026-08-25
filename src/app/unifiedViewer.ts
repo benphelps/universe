@@ -558,8 +558,6 @@ export class UnifiedViewer {
     this.galaxyVolume = new GalaxyVolume(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity(viewpoint);
     this.scene.add(this.galaxyVolume.mesh);
-    this.sectorChart = new SectorChart(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
-    this.pcGroup.add(this.sectorChart.group);
 
     getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
@@ -569,6 +567,8 @@ export class UnifiedViewer {
       // rifts, nebulae, dark clouds — which the galaxy volume replaces.
       this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
       this.scene.add(this.backdrop.group);
+      this.sectorChart = new SectorChart(sky.sectorBounds, sky.sectorHomeBounds);
+      this.pcGroup.add(this.sectorChart.group);
 
       const farCount = sky.starCount - sky.nearStarCount;
       if (farCount > 0) {

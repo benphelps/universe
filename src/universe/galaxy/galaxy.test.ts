@@ -413,17 +413,17 @@ describe('gazetteer', () => {
     expect(onArm.zone).toBe('arm');
   });
 
-  it('sector names tile the grid distinctly and stably', () => {
+  it('territories are contiguous, distinct, and deterministic', () => {
+    // Nearby points share a territory; a wide spread crosses many.
+    const home = sectorName({ xPc: 8100, yPc: 40, zPc: 0 });
+    expect(sectorName({ xPc: 8115, yPc: 52, zPc: 120 })).toBe(home);
+    expect(sectorName({ xPc: 8100, yPc: 40, zPc: 0 })).toBe(home);
     const names = new Set<string>();
     for (let ix = 0; ix < 6; ix++) {
       for (let iy = 0; iy < 6; iy++) {
-        names.add(sectorName({ xPc: 5000 + ix * 400, yPc: iy * 400, zPc: 0 }));
+        names.add(sectorName({ xPc: 4000 + ix * 1800, yPc: -4000 + iy * 1800, zPc: 0 }));
       }
     }
-    expect(names.size).toBeGreaterThan(30);
-    // Within one 400 pc cell the name holds.
-    expect(sectorName({ xPc: 4810, yPc: 10, zPc: 0 })).toBe(
-      sectorName({ xPc: 5190, yPc: 390, zPc: 50 }),
-    );
+    expect(names.size).toBeGreaterThan(25);
   });
 });

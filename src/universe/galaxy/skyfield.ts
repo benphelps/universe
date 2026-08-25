@@ -18,9 +18,10 @@ import {
   type MolecularCloud,
 } from './clouds';
 import { dustDensity, stellarDensity, type GalacticPosition } from './density';
-import { sceneFromGalaxy } from './orientation';
+import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
+import { sectorSeedAt } from './regions';
 
 /**
  * The sky as seen from a point in the galaxy: every star bright enough
@@ -104,6 +105,10 @@ export interface SkyField {
   /** Row-major galactic→scene rotation: each system's frame sits at its
    *  own random orientation within the galaxy. */
   sceneFromGalaxy: Float32Array;
+  /** Chart-territory borders as scene-frame pc segments (xyz pairs). */
+  sectorBounds: Float32Array;
+  /** The borders of the home locale's own territory, same encoding. */
+  sectorHomeBounds: Float32Array;
 }
 
 /** Keep far stars down to apparent magnitude ≈ 9. */
@@ -241,6 +246,7 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     darkClouds,
     darkAtlas,
     sceneFromGalaxy: sceneFromGalaxy(seed),
+    ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
     ...buildGlow(viewpoint, spriteSeeds),
   };
 }
@@ -512,6 +518,146 @@ function buildGroups(
   }
 
   return { nebulae, nebulaAtlas };
+}
+
+/** Chart border tracing: lattice over the disk, borders bisected sharp. */
+const CHART_RADIUS_PC = 15200;
+const CHART_STEP_PC = 110;
+
+/**
+ * Trace the gazetteer's territory borders: a lattice over the disk
+ * samples which territory each point belongs to, every border crossing
+ * is sharpened by bisection along its lattice edge, and the crossings
+ * connect through each lattice square — so the drawn curves follow the
+ * warped Voronoi borders themselves, not the lattice. Segments arrive
+ * in scene-frame parsecs; the home territory's own outline ships
+ * separately so the chart can highlight "you are here".
+ */
+function buildSectorBounds(
+  viewpoint: GalacticPosition,
+  orientation: Float32Array,
+): { sectorBounds: Float32Array; sectorHomeBounds: Float32Array } {
+  const n = Math.floor((2 * CHART_RADIUS_PC) / CHART_STEP_PC) + 1;
+  const coord = (i: number): number => -CHART_RADIUS_PC + i * CHART_STEP_PC;
+  const ids: bigint[] = new Array(n * n);
+  const idAt = (i: number, j: number): bigint => {
+    const key = j * n + i;
+    let id = ids[key];
+    if (id === undefined) {
+      const xPc = coord(i);
+      const yPc = coord(j);
+      id =
+        xPc * xPc + yPc * yPc > CHART_RADIUS_PC * CHART_RADIUS_PC
+          ? -1n
+          : sectorSeedAt({ xPc, yPc, zPc: 0 });
+      ids[key] = id;
+    }
+    return id;
+  };
+
+  const homeId = sectorSeedAt({ xPc: viewpoint.xPc, yPc: viewpoint.yPc, zPc: 0 });
+  // Crossing point per lattice edge (NaN pair when uncrossed).
+  const crossH = new Float32Array(n * n * 2).fill(Number.NaN);
+  const crossV = new Float32Array(n * n * 2).fill(Number.NaN);
+
+  const bisect = (
+    x0: number,
+    y0: number,
+    dx: number,
+    dy: number,
+    fromId: bigint,
+  ): [number, number] => {
+    let lo = 0;
+    let hi = 1;
+    for (let step = 0; step < 5; step++) {
+      const mid = (lo + hi) / 2;
+      const id = sectorSeedAt({ xPc: x0 + dx * mid, yPc: y0 + dy * mid, zPc: 0 });
+      if (id === fromId) lo = mid;
+      else hi = mid;
+    }
+    const t = (lo + hi) / 2;
+    return [x0 + dx * t, y0 + dy * t];
+  };
+
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const id = idAt(i, j);
+      if (id === -1n) continue;
+      if (i + 1 < n) {
+        const right = idAt(i + 1, j);
+        if (right !== id && right !== -1n) {
+          const [x, y] = bisect(coord(i), coord(j), CHART_STEP_PC, 0, id);
+          crossH[(j * n + i) * 2] = x;
+          crossH[(j * n + i) * 2 + 1] = y;
+        }
+      }
+      if (j + 1 < n) {
+        const up = idAt(i, j + 1);
+        if (up !== id && up !== -1n) {
+          const [x, y] = bisect(coord(i), coord(j), 0, CHART_STEP_PC, id);
+          crossV[(j * n + i) * 2] = x;
+          crossV[(j * n + i) * 2 + 1] = y;
+        }
+      }
+    }
+  }
+
+  const all: number[] = [];
+  const home: number[] = [];
+  const pushSegment = (
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    isHome: boolean,
+  ): void => {
+    const target = isHome ? home : all;
+    target.push(
+      ...rotateToScene(orientation, ax - viewpoint.xPc, ay - viewpoint.yPc, -viewpoint.zPc),
+      ...rotateToScene(orientation, bx - viewpoint.xPc, by - viewpoint.yPc, -viewpoint.zPc),
+    );
+  };
+
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      const points: number[] = [];
+      for (const [array, index] of [
+        [crossH, (j * n + i) * 2],
+        [crossH, ((j + 1) * n + i) * 2],
+        [crossV, (j * n + i) * 2],
+        [crossV, (j * n + i + 1) * 2],
+      ] as Array<[Float32Array, number]>) {
+        if (!Number.isNaN(array[index])) points.push(array[index], array[index + 1]);
+      }
+      if (points.length < 4) continue;
+      const isHome =
+        idAt(i, j) === homeId ||
+        idAt(i + 1, j) === homeId ||
+        idAt(i, j + 1) === homeId ||
+        idAt(i + 1, j + 1) === homeId;
+      if (points.length === 4) {
+        pushSegment(points[0], points[1], points[2], points[3], isHome);
+      } else {
+        // Border junction inside the square: fan through its center.
+        let cx = 0;
+        let cy = 0;
+        for (let p = 0; p < points.length; p += 2) {
+          cx += points[p];
+          cy += points[p + 1];
+        }
+        cx /= points.length / 2;
+        cy /= points.length / 2;
+        for (let p = 0; p < points.length; p += 2) {
+          pushSegment(points[p], points[p + 1], cx, cy, isHome);
+        }
+      }
+    }
+  }
+
+  return {
+    sectorBounds: new Float32Array(all),
+    sectorHomeBounds: new Float32Array(home),
+  };
 }
 
 /**
