@@ -212,11 +212,24 @@ export class UnifiedViewer {
   private cometObjects: CometObject[] = [];
   private backdrop: StarfieldBackdrop | null = null;
   private skyData: SkyField | null = null;
-  /** Ground frame of the focused body: spin about Y composed with the
-   *  axial tilt, applied to everything heliocentric (sun, planets,
-   *  belts, sky). The equatorial plane stays world XZ — rings and moons
-   *  live there — while the ecliptic tilts by the obliquity, so seasons
-   *  and ring lighting fall out of the model's own axis. */
+  /**
+   * Ground frame of the focused body: spin about Y composed with the
+   * axial tilt. The terrain never moves (static vertices stay jitter-free
+   * at ground zoom); instead the rest of the universe rotates around it.
+   *
+   * The frame contract — new content joins a frame group and is correct
+   * by default, never hand-rolls the transform:
+   * - ecliptic content (sun, planets, belts, comets, neighbors, sky
+   *   glints) parents under `heliocentric`, which carries the full
+   *   frameQuat plus the focus offset; the backdrop copies frameQuat.
+   * - equatorial content (moons, orbit guides; rings are axisymmetric)
+   *   parents under `moonGroup`, which carries the spin without the
+   *   obliquity lean — the equatorial plane is world XZ by construction.
+   * - the exceptions that must transform manually: star photospheres
+   *   (corona billboards may not inherit rotation), the belt-region
+   *   streamer, and the far-star hover scan — each applies frameQuat
+   *   (or its inverse) directly.
+   */
   private readonly frameQuat = new Quaternion();
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
@@ -1319,8 +1332,12 @@ export class UnifiedViewer {
     // cloud bands instead (mesh rotation inside PlanetObject).
     const spinPeriodHours =
       this.focusAsteroid?.spinPeriodHours ?? this.focusPlanet?.physical.rotation.periodHours;
+    // Negative: the body rotates prograde — the same sense it revolves,
+    // and the same sense the envelope planets spin their bands — so the
+    // solar day runs longer than the sidereal day and moons lag the
+    // stars instead of outrunning them.
     const spin =
-      solid && spinPeriodHours ? (2 * Math.PI * 24 * this.simTimeDays) / spinPeriodHours : 0;
+      solid && spinPeriodHours ? (-2 * Math.PI * 24 * this.simTimeDays) / spinPeriodHours : 0;
     // Terrain worlds put their spin axis on world Y, so their axial tilt
     // lives in the frame: the ecliptic leans by the obliquity. Envelope
     // focuses tilt the body instead (inside PlanetObject).
@@ -1436,22 +1453,29 @@ export class UnifiedViewer {
 
     this.bodyObject?.update(this.simTimeDays, sunDir, lightColor);
 
-    // Moons on their true orbits; the focus planet eclipses them.
+    // Moons on their true orbits; the focus planet eclipses them. Their
+    // group carries the ground frame's diurnal sweep — equatorial
+    // content spins without the ecliptic's obliquity lean — so moons
+    // rise and set over a fixed landscape like everything else in the
+    // sky, lagging the stars by their own orbital rate.
+    if (this.moonGroup) this.moonGroup.rotation.y = spin;
     const planetCaster = { position: new Vector3(0, 0, 0), radius: this.radiusKm };
+    const moonWorld = new Vector3();
     for (const { moon, object, marker, mu } of this.moons) {
       const state = elementsToState(moon.elements, mu, tSeconds);
       object.group.position.copy(toWorld(state.position)).divideScalar(1000);
+      moonWorld.copy(object.group.position).applyAxisAngle(yAxis, spin);
       object.update(this.simTimeDays, sunDir, lightColor);
       object.setOccluders([planetCaster], angularRadius);
 
-      const cameraDistance = this.camera.position.distanceTo(object.group.position);
+      const cameraDistance = this.camera.position.distanceTo(moonWorld);
       const moonRadiusKm = moon.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
       marker.visible = moonRadiusKm / cameraDistance < 0.004;
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
       this.pickables.push({
-        x: object.group.position.x,
-        y: object.group.position.y,
-        z: object.group.position.z,
+        x: moonWorld.x,
+        y: moonWorld.y,
+        z: moonWorld.z,
         name: moon.name,
         info: `moon · ${fmt(moonRadiusKm)} km${moon.tidalState !== 'dead' ? ` · ${moon.tidalState}` : ''}`,
         action: null,
