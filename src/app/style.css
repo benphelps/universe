@@ -230,3 +230,37 @@ body {
   background: rgba(220, 180, 90, 0.12);
   color: #e0c080;
 }
+
+#pick-tip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(16, 18, 24, 0.92);
+  border: 1px solid rgba(150, 165, 190, 0.25);
+  border-radius: 4px;
+  padding: 5px 9px;
+  max-width: 260px;
+  z-index: 5;
+}
+
+#pick-tip .tip-name {
+  color: #e8ecf2;
+  font-weight: 600;
+}
+
+#pick-tip .tip-info {
+  color: #9aa4b4;
+  font-size: 12px;
+}
+
+#pick-tip .tip-action {
+  color: #7fa8e0;
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+#pick-line {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}

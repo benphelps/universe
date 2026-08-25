@@ -48,11 +48,27 @@ function load(nextSeedHex: string): void {
         return viewer;
       },
     };
-    // Clicking a materialized belt member promotes it to the focus.
-    viewer.onBodyFocus = (asteroid) => {
-      if (!system) return;
-      planetPanel.renderAsteroid(system, asteroid, 'belt member');
-      controls.planetLabel = '·';
+    // Universal picking: a click on any hoverable body acts on it.
+    viewer.onPick = (target) => {
+      if (!viewer || !system) return;
+      if (target.kind === 'planet') {
+        viewMode = 'planet';
+        planetIndex = target.index;
+        load(seedHex);
+      } else if (target.kind === 'notable') {
+        viewMode = 'planet';
+        planetIndex = system.planets.length + target.index;
+        load(seedHex);
+      } else if (target.kind === 'star') {
+        viewMode = 'star';
+        load(seedHex);
+      } else if (target.kind === 'belt') {
+        viewer.focusBeltAsteroid(target.asteroid);
+        planetPanel.renderAsteroid(system, target.asteroid, 'belt member');
+        controls.planetLabel = '·';
+      } else if (target.kind === 'neighbor') {
+        load(target.seedHex);
+      }
     };
   }
   if (!system || system.seedHex !== seedHex) {

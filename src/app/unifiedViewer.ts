@@ -12,12 +12,10 @@ import {
   PerspectiveCamera,
   Points,
   Quaternion,
-  Raycaster,
   Scene,
   Sphere,
   ShaderMaterial,
   SphereGeometry,
-  Vector2,
   Vector3,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -62,6 +60,8 @@ import {
   NEIGHBOR_RADIUS_PC,
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
+import { starPhotometry } from '../universe/galaxy/photometry';
+import { spectralType } from '../universe/star/classification';
 import type { Moon } from '../universe/moon/types';
 import {
   bandMeanMotion,
@@ -77,6 +77,7 @@ import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { planetMu } from '../universe/system/generate';
 import { getSkyField } from './skyService';
+import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
 
 const EARTH_RADIUS_KM = EARTH_RADIUS / 1000;
@@ -88,6 +89,24 @@ const MAX_ALTITUDE_KM = NEIGHBOR_RADIUS_PC * 1.5 * PC_KM;
 
 export type FocusTarget = 'star' | number;
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
+
+/** What a pick resolved to; main decides how to act on it. */
+export type PickTarget =
+  | { kind: 'star' }
+  | { kind: 'planet'; index: number }
+  | { kind: 'notable'; index: number }
+  | { kind: 'belt'; asteroid: Asteroid }
+  | { kind: 'neighbor'; seedHex: string };
+
+interface Pickable {
+  x: number;
+  y: number;
+  z: number;
+  name: string;
+  info: string;
+  action: string | null;
+  target: PickTarget | null;
+}
 
 export const PRESET_TIME_SCALE: Record<ScenePreset, number> = {
   star: 0.05,
@@ -167,6 +186,8 @@ export class UnifiedViewer {
   /** Neighborhood stars (1 unit = 1 pc, already scene-frame) inside it. */
   private readonly pcGroup = new Group();
   private neighborPoints: Points | null = null;
+  private neighborSeedHexes: string[] = [];
+  private neighborPositionsPc: Float32Array = new Float32Array(0);
   /** Photometric glints for the system's own stars at unresolved range. */
   private starSprites: Points | null = null;
   private starNodes: StarNode[] = [];
@@ -209,12 +230,17 @@ export class UnifiedViewer {
     pseudoLum: number;
   }> = [];
   private beltCellSignature = '';
-  private beltSlotToCandidate: number[] = [];
-  private beltPointToCandidate: number[] = [];
-  private readonly raycaster = new Raycaster();
   private pointerDownAt: [number, number] | null = null;
-  /** Fired when a click promotes a materialized belt member to focus. */
-  onBodyFocus: ((asteroid: Asteroid) => void) | null = null;
+  /** Everything hoverable this frame; nearest to the cursor tooltips. */
+  private pickables: Pickable[] = [];
+  private hovered: Pickable | null = null;
+  private hoveredKey = '';
+  private cursor: [number, number] | null = null;
+  private dragging = false;
+  private readonly tooltip: HTMLDivElement;
+  private readonly tooltipLine: SVGLineElement;
+  /** Fired when the user clicks a picked body. */
+  onPick: ((target: PickTarget) => void) | null = null;
   private lastFrameMs = performance.now();
   private readonly onResize = () => this.resize();
 
@@ -277,16 +303,41 @@ export class UnifiedViewer {
     this.beltRockPoints.frustumCulled = false;
     this.scene.add(this.beltRockPoints);
 
-    // Click promotes any materialized belt member to the focused body.
+    // Hover tooltip: the body nearest the cursor names itself, with a
+    // connector line; a click acts on it.
+    this.tooltip = document.createElement('div');
+    this.tooltip.id = 'pick-tip';
+    this.tooltip.style.display = 'none';
+    container.appendChild(this.tooltip);
+    const lineSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    lineSvg.id = 'pick-line';
+    lineSvg.setAttribute('width', '100%');
+    lineSvg.setAttribute('height', '100%');
+    this.tooltipLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    this.tooltipLine.setAttribute('stroke', 'rgba(160, 175, 200, 0.55)');
+    this.tooltipLine.setAttribute('stroke-width', '1');
+    this.tooltipLine.setAttribute('visibility', 'hidden');
+    lineSvg.appendChild(this.tooltipLine);
+    container.appendChild(lineSvg);
+
+    this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
+      const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+      this.cursor = [e.clientX - rect.left, e.clientY - rect.top];
+      this.dragging = e.buttons !== 0;
+    });
+    this.pipeline.renderer.domElement.addEventListener('pointerleave', () => {
+      this.cursor = null;
+    });
     this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
       if (e.button === 0) this.pointerDownAt = [e.clientX, e.clientY];
     });
     this.pipeline.renderer.domElement.addEventListener('pointerup', (e) => {
       const down = this.pointerDownAt;
       this.pointerDownAt = null;
+      this.dragging = false;
       if (!down || e.button !== 0) return;
       if (Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
-      this.pickBeltAsteroid(e.clientX, e.clientY);
+      if (this.hovered?.target) this.onPick?.(this.hovered.target);
     });
 
     window.addEventListener('resize', this.onResize);
@@ -391,6 +442,8 @@ export class UnifiedViewer {
 
     const hood = computeNeighborhood(seedFromHex(system.seedHex));
     this.neighbors = hood.neighbors;
+    this.neighborSeedHexes = hood.seedHexes;
+    this.neighborPositionsPc = hood.positionsPc;
     this.neighborPoints = createNeighborStars(hood, PC_KM);
     this.pcGroup.add(this.neighborPoints);
 
@@ -551,31 +604,121 @@ export class UnifiedViewer {
     this.focusAsteroid = asteroid;
     this.applyAsteroidFocus(asteroid);
     this.arriveAtFocus('planet');
-    this.onBodyFocus?.(asteroid);
   }
 
-  /** Raycast the materialized belt members under a click. */
-  private pickBeltAsteroid(clientX: number, clientY: number): void {
-    if (!this.beltRockMesh || !this.beltRockPoints || this.beltCandidates.length === 0) return;
+  /** True when the segment camera→point passes behind the focus body. */
+  private occludedByFocus(x: number, y: number, z: number): boolean {
+    const cam = this.camera.position;
+    const dx = x - cam.x;
+    const dy = y - cam.y;
+    const dz = z - cam.z;
+    const lengthSq = dx * dx + dy * dy + dz * dz;
+    if (lengthSq < 1) return false;
+    // Closest approach of the segment to the focus body at the origin.
+    const t = Math.max(0, Math.min(1, -(cam.x * dx + cam.y * dy + cam.z * dz) / lengthSq));
+    const px = cam.x + dx * t;
+    const py = cam.y + dy * t;
+    const pz = cam.z + dz * t;
+    const r = this.radiusKm * 0.98;
+    return t > 0 && t < 1 && px * px + py * py + pz * pz < r * r;
+  }
+
+  /** Find the pickable nearest the cursor and drive the tooltip. */
+  private updateHover(): void {
     const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
-    const ndc = new Vector2(
-      ((clientX - rect.left) / rect.width) * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1,
-    );
-    this.raycaster.setFromCamera(ndc, this.camera);
-    this.raycaster.params.Points = { threshold: Math.max(80, this.altitudeKm * 0.02) };
-    const hits = this.raycaster.intersectObjects([this.beltRockMesh, this.beltRockPoints], false);
-    for (const hit of hits) {
-      const candidate =
-        hit.object === this.beltRockMesh && hit.instanceId !== undefined
-          ? this.beltSlotToCandidate[hit.instanceId]
-          : hit.object === this.beltRockPoints && hit.index !== undefined
-            ? this.beltPointToCandidate[hit.index]
-            : undefined;
-      if (candidate === undefined) continue;
-      this.focusBeltAsteroid(this.beltCandidates[candidate].asteroid);
+    let best: Pickable | null = null;
+    if (this.cursor && !this.dragging) {
+      const [cx, cy] = this.cursor;
+      const v = new Vector3();
+      let bestPx = 26;
+      const consider = (pickable: Pickable, bias: number): void => {
+        v.set(pickable.x, pickable.y, pickable.z).project(this.camera);
+        if (v.z > 1 || v.z < -1) return;
+        const sx = (v.x * 0.5 + 0.5) * rect.width;
+        const sy = (-v.y * 0.5 + 0.5) * rect.height;
+        const d = Math.hypot(sx - cx, sy - cy) * bias;
+        if (d >= bestPx) return;
+        if (this.occludedByFocus(pickable.x, pickable.y, pickable.z)) return;
+        bestPx = d;
+        best = pickable;
+      };
+      for (const pickable of this.pickables) consider(pickable, 1);
+
+      // Neighborhood stars: bulk scan of the 3D point field.
+      if (this.neighborPoints && this.system) {
+        const positions = this.neighborPoints.geometry.getAttribute('position') as BufferAttribute;
+        this.pcGroup.updateWorldMatrix(true, false);
+        const matrix = this.pcGroup.matrixWorld;
+        let bestStar = -1;
+        for (let i = 0; i < positions.count; i++) {
+          v.fromBufferAttribute(positions, i).applyMatrix4(matrix);
+          const wx = v.x;
+          const wy = v.y;
+          const wz = v.z;
+          v.project(this.camera);
+          if (v.z > 1 || v.z < -1) continue;
+          const sx = (v.x * 0.5 + 0.5) * rect.width;
+          const sy = (-v.y * 0.5 + 0.5) * rect.height;
+          const d = Math.hypot(sx - cx, sy - cy) * 1.5;
+          if (d >= bestPx) continue;
+          if (this.occludedByFocus(wx, wy, wz)) continue;
+          bestPx = d;
+          bestStar = i;
+          best = null;
+        }
+        if (bestStar >= 0 && this.neighborSeedHexes[bestStar]) {
+          const seedHex = this.neighborSeedHexes[bestStar];
+          const physical = starPhotometry(seedFromHex(seedHex));
+          const distancePc = Math.hypot(
+            this.neighborPositionsPc[bestStar * 3],
+            this.neighborPositionsPc[bestStar * 3 + 1],
+            this.neighborPositionsPc[bestStar * 3 + 2],
+          );
+          v.fromBufferAttribute(positions, bestStar).applyMatrix4(matrix);
+          best = {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+            name: `SIM-${seedHex.slice(-8).toUpperCase()}`,
+            info: `${spectralType(physical)} · ${fmt(distancePc)} pc`,
+            action: 'click to travel',
+            target: { kind: 'neighbor', seedHex },
+          };
+        }
+      }
+    }
+
+    this.hovered = best;
+    if (!best) {
+      if (this.hoveredKey) {
+        this.hoveredKey = '';
+        this.tooltip.style.display = 'none';
+        this.tooltipLine.setAttribute('visibility', 'hidden');
+      }
       return;
     }
+    const key = `${best.name}|${best.info}`;
+    if (key !== this.hoveredKey) {
+      this.hoveredKey = key;
+      this.tooltip.innerHTML = `
+        <div class="tip-name">${best.name}</div>
+        <div class="tip-info">${best.info}</div>
+        ${best.action ? `<div class="tip-action">${best.action}</div>` : ''}
+      `;
+      this.tooltip.style.display = 'block';
+    }
+    const v = new Vector3(best.x, best.y, best.z).project(this.camera);
+    const sx = (v.x * 0.5 + 0.5) * rect.width;
+    const sy = (-v.y * 0.5 + 0.5) * rect.height;
+    const boxX = Math.max(8, Math.min(rect.width - 270, sx + 22));
+    const boxY = Math.max(8, Math.min(rect.height - 90, sy - 48));
+    this.tooltip.style.left = `${boxX}px`;
+    this.tooltip.style.top = `${boxY}px`;
+    this.tooltipLine.setAttribute('visibility', 'visible');
+    this.tooltipLine.setAttribute('x1', String(sx));
+    this.tooltipLine.setAttribute('y1', String(sy));
+    this.tooltipLine.setAttribute('x2', String(boxX + 4));
+    this.tooltipLine.setAttribute('y2', String(boxY + this.tooltip.offsetHeight - 4));
   }
 
   /**
@@ -680,8 +823,24 @@ export class UnifiedViewer {
     const scale = new Vector3();
     let meshCount = 0;
     let pointCount = 0;
-    this.beltSlotToCandidate.length = 0;
-    this.beltPointToCandidate.length = 0;
+
+    const writeGlint = (
+      pos: Vector3,
+      distanceKm: number,
+      pseudoLum: number,
+      radiusKm: number,
+    ): void => {
+      if (pointCount >= 900) return;
+      positionAttr.setXYZ(pointCount, pos.x, pos.y, pos.z);
+      colorAttr.setXYZ(pointCount, sr, sg, sb);
+      // Physical reflected light when close; a faint marker floor
+      // otherwise — the moons-and-planets legibility convention, since
+      // a kilometers-scale rock at these ranges is honestly invisible.
+      const dPc = distanceKm / PC_KM;
+      lumAttr.setX(pointCount, Math.max(pseudoLum, 2.5e-5 * dPc * dPc));
+      radiusAttr.setX(pointCount, radiusKm);
+      pointCount++;
+    };
 
     for (let i = 0; i < this.beltCandidates.length; i++) {
       const candidate = this.beltCandidates[i];
@@ -693,18 +852,16 @@ export class UnifiedViewer {
       const distanceKm = pos.distanceTo(this.camera.position);
       if (distanceKm > REACH_AU * AU_KM * 1.5) continue;
 
-      if (pointCount < 900) {
-        positionAttr.setXYZ(pointCount, pos.x, pos.y, pos.z);
-        colorAttr.setXYZ(pointCount, sr, sg, sb);
-        // Physical reflected light when close; a faint marker floor
-        // otherwise — the moons-and-planets legibility convention, since
-        // a kilometers-scale rock at these ranges is honestly invisible.
-        const dPc = distanceKm / PC_KM;
-        lumAttr.setX(pointCount, Math.max(candidate.pseudoLum, 2.5e-5 * dPc * dPc));
-        radiusAttr.setX(pointCount, candidate.radiusKm);
-        this.beltPointToCandidate[pointCount] = i;
-        pointCount++;
-      }
+      writeGlint(pos, distanceKm, candidate.pseudoLum, candidate.radiusKm);
+      this.pickables.push({
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        name: `${this.system.star.designation} A-${candidate.asteroid.shape.noiseSeedHex.slice(-4).toUpperCase()}`,
+        info: `belt member · ${fmt(candidate.asteroid.diameterKm)} km · ${candidate.asteroid.taxonomy}-type`,
+        action: 'click to visit',
+        target: { kind: 'belt', asteroid: candidate.asteroid },
+      });
       if (meshCount < 320 && candidate.radiusKm / distanceKm > 4e-5) {
         const { shape, spinPeriodHours } = candidate.asteroid;
         const spinAngle = ((tSeconds / (spinPeriodHours * 3600)) * 2 * Math.PI) % (2 * Math.PI);
@@ -713,9 +870,34 @@ export class UnifiedViewer {
         scale.set(base / shape.elongation, base * shape.flattening, base);
         matrix.compose(pos, spinQuat, scale);
         mesh.setMatrixAt(meshCount, matrix);
-        this.beltSlotToCandidate[meshCount] = i;
         meshCount++;
       }
+    }
+
+    // The notable landmarks glint too — the same population's large end.
+    for (let i = 0; i < this.asteroids.length; i++) {
+      const notable = this.asteroids[i];
+      if (notable === this.focusAsteroid) continue;
+      const state = elementsToState(notable.elements, this.systemMu, tSeconds);
+      const pos = toWorld(state.position)
+        .divideScalar(1000)
+        .sub(focusPos)
+        .applyAxisAngle(yAxis, spin);
+      const distanceKm = pos.distanceTo(this.camera.position);
+      const radiusKm = notable.diameterKm / 2;
+      const starDistanceKm = (notable.elements.semiMajorAxis / AU) * AU_KM;
+      const pseudoLum =
+        this.system.star.luminosity * (radiusKm / (2 * starDistanceKm)) ** 2 * notable.albedo * 4;
+      writeGlint(pos, distanceKm, pseudoLum, radiusKm);
+      this.pickables.push({
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        name: `${this.system.star.designation} A-${notable.shape.noiseSeedHex.slice(-4).toUpperCase()}`,
+        info: `belt asteroid · ${fmt(notable.diameterKm)} km · ${notable.taxonomy}-type`,
+        action: 'click to visit',
+        target: { kind: 'notable', index: i },
+      });
     }
     mesh.count = meshCount;
     mesh.instanceMatrix.needsUpdate = true;
@@ -1011,6 +1193,7 @@ export class UnifiedViewer {
       this.camera.updateProjectionMatrix();
 
       this.updateWorld(up);
+      this.updateHover();
 
       if (this.backdrop) {
         this.backdrop.group.position.copy(this.camera.position);
@@ -1029,6 +1212,7 @@ export class UnifiedViewer {
 
   private updateWorld(up: Vector3): void {
     if (!this.system) return;
+    this.pickables.length = 0;
     const solid = this.field !== null;
     const tSeconds = seconds(this.simTimeDays * DAY);
     const yAxis = new Vector3(0, 1, 0);
@@ -1064,6 +1248,18 @@ export class UnifiedViewer {
         node.object.group.position.y,
         node.object.group.position.z,
       );
+      const star = i === 0 ? this.system.star : this.system.companions[i - 1]?.star;
+      if (star && this.focus !== 'star') {
+        this.pickables.push({
+          x: node.object.group.position.x,
+          y: node.object.group.position.y,
+          z: node.object.group.position.z,
+          name: star.designation,
+          info: `${star.spectralType} · ${i === 0 ? 'primary' : 'companion'}`,
+          action: 'click for star view',
+          target: { kind: 'star' },
+        });
+      }
     }
     if (spritePositions) spritePositions.needsUpdate = true;
     const primaryWorld = this.starNodes.length
@@ -1099,12 +1295,39 @@ export class UnifiedViewer {
         node.marker.position.copy(positionKm);
         node.marker.scale.setScalar(cameraDistance * 0.0035);
       }
+      const { climate, bulk } = node.planet.physical;
+      this.pickables.push({
+        x: worldPos.x,
+        y: worldPos.y,
+        z: worldPos.z,
+        name: node.planet.name,
+        info: `${node.planet.class} · ${fmt(bulk.massEarth)} M⊕ · ${fmt(climate.surfaceMeanK, 3)} K`,
+        action: 'click to visit',
+        target: { kind: 'planet', index: i },
+      });
     }
 
     for (const material of this.beltMaterials) {
       material.uniforms.uTimeYears.value = this.simTimeDays / 365.25;
     }
-    for (const comet of this.cometObjects) comet.update(tSeconds);
+    const cometHead = new Vector3();
+    for (let i = 0; i < this.cometObjects.length; i++) {
+      const comet = this.cometObjects[i];
+      comet.update(tSeconds);
+      if (comet.getHeadWorldPosition(cometHead)) {
+        const elements = this.system.comets[i].elements;
+        const perihelionAu = (elements.semiMajorAxis * (1 - elements.eccentricity)) / AU;
+        this.pickables.push({
+          x: cometHead.x,
+          y: cometHead.y,
+          z: cometHead.z,
+          name: `${this.system.star.designation} comet`,
+          info: `active comet · q ${fmt(perihelionAu)} AU`,
+          action: null,
+          target: null,
+        });
+      }
+    }
     this.updateBeltRegion(tSeconds, focusPos, spin);
 
     this.bodyObject?.update(this.simTimeDays, sunDir, lightColor);
@@ -1121,6 +1344,15 @@ export class UnifiedViewer {
       const moonRadiusKm = moon.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
       marker.visible = moonRadiusKm / cameraDistance < 0.004;
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
+      this.pickables.push({
+        x: object.group.position.x,
+        y: object.group.position.y,
+        z: object.group.position.z,
+        name: moon.name,
+        info: `moon · ${fmt(moonRadiusKm)} km${moon.tidalState !== 'dead' ? ` · ${moon.tidalState}` : ''}`,
+        action: null,
+        target: null,
+      });
     }
 
     if (!this.focusPlanet) {

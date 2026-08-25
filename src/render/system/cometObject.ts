@@ -137,6 +137,13 @@ export class CometObject {
     );
   }
 
+  /** Head world position; false while the comet is inactive/hidden. */
+  getHeadWorldPosition(target: Vector3): boolean {
+    if (!this.head.visible) return false;
+    this.head.getWorldPosition(target);
+    return true;
+  }
+
   dispose(): void {
     this.group.traverse((obj) => {
       if (obj instanceof Mesh || obj instanceof Line) {

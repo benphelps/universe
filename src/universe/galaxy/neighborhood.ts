@@ -21,6 +21,8 @@ export interface Neighborhood {
   positionsPc: Float32Array;
   colors: Float32Array;
   luminosities: Float32Array;
+  /** Seed per rendered point, aligned with positionsPc (unsorted). */
+  seedHexes: string[];
 }
 
 /**
@@ -36,6 +38,7 @@ export function computeNeighborhood(seed: bigint): Neighborhood {
   const colors: number[] = [];
   const luminosities: number[] = [];
   const neighbors: Neighbor[] = [];
+  const seedHexes: string[] = [];
 
   for (const slot of starsNear(viewpoint, NEIGHBOR_RADIUS_PC)) {
     const physical = starPhotometry(slot.seed);
@@ -49,6 +52,7 @@ export function computeNeighborhood(seed: bigint): Neighborhood {
     const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(physical.tEff) * 95)) * 4;
     colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
     luminosities.push(physical.luminosity);
+    seedHexes.push(seedToHex(slot.seed));
     neighbors.push({
       seedHex: seedToHex(slot.seed),
       distancePc: Math.hypot(dx, dy, dz),
@@ -63,5 +67,6 @@ export function computeNeighborhood(seed: bigint): Neighborhood {
     positionsPc: new Float32Array(positions),
     colors: new Float32Array(colors),
     luminosities: new Float32Array(luminosities),
+    seedHexes,
   };
 }
