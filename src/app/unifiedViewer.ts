@@ -63,7 +63,7 @@ import {
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
 import { starPhotometry } from '../universe/galaxy/photometry';
-import { viewpointForSeed } from '../universe/galaxy/sectors';
+import type { GalacticPosition } from '../universe/galaxy/density';
 import { spectralType } from '../universe/star/classification';
 import type { Moon } from '../universe/moon/types';
 import {
@@ -108,7 +108,7 @@ export type PickTarget =
   | { kind: 'planet'; index: number }
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
-  | { kind: 'neighbor'; seedHex: string };
+  | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition };
 
 interface Pickable {
   x: number;
@@ -218,6 +218,8 @@ export class UnifiedViewer {
    *  unresolved-glow representations swap. */
   private farPoints: Points | null = null;
   private neighborSeedHexes: string[] = [];
+  private neighborGalacticPc: Float32Array = new Float32Array(0);
+  private viewpointPc: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
   private neighborPositionsPc: Float32Array = new Float32Array(0);
   /** Photometric glints for the system's own stars at unresolved range. */
   private starSprites: Points | null = null;
@@ -541,19 +543,21 @@ export class UnifiedViewer {
     this.beltCandidates = [];
     this.beltCellSignature = '';
 
-    const hood = computeNeighborhood(seedFromHex(system.seedHex));
+    const viewpoint = system.localePc;
+    this.viewpointPc = viewpoint;
+    const hood = computeNeighborhood(seedFromHex(system.seedHex), viewpoint);
     this.neighbors = hood.neighbors;
     this.neighborSeedHexes = hood.seedHexes;
     this.neighborPositionsPc = hood.positionsPc;
+    this.neighborGalacticPc = hood.galacticPc;
     this.neighborPoints = createNeighborStars(hood, PC_KM);
     this.pcGroup.add(this.neighborPoints);
 
-    const viewpoint = viewpointForSeed(seedFromHex(system.seedHex));
     this.galaxyVolume = new GalaxyVolume(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity(viewpoint);
     this.scene.add(this.galaxyVolume.mesh);
 
-    getSkyField(system.seedHex).then((sky) => {
+    getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
       this.skyData = sky;
       // Every resolved star is 3D content now (near field above, far
@@ -849,12 +853,17 @@ export class UnifiedViewer {
             const position = { x: world.x, y: world.y, z: world.z };
             if (starSeed !== 0n) {
               const seedHex = seedToHex(starSeed);
+              const starPc = {
+                xPc: this.viewpointPc.xPc + sky.starDirs[s * 3] * distance,
+                yPc: this.viewpointPc.yPc + sky.starDirs[s * 3 + 1] * distance,
+                zPc: this.viewpointPc.zPc + sky.starDirs[s * 3 + 2] * distance,
+              };
               best = {
                 ...position,
                 name: `SIM-${seedHex.slice(-8).toUpperCase()}`,
-                info: `${spectralType(starPhotometry(starSeed))} · ${fmt(distance, 3)} pc`,
+                info: `${spectralType(starPhotometry(starSeed, starPc))} · ${fmt(distance, 3)} pc`,
                 action: 'click to travel',
-                target: { kind: 'neighbor', seedHex },
+                target: { kind: 'neighbor', seedHex, positionPc: starPc },
               };
             } else {
               // Cluster members ride their group's stream, not a seed
@@ -873,7 +882,12 @@ export class UnifiedViewer {
 
         if (bestStar >= 0 && this.neighborSeedHexes[bestStar]) {
           const seedHex = this.neighborSeedHexes[bestStar];
-          const physical = starPhotometry(seedFromHex(seedHex));
+          const starPc = {
+            xPc: this.neighborGalacticPc[bestStar * 3],
+            yPc: this.neighborGalacticPc[bestStar * 3 + 1],
+            zPc: this.neighborGalacticPc[bestStar * 3 + 2],
+          };
+          const physical = starPhotometry(seedFromHex(seedHex), starPc);
           const distancePc = Math.hypot(
             this.neighborPositionsPc[bestStar * 3],
             this.neighborPositionsPc[bestStar * 3 + 1],
@@ -887,7 +901,7 @@ export class UnifiedViewer {
             name: `SIM-${seedHex.slice(-8).toUpperCase()}`,
             info: `${spectralType(physical)} · ${fmt(distancePc)} pc`,
             action: 'click to travel',
-            target: { kind: 'neighbor', seedHex },
+            target: { kind: 'neighbor', seedHex, positionPc: starPc },
           };
         }
       }

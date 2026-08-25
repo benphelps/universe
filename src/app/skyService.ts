@@ -1,3 +1,4 @@
+import type { GalacticPosition } from '../universe/galaxy/density';
 import type { SkyField } from '../universe/galaxy/skyfield';
 
 /**
@@ -18,17 +19,18 @@ function ensureWorker(): Worker {
   return worker;
 }
 
-export function getSkyField(seedHex: string): Promise<SkyField> {
-  const cached = cache.get(seedHex);
+export function getSkyField(seedHex: string, viewpoint: GalacticPosition): Promise<SkyField> {
+  const key = `${seedHex}:${viewpoint.xPc.toFixed(4)},${viewpoint.yPc.toFixed(4)},${viewpoint.zPc.toFixed(4)}`;
+  const cached = cache.get(key);
   if (cached) return cached;
   const promise = new Promise<SkyField>((resolve) => {
     waiting.set(seedHex, resolve);
-    ensureWorker().postMessage({ seedHex });
+    ensureWorker().postMessage({ seedHex, viewpoint });
   });
-  cache.set(seedHex, promise);
+  cache.set(key, promise);
   if (cache.size > 4) {
     const oldest = cache.keys().next().value;
-    if (oldest && oldest !== seedHex) cache.delete(oldest);
+    if (oldest && oldest !== key) cache.delete(oldest);
   }
   return promise;
 }

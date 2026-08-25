@@ -1,6 +1,7 @@
 import { blackbodyChromaticity, blackbodyLinearRgb } from '../../core/color/blackbody';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
+import type { GalacticPosition } from '../galaxy/density';
 import { metallicityFor, populationFromUnit } from '../galaxy/population';
 import { viewpointForSeed } from '../galaxy/sectors';
 import { computeActivity } from './activity';
@@ -19,6 +20,9 @@ export interface StarGenOptions {
   population?: StellarPopulation;
   /** Companion generation is disabled for companion stars themselves. */
   withCompanions?: boolean;
+  /** The star's true galactic position (catalog stars carry theirs
+   *  through travel); bare seeds fall back to the seed-derived locale. */
+  localePc?: GalacticPosition;
 }
 
 /**
@@ -33,7 +37,7 @@ export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
   let feH = options.feH;
   let population = options.population;
   if (ageGyr === undefined || feH === undefined) {
-    const locale = viewpointForSeed(seed);
+    const locale = options.localePc ?? viewpointForSeed(seed);
     const draw = populationFromUnit(ageUnitOf(seed), locale);
     ageGyr ??= draw.ageGyr;
     feH ??= metallicityFor(rng, draw, locale);

@@ -4,6 +4,8 @@ import { AU, G, SOLAR_MASS, EARTH_MASS } from '../../core/physics/constants';
 import { rayleigh } from '../../core/rng/distributions';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
+import type { GalacticPosition } from '../galaxy/density';
+import { viewpointForSeed } from '../galaxy/sectors';
 import { generateMoons } from '../moon/generate';
 import { characterizePlanet } from '../planet/characterize';
 import { generateRings } from '../rings/generate';
@@ -27,9 +29,13 @@ const PLANET_LETTERS = 'bcdefghijklmnopq';
 /**
  * Complete planetary system for a seed. The star is generated from the
  * same seed, so a given seed names the same star in every viewer.
+ * Catalog stars pass their true galactic position — the population
+ * (age, metallicity) and everything downstream is local to it; bare
+ * seeds settle at the seed-derived locale.
  */
-export function generateSystem(seed: bigint): StarSystem {
-  const star = generateStar(seed);
+export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarSystem {
+  const locale = localePc ?? viewpointForSeed(seed);
+  const star = generateStar(seed, { localePc: locale });
   const rng = new Rng(deriveSeed(seed, 'system'));
 
   const companions = companionOrbits(rng.fork('companions'), star);
@@ -87,6 +93,7 @@ export function generateSystem(seed: bigint): StarSystem {
   const reservoirs = generateReservoirs(rng.fork('reservoirs'), stable);
   return {
     seedHex: seedToHex(seed),
+    localePc: locale,
     star,
     companions,
     configuration,

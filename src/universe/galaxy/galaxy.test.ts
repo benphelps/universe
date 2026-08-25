@@ -11,7 +11,13 @@ import {
   seedForIdentity,
 } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
-import { HOME_POSITION, stellarDensity, stellarDensityCeiling } from './density';
+import {
+  armBoost,
+  componentDensities,
+  HOME_POSITION,
+  stellarDensity,
+  stellarDensityCeiling,
+} from './density';
 import { sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
 import { populationFromUnit, metallicityFor } from './population';
@@ -159,12 +165,37 @@ describe('catalog', () => {
   it('a materialized catalog star mirrors its traveled-to system', () => {
     const stars = starsNear(HOME_POSITION, 12);
     for (const star of stars.slice(0, 12)) {
-      const full = generateStar(star.seed, { withCompanions: false });
+      // Travel carries the star's true position, so the destination is
+      // the very star the sky showed — photometry and all.
+      const full = generateStar(star.seed, {
+        withCompanions: false,
+        localePc: star.positionPc,
+      });
       expect(full.massInitial).toBeCloseTo(star.massInitial, 10);
+      const fast = starPhotometry(star.seed, star.positionPc);
+      expect(full.luminosity).toBe(fast.luminosity);
+      expect(full.tEff).toBe(fast.tEff);
       const row = CATALOG_ROWS.find(
         (r) => star.massInitial >= r.massLo && star.massInitial < r.massHi,
       );
       expect(row).toBeDefined();
+    }
+  });
+
+  it('the luminous age cap covers every galactic locale', () => {
+    // Band-B (post-luminous) cells never hold a shining star only if the
+    // thin-disk share of the population mix stays under the cap's bound
+    // everywhere a traveled-to system can sit.
+    const inner = componentDensities({ xPc: 5200, yPc: 0, zPc: 0 });
+    const innerThin = (inner.thin / armBoost(5200, 0)) * 2.2;
+    const bound = (innerThin / (innerThin + inner.thick + inner.halo)) * 1.03;
+    for (let r = 400; r <= 16000; r += 400) {
+      for (const zPc of [0, 150, 500, 1500, 2500]) {
+        const parts = componentDensities({ xPc: r, yPc: 0, zPc });
+        const thinMax = (parts.thin / armBoost(r, 0)) * 2.2;
+        const wThin = thinMax / (thinMax + parts.thick + parts.halo);
+        expect(wThin).toBeLessThan(bound);
+      }
     }
   });
 
@@ -319,8 +350,13 @@ describe('sky field', () => {
       const starSeed = sky.starSeeds[i];
       if (starSeed === 0n) continue;
       seeded++;
-      const physical = starPhotometry(starSeed);
       const distance = sky.starDistances[i];
+      // The sky drew this star's population at its true position.
+      const physical = starPhotometry(starSeed, {
+        xPc: HOME_POSITION.xPc + sky.starDirs[i * 3] * distance,
+        yPc: HOME_POSITION.yPc + sky.starDirs[i * 3 + 1] * distance,
+        zPc: HOME_POSITION.zPc + sky.starDirs[i * 3 + 2] * distance,
+      });
       const expected = physical.luminosity / (distance * distance);
       expect(sky.starBrightness[i] / expected).toBeGreaterThan(0.999);
       expect(sky.starBrightness[i] / expected).toBeLessThan(1.001);

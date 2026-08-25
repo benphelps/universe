@@ -1,5 +1,6 @@
 import './style.css';
 import { seedFromHex, seedToHex } from '../core/rng/hash';
+import type { GalacticPosition } from '../universe/galaxy/density';
 import { generateSystem } from '../universe/system/generate';
 import type { StarSystem } from '../universe/system/types';
 import { Controls, type ViewMode } from './ui/controls';
@@ -21,6 +22,7 @@ let seedHex = '';
 let planetIndex = 0;
 let viewer: UnifiedViewer | null = null;
 let system: StarSystem | null = null;
+let currentLocaleKey = '';
 let exposure = 1;
 let timeScale: number | null = null;
 
@@ -30,14 +32,35 @@ function randomSeedHex(): string {
   return words[0].toString(16).padStart(8, '0') + words[1].toString(16).padStart(8, '0');
 }
 
+/** Round-trips a galactic position through the URL without drift. */
+function localeParam(locale: GalacticPosition): string {
+  return `${locale.xPc.toFixed(4)}_${locale.yPc.toFixed(4)}_${locale.zPc.toFixed(4)}`;
+}
+
+function parseLocale(value: string | null): GalacticPosition | undefined {
+  if (!value) return undefined;
+  const [x, y, z] = value.split('_').map(Number);
+  if (![x, y, z].every(Number.isFinite)) return undefined;
+  return { xPc: x, yPc: y, zPc: z };
+}
+
+let localePc: GalacticPosition | undefined;
+
 /**
  * Every view is a preset of the one unified viewer — the same scene
  * focused and framed differently — so switching between them (or
  * stepping planets, or travelling to a neighbor star) never rebuilds
- * the renderer.
+ * the renderer. Travel to a catalog star carries its true galactic
+ * position, so the destination is built where the star actually is;
+ * bare seeds settle at their seed-derived locale.
  */
-function load(nextSeedHex: string): void {
+function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   seedHex = seedToHex(seedFromHex(nextSeedHex));
+  localePc = nextLocalePc && {
+    xPc: Number(nextLocalePc.xPc.toFixed(4)),
+    yPc: Number(nextLocalePc.yPc.toFixed(4)),
+    zPc: Number(nextLocalePc.zPc.toFixed(4)),
+  };
   const seed = seedFromHex(seedHex);
 
   if (!viewer) {
@@ -67,12 +90,14 @@ function load(nextSeedHex: string): void {
         planetPanel.renderAsteroid(system, target.asteroid, 'belt member');
         controls.planetLabel = '·';
       } else if (target.kind === 'neighbor') {
-        load(target.seedHex);
+        load(target.seedHex, target.positionPc);
       }
     };
   }
-  if (!system || system.seedHex !== seedHex) {
-    system = generateSystem(seed);
+  const localeKey = localePc ? localeParam(localePc) : '';
+  if (!system || system.seedHex !== seedHex || currentLocaleKey !== localeKey) {
+    currentLocaleKey = localeKey;
+    system = generateSystem(seed, localePc);
     viewer.setSystem(system);
   }
   if (viewMode === 'star') {
@@ -83,7 +108,9 @@ function load(nextSeedHex: string): void {
     systemPanel.render(system);
   } else if (viewMode === 'galaxy') {
     viewer.setFocus('star', 'galaxy');
-    galaxyPanel.render(seedHex, viewer.neighbors, (nextSeed) => load(nextSeed));
+    galaxyPanel.render(system.star, viewer.neighbors, (neighbor) =>
+      load(neighbor.seedHex, neighbor.positionPc),
+    );
   } else {
     // The body stepper walks the planets, then the notable belt asteroids.
     const count = system.planets.length + viewer.asteroids.length;
@@ -117,6 +144,11 @@ function load(nextSeedHex: string): void {
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
   url.searchParams.set('view', viewMode);
+  if (localePc) {
+    url.searchParams.set('at', localeParam(localePc));
+  } else {
+    url.searchParams.delete('at');
+  }
   if (viewMode === 'planet') {
     url.searchParams.set('planet', String(planetIndex));
   } else {
@@ -158,4 +190,4 @@ viewMode =
       ? 'planet'
       : 'star';
 planetIndex = Number(params.get('planet') ?? 0) || 0;
-load(params.get('seed') ?? randomSeedHex());
+load(params.get('seed') ?? randomSeedHex(), parseLocale(params.get('at')));

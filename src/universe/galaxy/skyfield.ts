@@ -192,10 +192,10 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
         const dy = y - viewpoint.yPc;
         const dz = z - viewpoint.zPc;
         const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < 1e-6) return;
+        if (d2 < 2.5e-5) return;
         if (d2 <= nearSq) {
           const starSeed = seedForIdentity(massBits, ageBits, entropy);
-          const physical = starPhotometry(starSeed);
+          const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
           if (physical.luminosity <= 0) return;
           pushTo(near, dx, dy, dz, physical.luminosity, physical.tEff, starSeed);
           return;
@@ -204,7 +204,7 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
         const mass = initialMassFromUnit(unitFromBits(massBits, MASS_BIT_SPAN));
         if (luminosityCeiling(mass) / d2 < MIN_FAR_IRRADIANCE) return;
         const starSeed = seedForIdentity(massBits, ageBits, entropy);
-        const physical = starPhotometry(starSeed);
+        const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
         if (physical.luminosity / d2 < MIN_FAR_IRRADIANCE) return;
         pushTo(far, dx, dy, dz, physical.luminosity, physical.tEff, starSeed);
       },

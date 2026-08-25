@@ -1,4 +1,5 @@
 import type { OrbitalElements } from '../../core/math/orbit';
+import type { GalacticPosition } from '../galaxy/density';
 import type { Moon } from '../moon/types';
 import type { Characterization } from '../planet/types';
 import type { RingSystem } from '../rings/types';
@@ -66,6 +67,10 @@ export type SystemConfiguration = 'single' | 's-type' | 'p-type';
 
 export interface StarSystem {
   seedHex: string;
+  /** The system's galactic position: a catalog star's true position
+   *  carried through travel, or the seed-derived locale for bare seeds.
+   *  Sky, neighborhood, and population all build from here. */
+  localePc: GalacticPosition;
   star: Star;
   companions: StellarCompanion[];
   /** s-type: planets orbit the primary; p-type: planets orbit a close binary pair. */
