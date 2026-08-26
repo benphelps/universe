@@ -81,7 +81,7 @@ import type { Star } from '../universe/star/types';
 import { createAsteroidField } from '../universe/surface/asteroidField';
 import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
-import { planetMu } from '../universe/system/generate';
+import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
 import { getSkyField } from './skyService';
@@ -108,13 +108,13 @@ const ORIGIN = new Vector3();
  *  extended sky objects; solid pickables keep their generous reach. */
 const STAR_SNAP_PX = 10;
 
-export type FocusTarget = 'star' | number | { companion: number; planet?: number };
+export type FocusTarget = 'star' | number;
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 /** What a pick resolved to; main decides how to act on it. */
 export type PickTarget =
   | { kind: 'star'; companion?: number }
-  | { kind: 'planet'; index: number; companion?: number }
+  | { kind: 'planet'; index: number }
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
   | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition };
@@ -217,6 +217,7 @@ export class UnifiedViewer {
   private readonly heliocentric = new Group();
   /** Map-frame subgroups (1 unit = 1 AU, z out of plane) inside it. */
   private readonly auGroup = new Group();
+  private readonly stellarOrbits = new Group();
   private readonly overlay = new Group();
   /** Neighborhood stars (1 unit = 1 pc, already scene-frame) inside it. */
   private readonly pcGroup = new Group();
@@ -226,12 +227,10 @@ export class UnifiedViewer {
    *  persist through the backdrop→volume crossfade — only the
    *  unresolved-glow representations swap. */
   private farPoints: Points | null = null;
-  private companionGroups: Array<{
-    group: Group;
-    lines: Group;
-    nodes: Array<{ planet: Planet; object: PlanetObject; marker: Mesh; mu: Mu }>;
-  }> = [];
-  private familyExtentsKm: number[] = [];
+  private hostIndex = -1;
+  private hostStar: Star | null = null;
+  private hostBelts: StarSystem['belts'] = [];
+  private hostSeedHex = '';
   private neighborSeedHexes: string[] = [];
   private neighborGalacticPc: Float32Array = new Float32Array(0);
   private viewpointPc: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
@@ -309,7 +308,6 @@ export class UnifiedViewer {
   private field: SurfaceField | null = null;
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
-  private focusCompanion = -1;
   private focusPlanet: Planet | null = null;
   private focusAsteroid: Asteroid | null = null;
   private extentAu = 1;
@@ -360,7 +358,7 @@ export class UnifiedViewer {
     this.controls.target.set(0, 0, 0);
 
     // Model-frame content lies flat in the world's ground plane.
-    for (const group of [this.auGroup, this.overlay]) {
+    for (const group of [this.auGroup, this.overlay, this.stellarOrbits]) {
       group.rotation.x = -Math.PI / 2;
       group.scale.setScalar(AU_KM);
       this.heliocentric.add(group);
@@ -476,13 +474,6 @@ export class UnifiedViewer {
     this.clearSystem();
     this.system = system;
 
-    const orbitExtent = system.planets.length
-      ? Math.max(...system.planets.map((p) => p.elements.semiMajorAxis / AU))
-      : 1;
-    const beltExtent = Math.max(0, ...system.belts.map((b) => b.outerAu));
-    this.extentAu = Math.max(orbitExtent * 1.2, beltExtent * 1.1, 0.5);
-    this.extentKm = this.extentAu * AU_KM;
-
     // Real photospheres at scene root: the corona billboard orients by
     // copying the camera quaternion, so star groups must not inherit the
     // heliocentric group's spin rotation. Positions are set every frame.
@@ -500,12 +491,10 @@ export class UnifiedViewer {
     };
     addStar(system.star);
     for (const companion of system.companions) {
-      // Every companion shines — a wide binary partner hangs in the sky
-      // as a brilliant glint; only its orbit line stays map-scaled.
+      // Every companion shines, and its stellar orbit is charted like a
+      // planet's — visible whenever the orbit map is.
       addStar(companion.star);
-      if (companion.elements.semiMajorAxis / AU <= this.extentAu * 3) {
-        this.overlay.add(createOrbitLine(companion.elements, 0x8888aa, 0.25));
-      }
+      this.stellarOrbits.add(createOrbitLine(companion.elements, 0x8888aa, 0.3));
     }
 
     // Photometric glints carry the stars once their discs fall subpixel
@@ -526,96 +515,12 @@ export class UnifiedViewer {
     this.starSprites.renderOrder = -2;
     this.scene.add(this.starSprites);
 
-    const starRgb = system.star.linearRgb;
-    this.planetNodes = system.planets.map((planet) => {
-      const object = new PlanetObject(planet.physical, planet.rings);
-      object.group.scale.setScalar(EARTH_RADIUS_KM);
-      this.heliocentric.add(object.group);
-      const marker = new Mesh(
-        new SphereGeometry(1, 12, 6),
-        new MeshBasicMaterial({ color: markerColor(planet.physical.appearance, starRgb) }),
-      );
-      this.heliocentric.add(marker);
-      return { planet, object, marker, mu: planetMu(system, planet) };
-    });
-
-    for (const points of createBeltPointsForSystem(system.belts, system.seedHex)) {
-      const material = points.material as ShaderMaterial;
-      material.uniforms.uSqrtCentralMass.value = Math.sqrt(system.centralMassSolar);
-      // Point sizing was tuned for AU-unit view distances.
-      material.uniforms.uPointScale.value = 40 * AU_KM;
-      this.beltMaterials.push(material);
-      this.auGroup.add(points);
-    }
-    for (const comet of system.comets) {
-      const object = new CometObject(comet, system.centralMassSolar);
-      this.cometObjects.push(object);
-      this.auGroup.add(object.group);
-    }
-
-    this.overlay.add(createZoneRings(system.zones));
-    for (const planet of system.planets) {
-      this.overlay.add(
-        createOrbitLine(planet.elements, planet.inHabitableZone ? 0x4fbf7f : 0x6a7484, 0.45),
-      );
-    }
-
-    // Each companion's own system rides its star: orbit lines, zone
-    // rings, and true-scale planet spheres in a group whose position
-    // tracks the companion every frame.
-    this.companionGroups = system.companions.map((companion) => {
-      const group = new Group();
-      this.heliocentric.add(group);
-      // Chart lines share the overlay's convention: AU units, flat in
-      // the model plane — the sub-group carries the mapping to km.
-      const lines = new Group();
-      lines.rotation.x = -Math.PI / 2;
-      lines.scale.setScalar(AU_KM);
-      group.add(lines);
-      if (companion.planets.length > 0) lines.add(createZoneRings(companion.zones));
-      const nodes = companion.planets.map((planet) => {
-        const object = new PlanetObject(planet.physical, planet.rings);
-        object.group.scale.setScalar(EARTH_RADIUS_KM);
-        group.add(object.group);
-        lines.add(
-          createOrbitLine(planet.elements, planet.inHabitableZone ? 0x4fbf7f : 0x6a7484, 0.45),
-        );
-        const marker = new Mesh(
-          new SphereGeometry(1, 12, 6),
-          new MeshBasicMaterial({
-            color: markerColor(planet.physical.appearance, companion.star.linearRgb),
-          }),
-        );
-        group.add(marker);
-        return {
-          planet,
-          object,
-          marker,
-          mu: muOf(
-            G * (companion.star.mass * SOLAR_MASS + planet.physical.bulk.massEarth * EARTH_MASS),
-          ),
-        };
-      });
-      return { group, lines, nodes };
-    });
-    this.familyExtentsKm = [
-      this.extentKm,
-      ...system.companions.map((companion) => {
-        const orbitAu = companion.planets.length
-          ? Math.max(...companion.planets.map((pl) => pl.elements.semiMajorAxis / AU))
-          : 0.4;
-        const beltAu = Math.max(0, ...companion.belts.map((b) => b.outerAu));
-        return Math.max(orbitAu * 1.2, beltAu * 1.1, 0.4) * AU_KM;
-      }),
-    ];
+    this.asteroids = notableAsteroids(system);
+    this.setHost(0);
 
     // The neighborhood rides in the scene as true 3D points: the night
     // sky's near field from the ground, the flyable galaxy layer from
     // interstellar altitude — the same objects, parallax-correct.
-    this.asteroids = notableAsteroids(system);
-    this.systemMu = muOf(G * system.centralMassSolar * SOLAR_MASS);
-    this.beltCandidates = [];
-    this.beltCellSignature = '';
 
     const viewpoint = system.localePc;
     this.viewpointPc = viewpoint;
@@ -678,24 +583,122 @@ export class UnifiedViewer {
     });
   }
 
+  /**
+   * Re-root the system pipeline on one of the system's stars: the
+   * host's planets, belts, zone rings, and orbit lines are the only
+   * system content rendered — the other stars stay as photospheres on
+   * their stellar orbits until selected.
+   */
+  setHost(index: number): void {
+    if (!this.system) return;
+    const clamped = Math.max(0, Math.min(index, this.system.companions.length));
+    if (clamped === this.hostIndex) return;
+    this.clearHostContent();
+    this.hostIndex = clamped;
+    const system = this.system;
+    const companion = clamped > 0 ? (system.companions[clamped - 1] ?? null) : null;
+    const hostStar = companion ? companion.star : system.star;
+    const planets = companion ? companion.planets : system.planets;
+    const belts = companion ? companion.belts : system.belts;
+    const zones = companion ? companion.zones : system.zones;
+    const centralMassSolar = companion ? companion.star.mass : system.centralMassSolar;
+    this.hostStar = hostStar;
+    this.hostBelts = belts;
+    this.hostSeedHex = companion ? companion.star.seedHex : system.seedHex;
+    this.systemMu = muOf(G * centralMassSolar * SOLAR_MASS);
+    this.beltCandidates = [];
+    this.beltCellSignature = '';
+
+    const orbitExtent = planets.length
+      ? Math.max(...planets.map((p) => p.elements.semiMajorAxis / AU))
+      : companion
+        ? 0.4
+        : 1;
+    const beltExtent = Math.max(0, ...belts.map((b) => b.outerAu));
+    this.extentAu = Math.max(orbitExtent * 1.2, beltExtent * 1.1, 0.5);
+    this.extentKm = this.extentAu * AU_KM;
+
+    const starRgb = hostStar.linearRgb;
+    this.planetNodes = planets.map((planet) => {
+      const object = new PlanetObject(planet.physical, planet.rings);
+      object.group.scale.setScalar(EARTH_RADIUS_KM);
+      this.heliocentric.add(object.group);
+      const marker = new Mesh(
+        new SphereGeometry(1, 12, 6),
+        new MeshBasicMaterial({ color: markerColor(planet.physical.appearance, starRgb) }),
+      );
+      this.heliocentric.add(marker);
+      return {
+        planet,
+        object,
+        marker,
+        mu: companion ? companionPlanetMu(companion, planet) : planetMu(system, planet),
+      };
+    });
+
+    for (const points of createBeltPointsForSystem(belts, this.hostSeedHex)) {
+      const material = points.material as ShaderMaterial;
+      material.uniforms.uSqrtCentralMass.value = Math.sqrt(centralMassSolar);
+      // Point sizing was tuned for AU-unit view distances.
+      material.uniforms.uPointScale.value = 40 * AU_KM;
+      this.beltMaterials.push(material);
+      this.auGroup.add(points);
+    }
+    // The comet reservoirs belong to the primary's system.
+    if (!companion) {
+      for (const comet of system.comets) {
+        const object = new CometObject(comet, system.centralMassSolar);
+        this.cometObjects.push(object);
+        this.auGroup.add(object.group);
+      }
+    }
+
+    this.overlay.add(createZoneRings(zones));
+    for (const planet of planets) {
+      this.overlay.add(
+        createOrbitLine(planet.elements, planet.inHabitableZone ? 0x4fbf7f : 0x6a7484, 0.45),
+      );
+    }
+  }
+
+  /** Tear down the host-scoped content (planets, belts, comets, chart lines). */
+  private clearHostContent(): void {
+    for (const node of this.planetNodes) {
+      node.object.dispose();
+      node.marker.geometry.dispose();
+      (node.marker.material as MeshBasicMaterial).dispose();
+      this.heliocentric.remove(node.object.group);
+      this.heliocentric.remove(node.marker);
+    }
+    this.planetNodes = [];
+    for (const comet of this.cometObjects) comet.dispose();
+    this.cometObjects = [];
+    this.beltMaterials = [];
+    for (const child of [...this.auGroup.children, ...this.overlay.children]) {
+      child.parent?.remove(child);
+      child.traverse((obj) => {
+        if (obj instanceof Mesh || obj instanceof Line || obj instanceof Points) {
+          obj.geometry.dispose();
+          if (!Array.isArray(obj.material)) obj.material.dispose();
+        }
+      });
+    }
+    this.hostIndex = -1;
+  }
+
   /** Rebuild focus-specific content and jump the camera to an arrival orbit. */
   setFocus(target: FocusTarget, preset: ScenePreset): void {
     if (!this.system) return;
     this.clearFocus();
     this.focus = target;
-    const hosted = typeof target === 'object' ? target : null;
-    this.focusCompanion = hosted ? hosted.companion : -1;
-    // Numeric targets index the primary's planets, then the notable
-    // asteroids; hosted targets address a companion's system.
-    const planetCount = this.system.planets.length;
+    // Numeric targets index the host's planets; past them, the notable
+    // asteroids (the primary's belts only).
+    const hostPlanets = this.planetNodes.map((node) => node.planet);
+    const planetCount = hostPlanets.length;
     this.focusPlanet =
-      typeof target === 'number' && target < planetCount
-        ? (this.system.planets[target] ?? null)
-        : hosted && hosted.planet !== undefined
-          ? (this.system.companions[hosted.companion]?.planets[hosted.planet] ?? null)
-          : null;
+      typeof target === 'number' && target < planetCount ? (hostPlanets[target] ?? null) : null;
     this.focusAsteroid =
-      typeof target === 'number' && target >= planetCount
+      typeof target === 'number' && target >= planetCount && this.hostIndex === 0
         ? (this.asteroids[target - planetCount] ?? null)
         : null;
 
@@ -761,13 +764,12 @@ export class UnifiedViewer {
     } else if (this.focusAsteroid) {
       this.applyAsteroidFocus(this.focusAsteroid);
     } else {
-      const focusStar =
-        this.system.companions[this.focusCompanion]?.star ?? this.system.star;
+      const focusStar = this.hostStar ?? this.system.star;
       this.radiusKm = Math.max(focusStar.radius, 1e-4) * SOLAR_RADIUS_KM;
       this.minAltitudeKm = this.radiusKm * 0.3;
       this.altitudeKm =
         preset === 'system'
-          ? (this.familyExtentsKm[this.focusCompanion + 1] ?? this.extentKm)
+          ? this.extentKm
           : preset === 'galaxy'
             ? GALAXY_ARRIVAL_ALTITUDE_KM
             : this.radiusKm * 3.2;
@@ -806,12 +808,12 @@ export class UnifiedViewer {
     // relief; at the star, near-horizontal for the limb close-up,
     // overhead for the system map, or oblique for the neighborhood.
     const focusPos = this.focusPositionKm();
-    // A hosted planet's lit face looks at its own sun, not the system
-    // origin the primary's planets face.
+    // A planet's lit face looks at its own host sun.
     const hostPos =
-      this.focusCompanion >= 0 && this.focusPlanet
-        ? (this.stellarPositionsKm(seconds(this.simTimeDays * DAY))[this.focusCompanion + 1] ??
-          new Vector3())
+      this.focusPlanet || this.focusAsteroid
+        ? (this.stellarPositionsKm(seconds(this.simTimeDays * DAY))[
+            Math.max(this.hostIndex, 0)
+          ]?.clone() ?? new Vector3())
         : new Vector3();
     const toStar =
       this.focusPlanet || this.focusAsteroid
@@ -1157,22 +1159,27 @@ export class UnifiedViewer {
    * promotes it to the focused body. The additive point cloud stays as
    * the far-field statistical limit of the same population.
    */
-  private updateBeltRegion(tSeconds: Seconds, focusPos: Vector3): void {
+  private updateBeltRegion(tSeconds: Seconds, focusPos: Vector3, hostPos: Vector3): void {
     const mesh = this.beltRockMesh;
     const points = this.beltRockPoints;
     if (!mesh || !points || !this.system) return;
 
     const REACH_AU = 0.35;
     const frameInv = this.frameQuat.clone().invert();
-    // Camera into the heliocentric model frame (undo the ground frame).
-    const helio = this.camera.position.clone().applyQuaternion(frameInv).add(focusPos);
+    // Camera into the host's model frame (undo the ground frame, then
+    // measure from the host star).
+    const helio = this.camera.position
+      .clone()
+      .applyQuaternion(frameInv)
+      .add(focusPos)
+      .sub(hostPos);
     const mx = helio.x / AU_KM;
     const my = -helio.z / AU_KM;
     const rAu = Math.hypot(mx, my);
     const phi = Math.atan2(my, mx);
 
     const cells: Array<{ belt: number; band: number; sector: number }> = [];
-    this.system.belts.forEach((belt, beltIndex) => {
+    this.hostBelts.forEach((belt, beltIndex) => {
       if (rAu < belt.innerAu - REACH_AU || rAu > belt.outerAu + REACH_AU) return;
       const bands = beltBandCount(belt);
       const inner2 = belt.innerAu ** 2;
@@ -1204,8 +1211,8 @@ export class UnifiedViewer {
       // a naive cap would truncate the region's far side.
       const drawn: Array<{ asteroid: Asteroid; distanceKm: number }> = [];
       for (const cell of cells) {
-        const belt = this.system.belts[cell.belt];
-        const beltSeed = deriveSeed(seedFromHex(this.system.seedHex), 'belt-region', cell.belt);
+        const belt = this.hostBelts[cell.belt];
+        const beltSeed = deriveSeed(seedFromHex(this.hostSeedHex), 'belt-region', cell.belt);
         for (const asteroid of beltCellAsteroids(beltSeed, belt, cell.band, cell.sector, 6)) {
           const state = elementsToState(asteroid.elements, this.systemMu, tSeconds);
           const posKm = toWorld(state.position).divideScalar(1000);
@@ -1227,7 +1234,7 @@ export class UnifiedViewer {
         // Reflected sunlight as a pseudo-luminosity for the glint shader.
         const starDistanceKm = (asteroid.elements.semiMajorAxis / AU) * AU_KM;
         const pseudoLum =
-          this.system!.star.luminosity *
+          (this.hostStar ?? this.system!.star).luminosity *
           (radiusKm / (2 * starDistanceKm)) ** 2 *
           asteroid.albedo *
           4;
@@ -1244,7 +1251,7 @@ export class UnifiedViewer {
     const colorAttr = points.geometry.getAttribute('starColor') as BufferAttribute;
     const lumAttr = points.geometry.getAttribute('luminosity') as BufferAttribute;
     const radiusAttr = points.geometry.getAttribute('aRadiusKm') as BufferAttribute;
-    const [sr, sg, sb] = this.system.star.linearRgb;
+    const [sr, sg, sb] = (this.hostStar ?? this.system.star).linearRgb;
     const matrix = new Matrix4();
     const spinQuat = new Quaternion();
     const scale = new Vector3();
@@ -1274,6 +1281,7 @@ export class UnifiedViewer {
       const state = elementsToState(candidate.asteroid.elements, this.systemMu, tSeconds);
       const pos = toWorld(state.position)
         .divideScalar(1000)
+        .add(hostPos)
         .sub(focusPos)
         .applyQuaternion(this.frameQuat);
       const distanceKm = pos.distanceTo(this.camera.position);
@@ -1284,7 +1292,7 @@ export class UnifiedViewer {
         x: pos.x,
         y: pos.y,
         z: pos.z,
-        name: `${this.system.star.designation} A-${candidate.asteroid.shape.noiseSeedHex.slice(-4).toUpperCase()}`,
+        name: `${(this.hostStar ?? this.system.star).designation} A-${candidate.asteroid.shape.noiseSeedHex.slice(-4).toUpperCase()}`,
         info: `belt member · ${fmt(candidate.asteroid.diameterKm)} km · ${candidate.asteroid.taxonomy}-type`,
         action: 'click to visit',
         target: { kind: 'belt', asteroid: candidate.asteroid },
@@ -1497,21 +1505,13 @@ export class UnifiedViewer {
       (node.marker.material as MeshBasicMaterial).dispose();
     }
     this.planetNodes = [];
-    for (const family of this.companionGroups) {
-      for (const node of family.nodes) {
-        node.object.dispose();
-        node.marker.geometry.dispose();
-        (node.marker.material as MeshBasicMaterial).dispose();
+    for (const child of [...this.stellarOrbits.children]) {
+      this.stellarOrbits.remove(child);
+      if (child instanceof Line) {
+        child.geometry.dispose();
+        (child.material as LineBasicMaterial).dispose();
       }
-      family.group.traverse((obj) => {
-        if (obj instanceof Line) {
-          obj.geometry.dispose();
-          (obj.material as LineBasicMaterial).dispose();
-        }
-      });
-      this.heliocentric.remove(family.group);
     }
-    this.companionGroups = [];
     for (const comet of this.cometObjects) comet.dispose();
     this.cometObjects = [];
     this.beltMaterials = [];
@@ -1616,21 +1616,14 @@ export class UnifiedViewer {
     }
     if (!this.focusPlanet) {
       const positions = this.stellarPositionsKm(tSeconds);
-      return positions[this.focusCompanion + 1] ?? positions[0];
+      return positions[Math.max(this.hostIndex, 0)] ?? positions[0];
     }
-    const mu =
-      this.focusCompanion >= 0
-        ? muOf(
-            G *
-              (this.system.companions[this.focusCompanion].star.mass * SOLAR_MASS +
-                this.focusPlanet.physical.bulk.massEarth * EARTH_MASS),
-          )
-        : planetMu(this.system, this.focusPlanet);
+    const node = this.planetNodes.find((candidate) => candidate.planet === this.focusPlanet);
+    const mu = node ? node.mu : planetMu(this.system, this.focusPlanet);
     const { position } = elementsToState(this.focusPlanet.elements, mu, tSeconds);
-    if (this.focusCompanion >= 0) {
-      return toWorld(position)
-        .divideScalar(1000)
-        .add(this.stellarPositionsKm(tSeconds)[this.focusCompanion + 1] ?? new Vector3());
+    const hostPos = this.stellarPositionsKm(tSeconds)[Math.max(this.hostIndex, 0)];
+    if (hostPos) {
+      return toWorld(position).divideScalar(1000).add(hostPos);
     }
     return toWorld(position).divideScalar(1000);
   }
@@ -1800,6 +1793,7 @@ export class UnifiedViewer {
       this.chunkManager?.update(this.camera.position);
       // The diagrammatic orbit overlay appears at map heights.
       this.overlay.visible = this.altitudeKm > this.radiusKm * 25;
+      this.stellarOrbits.visible = this.overlay.visible;
     }
 
     this.pipeline.render();
@@ -1867,8 +1861,7 @@ export class UnifiedViewer {
       }
       // Every star identifies itself except the one already filling
       // the screen as the focus.
-      const focusedNode =
-        this.focus === 'star' ? 0 : this.focusCompanion >= 0 ? this.focusCompanion + 1 : -1;
+      const focusedNode = this.focus === 'star' ? Math.max(this.hostIndex, 0) : -1;
       if (star && i !== focusedNode) {
         this.pickables.push({
           x: node.object.group.position.x,
@@ -1882,17 +1875,15 @@ export class UnifiedViewer {
       }
     }
     if (spritePositions) spritePositions.needsUpdate = true;
-    const primaryWorld = this.starNodes.length
-      ? this.starNodes[0].object.group.position
-      : new Vector3();
-    // The focus family's host star: the primary, or — focused into a
-    // companion's system — that companion. The focus body's terrain,
-    // sky, and moons are lit by their own sun; any other star bright
-    // enough joins as the second light.
-    const hostIndex = this.focusPlanet && this.focusCompanion >= 0 ? this.focusCompanion + 1 : 0;
-    const hostStar =
-      hostIndex === 0 ? this.system.star : this.system.companions[hostIndex - 1].star;
-    const hostWorld = this.starNodes[hostIndex]?.object.group.position ?? primaryWorld;
+    // The selected host star lights its system: terrain, sky, moons,
+    // and every planet node; any other star bright enough joins as the
+    // second light. The chart groups ride the host's position.
+    const hostIndex = Math.max(this.hostIndex, 0);
+    const hostStar = this.hostStar ?? this.system.star;
+    const hostWorld = this.starNodes[hostIndex]?.object.group.position ?? new Vector3();
+    const hostPos = starPositions[hostIndex] ?? new Vector3();
+    this.auGroup.position.copy(hostPos);
+    this.overlay.position.copy(hostPos);
     this.starDistanceKm = Math.max(hostWorld.length(), this.radiusKm * 4);
     const sunDir =
       hostWorld.lengthSq() > 1 ? hostWorld.clone().normalize() : new Vector3(0, 0, 1);
@@ -1912,11 +1903,11 @@ export class UnifiedViewer {
       node.marker.visible = false;
       if (isFocus) continue;
       const state = elementsToState(node.planet.elements, node.mu, tSeconds);
-      const positionKm = toWorld(state.position).divideScalar(1000);
+      const positionKm = toWorld(state.position).divideScalar(1000).add(hostPos);
       node.object.group.position.copy(positionKm);
       const worldPos = toFocusWorld(positionKm);
-      const lightDir = primaryWorld.clone().sub(worldPos).normalize();
-      const node2Color = this.otherSunAt(worldPos, 0, node2Dir);
+      const lightDir = hostWorld.clone().sub(worldPos).normalize();
+      const node2Color = this.otherSunAt(worldPos, hostIndex, node2Dir);
       node.object.update(this.simTimeDays, lightDir, lightColor, node2Dir, node2Color);
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
@@ -1937,56 +1928,6 @@ export class UnifiedViewer {
         action: 'click to visit',
         target: { kind: 'planet', index: i },
       });
-    }
-
-    // Companion-hosted planets: each family rides its star, lit by its
-    // own sun with the rest of the system's stars as second lights.
-    for (let ci = 0; ci < this.companionGroups.length; ci++) {
-      const family = this.companionGroups[ci];
-      const starNode = this.starNodes[ci + 1];
-      const companion = this.system.companions[ci];
-      if (!starNode || !companion) continue;
-      family.group.position.copy(starPositions[ci + 1]);
-      family.lines.visible = this.overlay.visible;
-      const hostWorldPos = starNode.object.group.position;
-      for (let pi = 0; pi < family.nodes.length; pi++) {
-        const node = family.nodes[pi];
-        const isFocus = this.focusCompanion === ci && this.focusPlanet === node.planet;
-        node.object.group.visible = !isFocus;
-        node.marker.visible = false;
-        if (isFocus) continue;
-        const state = elementsToState(node.planet.elements, node.mu, tSeconds);
-        const positionKm = toWorld(state.position).divideScalar(1000);
-        node.object.group.position.copy(positionKm);
-        const worldPos = toFocusWorld(positionKm.clone().add(family.group.position));
-        const lightDir = hostWorldPos.clone().sub(worldPos).normalize();
-        const node2Color = this.otherSunAt(worldPos, ci + 1, node2Dir);
-        node.object.update(
-          this.simTimeDays,
-          lightDir,
-          companion.star.linearRgb,
-          node2Dir,
-          node2Color,
-        );
-
-        const cameraDistance = this.camera.position.distanceTo(worldPos);
-        const bodyRadiusKm = node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
-        if (bodyRadiusKm / cameraDistance < 0.004) {
-          node.marker.visible = true;
-          node.marker.position.copy(positionKm);
-          node.marker.scale.setScalar(cameraDistance * 0.0035);
-        }
-        const { climate, bulk } = node.planet.physical;
-        this.pickables.push({
-          x: worldPos.x,
-          y: worldPos.y,
-          z: worldPos.z,
-          name: node.planet.name,
-          info: `${node.planet.class} · ${fmt(bulk.massEarth)} M⊕ · ${fmt(climate.surfaceMeanK, 3)} K`,
-          action: 'click to visit',
-          target: { kind: 'planet', index: pi, companion: ci },
-        });
-      }
     }
 
     for (const material of this.beltMaterials) {
@@ -2010,7 +1951,7 @@ export class UnifiedViewer {
         });
       }
     }
-    this.updateBeltRegion(tSeconds, focusPos);
+    this.updateBeltRegion(tSeconds, focusPos, hostPos);
 
     this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
 

@@ -50,7 +50,7 @@ function stepBody(delta: number): void {
   load(seedHex);
 }
 
-function selectPlanet(index: number, host = 0): void {
+function selectPlanet(index: number, host = companionIndex): void {
   viewMode = 'planet';
   planetIndex = index;
   companionIndex = host;
@@ -93,7 +93,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     viewer.onPick = (target) => {
       if (!viewer || !system) return;
       if (target.kind === 'planet') {
-        selectPlanet(target.index, (target.companion ?? -1) + 1);
+        selectPlanet(target.index);
       } else if (target.kind === 'notable') {
         selectPlanet(system.planets.length + target.index);
       } else if (target.kind === 'star') {
@@ -119,11 +119,12 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   const hostPlanets =
     companionIndex === 0 ? system.planets : system.companions[companionIndex - 1].planets;
   const hostStar = companionIndex === 0 ? system.star : system.companions[companionIndex - 1].star;
+  viewer.setHost(companionIndex);
   if (viewMode === 'star') {
-    viewer.setFocus(companionIndex === 0 ? 'star' : { companion: companionIndex - 1 }, 'star');
+    viewer.setFocus('star', 'star');
     starPanel.render(hostStar, system.star, companionIndex, selectStar);
   } else if (viewMode === 'system') {
-    viewer.setFocus(companionIndex === 0 ? 'star' : { companion: companionIndex - 1 }, 'system');
+    viewer.setFocus('star', 'system');
     systemPanel.render(system, companionIndex, (index) => selectPlanet(index, companionIndex));
   } else if (viewMode === 'galaxy') {
     viewer.setFocus('star', 'galaxy');
@@ -136,14 +137,11 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     const count =
       companionIndex === 0 ? hostPlanets.length + viewer.asteroids.length : hostPlanets.length;
     if (count === 0) {
-      viewer.setFocus(companionIndex === 0 ? 'star' : { companion: companionIndex - 1 }, 'star');
+      viewer.setFocus('star', 'star');
       planetPanel.renderEmpty(hostStar);
     } else {
       planetIndex = ((planetIndex % count) + count) % count;
-      viewer.setFocus(
-        companionIndex === 0 ? planetIndex : { companion: companionIndex - 1, planet: planetIndex },
-        'planet',
-      );
+      viewer.setFocus(planetIndex, 'planet');
       if (planetIndex < hostPlanets.length) {
         planetPanel.render(hostStar, hostPlanets, hostPlanets[planetIndex], planetIndex, stepBody);
       } else {
