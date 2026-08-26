@@ -17,12 +17,16 @@ import { createRockGeometry, createShrubGeometry } from './scatterObjects';
 import { buildChunkIndices } from './terrainMaterial';
 
 const RES = 48;
-const MAX_LEVEL = 17;
+/** Level 22 tiles are ~2.7 m across at Earth radius: ~6 cm vertex
+ *  spacing, the walking regime's geometric detail floor. */
+const MAX_LEVEL = 22;
 /** Never show tiles coarser than this within the horizon: they are pinned,
  *  so the whole-planet base layer builds once per visit. */
 const MIN_LEVEL = 3;
-const SPLIT_RATIO = 0.45;
-const MAX_CHUNKS = 1400;
+/** Split when tile size exceeds this fraction of its distance. The
+ *  terrain material's geomorph is calibrated against the same ratio. */
+export const SPLIT_RATIO = 0.45;
+const MAX_CHUNKS = 2400;
 const MAX_IN_FLIGHT = 24;
 /** Levels this coarse are never evicted: they cover zoom-out instantly. */
 const PINNED_LEVEL = 3;
@@ -90,9 +94,16 @@ export class TerrainChunkManager {
     }
   }
 
+  /** Terrain height under the camera, km above the datum: LOD distances
+   *  measure to the local ground sphere, not the datum — on a world
+   *  whose land rides hundreds of meters above datum, datum distances
+   *  stall the quadtree exactly that far short of the walker's feet. */
+  private groundOffsetKm = 0;
+
   /** cameraKm is the camera's planet-local position, used for LOD and culling. */
-  update(cameraKm: Vector3): void {
+  update(cameraKm: Vector3, groundKm = 0): void {
     this.frame++;
+    this.groundOffsetKm = groundKm;
     for (const record of this.chunks.values()) {
       if (record.mesh) record.mesh.visible = false;
       if (record.waterMesh) record.waterMesh.visible = false;
@@ -170,10 +181,11 @@ export class TerrainChunkManager {
     if (angleToCamera > horizonAngle + angular * 1.5 + 0.15) return;
 
     const sizeKm = angular * this.radiusKm;
-    const dx = dir.x * this.radiusKm - cameraKm.x;
-    const dy = dir.y * this.radiusKm - cameraKm.y;
-    const dz = dir.z * this.radiusKm - cameraKm.z;
-    const distanceKm = Math.max(Math.hypot(dx, dy, dz), 0.02);
+    const sampleKm = this.radiusKm + this.groundOffsetKm;
+    const dx = dir.x * sampleKm - cameraKm.x;
+    const dy = dir.y * sampleKm - cameraKm.y;
+    const dz = dir.z * sampleKm - cameraKm.z;
+    const distanceKm = Math.max(Math.hypot(dx, dy, dz), 0.005);
 
     if ((sizeKm / distanceKm > SPLIT_RATIO || level < MIN_LEVEL) && level < MAX_LEVEL) {
       const children: ChunkRecord[] = [];
@@ -255,6 +267,7 @@ export class TerrainChunkManager {
     geometry.setAttribute('position', new BufferAttribute(response.positions, 3));
     geometry.setAttribute('normal', new BufferAttribute(response.normals, 3));
     geometry.setAttribute('color', new BufferAttribute(response.colors, 3));
+    geometry.setAttribute('aMorph', new BufferAttribute(response.morph, 2));
     geometry.setIndex(this.indexAttribute);
     geometry.computeBoundingSphere();
 

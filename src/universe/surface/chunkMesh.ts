@@ -9,6 +9,13 @@ export interface ChunkMesh {
   normals: Float32Array;
   colors: Float32Array;
   /**
+   * Per-vertex (height above the parent-LOD surface in km, tile edge in
+   * km): the renderer removes the first term as the camera recedes, so a
+   * tile swapped in at distance is byte-identical to the parent it
+   * replaces and detail grows in continuously on approach.
+   */
+  morph: Float32Array;
+  /**
    * Sea surface on the same grid points projected to the sea-level
    * radius — resolution-matched to the terrain, so the two surfaces
    * cross only at real coastlines. Null when the tile is fully dry.
@@ -41,6 +48,8 @@ export function buildChunkMesh(
   const positions = new Float32Array((gridCount + skirtCount) * 3);
   const normals = new Float32Array((gridCount + skirtCount) * 3);
   const colors = new Float32Array((gridCount + skirtCount) * 3);
+  const morph = new Float32Array((gridCount + skirtCount) * 2);
+  const tileSizeKm = ((Math.PI / 2) * radiusKm) / tiles;
 
   const centerDir = faceUvToDir(face, (x + 0.5) / tiles, (y + 0.5) / tiles);
   const centerKm: [number, number, number] = [
@@ -90,6 +99,8 @@ export function buildChunkMesh(
         y: dirs[extIndex * 3 + 1],
         z: dirs[extIndex * 3 + 2],
       };
+      morph[outIndex * 2] = (heights[extIndex] - field.heightAt(dir, lodAngularRad * 2)) / 1000;
+      morph[outIndex * 2 + 1] = tileSizeKm;
       const slopeCos =
         extNormals[extIndex * 3] * dir.x +
         extNormals[extIndex * 3 + 1] * dir.y +
@@ -102,6 +113,17 @@ export function buildChunkMesh(
   }
 
   buildSkirt(positions, normals, colors, res, radiusKm / tiles, centerKm, radiusKm);
+  // Skirt vertices morph with the edge vertex they duplicate.
+  const stride = res + 1;
+  for (let side = 0; side < 4; side++) {
+    for (let k = 0; k <= res; k++) {
+      const source =
+        (side === 0 ? k : side === 1 ? res * stride + k : side === 2 ? k * stride : k * stride + res) * 2;
+      const target = (gridCount + side * stride + k) * 2;
+      morph[target] = morph[source];
+      morph[target + 1] = morph[source + 1];
+    }
+  }
 
   let waterPositions: Float32Array | null = null;
   let waterNormals: Float32Array | null = null;
@@ -123,7 +145,7 @@ export function buildChunkMesh(
     buildSkirt(waterPositions, waterNormals, waterNormals, res, radiusKm / tiles, centerKm, radiusKm);
   }
 
-  return { centerKm, positions, normals, colors, waterPositions, waterNormals };
+  return { centerKm, positions, normals, colors, morph, waterPositions, waterNormals };
 }
 
 /** Area-weighted triangle normals accumulated over the extended grid. */

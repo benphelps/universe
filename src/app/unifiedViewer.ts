@@ -51,7 +51,7 @@ import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
 import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
-import { TerrainChunkManager } from '../render/terrain/chunkManager';
+import { SPLIT_RATIO, TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createCloudShell } from '../render/terrain/cloudShell';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
 import { createRockGeometry, createScatterMaterial } from '../render/terrain/scatterObjects';
@@ -214,7 +214,7 @@ export class UnifiedViewer {
   private readonly pipeline: RenderPipeline;
   private readonly controls: OrbitControls;
   private readonly lut = createTemperatureLutTexture();
-  private readonly terrainMaterial = createTerrainMaterial();
+  private readonly terrainMaterial = createTerrainMaterial(SPLIT_RATIO);
   private readonly scatterMaterial = createScatterMaterial();
   /** Heliocentric content riding the focus translation and ground spin. */
   private readonly heliocentric = new Group();
@@ -1683,10 +1683,13 @@ export class UnifiedViewer {
         ? asteroidGravityMs2(this.focusAsteroid)
         : 0;
     if (gravityMs2 <= 0) return null;
+    // Feet low-pass the ground: bands finer than a stride (~0.7 m
+    // wavelength) are texture to step over, not terrain to bob across.
+    const strideLodRad = 0.00035 / this.radiusKm;
     return {
       radiusKm: this.radiusKm,
       gravityMs2,
-      heightM: (u) => field.heightAt(u),
+      heightM: (u) => field.heightAt(u, strideLodRad),
       seaLevelM: field.seaLevelM,
     };
   }
@@ -1912,7 +1915,7 @@ export class UnifiedViewer {
           Math.min(this.camera.far * 0.3, 3e15),
         );
       }
-      this.chunkManager?.update(this.camera.position);
+      this.chunkManager?.update(this.camera.position, groundKm);
       // The diagrammatic orbit overlay appears at map heights.
       this.overlay.visible = this.altitudeKm > this.radiusKm * 25;
       this.stellarOrbits.visible = this.overlay.visible;

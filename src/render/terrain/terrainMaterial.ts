@@ -4,6 +4,9 @@ import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 
 const VERTEX = /* glsl */ `
 attribute vec3 color;
+attribute vec2 aMorph;
+
+uniform float uSplitRatio;
 
 varying vec3 vColor;
 varying vec3 vNormal;
@@ -21,7 +24,19 @@ void main() {
   // viewMatrix on the GPU subtracts two planet-radius f32 values and
   // makes the ground shake at eye height.
   vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+
+  // Geomorph: aMorph.x is this vertex's height above the parent-LOD
+  // surface, removed entirely at the distance where this tile swapped
+  // in for its parent (2·size/ratio) — so the swap is invisible — and
+  // restored on approach, fully before this tile's own children arrive
+  // (size/ratio). Adjacent LOD rings agree at their shared boundary by
+  // the same rule.
+  float swapInKm = 2.0 * aMorph.y / uSplitRatio;
+  float viewKm = length((modelViewMatrix * vec4(position, 1.0)).xyz);
+  float morph = clamp((swapInKm - viewKm) / (0.8 * aMorph.y / uSplitRatio), 0.0, 1.0);
+  vec3 displaced = position - normalize(vWorldPos) * (aMorph.x * (1.0 - morph));
+
+  vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
   vViewPos = mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -75,12 +90,15 @@ void main() {
 }
 `;
 
-/** Shared by every chunk of a planet; per-frame uniforms set by the viewer. */
-export function createTerrainMaterial(): ShaderMaterial {
+/** Shared by every chunk of a planet; per-frame uniforms set by the viewer.
+ *  splitRatio must match the chunk streamer's, or geomorph completes at
+ *  the wrong distances and swaps pop again. */
+export function createTerrainMaterial(splitRatio: number): ShaderMaterial {
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      uSplitRatio: { value: splitRatio },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),

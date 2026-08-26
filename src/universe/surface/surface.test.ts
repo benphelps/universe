@@ -106,6 +106,26 @@ describe('surface field', () => {
       }
     }
   });
+
+  it('carries walked-scale texture that a coarse LOD does not see', () => {
+    // A step of ~30 cm on the airless world: full detail must vary at
+    // centimeter amplitude, while a 100 m sampling of the same spots
+    // is blind to it — the fine bands respect the Nyquist gate.
+    const stepRad = 0.3 / moonLike.params.radiusM;
+    const coarseLod = 100 / moonLike.params.radiusM;
+    let fine = 0;
+    let coarse = 0;
+    const dirs = sampleDirs(200);
+    for (const dir of dirs) {
+      const near = { x: dir.x + stepRad, y: dir.y, z: dir.z };
+      const l = Math.hypot(near.x, near.y, near.z);
+      const nearDir = { x: near.x / l, y: near.y / l, z: near.z / l };
+      fine += Math.abs(moonLike.heightAt(dir) - moonLike.heightAt(nearDir));
+      coarse += Math.abs(moonLike.heightAt(dir, coarseLod) - moonLike.heightAt(nearDir, coarseLod));
+    }
+    expect(fine / dirs.length).toBeGreaterThan(0.005);
+    expect(coarse / dirs.length).toBeLessThan((fine / dirs.length) * 0.2);
+  });
 });
 
 describe('chunk meshes', () => {
@@ -141,5 +161,32 @@ describe('chunk meshes', () => {
     expect(Math.abs(field.heightAt(a) - field.heightAt(b))).toBeLessThan(
       field.params.reliefM * 0.05,
     );
+  });
+
+  it('geomorph deltas reproduce the parent-LOD surface', () => {
+    const res = 16;
+    const mesh = buildChunkMesh(field, 2, 9, 130, 260, res);
+    const tiles = 2 ** 9;
+    const lod = Math.PI / 2 / tiles / res;
+    for (let j = 0; j <= res; j += 4) {
+      for (let i = 0; i <= res; i += 4) {
+        const index = j * (res + 1) + i;
+        const world = {
+          x: mesh.positions[index * 3] + mesh.centerKm[0],
+          y: mesh.positions[index * 3 + 1] + mesh.centerKm[1],
+          z: mesh.positions[index * 3 + 2] + mesh.centerKm[2],
+        };
+        const l = Math.hypot(world.x, world.y, world.z);
+        const dir = { x: world.x / l, y: world.y / l, z: world.z / l };
+        // Removing the stored delta from the vertex radius lands on the
+        // parent-LOD height — the surface a swap must match exactly.
+        const morphedM = (l - mesh.morph[index * 2]) * 1000 - field.params.radiusM / 1000 * 1000;
+        expect(morphedM).toBeCloseTo(field.heightAt(dir, lod * 2), 0);
+        expect(mesh.morph[index * 2 + 1]).toBeCloseTo(
+          ((Math.PI / 2) * (field.params.radiusM / 1000)) / tiles,
+          6,
+        );
+      }
+    }
   });
 });

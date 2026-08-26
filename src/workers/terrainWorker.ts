@@ -36,11 +36,12 @@ self.onmessage = (event: MessageEvent<TerrainRequest>) => {
     positions: mesh.positions,
     normals: mesh.normals,
     colors: mesh.colors,
+    morph: mesh.morph,
     waterPositions: mesh.waterPositions,
     waterNormals: mesh.waterNormals,
     scatter,
   };
-  const transfers = [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer];
+  const transfers = [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.morph.buffer];
   if (mesh.waterPositions && mesh.waterNormals) {
     transfers.push(mesh.waterPositions.buffer, mesh.waterNormals.buffer);
   }

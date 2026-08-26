@@ -86,8 +86,9 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   };
 
   // Roughness cascade below the continental scale, ~1/f amplitude falloff
-  // down to ~100 m features. Erosion damps it; cratered dead worlds stay
-  // rugged.
+  // from ~100 km structure to ~20 cm ground texture. Erosion damps it;
+  // cratered dead worlds stay rugged. Bands from FINE_BAND down are the
+  // walked-scale texture (outcrop, gravel) and take the substrate factor.
   const roughness = (1 - 0.72 * erosion) * (1 + 0.4 * params.craterAmplitude);
   const detailBands: DetailBand[] = [
     { frequency: 45, octaves: 3, amplitudeM: reliefM * 0.055 * roughness },
@@ -95,7 +96,12 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     { frequency: 1700, octaves: 2, amplitudeM: reliefM * 0.005 * roughness },
     { frequency: 9000, octaves: 2, amplitudeM: reliefM * 0.0016 * roughness },
     { frequency: 45000, octaves: 2, amplitudeM: reliefM * 0.0005 * roughness },
+    { frequency: 240000, octaves: 2, amplitudeM: reliefM * 0.00016 * roughness },
+    { frequency: 1300000, octaves: 2, amplitudeM: reliefM * 0.000052 * roughness },
+    { frequency: 7000000, octaves: 2, amplitudeM: reliefM * 0.000017 * roughness },
+    { frequency: 30000000, octaves: 1, amplitudeM: reliefM * 0.0000065 * roughness },
   ];
+  const FINE_BAND = 5;
 
   const heightAt = (dir: Vec3, lodAngularRad = 0): number => {
     let h = continents(dir.x * 1.3, dir.y * 1.3, dir.z * 1.3) * reliefM * 0.55;
@@ -135,6 +141,13 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     h += detail(dir.x * 7, dir.y * 7, dir.z * 7) * reliefM * 0.16 * (1 - 0.75 * erosion) *
       (1 - 0.55 * glacial);
 
+    // Substrate under the fine bands: sand seas and sediment-filled
+    // lowlands (and drowned floors) read smooth at walking scale, while
+    // highlands and airless regolith keep their rubble texture.
+    const erg = ergAt(dir, h);
+    const lowland = smooth01((reliefM * 0.12 - h) / (reliefM * 0.12));
+    const substrate = (1 - 0.85 * erg) * (1 - 0.7 * erosion * lowland);
+
     for (let bandIndex = 0; bandIndex < detailBands.length; bandIndex++) {
       const band = detailBands[bandIndex];
       // Fade each band in across a LOD level: a hard Nyquist cut would
@@ -151,6 +164,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       }
       const offset = 17.31 * (bandIndex + 1);
       let amplitude = band.amplitudeM * fade * (1 - 0.5 * glacial);
+      if (bandIndex >= FINE_BAND) amplitude *= substrate;
       let frequency = band.frequency;
       let sum = 0;
       for (let o = 0; o < band.octaves; o++) {
@@ -168,7 +182,6 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       const duneFade =
         lodAngularRad > 0 ? Math.min(1, Math.max(0, 1 / 2400 / (2 * lodAngularRad) - 1) / 4) : 1;
       if (duneFade > 0) {
-        const erg = ergAt(dir, h);
         if (erg > 0.02) {
           const phase =
             (dir.x * windX + dir.z * windZ) * 2400 +
