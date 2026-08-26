@@ -5,6 +5,7 @@ import { createWorley3 } from '../../core/noise/worley3';
 import { deriveSeed, seedFromHex } from '../../core/rng/hash';
 import type { Characterization } from '../planet/types';
 import { createCraterField } from './craters';
+import { buildDrainage, type DrainageGraph } from './drainage';
 import { deriveSurfaceParams, type SurfaceParams } from './params';
 
 type Rgb = [number, number, number];
@@ -21,6 +22,8 @@ export interface SurfaceField {
   colorAt(dir: Vec3, heightM: number, slopeCos: number, lodAngularRad?: number): Rgb;
   /** Sea surface height, meters above datum (−Infinity when dry). */
   seaLevelM: number;
+  /** The river network carving this world, on wet worlds. */
+  drainage?: DrainageGraph | null;
 }
 
 interface DetailBand {
@@ -50,8 +53,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   const craters = createCraterField(seedHex, params.radiusM, params.craterAmplitude);
   const moistureNoise = fbm(createSimplex3(deriveSeed(seed, 'moisture')), { octaves: 3 });
   const paletteNoise = fbm(createSimplex3(deriveSeed(seed, 'palette')), { octaves: 4 });
-  const valleyRidge = ridged(createSimplex3(deriveSeed(seed, 'valleys')), { octaves: 1 });
-  const tributaryRidge = ridged(createSimplex3(deriveSeed(seed, 'tributaries')), { octaves: 1 });
+  const meander = createSimplex3(deriveSeed(seed, 'meanders'));
   const glacialRidge = ridged(createSimplex3(deriveSeed(seed, 'glacial')), { octaves: 1 });
   const duneWarp = createSimplex3(deriveSeed(seed, 'dunes'));
   const ergNoise = fbm(createSimplex3(deriveSeed(seed, 'ergs')), { octaves: 2 });
@@ -102,6 +104,58 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     { frequency: 30000000, octaves: 1, amplitudeM: reliefM * 0.0000065 * roughness },
   ];
   const FINE_BAND = 5;
+
+  // Null while the structural surface is solved and sampled: the sea
+  // level and the drainage build itself both see the uncarved world;
+  // every later call gets the rivers.
+  let drainage: DrainageGraph | null = null;
+  let solvedSeaLevelM = -Infinity;
+  // Meander-belt scale: a few km of course displacement on a ~half-cell
+  // wavelength — bends within the valley corridor, never re-routing.
+  const meanderAmpRad = 0.0008;
+  const warped = { x: 0, y: 0, z: 0 };
+
+  /** Valley + channel carved by the nearest river segment, meters (≤ 0). */
+  const riverCarve = (dir: Vec3, h: number, lodAngularRad: number): number => {
+    if (h <= solvedSeaLevelM || lodAngularRad > 0.012) return 0;
+    // Meanders: the graph fixes topology and discharge; a seeded warp
+    // bends the straight cell-to-cell course at sub-cell scale.
+    const wx = dir.x + meanderAmpRad * meander(dir.x * 130, dir.y * 130, dir.z * 130);
+    const wy = dir.y + meanderAmpRad * meander(dir.x * 130 + 31.7, dir.y * 130, dir.z * 130);
+    const wz = dir.z + meanderAmpRad * meander(dir.x * 130, dir.y * 130 + 57.3, dir.z * 130);
+    const wl = Math.hypot(wx, wy, wz);
+    warped.x = wx / wl;
+    warped.y = wy / wl;
+    warped.z = wz / wl;
+    const river = drainage!.nearestRiver(warped);
+    if (!river) return 0;
+    const q = river.dischargeM3s;
+    const halfWidthM = Math.min(25000, Math.max(220, 1200 * Math.sqrt(q / 1000)));
+    const widthRad = halfWidthM / params.radiusM;
+    if (river.distRad >= widthRad) return 0;
+    // A valley narrower than the sample spacing fades like the detail
+    // bands do — but as a line feature it surfaces at half a sample, so
+    // continental rivers still trace from orbit.
+    const fade = lodAngularRad > 0 ? Math.min(1, widthRad / lodAngularRad / 1.5) : 1;
+    if (fade <= 0.02) return 0;
+    // Stream-power-flavored depth: grows with discharge, digs hardest
+    // in highlands, grades toward the sea near the coast.
+    const rel = 0.3 + 0.7 * smooth01(h / (reliefM * 0.5));
+    const depthM = Math.min(
+      45 * q ** 0.25 * rel * (0.35 + 0.65 * fluvialStrength),
+      (h - solvedSeaLevelM) * 0.9 + 4,
+    );
+    const across = river.distRad / widthRad;
+    let carve = -depthM * (1 - across * across) ** 1.5;
+    // The channel itself: hydraulic-geometry width, a few meters deep.
+    const channelRad = Math.max(6, 4 * Math.sqrt(q)) / params.radiusM;
+    if (river.distRad < channelRad) {
+      const chFade = lodAngularRad > 0 ? Math.min(1, channelRad / lodAngularRad / 1.5) : 1;
+      const chAcross = river.distRad / channelRad;
+      carve -= 1.5 * q ** 0.2 * (1 - chAcross * chAcross) * chFade;
+    }
+    return carve * fade;
+  };
 
   const heightAt = (dir: Vec3, lodAngularRad = 0): number => {
     let h = continents(dir.x * 1.3, dir.y * 1.3, dir.z * 1.3) * reliefM * 0.55;
@@ -192,27 +246,12 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       }
     }
 
-    // Fluvial valleys: dendritic carving along ridge crests of a low-
-    // frequency field, tributaries one octave up. Depth scales with
-    // elevation (canyons in highlands, shallow washes on plains) and
-    // hands over to glacial troughs where the freeze mask takes hold.
-    if (fluvialStrength > 0.02) {
-      const rain = fluvialStrength * (1 - (glacialStrength > 0 ? glacial / glacialStrength : 0));
-      if (rain > 0.02) {
-        const major = valleyRidge(dir.x * 9, dir.y * 9, dir.z * 9);
-        let channel = smooth01((major - 0.78) / 0.14);
-        if (lodAngularRad < 0.006) {
-          const branch = tributaryRidge(dir.x * 34, dir.y * 34, dir.z * 34);
-          const tributaryFade =
-            lodAngularRad > 0 ? Math.min(1, Math.max(0, 1 / 34 / (2 * lodAngularRad) - 1) / 4) : 1;
-          channel = Math.max(channel, 0.55 * smooth01((branch - 0.8) / 0.12) * tributaryFade);
-        }
-        if (channel > 0.01) {
-          const depthM =
-            reliefM * 0.22 * (0.25 + 0.75 * smooth01(h / (reliefM * 0.45)));
-          h -= channel * depthM * rain;
-        }
-      }
+    // Fluvial valleys belong to the drainage graph: every nearby river
+    // segment carves its discharge-scaled valley and channel, yielding
+    // to ice where the freeze mask takes hold.
+    if (drainage) {
+      const rain = 1 - (glacialStrength > 0 ? glacial / glacialStrength : 0);
+      if (rain > 0.02) h += riverCarve(dir, h, lodAngularRad) * rain;
     }
     if (glacial > 0.02) {
       const trough = smooth01((glacialRidge(dir.x * 5, dir.y * 5, dir.z * 5) - 0.62) / 0.25);
@@ -224,6 +263,14 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   };
 
   const seaLevelM = solveSeaLevel(heightAt, params.oceanCoverage);
+  solvedSeaLevelM = seaLevelM;
+  if (fluvialStrength > 0.02) {
+    // Arid eroded worlds carve with their paleo-discharge: the erosion
+    // parameter encodes the wet history that shaped them, even where
+    // today's mean rainfall rounds to nothing.
+    const carvingWetness = Math.max(wetness, 0.45 * fluvialStrength);
+    drainage = buildDrainage(heightAt, params.radiusM, seaLevelM, carvingWetness, 128);
+  }
   const sand: Rgb = [
     Math.min(1, params.palette.landB[0] * 1.25 + 0.08),
     Math.min(1, params.palette.landB[1] * 1.2 + 0.06),
@@ -306,7 +353,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     return ground;
   };
 
-  return { params, heightAt, colorAt, seaLevelM };
+  return { params, heightAt, colorAt, seaLevelM, drainage };
 }
 
 /** Height whose flooded fraction matches coverage, via a golden-spiral sample. */
