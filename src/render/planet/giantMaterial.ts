@@ -1,8 +1,13 @@
-import { Color, ShaderMaterial } from 'three';
-import { secondSunUniforms } from '../lighting/secondSun';
+import { Color, ShaderMaterial, Vector3, Vector4 } from 'three';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
+import {
+  MAX_ACTIVE_STORMS,
+  MAX_BANDS,
+  type Circulation,
+} from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { secondSunUniforms } from '../lighting/secondSun';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 import { planetSeedOffset } from './solidPlanetMaterial';
 
@@ -30,61 +35,143 @@ uniform vec3 uLightColor;
 uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
 uniform vec3 uSeedOffset;
-uniform vec3 uZoneColor;
-uniform vec3 uBeltColor;
-uniform vec3 uStormColor;
-uniform vec3 uThermalColor;
-uniform float uBandCount;
-uniform float uTurbulence;
-uniform float uMajorStormSize;
-uniform float uThermalStrength;
 uniform float uTimeDays;
-uniform float uSpinRadPerDay;
+
+uniform int uBandCount;
+uniform vec4 uBands[${MAX_BANDS}];      // latStart, latEnd, driftRadPerDay, edgeShear
+uniform vec3 uBandColors[${MAX_BANDS}];
+uniform int uStormCount;
+uniform vec4 uStorms[${MAX_ACTIVE_STORMS}]; // lat, lon, size, age
+uniform vec3 uStormFresh;
+uniform vec3 uStormAged;
+uniform vec4 uPolar;                    // capStart, cycloneCount, hexWave, hemiDrift
+uniform vec3 uHoodColor;
+uniform vec4 uAurora;                   // strength, tiltRad, azimuthRad, ovalColat
+uniform float uContrast;
+uniform float uFineBands;
+uniform float uChurnPerDay;
+uniform float uRegime;                  // 0 banded, 1 locked
+uniform vec3 uLightDirObj;
+uniform vec3 uHotspotDirObj;
+uniform vec3 uThermalColor;
+uniform float uThermalStrength;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
 
-vec3 rotateY(vec3 p, float a) {
-  float c = cos(a);
-  float s = sin(a);
-  return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+float wrapPi(float x) {
+  return x - 6.2831853 * floor(x / 6.2831853 + 0.5);
+}
+
+int bandAt(float lat) {
+  int band = 0;
+  for (int i = 0; i < ${MAX_BANDS}; i++) {
+    if (i >= uBandCount) break;
+    if (lat >= uBands[i].x) band = i;
+  }
+  return band;
 }
 
 void main() {
   vec3 p = normalize(vObjPos);
-  float latitude = asin(clamp(p.y, -1.0, 1.0));
+  float lat = asin(clamp(p.y, -1.0, 1.0));
+  float lon = atan(p.z, p.x);
+  float churnT = uTimeDays * uChurnPerDay;
+  vec3 surface;
 
-  // Alternating zonal jets shear the clouds differentially with latitude.
-  vec3 ps = rotateY(p, uTimeDays * uSpinRadPerDay * 0.12 * sin(latitude * 5.0));
+  if (uRegime < 0.5) {
+    // ——— Banded regime: the circulation model, rendered. ———
+    // Festoons: the band-edge latitude wobbles with advected noise,
+    // strongest where the model says the shear is.
+    float warp = 0.0;
+    for (int i = 1; i < ${MAX_BANDS}; i++) {
+      if (i >= uBandCount) break;
+      float g = exp(-pow((lat - uBands[i].x) / 0.05, 2.0));
+      if (g < 0.02) continue;
+      float edgeDrift = 0.5 * (uBands[i - 1].z + uBands[i].z);
+      float adv = lon + uTimeDays * edgeDrift;
+      float n = snoise(vec3(cos(adv), sin(adv), uBands[i].x * 9.0) * 2.6 + uSeedOffset
+        + vec3(0.0, 0.0, churnT * 0.4));
+      float n2 = snoise(vec3(cos(adv), sin(adv), uBands[i].x * 9.0) * 6.5 - uSeedOffset.yzx
+        + vec3(0.0, churnT * 0.7, 0.0));
+      warp += g * uBands[i].w * (n * 0.042 + n2 * 0.016);
+    }
+    float wlat = lat + warp;
+    int band = bandAt(wlat);
+    vec3 bandColor = uBandColors[band];
 
-  // Bands: latitude stripes warped by shear eddies elongated along the flow.
-  float warp = uTurbulence * 0.1 * fbm(vec3(ps.x, ps.y * 3.5, ps.z) * 2.8 + uSeedOffset);
-  float bandCoord = sin((p.y + warp) * 3.14159 * uBandCount);
-  float bandMix = smoothstep(-0.55, 0.55, bandCoord);
-  vec3 surface = mix(uBeltColor, uZoneColor, bandMix);
+    // The deck: churned cloud texture advected with the band's own jet.
+    float lonAdv = lon + uTimeDays * uBands[band].z;
+    vec3 q = vec3(cos(wlat) * cos(lonAdv), sin(wlat), cos(wlat) * sin(lonAdv));
+    float deck = fbm(vec3(q.x, q.y * 4.0, q.z) * 3.0 + uSeedOffset + vec3(0.0, 0.0, churnT));
+    float fine = fbm(vec3(q.x, q.y * 7.0, q.z) * 9.0 + uSeedOffset.yzx
+      + vec3(0.0, churnT * 1.6, 0.0));
+    surface = bandColor * (1.0 + uContrast * (0.5 * deck + 0.28 * fine));
 
-  // Small storm ovals: longitude-stretched noise along belt edges.
-  float stormField = fbm(vec3(ps.x, ps.y * 4.0, ps.z) * 2.6 + uSeedOffset.zxy);
-  float storms = smoothstep(0.55, 0.75, stormField) * uTurbulence;
-  surface = mix(surface, uStormColor, storms * 0.7);
+    // The physics often asks for more bands than the macro budget
+    // carries: the surplus renders as faint striping within them.
+    if (uFineBands > 0.5) {
+      float phase = 1.2 * snoise(vec3(q.x, q.z, wlat * 2.0) + uSeedOffset);
+      surface *= 1.0 + 0.12 * uContrast * sin(wlat * uFineBands * 2.2 + phase);
+    }
 
-  // Great-spot analog: one persistent anticyclone at a fixed latitude.
-  if (uMajorStormSize > 0.0) {
-    float longitude = atan(ps.z, ps.x);
-    float dLat = (latitude + 0.35) / (uMajorStormSize * 1.6);
-    float dLon = (longitude - 0.9) / (uMajorStormSize * 3.2);
-    float spot = exp(-(dLat * dLat + dLon * dLon));
-    surface = mix(surface, uStormColor, spot * 0.85);
+    // Storms: the catalog's live population, ovals with rims, carved
+    // into their bands.
+    for (int i = 0; i < ${MAX_ACTIVE_STORMS}; i++) {
+      if (i >= uStormCount) break;
+      vec4 s = uStorms[i];
+      float dLat = lat - s.x;
+      float dLon = wrapPi(lon - s.y) * cos(s.x);
+      float rr = (dLat * dLat) / (s.z * s.z * 0.42) + (dLon * dLon) / (s.z * s.z * 1.69);
+      if (rr > 5.0) continue;
+      vec3 stormColor = mix(uStormFresh, uStormAged, s.w);
+      float swirl = snoise(vec3(dLon, dLat, 0.4) * (5.0 / s.z) + uSeedOffset.zxy
+        + vec3(churnT * 0.5, 0.0, 0.0));
+      float core = exp(-rr * 1.2);
+      float rim = exp(-pow((sqrt(rr) - 1.0) * 3.2, 2.0));
+      surface = mix(surface, stormColor * (0.94 + 0.12 * swirl), clamp(core * 1.25, 0.0, 1.0));
+      surface = mix(surface, stormColor * 1.13, rim * 0.45);
+    }
+
+    // The polar regime: hood, hexagon-analog cap edge, cyclone cluster.
+    float hemi = sign(p.y + 1e-6);
+    float capEdge = uPolar.x;
+    if (uPolar.z > 0.5) {
+      capEdge += 0.03 * cos(uPolar.z * lon * hemi + uTimeDays * uPolar.w);
+    }
+    float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(lat));
+    surface = mix(surface, uHoodColor * (0.92 + 0.16 * fbm(p * 5.0 + uSeedOffset)), cap * 0.85);
+    if (cap > 0.01) {
+      float colat = 1.5707963 - abs(lat);
+      vec2 pp = vec2(colat * cos(lon), colat * sin(lon));
+      float vortices = exp(-dot(pp, pp) / 0.0018);
+      for (int i = 0; i < 9; i++) {
+        if (float(i) >= uPolar.y) break;
+        float a = 6.2831853 * float(i) / uPolar.y + uTimeDays * uPolar.w * 1.7 * hemi;
+        vec2 c = vec2(0.13 * cos(a), 0.13 * sin(a));
+        vortices += exp(-dot(pp - c, pp - c) / 0.0022);
+      }
+      surface = mix(surface, uHoodColor * 0.68, clamp(vortices, 0.0, 1.0) * cap * 0.85);
+    }
+  } else {
+    // ——— Locked regime: day-night circulation, no bands. ———
+    float dayness = clamp(dot(p, uLightDirObj) * 0.9 + 0.35, 0.0, 1.0);
+    // Superrotating streaks smear the deck zonally past the terminator.
+    float lonAdv = lon + uTimeDays * 2.4;
+    vec3 q = vec3(cos(lat) * cos(lonAdv), sin(lat) * 3.5, cos(lat) * sin(lonAdv));
+    float streaks = fbm(q * 2.6 + uSeedOffset + vec3(0.0, 0.0, churnT));
+    surface = uBandColors[0] * (0.55 + 0.75 * dayness) * (1.0 + 0.4 * streaks);
+    // Condensate clouds ride the cooler west terminator.
+    vec3 west = normalize(cross(vec3(0.0, 1.0, 0.0), uLightDirObj));
+    float crescent = exp(-pow(dot(p, uLightDirObj) / 0.22, 2.0))
+      * smoothstep(0.0, 0.5, dot(p, west));
+    surface = mix(surface, uStormFresh, crescent * 0.55);
   }
 
-  // Poles darken slightly (aerosol hoods).
-  surface *= 1.0 - 0.25 * pow(abs(p.y), 6.0);
-
+  // Lighting: star, second light, self-luminosity, aurora.
   vec3 normal = normalize(vWorldNormal);
   float ndotl = dot(normal, uLightDir);
   float diffuse = max(ndotl, 0.0) * shadowFactor(vWorldPos, uLightDir);
-
-  // Gentle limb darkening on the cloud deck.
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   float mu = clamp(dot(normal, viewDir), 0.0, 1.0);
   float limb = 1.0 - 0.45 * (1.0 - mu);
@@ -92,18 +179,54 @@ void main() {
   float diffuse2 = max(dot(normal, uLight2Dir), 0.0) * shadowFactor(vWorldPos, uLight2Dir);
   vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2) * limb;
 
-  // Hot giants radiate their own heat on the night side.
-  float night = 1.0 - smoothstep(-0.1, 0.2, ndotl);
-  color += uThermalColor * uThermalStrength * mix(0.35, 1.0, night) * limb;
+  // Stratospheric haze: a forward-scattering bright rim on the lit limb.
+  float rimGlow = pow(1.0 - mu, 4.0);
+  color += uLightColor * uBandColors[0] * rimGlow * (0.1 + 0.5 * max(ndotl, 0.0));
+
+  // Hot giants radiate their own heat; the locked hotspot rides east
+  // of the substellar point and carries into the night.
+  if (uThermalStrength > 0.0) {
+    float glow = uRegime > 0.5
+      ? 0.25 + 0.75 * pow(clamp(dot(p, uHotspotDirObj), 0.0, 1.0), 3.0)
+      : mix(0.35, 1.0, 1.0 - smoothstep(-0.1, 0.2, ndotl));
+    color += uThermalColor * uThermalStrength * glow * limb;
+  }
+
+  if (uAurora.x > 0.0) {
+    vec3 mAxis = vec3(
+      sin(uAurora.y) * cos(uAurora.z),
+      cos(uAurora.y),
+      sin(uAurora.y) * sin(uAurora.z)
+    );
+    float mColat = acos(clamp(abs(dot(p, mAxis)), 0.0, 1.0));
+    float oval = exp(-pow((mColat - uAurora.w) / 0.05, 2.0));
+    float night = 1.0 - smoothstep(-0.05, 0.25, ndotl);
+    float curtain = 0.55 + 0.45 * snoise(vec3(p.x, p.z, uTimeDays * 0.6) * 9.0 + uSeedOffset);
+    color += vec3(0.5, 0.32, 0.85) * oval * uAurora.x * (0.03 + 0.6 * night) * curtain;
+  }
 
   gl_FragColor = vec4(color, 1.0);
 }
 `;
 
-export function createGiantMaterial(physical: Characterization): ShaderMaterial {
-  const banding = physical.appearance.banding!;
-  const spin = (2 * Math.PI * 24) / physical.rotation.periodHours;
-  const glowing = banding.thermalGlowK > 700;
+/** The circulation model's renderer: bands, storms, poles, aurora, and
+ *  regimes all arrive as uniforms from first-class derived objects. */
+export function createGiantMaterial(
+  physical: Characterization,
+  circulation: Circulation,
+): ShaderMaterial {
+  const bands: Vector4[] = [];
+  const bandColors: Color[] = [];
+  for (let i = 0; i < MAX_BANDS; i++) {
+    const band = circulation.bands[Math.min(i, circulation.bands.length - 1)];
+    bands.push(
+      band
+        ? new Vector4(band.latStartRad, band.latEndRad, band.driftRadPerDay, band.edgeShear)
+        : new Vector4(0, 0, 0, 0),
+    );
+    bandColors.push(band ? new Color(...band.color) : new Color(0.5, 0.5, 0.5));
+  }
+  const glowing = circulation.thermalGlowK > 700;
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -113,16 +236,45 @@ export function createGiantMaterial(physical: Characterization): ShaderMaterial 
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
-      uZoneColor: { value: banding.zoneColor },
-      uBeltColor: { value: banding.beltColor },
-      uStormColor: { value: banding.stormColor },
-      uThermalColor: { value: glowing ? blackbodyLinearRgb(banding.thermalGlowK) : [0, 0, 0] },
-      uBandCount: { value: banding.bandCount },
-      uTurbulence: { value: banding.turbulence },
-      uMajorStormSize: { value: banding.majorStormSize },
-      uThermalStrength: { value: glowing ? Math.min(1, (banding.thermalGlowK / 1800) ** 4) : 0 },
       uTimeDays: { value: 0 },
-      uSpinRadPerDay: { value: spin },
+      uBandCount: { value: Math.max(circulation.bands.length, 1) },
+      uBands: { value: bands },
+      uBandColors: { value: bandColors },
+      uStormCount: { value: 0 },
+      uStorms: {
+        value: Array.from({ length: MAX_ACTIVE_STORMS }, () => new Vector4()),
+      },
+      uStormFresh: { value: new Color(...circulation.stormFresh) },
+      uStormAged: { value: new Color(...circulation.stormAged) },
+      uPolar: {
+        value: new Vector4(
+          circulation.polar.capStartRad,
+          circulation.polar.cycloneCount,
+          circulation.polar.hexWave,
+          0.12,
+        ),
+      },
+      uHoodColor: { value: new Color(...circulation.polar.hoodColor) },
+      uAurora: {
+        value: new Vector4(
+          circulation.auroraStrength,
+          circulation.auroraTiltRad,
+          circulation.auroraAzimuthRad,
+          0.3,
+        ),
+      },
+      uContrast: { value: circulation.contrast },
+      uFineBands: { value: circulation.fineBandCount },
+      uChurnPerDay: { value: circulation.churnPerDay },
+      uRegime: { value: circulation.regime === 'locked' ? 1 : 0 },
+      uLightDirObj: { value: new Vector3(0, 0, 1) },
+      uHotspotDirObj: { value: new Vector3(0, 0, 1) },
+      uThermalColor: {
+        value: glowing ? blackbodyLinearRgb(circulation.thermalGlowK) : [0, 0, 0],
+      },
+      uThermalStrength: {
+        value: glowing ? Math.min(1, (circulation.thermalGlowK / 1800) ** 4) : 0,
+      },
     },
   });
 }

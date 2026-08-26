@@ -59,6 +59,9 @@ export interface Circulation {
   polar: PolarRegime;
   /** 0 = washed out (cold quiet interior) → 1 = vivid. */
   contrast: number;
+  /** Bands the physics asked for beyond the shader's macro budget —
+   *  rendered as sub-band striping inside the macro bands. */
+  fineBandCount: number;
   /** Storm deck colors: fresh upwelling and chromophore-aged. */
   stormFresh: Rgb;
   stormAged: Rgb;
@@ -102,7 +105,7 @@ export function deriveCirculation(physical: Characterization): Circulation {
 
   const uProfileMs = spinUpJets(rng.fork('spin-up'), radiusM, omega, convectiveMs, climate);
   const palette = chemistryPalette(rng.fork('chromophores'), climate.equilibriumK);
-  const bands = extractBands(rng.fork('bands'), uProfileMs, radiusM, palette, contrast);
+  const { bands, rawCount } = extractBands(rng.fork('bands'), uProfileMs, radiusM, palette, contrast);
   const { storms, spotIndex } = buildStormCatalog(
     rng.fork('storms'),
     bands,
@@ -131,6 +134,7 @@ export function deriveCirculation(physical: Characterization): Circulation {
     spotIndex,
     polar,
     contrast,
+    fineBandCount: Math.max(0, rawCount - bands.length),
     stormFresh: palette.stormFresh,
     stormAged: palette.stormAged,
     auroraStrength,
@@ -174,9 +178,25 @@ function spinUpJets(
     area[i] = Math.max(Math.cos(lat), 1e-4);
   }
 
+  // The mixing width follows the flow it creates: patches start at the
+  // convective forcing scale, and as the staircase's jets strengthen
+  // the Rhines length grows with them, widening later events — the
+  // inverse cascade arresting itself. Fast vigorous planets sweep from
+  // fine stirring to broad jets; feeble interiors never leave the fine
+  // scale.
   const events = 420;
+  const targetPeakMs = (30 + 9 * convectiveMs) * rng.range(0.8, 1.25);
+  const q0 = Float64Array.from(q);
   for (let e = 0; e < events; e++) {
-    // Area-weighted center; width from the local Rhines scale.
+    // Radiative restoration: between stirrings the PV structure decays
+    // back toward planetary, so the staircase equilibrates where the
+    // forcing can hold it instead of deepening without bound.
+    for (let i = 0; i < LAT_SAMPLES; i++) q[i] += (q0[i] - q[i]) * 0.015;
+    // Area-weighted center; width from the local Rhines scale at the
+    // EDDY velocity — the arrest happens where the cascading eddies
+    // meet the Rossby waves, not at the accumulated jet speed (feeble
+    // interiors really do carve many narrow faint bands: Uranus in the
+    // near-infrared).
     const centerLat = Math.asin(rng.range(-1, 1)) * 0.94;
     const beta = (2 * omega * Math.max(Math.cos(centerLat), 0.08)) / radiusM;
     const rhinesM = Math.PI * Math.sqrt((2 * convectiveMs) / beta);
@@ -191,29 +211,16 @@ function spinUpJets(
       weight += area[i];
     }
     const mean = sum / weight;
-    // Partial homogenization: each event mixes, none finishes the job.
-    for (let i = lo; i <= hi; i++) q[i] += (mean - q[i]) * 0.55;
+    // Partial homogenization, at the forcing's own strength: vigorous
+    // convection scours PV toward the staircase; a feeble interior
+    // stirs weakly, leaves the gradient mostly intact, and its jets
+    // never grow wide — the energy budget the toy mixing otherwise
+    // lacks.
+    const relax = Math.min(0.55, 0.06 + convectiveMs / 40);
+    for (let i = lo; i <= hi; i++) q[i] += (mean - q[i]) * relax;
   }
 
-  // Invert the staircase: d(u·cosφ)/dφ = R·cosφ·(f − q), from the pole.
-  const u = new Float32Array(LAT_SAMPLES);
-  const dLat = Math.PI / (LAT_SAMPLES - 1);
-  let uCos = 0;
-  for (let i = 0; i < LAT_SAMPLES; i++) {
-    const lat = profileLatRad(i);
-    const f = 2 * omega * Math.sin(lat);
-    uCos += radiusM * Math.cos(lat) * (f - q[i]) * dLat;
-    u[i] = uCos / Math.max(Math.cos(lat), 0.05);
-  }
-  // Mixing conserves area-weighted PV, so the integral closes near zero
-  // at the far pole; fold any numerical residue out as a solid drift.
-  let drift = 0;
-  let weight = 0;
-  for (let i = 0; i < LAT_SAMPLES; i++) {
-    drift += u[i] * area[i];
-    weight += area[i];
-  }
-  for (let i = 0; i < LAT_SAMPLES; i++) u[i] -= drift / weight;
+  const u = invertWind(q, radiusM, omega);
 
   // The staircase sets structure; its amplitude is renormalized to the
   // observed giant-wind scale (peaks grow with convective vigor —
@@ -224,7 +231,6 @@ function spinUpJets(
   for (let i = 0; i < LAT_SAMPLES; i++) {
     if (Math.abs(profileLatRad(i)) < 1.3) peak = Math.max(peak, Math.abs(u[i]));
   }
-  const targetPeakMs = (30 + 9 * convectiveMs) * rng.range(0.8, 1.25);
   const scale = targetPeakMs / peak;
   for (let i = 0; i < LAT_SAMPLES; i++) u[i] *= scale;
 
@@ -245,6 +251,35 @@ function spinUpJets(
 
 function latIndex(latRad: number): number {
   return Math.round(((latRad + Math.PI / 2) / Math.PI) * (LAT_SAMPLES - 1));
+}
+
+/**
+ * Invert the PV anomaly for the zonal wind: d(u·cosφ)/dφ = R·cosφ·(f−q),
+ * integrated from the pole. The net imbalance is gauged out first (the
+ * restoration term exchanges a little angular momentum with the
+ * interior), so the integral closes at the far pole instead of letting
+ * a residue blow up through the 1/cosφ.
+ */
+function invertWind(q: Float64Array, radiusM: number, omega: number): Float32Array {
+  const dLat = Math.PI / (LAT_SAMPLES - 1);
+  let imbalance = 0;
+  let weight = 0;
+  for (let i = 0; i < LAT_SAMPLES; i++) {
+    const lat = profileLatRad(i);
+    const f = 2 * omega * Math.sin(lat);
+    imbalance += (f - q[i]) * Math.cos(lat) * dLat;
+    weight += Math.cos(lat) * dLat;
+  }
+  const gauge = imbalance / weight;
+  const u = new Float32Array(LAT_SAMPLES);
+  let uCos = 0;
+  for (let i = 0; i < LAT_SAMPLES; i++) {
+    const lat = profileLatRad(i);
+    const f = 2 * omega * Math.sin(lat);
+    uCos += radiusM * Math.cos(lat) * (f - q[i] - gauge) * dLat;
+    u[i] = uCos / Math.max(Math.cos(lat), 0.05);
+  }
+  return u;
 }
 
 interface Palette {
@@ -320,7 +355,7 @@ function extractBands(
   radiusM: number,
   palette: Palette,
   contrast: number,
-): CloudBand[] {
+): { bands: CloudBand[]; rawCount: number } {
   const edges: number[] = [0];
   const capLat = (78 * Math.PI) / 180;
   for (let i = 1; i < LAT_SAMPLES - 1; i++) {
@@ -346,6 +381,7 @@ function extractBands(
   for (let e = 0; e < clean.length - 1; e++) {
     raw.push({ lo: clean[e], hi: clean[e + 1] });
   }
+  const rawCount = raw.length;
   // The shader carries a fixed budget: merge the narrowest neighbors.
   while (raw.length > MAX_BANDS) {
     let narrow = 0;
@@ -362,7 +398,7 @@ function extractBands(
     maxShear = Math.max(maxShear, Math.abs(u[band.hi] - u[band.lo]));
   }
 
-  return raw.map((band) => {
+  const bands = raw.map((band) => {
     const latStart = profileLatRad(band.lo);
     const latEnd = profileLatRad(band.hi);
     const mid = (latStart + latEnd) / 2;
@@ -390,6 +426,7 @@ function extractBands(
       kind,
     };
   });
+  return { bands, rawCount };
 }
 
 function mix(a: number, b: number, t: number): number {
@@ -433,7 +470,12 @@ function buildStormCatalog(
   }
 
   const slotCount = Math.round(rng.range(0.8, 1.2) * (2 + 9 * Math.min(1, convectiveMs / 22)));
-  const weights = bands.map((band) => 0.15 + band.edgeShear);
+  // Anticyclones live in the sheared mid-latitudes; the caps run their
+  // own cyclone regime instead.
+  const weights = bands.map((band) => {
+    const mid = Math.abs(band.latStartRad + band.latEndRad) / 2;
+    return mid > 1.1 ? 0 : 0.15 + band.edgeShear;
+  });
   for (let s = 0; s < slotCount; s++) {
     let pick = rng.float() * weights.reduce((a, b) => a + b, 0);
     let bandIndex = 0;

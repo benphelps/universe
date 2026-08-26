@@ -2210,6 +2210,7 @@ export class UnifiedViewer {
       });
     }
     const moonWorld = new Vector3();
+    const moonCasters: { position: Vector3; radius: number }[] = [];
     for (let j = 0; j < this.moons.length; j++) {
       const { moon, object, marker, mu } = this.moons[j];
       const isFocusMoon = moon === this.focusMoon;
@@ -2229,6 +2230,7 @@ export class UnifiedViewer {
       marker.visible = moonRadiusKm / cameraDistance < 0.004;
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
       this.occluders.push({ x: moonWorld.x, y: moonWorld.y, z: moonWorld.z, rKm: moonRadiusKm });
+      moonCasters.push({ position: moonWorld.clone(), radius: moonRadiusKm });
       shineBodies.push({
         positionKm: moonWorld.clone(),
         radiusKm: moonRadiusKm,
@@ -2244,6 +2246,13 @@ export class UnifiedViewer {
         action: parentIndex >= 0 ? 'click to visit' : null,
         target: parentIndex >= 0 ? { kind: 'moon', planet: parentIndex, index: j } : null,
       });
+    }
+
+    // A focused envelope takes its own moons as eclipse casters, so
+    // transit shadows crawl across the deck (they already darken the
+    // moons the other way).
+    if (this.bodyObject && moonCasters.length > 0) {
+      this.bodyObject.setOccluders(moonCasters, angularRadius);
     }
 
     if (!focusBody) {
