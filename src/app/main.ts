@@ -1,4 +1,3 @@
-import './style.css';
 import { seedFromHex, seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galacticAddress } from '../universe/galaxy/regions';
@@ -12,6 +11,7 @@ import { Sidebar, type ViewMode } from './ui/sidebar';
 import { StarInfoPanel } from './ui/starInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
 import { UnifiedViewer } from './unifiedViewer';
+import { showWelcome } from './ui/welcome';
 
 const viewElement = document.getElementById('view')!;
 
@@ -219,3 +219,5 @@ viewMode =
 planetIndex = Number(params.get('planet') ?? 0) || 0;
 companionIndex = Number(params.get('companion') ?? 0) || 0;
 load(params.get('seed') ?? randomSeedHex(), parseLocale(params.get('at')));
+
+showWelcome();

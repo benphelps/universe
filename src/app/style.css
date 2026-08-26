@@ -487,3 +487,99 @@ tr.here .swatch {
     transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
 }
+
+/* ---- welcome dialog ---- */
+
+#welcome {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 6, 10, 0.78);
+  backdrop-filter: blur(4px);
+  opacity: 1;
+  transition: opacity 0.45s ease;
+}
+
+#welcome.leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#welcome-card {
+  max-width: 520px;
+  max-height: 86vh;
+  overflow-y: auto;
+  margin: 16px;
+  padding: 26px 30px 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+#welcome-card .eyebrow {
+  font: 600 11px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+
+#welcome-card h1 {
+  margin: 6px 0 12px;
+  font: 600 22px/1.25 var(--display);
+  color: var(--ink);
+}
+
+#welcome-card p {
+  margin: 0 0 12px;
+  color: var(--dim);
+  font-size: 12.5px;
+}
+
+#welcome-card ul {
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+#welcome-card li {
+  margin: 0 0 10px;
+  color: var(--dim);
+  font-size: 12.5px;
+}
+
+#welcome-card li b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+#welcome-card .controls-hint {
+  margin: 0 0 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font: 600 10.5px/1.6 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+}
+
+#welcome-explore {
+  display: block;
+  width: 100%;
+  padding: 9px 0;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent-hi);
+  font: 600 12px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+}
+
+#welcome-explore:hover {
+  background: rgba(70, 174, 198, 0.22);
+  color: #b5ecf8;
+}
