@@ -3,6 +3,8 @@ import { AU } from '../../core/physics/constants';
 import { planetMu } from '../../universe/system/generate';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { fmt, fmtDays } from './format';
+import { cssColor, renderPlate } from './markup';
+import type { Sidebar } from './sidebar';
 
 const CLASS_LABEL: Record<Planet['class'], string> = {
   rocky: 'rocky',
@@ -12,7 +14,7 @@ const CLASS_LABEL: Record<Planet['class'], string> = {
   'gas-giant': 'gas giant',
 };
 
-const CLASS_COLOR: Record<Planet['class'], string> = {
+export const CLASS_COLOR: Record<Planet['class'], string> = {
   rocky: '#b98a63',
   'super-earth': '#d4a373',
   'mini-neptune': '#86b6d6',
@@ -20,37 +22,53 @@ const CLASS_COLOR: Record<Planet['class'], string> = {
   'gas-giant': '#d9b380',
 };
 
+/**
+ * System level: the host star up top, the planet inventory below.
+ * Clicking a planet row focuses that planet.
+ */
 export class SystemInfoPanel {
-  constructor(private readonly element: HTMLElement) {}
+  constructor(private readonly sidebar: Sidebar) {}
 
-  render(system: StarSystem): void {
+  render(system: StarSystem, onSelectPlanet: (index: number) => void): void {
     const { star, zones } = system;
-    const configBadge =
+    const configuration =
       system.configuration === 'p-type'
         ? ' · circumbinary'
         : system.configuration === 's-type'
           ? ' · binary'
           : '';
 
+    renderPlate(this.sidebar.focus, {
+      title: star.designation,
+      subtitle: `${star.spectralType}${configuration} · ${system.planets.length} planets`,
+      color: cssColor(star.linearRgb),
+      rows: [
+        ['Star', `${fmt(star.mass)} M☉ · ${fmt(star.luminosity)} L☉`],
+        ['Habitable zone', `${fmt(zones.habitableInnerAu)}–${fmt(zones.habitableOuterAu)} AU`],
+        ['Frost line', `${fmt(zones.frostLineAu)} AU`],
+      ],
+    });
+
     const planetRows = system.planets
-      .map((planet) => {
+      .map((planet, index) => {
         const aAu = planet.elements.semiMajorAxis / AU;
-        const periodDays = orbitalPeriod(planetMu(system, planet), planet.elements.semiMajorAxis) / 86400;
+        const periodDays =
+          orbitalPeriod(planetMu(system, planet), planet.elements.semiMajorAxis) / 86400;
         const badges = [
           planet.inHabitableZone ? '<span class="badge hz">HZ</span>' : '',
-          planet.tidallyLocked ? '<span class="badge lock">locked</span>' : '',
+          planet.tidallyLocked ? '<span class="badge lock">lock</span>' : '',
           planet.resonanceWithInner
             ? `<span class="badge res">${planet.resonanceWithInner}</span>`
             : '',
         ].join('');
         const letter = planet.name.split(' ').pop();
-        return `<tr>
+        return `<tr class="pick" data-index="${index}">
           <td><span class="swatch" style="background:${CLASS_COLOR[planet.class]}"></span> ${letter}</td>
           <td>${CLASS_LABEL[planet.class]}</td>
-          <td>${fmt(planet.physical.bulk.massEarth)} M⊕</td>
-          <td>${fmt(aAu)} AU</td>
-          <td>${fmtDays(periodDays)}</td>
-          <td>${fmt(planet.elements.eccentricity, 2)}</td>
+          <td class="n">${fmt(planet.physical.bulk.massEarth)}</td>
+          <td class="n">${fmt(aAu)}</td>
+          <td class="n">${fmtDays(periodDays)}</td>
+          <td class="n">${fmt(planet.elements.eccentricity, 2)}</td>
           <td>${badges}</td>
         </tr>`;
       })
@@ -66,22 +84,21 @@ export class SystemInfoPanel {
       )
       .join('');
 
-    this.element.innerHTML = `
-      <h1>${star.designation}${configBadge}</h1>
-      <div class="sub">${star.spectralType} · ${fmt(star.mass)} M☉ · ${
-        system.planets.length
-      } planets</div>
-      <div class="sub">HZ ${fmt(zones.habitableInnerAu)}–${fmt(zones.habitableOuterAu)} AU ·
-        frost ${fmt(zones.frostLineAu)} AU</div>
+    this.sidebar.level.innerHTML = `
       ${
         system.planets.length > 0
-          ? `<table class="planets">
-              <tr><th></th><th>class</th><th>mass</th><th>a</th><th>period</th><th>e</th><th></th></tr>
-              ${planetRows}
-            </table>`
-          : '<div class="sub">no planets</div>'
+          ? `<h2>Planets · ${system.planets.length}</h2>
+             <table class="list">
+               <tr><th></th><th>class</th><th class="n">M⊕</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th><th></th></tr>
+               ${planetRows}
+             </table>`
+          : '<div class="empty">no planets formed here</div>'
       }
       ${beltRows}
     `;
+
+    for (const row of this.sidebar.level.querySelectorAll<HTMLElement>('tr.pick')) {
+      row.addEventListener('click', () => onSelectPlanet(Number(row.dataset.index)));
+    }
   }
 }

@@ -4,19 +4,14 @@ import type { GalacticPosition } from '../universe/galaxy/density';
 import { galacticAddress } from '../universe/galaxy/regions';
 import { generateSystem } from '../universe/system/generate';
 import type { StarSystem } from '../universe/system/types';
-import { Controls, type ViewMode } from './ui/controls';
-import { InfoPanel } from './ui/infoPanel';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
+import { Sidebar, type ViewMode } from './ui/sidebar';
+import { StarInfoPanel } from './ui/starInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
 import { PRESET_TIME_SCALE, UnifiedViewer } from './unifiedViewer';
 
 const viewElement = document.getElementById('view')!;
-const infoElement = document.getElementById('info')!;
-const starPanel = new InfoPanel(infoElement);
-const systemPanel = new SystemInfoPanel(infoElement);
-const planetPanel = new PlanetInfoPanel(infoElement);
-const galaxyPanel = new GalaxyInfoPanel(infoElement);
 
 let viewMode: ViewMode = 'star';
 let seedHex = '';
@@ -47,10 +42,21 @@ function parseLocale(value: string | null): GalacticPosition | undefined {
 
 let localePc: GalacticPosition | undefined;
 
+function stepBody(delta: number): void {
+  planetIndex += delta;
+  load(seedHex);
+}
+
+function selectPlanet(index: number): void {
+  viewMode = 'planet';
+  planetIndex = index;
+  load(seedHex);
+}
+
 /**
  * Every view is a preset of the one unified viewer — the same scene
  * focused and framed differently — so switching between them (or
- * stepping planets, or travelling to a neighbor star) never rebuilds
+ * stepping bodies, or travelling to a neighbor star) never rebuilds
  * the renderer. Travel to a catalog star carries its true galactic
  * position, so the destination is built where the star actually is;
  * bare seeds settle at their seed-derived locale.
@@ -76,20 +82,15 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     viewer.onPick = (target) => {
       if (!viewer || !system) return;
       if (target.kind === 'planet') {
-        viewMode = 'planet';
-        planetIndex = target.index;
-        load(seedHex);
+        selectPlanet(target.index);
       } else if (target.kind === 'notable') {
-        viewMode = 'planet';
-        planetIndex = system.planets.length + target.index;
-        load(seedHex);
+        selectPlanet(system.planets.length + target.index);
       } else if (target.kind === 'star') {
         viewMode = 'star';
         load(seedHex);
       } else if (target.kind === 'belt') {
         viewer.focusBeltAsteroid(target.asteroid);
         planetPanel.renderAsteroid(system, target.asteroid, 'belt member');
-        controls.planetLabel = '·';
       } else if (target.kind === 'neighbor') {
         load(target.seedHex, target.positionPc);
       }
@@ -101,15 +102,17 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     system = generateSystem(seed, localePc);
     viewer.setSystem(system);
   }
+  const address = galacticAddress(system.localePc);
+  sidebar.address = address;
   if (viewMode === 'star') {
     viewer.setFocus('star', 'star');
     starPanel.render(system.star);
   } else if (viewMode === 'system') {
     viewer.setFocus('star', 'system');
-    systemPanel.render(system);
+    systemPanel.render(system, selectPlanet);
   } else if (viewMode === 'galaxy') {
     viewer.setFocus('star', 'galaxy');
-    galaxyPanel.render(system.star, galacticAddress(system.localePc), viewer.neighbors, (neighbor) =>
+    galaxyPanel.render(system.star, address, viewer.neighbors, (neighbor) =>
       load(neighbor.seedHex, neighbor.positionPc),
     );
   } else {
@@ -118,30 +121,27 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     if (count === 0) {
       viewer.setFocus('star', 'star');
       planetPanel.renderEmpty(system);
-      controls.planetLabel = '—';
     } else {
       planetIndex = ((planetIndex % count) + count) % count;
       viewer.setFocus(planetIndex, 'planet');
       if (planetIndex < system.planets.length) {
-        const planet = system.planets[planetIndex];
-        planetPanel.render(system, planet, planetIndex);
-        controls.planetLabel = planet.name.split(' ').pop() ?? '';
+        planetPanel.render(system, system.planets[planetIndex], planetIndex, stepBody);
       } else {
         const ordinal = planetIndex - system.planets.length;
         planetPanel.renderAsteroid(
           system,
           viewer.asteroids[ordinal],
           `belt asteroid ${ordinal + 1} of ${viewer.asteroids.length}`,
+          stepBody,
         );
-        controls.planetLabel = `A${ordinal + 1}`;
       }
     }
   }
   viewer.timeScaleDaysPerSecond = timeScale ?? PRESET_TIME_SCALE[viewMode];
   viewer.exposure = exposure;
 
-  controls.seed = seedHex;
-  controls.view = viewMode;
+  sidebar.seed = seedHex;
+  sidebar.view = viewMode;
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
   url.searchParams.set('view', viewMode);
@@ -158,18 +158,13 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   history.replaceState(null, '', url);
 }
 
-const controls = new Controls(document.getElementById('controls')!, {
+const sidebar = new Sidebar(document.getElementById('sidebar')!, {
   onSeed: load,
   onRandom: () => load(randomSeedHex()),
   onView: (mode) => {
     if (mode === viewMode) return;
     viewMode = mode;
     timeScale = null;
-    load(seedHex);
-  },
-  onPlanetStep: (delta) => {
-    if (viewMode !== 'planet') return;
-    planetIndex += delta;
     load(seedHex);
   },
   onTimeScale: (daysPerSecond) => {
@@ -184,6 +179,10 @@ const controls = new Controls(document.getElementById('controls')!, {
     if (viewer) viewer.chartVisible = visible;
   },
 });
+const starPanel = new StarInfoPanel(sidebar);
+const systemPanel = new SystemInfoPanel(sidebar);
+const planetPanel = new PlanetInfoPanel(sidebar);
+const galaxyPanel = new GalaxyInfoPanel(sidebar);
 
 const params = new URLSearchParams(location.search);
 const viewParam = params.get('view');

@@ -4,12 +4,22 @@ import { asteroidDesignation } from '../../universe/smallbody/notable';
 import type { Asteroid } from '../../universe/smallbody/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { fmt, fmtDays } from './format';
+import { renderPlate } from './markup';
+import type { Sidebar } from './sidebar';
+import { CLASS_COLOR } from './systemInfoPanel';
 
 const TAXONOMY_LABEL: Record<Asteroid['taxonomy'], string> = {
   S: 'S-type (silicaceous)',
   C: 'C-type (carbonaceous)',
   M: 'M-type (metallic)',
   D: 'D-type (organic-rich)',
+};
+
+const TAXONOMY_COLOR: Record<Asteroid['taxonomy'], string> = {
+  S: '#a08a6a',
+  C: '#6f6a62',
+  M: '#9a9aa4',
+  D: '#7a6a58',
 };
 
 const TIDAL_LABEL: Record<Moon['tidalState'], string> = {
@@ -45,10 +55,14 @@ const REGIME_LABEL: Record<string, string> = {
   gas: '—',
 };
 
+/**
+ * Planet level: the selected body up top (planet or belt asteroid,
+ * with a stepper walking the system's bodies), its moons listed below.
+ */
 export class PlanetInfoPanel {
-  constructor(private readonly element: HTMLElement) {}
+  constructor(private readonly sidebar: Sidebar) {}
 
-  render(system: StarSystem, planet: Planet, index: number, note?: string): void {
+  render(system: StarSystem, planet: Planet, index: number, onStep: (delta: number) => void): void {
     const { bulk, interior, rotation, atmosphere, climate } = planet.physical;
     const aAu = planet.elements.semiMajorAxis / AU;
 
@@ -95,6 +109,17 @@ export class PlanetInfoPanel {
            planet.rings.gaps.length > 0 ? ` · ${planet.rings.gaps.length} gaps` : ''
          }</div>`
       : '';
+
+    renderPlate(this.sidebar.focus, {
+      title: planet.name,
+      subtitle: `planet ${index + 1} of ${system.planets.length} · ${system.star.spectralType}`,
+      badges,
+      color: CLASS_COLOR[planet.class],
+      rows,
+      extra: rings,
+      onStep,
+    });
+
     const moons = planet.moons.filter((m) => m.semiMajorAxisPlanetRadii < 100);
     const moonRows = moons
       .map((moon) => {
@@ -106,24 +131,30 @@ export class PlanetInfoPanel {
         ]
           .filter(Boolean)
           .join(' · ');
-        return `<div class="companion">
-          ${moon.name.split(' ').pop()} · ${fmt(radiusKm, 3)} km ·
-          a ${fmt(moon.semiMajorAxisPlanetRadii, 3)} R_p${notes ? ` · ${notes}` : ''}
-        </div>`;
+        return `<tr>
+          <td>${moon.name.split(' ').pop()}</td>
+          <td class="n">${fmt(radiusKm, 3)}</td>
+          <td class="n">${fmt(moon.semiMajorAxisPlanetRadii, 3)}</td>
+          <td>${notes}</td>
+        </tr>`;
       })
       .join('');
 
-    this.element.innerHTML = `
-      <h1>${planet.name} ${badges}</h1>
-      <div class="sub">planet ${index + 1} of ${system.planets.length} · ${system.star.spectralType}</div>
-      ${note ? `<div class="note">${note}</div>` : ''}
-      <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
-      ${rings}
-      ${moonRows ? `<h2>Moons</h2>${moonRows}` : ''}
-    `;
+    this.sidebar.level.innerHTML = moonRows
+      ? `<h2>Moons · ${moons.length}</h2>
+         <table class="list">
+           <tr><th></th><th class="n">km</th><th class="n">a R_p</th><th></th></tr>
+           ${moonRows}
+         </table>`
+      : '<div class="empty">no moons</div>';
   }
 
-  renderAsteroid(system: StarSystem, asteroid: Asteroid, subtitle: string): void {
+  renderAsteroid(
+    system: StarSystem,
+    asteroid: Asteroid,
+    subtitle: string,
+    onStep?: (delta: number) => void,
+  ): void {
     const { shape } = asteroid;
     const aAu = asteroid.elements.semiMajorAxis / AU;
     const structure = [
@@ -133,33 +164,35 @@ export class PlanetInfoPanel {
     ]
       .filter(Boolean)
       .join(' · ');
-    const rows: Array<[string, string]> = [
-      ['Type', TAXONOMY_LABEL[asteroid.taxonomy]],
-      ['Diameter', `${fmt(asteroid.diameterKm)} km`],
-      [
-        'Shape',
-        `elongation ${fmt(1 / shape.elongation, 2)} : 1 · flattening ${fmt(shape.flattening, 2)}`,
+    renderPlate(this.sidebar.focus, {
+      title: `${system.star.designation} ${asteroidDesignation(asteroid)}`,
+      subtitle: `${subtitle} · ${TAXONOMY_LABEL[asteroid.taxonomy]}`,
+      color: TAXONOMY_COLOR[asteroid.taxonomy],
+      rows: [
+        ['Diameter', `${fmt(asteroid.diameterKm)} km`],
+        [
+          'Shape',
+          `elongation ${fmt(1 / shape.elongation, 2)} : 1 · flattening ${fmt(shape.flattening, 2)}`,
+        ],
+        ['Structure', structure],
+        ['Spin', fmtDays(asteroid.spinPeriodHours / 24)],
+        [
+          'Orbit',
+          `${fmt(aAu)} AU · e ${fmt(asteroid.elements.eccentricity, 2)} · i ${fmt((asteroid.elements.inclination * 180) / Math.PI, 2)}°`,
+        ],
+        ['Albedo', fmt(asteroid.albedo, 2)],
       ],
-      ['Structure', structure],
-      ['Spin', fmtDays(asteroid.spinPeriodHours / 24)],
-      [
-        'Orbit',
-        `${fmt(aAu)} AU · e ${fmt(asteroid.elements.eccentricity, 2)} · i ${fmt((asteroid.elements.inclination * 180) / Math.PI, 2)}°`,
-      ],
-      ['Albedo', fmt(asteroid.albedo, 2)],
-    ];
-    this.element.innerHTML = `
-      <h1>${system.star.designation} ${asteroidDesignation(asteroid)}</h1>
-      <div class="sub">${subtitle} · ${system.star.spectralType}</div>
-      <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
-    `;
+      onStep,
+    });
   }
 
   renderEmpty(system: StarSystem): void {
-    this.element.innerHTML = `
-      <h1>${system.star.designation}</h1>
-      <div class="sub">this system has no planets</div>
-    `;
+    renderPlate(this.sidebar.focus, {
+      title: system.star.designation,
+      subtitle: 'this system has no planets',
+      rows: [],
+    });
+    this.sidebar.level.innerHTML = '';
   }
 }
 
