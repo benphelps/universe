@@ -1,21 +1,21 @@
 /*
- * The survey console: a dark-adaptation instrument panel beside the
- * viewport. Chrome stays dim and warm — amber like a dark-room lamp —
- * so the sky keeps every bright, cool color for itself. Designations
- * and labels wear a condensed display face; every measurement is mono.
+ * The survey console: a slate instrument panel beside the viewport.
+ * Chrome stays dim and cool — hairlines and a teal accent low enough
+ * that the sky stays the brightest thing on screen. Designations and
+ * labels wear a condensed display face; every measurement is mono.
  */
 
 :root {
-  --void: #050607;
-  --panel: #0e0c0a;
-  --panel-raised: #16130f;
-  --line: rgba(255, 225, 180, 0.1);
-  --ink: #ddd6ca;
-  --dim: #9c9284;
-  --faint: #6e6659;
-  --ember: #d3893c;
-  --ember-hi: #f0b064;
-  --ember-soft: rgba(211, 137, 60, 0.12);
+  --void: #04060a;
+  --panel: #0a0e14;
+  --panel-raised: #101722;
+  --line: rgba(170, 210, 255, 0.1);
+  --ink: #ccd6e0;
+  --dim: #8494a4;
+  --faint: #596879;
+  --accent: #46aec6;
+  --accent-hi: #7fd4e8;
+  --accent-soft: rgba(70, 174, 198, 0.12);
   --display: 'Avenir Next Condensed', 'Arial Narrow', system-ui, sans-serif;
   --mono: 'SF Mono', ui-monospace, Menlo, monospace;
 }
@@ -132,15 +132,23 @@ table.props td:first-child {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 12px 16px;
+  padding: 0 16px 12px;
 }
 
+/* Section bar, the address bar's sibling: it stays put while the
+   table scrolls beneath it. */
 #level h2 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -16px 10px;
+  padding: 8px 16px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
   font: 600 11px/1.4 var(--display);
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: var(--faint);
-  margin: 0 0 7px;
 }
 
 table.list {
@@ -189,13 +197,14 @@ tr.pick {
 }
 
 tr.pick:hover td {
-  background: var(--ember-soft);
+  background: var(--accent-soft);
   color: var(--ink);
 }
 
 .empty {
   color: var(--faint);
   font-size: 12px;
+  margin-top: 2px;
 }
 
 /* ---- shared fragments ---- */
@@ -273,7 +282,7 @@ tr.pick:hover td {
 
 #settings input[type='range'] {
   width: 100%;
-  accent-color: var(--ember);
+  accent-color: var(--accent);
 }
 
 #sidebar button {
@@ -287,19 +296,19 @@ tr.pick:hover td {
 }
 
 #sidebar button:hover {
-  border-color: var(--ember);
+  border-color: var(--accent);
   color: var(--ink);
 }
 
 #sidebar button:focus-visible,
 #settings input:focus-visible {
-  outline: 1px solid var(--ember-hi);
+  outline: 1px solid var(--accent-hi);
   outline-offset: 1px;
 }
 
 #sidebar #chart.active {
-  border-color: var(--ember);
-  color: var(--ember);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ---- the four framing scales ---- */
@@ -340,18 +349,18 @@ tr.pick:hover td {
 }
 
 #level-nav button:hover {
-  background: var(--ember-soft);
+  background: var(--accent-soft);
   color: var(--ink);
 }
 
 #level-nav button.active {
-  box-shadow: inset 0 2px 0 var(--ember);
-  color: var(--ember);
-  background: var(--ember-soft);
+  box-shadow: inset 0 2px 0 var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 #level-nav button.active .unit {
-  color: var(--ember);
+  color: var(--accent);
 }
 
 /* ---- scrollbars ---- */
@@ -361,7 +370,7 @@ tr.pick:hover td {
 }
 
 #level::-webkit-scrollbar-thumb {
-  background: rgba(255, 225, 180, 0.13);
+  background: rgba(170, 210, 255, 0.13);
   border-radius: 4px;
 }
 
@@ -374,7 +383,7 @@ tr.pick:hover td {
 #pick-tip {
   position: absolute;
   pointer-events: none;
-  background: rgba(14, 12, 10, 0.93);
+  background: rgba(10, 14, 20, 0.93);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 5px 9px;
@@ -393,7 +402,7 @@ tr.pick:hover td {
 }
 
 #pick-tip .tip-action {
-  color: var(--ember);
+  color: var(--accent);
   font-size: 11px;
   margin-top: 1px;
 }

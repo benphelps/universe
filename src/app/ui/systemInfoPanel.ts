@@ -85,10 +85,10 @@ export class SystemInfoPanel {
       .join('');
 
     this.sidebar.level.innerHTML = `
+      <h2>Planets · ${system.planets.length}</h2>
       ${
         system.planets.length > 0
-          ? `<h2>Planets · ${system.planets.length}</h2>
-             <table class="list">
+          ? `<table class="list">
                <tr><th></th><th>class</th><th class="n">M⊕</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th><th></th></tr>
                ${planetRows}
              </table>`

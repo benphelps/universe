@@ -30,7 +30,7 @@ export function renderPlate(element: HTMLElement, spec: PlateSpec): void {
     : '';
   const strip = spec.color
     ? `linear-gradient(90deg, ${spec.color} 0%, transparent 92%)`
-    : 'linear-gradient(90deg, rgba(255, 225, 180, 0.22) 0%, transparent 92%)';
+    : 'linear-gradient(90deg, rgba(200, 225, 255, 0.22) 0%, transparent 92%)';
   element.innerHTML = `
     <div class="plate-head">
       <h1>${spec.title}</h1>

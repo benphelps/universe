@@ -60,13 +60,17 @@ export class StarInfoPanel {
       )
       .join('');
 
-    this.sidebar.level.innerHTML = companionRows
-      ? `<h2>Companions · ${star.companions.length}</h2>
-         <table class="list">
-           <tr><th></th><th class="n">M☉</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th></tr>
-           ${companionRows}
-         </table>`
-      : '<div class="empty">a single star — no companions</div>';
+    this.sidebar.level.innerHTML = `
+      <h2>Companions · ${star.companions.length}</h2>
+      ${
+        companionRows
+          ? `<table class="list">
+              <tr><th></th><th class="n">M☉</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th></tr>
+              ${companionRows}
+            </table>`
+          : '<div class="empty">a single star — no companions</div>'
+      }
+    `;
   }
 }
 

@@ -140,13 +140,17 @@ export class PlanetInfoPanel {
       })
       .join('');
 
-    this.sidebar.level.innerHTML = moonRows
-      ? `<h2>Moons · ${moons.length}</h2>
-         <table class="list">
-           <tr><th></th><th class="n">km</th><th class="n">a R_p</th><th></th></tr>
-           ${moonRows}
-         </table>`
-      : '<div class="empty">no moons</div>';
+    this.sidebar.level.innerHTML = `
+      <h2>Moons · ${moons.length}</h2>
+      ${
+        moonRows
+          ? `<table class="list">
+              <tr><th></th><th class="n">km</th><th class="n">a R_p</th><th></th></tr>
+              ${moonRows}
+            </table>`
+          : '<div class="empty">no moons</div>'
+      }
+    `;
   }
 
   renderAsteroid(
