@@ -5,6 +5,9 @@ export interface WorleySample {
   f1: number;
   /** Distance to the second-nearest feature point. */
   f2: number;
+  /** Stable unit-interval identity of the nearest cell — constant across
+   *  a cell's whole region, discontinuous exactly at the ridges. */
+  id1: number;
 }
 
 /**
@@ -30,6 +33,9 @@ export function createWorley3(seed: bigint): (x: number, y: number, z: number) =
     const iz = Math.floor(z);
     let f1 = Infinity;
     let f2 = Infinity;
+    let bx = 0;
+    let by = 0;
+    let bz = 0;
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
@@ -43,12 +49,15 @@ export function createWorley3(seed: bigint): (x: number, y: number, z: number) =
           if (d < f1) {
             f2 = f1;
             f1 = d;
+            bx = cx;
+            by = cy;
+            bz = cz;
           } else if (d < f2) {
             f2 = d;
           }
         }
       }
     }
-    return { f1, f2 };
+    return { f1, f2, id1: hashToUnit(bx, by, bz, 3) };
   };
 }

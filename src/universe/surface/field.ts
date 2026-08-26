@@ -54,6 +54,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   const moistureNoise = fbm(createSimplex3(deriveSeed(seed, 'moisture')), { octaves: 3 });
   const paletteNoise = fbm(createSimplex3(deriveSeed(seed, 'palette')), { octaves: 4 });
   const meander = createSimplex3(deriveSeed(seed, 'meanders'));
+  const ravineRidge = ridged(createSimplex3(deriveSeed(seed, 'ravines')), { octaves: 2 });
   const glacialRidge = ridged(createSimplex3(deriveSeed(seed, 'glacial')), { octaves: 1 });
   const duneWarp = createSimplex3(deriveSeed(seed, 'dunes'));
   const ergNoise = fbm(createSimplex3(deriveSeed(seed, 'ergs')), { octaves: 2 });
@@ -132,12 +133,8 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     const q = river.dischargeM3s;
     const halfWidthM = Math.min(25000, Math.max(220, 1200 * Math.sqrt(q / 1000)));
     const widthRad = halfWidthM / params.radiusM;
-    if (river.distRad >= widthRad) return 0;
-    // A valley narrower than the sample spacing fades like the detail
-    // bands do — but as a line feature it surfaces at half a sample, so
-    // continental rivers still trace from orbit.
-    const fade = lodAngularRad > 0 ? Math.min(1, widthRad / lodAngularRad / 1.5) : 1;
-    if (fade <= 0.02) return 0;
+    const zoneRad = widthRad * 2.5;
+    if (river.distRad >= zoneRad) return 0;
     // Stream-power-flavored depth: grows with discharge, digs hardest
     // in highlands, grades toward the sea near the coast.
     const rel = 0.3 + 0.7 * smooth01(h / (reliefM * 0.5));
@@ -145,24 +142,54 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       45 * q ** 0.25 * rel * (0.35 + 0.65 * fluvialStrength),
       (h - solvedSeaLevelM) * 0.9 + 4,
     );
-    const across = river.distRad / widthRad;
-    let carve = -depthM * (1 - across * across) ** 1.5;
-    // The channel itself: hydraulic-geometry width, a few meters deep.
-    const channelRad = Math.max(6, 4 * Math.sqrt(q)) / params.radiusM;
-    if (river.distRad < channelRad) {
-      const chFade = lodAngularRad > 0 ? Math.min(1, channelRad / lodAngularRad / 1.5) : 1;
-      const chAcross = river.distRad / channelRad;
-      carve -= 1.5 * q ** 0.2 * (1 - chAcross * chAcross) * chFade;
+    let carve = 0;
+    if (river.distRad < widthRad) {
+      // A valley narrower than the sample spacing fades like the detail
+      // bands do — but as a line feature it surfaces at half a sample,
+      // so continental rivers still trace from orbit.
+      const fade = lodAngularRad > 0 ? Math.min(1, widthRad / lodAngularRad / 1.5) : 1;
+      if (fade > 0.02) {
+        const across = river.distRad / widthRad;
+        carve -= depthM * (1 - across * across) ** 1.5 * fade;
+        // The channel itself: hydraulic-geometry width, a few meters deep.
+        const channelRad = Math.max(6, 4 * Math.sqrt(q)) / params.radiusM;
+        if (river.distRad < channelRad) {
+          const chFade = lodAngularRad > 0 ? Math.min(1, channelRad / lodAngularRad / 1.5) : 1;
+          const chAcross = river.distRad / channelRad;
+          carve -= 1.5 * q ** 0.2 * (1 - chAcross * chAcross) * chFade * fade;
+        }
+      }
     }
-    return carve * fade;
+    // Gully networks on the valley flanks: ravines strengthen toward
+    // the river and die at the divide shoulder — the sub-cell dendritic
+    // texture the graph is too coarse to carry itself.
+    const ravineFade =
+      lodAngularRad > 0 ? Math.min(1, Math.max(0, 1 / 700 / (2 * lodAngularRad) - 1) / 4) : 1;
+    if (ravineFade > 0.02) {
+      const inner = smooth01((river.distRad - widthRad * 0.45) / (widthRad * 0.4));
+      const outer = 1 - river.distRad / zoneRad;
+      const flank = inner * outer;
+      if (flank > 0.03) {
+        const ridge = ravineRidge(dir.x * 700, dir.y * 700, dir.z * 700);
+        const gully = smooth01((ridge - 0.68) / 0.22);
+        if (gully > 0.01) {
+          carve -= Math.min(50, depthM * 0.25) * flank * gully * ravineFade;
+        }
+      }
+    }
+    return carve;
   };
 
   const heightAt = (dir: Vec3, lodAngularRad = 0): number => {
     let h = continents(dir.x * 1.3, dir.y * 1.3, dir.z * 1.3) * reliefM * 0.55;
 
     if (mountainStrength > 0.05) {
-      // Fold belts where cell boundaries pinch (f2 ≈ f1).
+      // Fold belts where cell boundaries pinch (f2 ≈ f1); each plate
+      // also rides at its own elevation, so crossing a boundary steps —
+      // the fault scarp is the discontinuity itself, degraded by
+      // erosion, and belts often bury it under their own ridges.
       const cell = boundaries(dir.x * 1.6, dir.y * 1.6, dir.z * 1.6);
+      h += (cell.id1 - 0.5) * reliefM * 0.09 * mountainStrength * (1 - 0.6 * erosion);
       const boundary = Math.max(0, 1 - (cell.f2 - cell.f1) / 0.22);
       if (boundary > 0) {
         const ridge = mountains(dir.x * 3.2, dir.y * 3.2, dir.z * 3.2);
@@ -259,6 +286,18 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     }
 
     h += craters(dir, lodAngularRad);
+
+    // Wave-worked shore: surf redistributes sediment into a flat beach
+    // and shallow shoreface in a narrow band about sea level. Inactive
+    // (−Infinity sea) until the level is solved, like the rivers.
+    if (solvedSeaLevelM > -1e8) {
+      const shoreRel = h - solvedSeaLevelM;
+      if (shoreRel > -6 && shoreRel < 6) {
+        h =
+          solvedSeaLevelM +
+          shoreRel * (0.4 + 0.6 * smooth01((Math.abs(shoreRel) - 2) / 4));
+      }
+    }
     return h;
   };
 
@@ -279,6 +318,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   // Height-keyed color rules blend over windows wider than the detail
   // bands' LOD-dependent height swing, or coastlines flicker between levels.
   const shoreWindowM = Math.max(150, reliefM * 0.06);
+  const strataThicknessM = 35 + 80 * (Number(deriveSeed(seed, 'strata') & 0xffn) / 255);
 
   const colorAt = (dir: Vec3, heightM: number, slopeCos: number, lodAngularRad = 0): Rgb => {
     const { palette } = params;
@@ -335,9 +375,28 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       );
     }
 
-    // Bare rock breaks through on steep slopes; shores lighten to sand.
+    // Bare rock breaks through on steep slopes — and the rock has a
+    // history: volcanic provinces expose dark basalts, the rest shows
+    // elevation-keyed sedimentary bedding in its cliff faces. Strata
+    // fade out where vertex spacing would alias the bands to speckle.
     if (slopeCos < 0.82) {
-      ground = mixRgb(palette.rock, ground, Math.max(0, (slopeCos - 0.55) / 0.27));
+      let rock = palette.rock;
+      const province = provinces(dir.x * 1.7, dir.y * 1.7, dir.z * 1.7);
+      if (province > 0.25) {
+        rock = [rock[0] * 0.55, rock[1] * 0.55, rock[2] * 0.6];
+      } else {
+        const strataFade =
+          lodAngularRad > 0 ? Math.max(0, 1 - lodAngularRad / 0.0002) : 1;
+        if (strataFade > 0.02) {
+          const bedding = Math.sin(
+            (heightM / strataThicknessM) * 2 * Math.PI +
+              2.5 * paletteNoise(dir.x * 13, dir.y * 13, dir.z * 13),
+          );
+          const tone = 1 + 0.13 * bedding * strataFade;
+          rock = [rock[0] * tone, rock[1] * tone, rock[2] * tone];
+        }
+      }
+      ground = mixRgb(rock, ground, Math.max(0, (slopeCos - 0.55) / 0.27));
     }
     if (params.oceanCoverage > 0) {
       ground = mixRgb(

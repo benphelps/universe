@@ -107,6 +107,50 @@ describe('surface field', () => {
     }
   });
 
+  it('waves flatten the shore band below upland slopes', () => {
+    const norm = (p: { x: number; y: number; z: number }) => {
+      const l = Math.hypot(p.x, p.y, p.z);
+      return { x: p.x / l, y: p.y / l, z: p.z / l };
+    };
+    const stepRad = 40 / earthLike.params.radiusM;
+    const slopeAt = (dir: { x: number; y: number; z: number }): number => {
+      const east = norm({ x: -dir.z, y: 0, z: dir.x });
+      const a = earthLike.heightAt(norm({
+        x: dir.x + east.x * stepRad, y: dir.y, z: dir.z + east.z * stepRad,
+      }));
+      return Math.abs(a - earthLike.heightAt(dir)) / 40;
+    };
+    // Bisect dry/wet sample pairs down to the waterline.
+    let beach = 0;
+    let upland = 0;
+    let shores = 0;
+    const dirs = sampleDirs(500);
+    for (let i = 0; i < dirs.length - 1 && shores < 15; i++) {
+      let dry = dirs[i];
+      let wet = dirs[i + 1];
+      if (earthLike.heightAt(dry) < earthLike.seaLevelM) [dry, wet] = [wet, dry];
+      if (earthLike.heightAt(dry) < earthLike.seaLevelM) continue;
+      if (earthLike.heightAt(wet) >= earthLike.seaLevelM) continue;
+      for (let b = 0; b < 40; b++) {
+        const mid = norm({ x: (dry.x + wet.x) / 2, y: (dry.y + wet.y) / 2, z: (dry.z + wet.z) / 2 });
+        if (earthLike.heightAt(mid) - earthLike.seaLevelM > 0.5) dry = mid;
+        else wet = mid;
+      }
+      beach += slopeAt(dry);
+      // Control band: the same coast, 25 m of elevation higher — walk
+      // uphill by resampling a short ray toward the dry sample.
+      const inland = norm({
+        x: dry.x + (dirs[i].x - dry.x) * 0.02,
+        y: dry.y + (dirs[i].y - dry.y) * 0.02,
+        z: dry.z + (dirs[i].z - dry.z) * 0.02,
+      });
+      upland += slopeAt(inland);
+      shores++;
+    }
+    expect(shores).toBeGreaterThan(5);
+    expect(beach).toBeLessThan(upland * 0.7);
+  });
+
   it('carries walked-scale texture that a coarse LOD does not see', () => {
     // A step of ~30 cm on the airless world: full detail must vary at
     // centimeter amplitude, while a 100 m sampling of the same spots
