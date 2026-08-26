@@ -1,4 +1,5 @@
 import { Color, ShaderMaterial } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 
 const VERTEX = /* glsl */ `
 varying vec3 vNormal;
@@ -19,6 +20,8 @@ varying vec3 vViewPos;
 uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 
@@ -34,7 +37,8 @@ void main() {
   vec3 halfDir = normalize(uLightDir + viewDir);
   float specular = pow(max(dot(normal, halfDir), 0.0), 220.0);
 
-  vec3 color = uColor * uLightColor * (diffuse + 0.02)
+  float diffuse2 = max(dot(normal, uLight2Dir), 0.0);
+  vec3 color = uColor * (uLightColor * (diffuse + 0.02) + uLight2Color * diffuse2)
     + uLightColor * (fresnel * 0.25 * diffuse + specular * diffuse);
 
   float fog = 1.0 - exp(-length(vViewPos) * uFogDensity);
@@ -58,6 +62,7 @@ export function createOceanMaterial(oceanColor: [number, number, number]): Shade
       uColor: { value: new Color(...oceanColor) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uFogColor: { value: new Color(0, 0, 0) },
       uFogDensity: { value: 0 },
     },

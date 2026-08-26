@@ -1,4 +1,5 @@
 import { Color, DoubleSide, Mesh, ShaderMaterial, SphereGeometry } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { planetSeedOffset } from '../planet/solidPlanetMaterial';
@@ -21,6 +22,8 @@ varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform vec3 uSeedOffset;
 uniform vec3 uCloudColor;
 uniform float uCloudCoverage;
@@ -51,7 +54,8 @@ void main() {
 
   // Radially-lit tops: bright day decks, near-black night ones.
   float diffuse = max(dot(p, uLightDir), 0.0);
-  vec3 color = uCloudColor * uLightColor * (0.05 + 0.95 * diffuse);
+  float diffuse2 = max(dot(p, uLight2Dir), 0.0);
+  vec3 color = uCloudColor * (uLightColor * (0.05 + 0.95 * diffuse) + uLight2Color * diffuse2 * 0.95);
 
   // Fade out around the camera so descending through the deck never
   // crosses a hard sheet.
@@ -84,6 +88,7 @@ export function createCloudShell(
     uniforms: {
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
       uCloudColor: { value: appearance.cloudColor },
       uCloudCoverage: { value: appearance.cloudCoverage },

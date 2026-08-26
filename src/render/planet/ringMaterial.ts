@@ -1,4 +1,5 @@
 import { Color, DoubleSide, Mesh, RingGeometry, ShaderMaterial, Vector2 } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 import type { RingSystem } from '../../universe/rings/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
@@ -25,6 +26,8 @@ varying vec3 vWorldPos;
 uniform vec3 uHue;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform float uInner;
 uniform float uOuter;
 uniform float uOpticalDepth;
@@ -69,7 +72,11 @@ void main() {
   float forward = pow(max(dot(viewToFrag, uLightDir), 0.0), 8.0) * uForwardScatter;
 
   float shadow = shadowFactor(vWorldPos, uLightDir);
-  vec3 color = uHue * uLightColor * (slab * shadow + forward * (0.3 + 0.7 * shadow));
+  float slab2 = pow(abs(dot(normal, uLight2Dir)), 0.6) * 0.7 + 0.22;
+  float forward2 = pow(max(dot(viewToFrag, uLight2Dir), 0.0), 8.0) * uForwardScatter;
+  float shadow2 = shadowFactor(vWorldPos, uLight2Dir);
+  vec3 color = uHue * (uLightColor * (slab * shadow + forward * (0.3 + 0.7 * shadow))
+    + uLight2Color * (slab2 * shadow2 + forward2 * (0.3 + 0.7 * shadow2)));
   gl_FragColor = vec4(color, alpha);
 }
 `;
@@ -93,6 +100,7 @@ export function createRingMesh(rings: RingSystem, planetRadiusUnits: number): Me
       uHue: { value: new Color(...rings.hue) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uInner: { value: inner },
       uOuter: { value: outer },
       uOpticalDepth: { value: rings.opticalDepth },

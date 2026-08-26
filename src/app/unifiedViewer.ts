@@ -41,6 +41,7 @@ import { createRingMesh } from '../render/planet/ringMaterial';
 import { applyOccluders } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
+import { applySecondSun } from '../render/lighting/secondSun';
 import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import {
   createNeighborStars,
@@ -100,6 +101,7 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
  *  breaks down at these heights, the volume takes over. */
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
+const ORIGIN = new Vector3();
 
 /** Point stars snap the hover only from this close (px), so the space
  *  between glints stays hoverable for nebulae, rifts, and the other
@@ -224,6 +226,7 @@ export class UnifiedViewer {
    *  persist through the backdrop→volume crossfade — only the
    *  unresolved-glow representations swap. */
   private farPoints: Points | null = null;
+  private secondSunIndex = -1;
   private neighborSeedHexes: string[] = [];
   private neighborGalacticPc: Float32Array = new Float32Array(0);
   private viewpointPc: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
@@ -1248,6 +1251,27 @@ export class UnifiedViewer {
     return MAX_ALTITUDE_KM;
   }
 
+  /**
+   * Second-sun direction (written into `out`) and flux-premultiplied
+   * color at a world position; null when no companion contributes.
+   */
+  private secondSunAt(worldPos: Vector3, out: Vector3): [number, number, number] | null {
+    if (this.secondSunIndex < 0 || !this.system) return null;
+    const companion = this.system.companions[this.secondSunIndex - 1];
+    const node = this.starNodes[this.secondSunIndex];
+    if (!companion || !node) return null;
+    out.copy(node.object.group.position).sub(worldPos);
+    const fluxRatio =
+      (companion.star.luminosity / Math.max(out.lengthSq(), 1)) /
+      (this.system.star.luminosity /
+        Math.max(this.starNodes[0].object.group.position.distanceToSquared(worldPos), 1));
+    if (fluxRatio < 0.004) return null;
+    out.normalize();
+    const scale = Math.min(fluxRatio, 4);
+    const [r, g, b] = companion.star.linearRgb;
+    return [r * scale, g * scale, b * scale];
+  }
+
   private buildMoons(planet: Planet): void {
     if (!this.system) return;
     const starRgb = this.system.star.linearRgb;
@@ -1701,9 +1725,34 @@ export class UnifiedViewer {
       (this.system.star.radius * SOLAR_RADIUS_KM) / Math.max(this.starDistanceKm, 1);
     const lightColor = this.system.star.linearRgb;
 
+    // The second sun: whichever companion delivers the strongest flux
+    // at the focus. Below threshold a companion stays a glint, not a
+    // light, so single-star systems pay nothing.
+    this.secondSunIndex = -1;
+    {
+      const primaryFlux =
+        this.system.star.luminosity / Math.max(primaryWorld.lengthSq(), 1);
+      let bestRatio = 0.004;
+      for (let i = 1; i < this.starNodes.length; i++) {
+        const companion = this.system.companions[i - 1];
+        if (!companion) continue;
+        const ratio =
+          companion.star.luminosity /
+          Math.max(this.starNodes[i].object.group.position.lengthSq(), 1) /
+          Math.max(primaryFlux, 1e-30);
+        if (ratio > bestRatio) {
+          bestRatio = ratio;
+          this.secondSunIndex = i;
+        }
+      }
+    }
+    const light2Dir = new Vector3(0, 0, 1);
+    const light2Color = this.secondSunAt(ORIGIN, light2Dir);
+
     // Planets on their orbits. The focused one is rendered at the origin
     // by terrain or the envelope sphere, so its node hides; the rest are
     // true-scale spheres with adaptive markers once they fall subpixel.
+    const node2Dir = new Vector3();
     for (let i = 0; i < this.planetNodes.length; i++) {
       const node = this.planetNodes[i];
       const isFocus = this.focus === i;
@@ -1715,7 +1764,8 @@ export class UnifiedViewer {
       node.object.group.position.copy(positionKm);
       const worldPos = toFocusWorld(positionKm);
       const lightDir = primaryWorld.clone().sub(worldPos).normalize();
-      node.object.update(this.simTimeDays, lightDir, lightColor);
+      const node2Color = this.secondSunAt(worldPos, node2Dir);
+      node.object.update(this.simTimeDays, lightDir, lightColor, node2Dir, node2Color);
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
       const bodyRadiusKm = node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
@@ -1759,7 +1809,7 @@ export class UnifiedViewer {
     }
     this.updateBeltRegion(tSeconds, focusPos);
 
-    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor);
+    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
 
     // Moons on their true orbits; the focus planet eclipses them. Their
     // group carries the ground frame's diurnal sweep — equatorial
@@ -1773,7 +1823,7 @@ export class UnifiedViewer {
       const state = elementsToState(moon.elements, mu, tSeconds);
       object.group.position.copy(toWorld(state.position)).divideScalar(1000);
       moonWorld.copy(object.group.position).applyAxisAngle(yAxis, spin);
-      object.update(this.simTimeDays, sunDir, lightColor);
+      object.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
       object.setOccluders([planetCaster], angularRadius);
 
       const cameraDistance = this.camera.position.distanceTo(moonWorld);
@@ -1820,17 +1870,20 @@ export class UnifiedViewer {
       const material = this.atmosphereShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
+      applySecondSun(material, light2Dir, light2Color);
     }
     if (this.cloudShell) {
       const material = this.cloudShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
       material.uniforms.uTimeDays.value = this.simTimeDays;
+      applySecondSun(material, light2Dir, light2Color);
     }
     if (this.ringMesh) {
       const material = this.ringMesh.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
+      applySecondSun(material, light2Dir, light2Color);
       applyOccluders(material, [planetCaster], angularRadius);
     }
 
@@ -1838,6 +1891,7 @@ export class UnifiedViewer {
       if (!material) continue;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
+      applySecondSun(material, light2Dir, light2Color);
       material.uniforms.uFogColor.value.copy(fog);
       material.uniforms.uFogDensity.value = density;
     }
@@ -1848,6 +1902,7 @@ export class UnifiedViewer {
       material.uniforms.uSunDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uUp.value = [up.x, up.y, up.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
+      applySecondSun(material, light2Dir, light2Color);
       // Sky radiance tracks optical depth: thin atmospheres barely glow.
       material.uniforms.uStrength.value =
         Math.exp(-this.altitudeKm / (10 * scaleHeightKm)) *

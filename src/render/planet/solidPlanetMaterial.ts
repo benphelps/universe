@@ -1,4 +1,5 @@
 import { Color, ShaderMaterial } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 import { seedFromHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import type { Characterization } from '../../universe/planet/types';
@@ -26,6 +27,8 @@ varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform vec3 uSeedOffset;
 uniform vec3 uLandA;
 uniform vec3 uLandB;
@@ -89,7 +92,9 @@ void main() {
   float specular = pow(max(dot(normal, halfDir), 0.0), 90.0)
     * oceanMask * (1.0 - iceMask) * (1.0 - cloudMask) * 0.5;
 
-  vec3 color = surface * uLightColor * (diffuse + 0.004) + uLightColor * specular * diffuse;
+  float diffuse2 = max(dot(normal, uLight2Dir), 0.0) * shadowFactor(vWorldPos, uLight2Dir);
+  vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2)
+    + uLightColor * specular * diffuse;
 
   // Magma worlds glow through the night side along crack networks.
   if (uLavaGlow > 0.0) {
@@ -117,6 +122,7 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       ...createShadowUniforms(),
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
       uLandA: { value: appearance.landColorA },
       uLandB: { value: appearance.landColorB },

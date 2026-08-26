@@ -1,6 +1,7 @@
 import { Group, Mesh, ShaderMaterial, SphereGeometry, Vector3, Vector4 } from 'three';
 import type { Characterization } from '../../universe/planet/types';
 import type { RingSystem } from '../../universe/rings/types';
+import { applySecondSun } from '../lighting/secondSun';
 import { createAtmosphereShell } from './atmosphereShell';
 import { createGiantMaterial } from './giantMaterial';
 import { createRingMesh } from './ringMaterial';
@@ -65,14 +66,21 @@ export class PlanetObject {
     this.spinRadPerDay = (2 * Math.PI * 24) / physical.rotation.periodHours;
   }
 
-  /** Advance spin and update the star-light direction (world space, toward the star). */
-  update(simTimeDays: number, lightDirWorld: Vector3, lightColor: [number, number, number]): void {
+  /** Advance spin and update the star-light directions (world space, toward each star). */
+  update(
+    simTimeDays: number,
+    lightDirWorld: Vector3,
+    lightColor: [number, number, number],
+    light2Dir: Vector3 | null = null,
+    light2Color: readonly [number, number, number] | null = null,
+  ): void {
     this.body.rotation.y = simTimeDays * this.spinRadPerDay;
     for (const material of this.materials) {
       const uniforms = material.uniforms;
       uniforms.uLightDir.value = [lightDirWorld.x, lightDirWorld.y, lightDirWorld.z];
       if (uniforms.uLightColor) uniforms.uLightColor.value.setRGB(...lightColor);
       if (uniforms.uTimeDays) uniforms.uTimeDays.value = simTimeDays;
+      applySecondSun(material, light2Dir, light2Color);
     }
     // Ring shadows follow the tilted equatorial plane.
     const ringNormal = new Vector3(0, 1, 0).applyQuaternion(this.group.quaternion);

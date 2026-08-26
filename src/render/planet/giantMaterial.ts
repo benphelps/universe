@@ -1,4 +1,5 @@
 import { Color, ShaderMaterial } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
@@ -26,6 +27,8 @@ varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform vec3 uSeedOffset;
 uniform vec3 uZoneColor;
 uniform vec3 uBeltColor;
@@ -86,7 +89,8 @@ void main() {
   float mu = clamp(dot(normal, viewDir), 0.0, 1.0);
   float limb = 1.0 - 0.45 * (1.0 - mu);
 
-  vec3 color = surface * uLightColor * (diffuse + 0.004) * limb;
+  float diffuse2 = max(dot(normal, uLight2Dir), 0.0) * shadowFactor(vWorldPos, uLight2Dir);
+  vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2) * limb;
 
   // Hot giants radiate their own heat on the night side.
   float night = 1.0 - smoothstep(-0.1, 0.2, ndotl);
@@ -107,6 +111,7 @@ export function createGiantMaterial(physical: Characterization): ShaderMaterial 
       ...createShadowUniforms(),
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
       uZoneColor: { value: banding.zoneColor },
       uBeltColor: { value: banding.beltColor },

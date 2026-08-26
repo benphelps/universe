@@ -1,4 +1,5 @@
 import { AdditiveBlending, Color, Mesh, ShaderMaterial, SphereGeometry } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 import type { Characterization } from '../../universe/planet/types';
 
 const VERTEX = /* glsl */ `
@@ -20,6 +21,8 @@ varying vec3 vWorldPos;
 uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform float uStrength;
 
 void main() {
@@ -29,7 +32,8 @@ void main() {
   float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.2);
   // Scattering needs sunlight: fade across the terminator, tint by the star.
   float day = clamp(dot(normal, uLightDir) * 0.8 + 0.25, 0.0, 1.0);
-  gl_FragColor = vec4(uColor * uLightColor * fresnel * day * uStrength, 1.0);
+  float day2 = clamp(dot(normal, uLight2Dir) * 0.8 + 0.25, 0.0, 1.0);
+  gl_FragColor = vec4(uColor * (uLightColor * day + uLight2Color * day2) * fresnel * uStrength, 1.0);
 }
 `;
 
@@ -53,6 +57,7 @@ export function createAtmosphereShell(
       uColor: { value: atmosphere.scatteringColor },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uStrength: {
         value: 1.2 * Math.min(1, atmosphere.surfacePressureBar ** 0.4 || 0.3),
       },

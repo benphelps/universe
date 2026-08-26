@@ -1,4 +1,5 @@
 import { AdditiveBlending, BackSide, Color, Mesh, ShaderMaterial, SphereGeometry } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 
 const VERTEX = /* glsl */ `
 varying vec3 vDir;
@@ -15,6 +16,8 @@ varying vec3 vDir;
 uniform vec3 uSkyColor;
 uniform vec3 uLightColor;
 uniform vec3 uSunDir;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform vec3 uUp;
 uniform float uStrength;
 
@@ -26,8 +29,10 @@ void main() {
   float horizon = pow(1.0 - clamp(elevation, 0.0, 1.0), 1.6);
   float sunGlow = pow(max(dot(vDir, uSunDir), 0.0), 9.0);
 
-  vec3 sky = uSkyColor * uLightColor * sunElevation * (0.35 + 0.65 * horizon);
-  sky += uLightColor * sunGlow * sunElevation * 0.55;
+  float sunElevation2 = clamp(dot(uLight2Dir, uUp) * 2.5 + 0.15, 0.0, 1.0);
+  float sunGlow2 = pow(max(dot(vDir, uLight2Dir), 0.0), 9.0);
+  vec3 sky = uSkyColor * (uLightColor * sunElevation + uLight2Color * sunElevation2) * (0.35 + 0.65 * horizon);
+  sky += uLightColor * sunGlow * sunElevation * 0.55 + uLight2Color * sunGlow2 * sunElevation2 * 0.55;
 
   // Scattering adds light; it never occludes, so the sun's disc (and
   // anything else bright enough) blazes through the daytime sky.
@@ -48,6 +53,7 @@ export function createSkyDome(scatteringColor: [number, number, number]): Mesh {
     uniforms: {
       uSkyColor: { value: new Color(...scatteringColor) },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uSunDir: { value: [0, 0, 1] },
       uUp: { value: [0, 1, 0] },
       uStrength: { value: 1 },

@@ -1,4 +1,5 @@
 import { BufferGeometry, Color, IcosahedronGeometry, ShaderMaterial } from 'three';
+import { secondSunUniforms } from '../lighting/secondSun';
 
 const VERTEX = /* glsl */ `
 varying vec3 vColor;
@@ -33,12 +34,15 @@ varying vec3 vViewPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 
 void main() {
   float diffuse = max(dot(normalize(vNormal), uLightDir), 0.0);
-  vec3 color = vColor * uLightColor * (diffuse + 0.02);
+  float diffuse2 = max(dot(normalize(vNormal), uLight2Dir), 0.0);
+  vec3 color = vColor * (uLightColor * (diffuse + 0.02) + uLight2Color * diffuse2);
   float fog = 1.0 - exp(-length(vViewPos) * uFogDensity);
   gl_FragColor = vec4(mix(color, uFogColor, fog), 1.0);
 }
@@ -52,6 +56,7 @@ export function createScatterMaterial(): ShaderMaterial {
     uniforms: {
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
+      ...secondSunUniforms(),
       uFogColor: { value: new Color(0, 0, 0) },
       uFogDensity: { value: 0 },
     },
