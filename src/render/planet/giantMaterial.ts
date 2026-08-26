@@ -125,6 +125,15 @@ void main() {
     // wander with longitude, and the boundaries are wakes, not lines.
     // The stirring rides everywhere and doubles where the model says
     // the shear is.
+    float hemi = sign(p.y + 1e-6);
+    float capEdge = uPolar.x;
+    if (uPolar.z > 0.5) {
+      capEdge += 0.03 * cos(uPolar.z * lon * hemi + uTimeDays * uPolar.w);
+    }
+    // Zonal anisotropy and stirring belong to the jets: both fade into
+    // the caps, where the turbulence is isotropic (as Juno found).
+    float zonality = 1.0 - smoothstep(capEdge - 0.18, capEdge + 0.04, abs(lat));
+
     float edgeFactor = 0.0;
     for (int i = 1; i < ${MAX_BANDS}; i++) {
       if (i >= uBandCount) break;
@@ -134,12 +143,13 @@ void main() {
     int band0 = bandAt(lat);
     float advLon = lon + uTimeDays * uBands[band0].z;
     vec3 e = vec3(cos(lat) * cos(advLon), sin(lat), cos(lat) * sin(advLon));
-    float amp = (0.35 + 0.65 * edgeFactor) * (0.35 + 0.65 * uContrast);
+    float amp = (0.35 + 0.65 * edgeFactor) * (0.35 + 0.65 * uContrast)
+      * mix(0.3, 1.0, zonality);
     float w1 = snoise(vec3(e.x, e.y * 2.2, e.z) * 1.7 + uSeedOffset + vec3(0.0, 0.0, churnT * 0.3));
     float w2 = snoise(vec3(e.x, e.y * 3.4, e.z) * 4.4 - uSeedOffset.yzx + vec3(0.0, churnT * 0.6, 0.0));
     float w3 = snoise(vec3(e.x, e.y * 5.0, e.z) * 11.0 + uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
     float warp = amp * (0.06 * w1 + 0.03 * w2 + 0.013 * w3);
-    float wlat = lat + warp;
+    float wlat = clamp(lat + warp, -1.55, 1.55);
     int band = bandAt(wlat);
     vec3 bandColor = bandColorAt(wlat, band);
     // Decadal fade cycles: fresh white deck buries a belt's color,
@@ -153,8 +163,9 @@ void main() {
     // The deck: churned cloud texture advected with the band's own jet.
     float lonAdv = lon + uTimeDays * uBands[band].z;
     vec3 q = vec3(cos(wlat) * cos(lonAdv), sin(wlat), cos(wlat) * sin(lonAdv));
-    float deck = fbm(vec3(q.x, q.y * 4.0, q.z) * 3.0 + uSeedOffset + vec3(0.0, 0.0, churnT));
-    float fine = fbm(vec3(q.x, q.y * 7.0, q.z) * 9.0 + uSeedOffset.yzx
+    float deck = fbm(vec3(q.x, q.y * mix(1.0, 4.0, zonality), q.z) * 3.0 + uSeedOffset
+      + vec3(0.0, 0.0, churnT));
+    float fine = fbm(vec3(q.x, q.y * mix(1.0, 7.0, zonality), q.z) * 9.0 + uSeedOffset.yzx
       + vec3(0.0, churnT * 1.6, 0.0));
     surface = bandColor * (1.0 + uContrast * (0.5 * deck + 0.28 * fine));
     cloudH += uContrast * (0.2 * deck + 0.055 * fine);
@@ -211,24 +222,19 @@ void main() {
     // stirred deck, each fading in as the pixel footprint shrinks —
     // the deck keeps resolving all the way down.
     if (microGate > 0.01) {
-      float micro = fbm(vec3(q.x, q.y * 5.0, q.z) * 24.0 + uSeedOffset.zxy
+      float micro = fbm(vec3(q.x, q.y * mix(1.0, 5.0, zonality), q.z) * 24.0 + uSeedOffset.zxy
         + vec3(churnT * 1.8, 0.0, 0.0));
       surface *= 1.0 + uContrast * 0.2 * micro * microGate;
       cloudH += uContrast * 0.06 * micro * microGate;
     }
     if (ultraGate > 0.01) {
-      float ultra = fbm(vec3(q.x, q.y * 4.0, q.z) * 85.0 + uSeedOffset.xzy
+      float ultra = fbm(vec3(q.x, q.y * mix(1.0, 4.0, zonality), q.z) * 85.0 + uSeedOffset.xzy
         + vec3(0.0, churnT * 2.6, 0.0));
       surface *= 1.0 + uContrast * 0.14 * ultra * ultraGate;
       cloudH += uContrast * 0.035 * ultra * ultraGate;
     }
 
     // The polar regime: hood, hexagon-analog cap edge, cyclone cluster.
-    float hemi = sign(p.y + 1e-6);
-    float capEdge = uPolar.x;
-    if (uPolar.z > 0.5) {
-      capEdge += 0.03 * cos(uPolar.z * lon * hemi + uTimeDays * uPolar.w);
-    }
     float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(wlat));
     if (cap > 0.01) {
       float colat = 1.5707963 - abs(lat);
@@ -237,13 +243,20 @@ void main() {
       // the swirl angle grows toward the pole, shearing isotropic
       // texture into converging filaments the way a real vortex winds
       // its clouds.
-      float windRad = hemi * (6.5 * smooth01((abs(lat) - capEdge + 0.25) / 0.9)
+      // The winding saturates well before the pole (a solid-body eye,
+      // not a shear singularity), and only the large structure takes
+      // the full spiral: small eddies sheared to threads re-form, so
+      // the finer octaves stay nearly isotropic — no fringe moiré, no
+      // stretched texels.
+      float windRad = hemi * (3.2 * smooth01((abs(lat) - capEdge + 0.25) / 0.75)
         + uTimeDays * uPolar.w * 2.0);
       vec3 ps = rotateY(p, windRad);
+      vec3 psFine = rotateY(p, windRad * 0.35);
+      vec3 psMicro = rotateY(p, windRad * 0.12);
       float polarDeck = fbm(ps * 5.0 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5));
-      float polarFine = fbm(ps * 15.0 - uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
+      float polarFine = fbm(psFine * 15.0 - uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
       float polarMicro = microGate > 0.01
-        ? fbm(ps * 42.0 + uSeedOffset.xzy + vec3(0.0, churnT * 1.5, 0.0)) * microGate
+        ? fbm(psMicro * 42.0 + uSeedOffset.xzy + vec3(0.0, churnT * 1.5, 0.0)) * microGate
         : 0.0;
       vec3 hood = uHoodColor
         * (1.0 + uContrast * (0.4 * polarDeck + 0.24 * polarFine + 0.18 * polarMicro));
@@ -267,12 +280,25 @@ void main() {
         vec2 d = pp - c;
         float rr = dot(d, d) * sizeInv;
         if (rr > 7.0) continue;
-        float ang = atan(d.y, d.x);
-        float arms = 0.5 + 0.5 * sin(ang * 3.0 + float(i) * 2.7 + sqrt(rr) * 6.0
-          - uTimeDays * (2.2 + 0.3 * float(i)) * hemi);
+        // Each cyclone winds its own patch of cloud: a solid-body core
+        // whose swirl decays outward shears local noise into spiral
+        // arms — organic, unique per vortex, resolving on approach.
+        float w = hemi * ((2.0 + 0.3 * float(i)) * exp(-rr * 0.45)
+          + uTimeDays * (1.5 + 0.25 * float(i)));
+        float cw = cos(w);
+        float sw = sin(w);
+        vec2 dw = vec2(cw * d.x - sw * d.y, sw * d.x + cw * d.y) * sqrt(sizeInv);
+        vec2 df = vec2(cos(w * 0.3) * d.x - sin(w * 0.3) * d.y,
+          sin(w * 0.3) * d.x + cos(w * 0.3) * d.y) * sqrt(sizeInv);
+        vec3 vp = vec3(dw * 1.5, float(i) * 3.7);
+        float vn = fbm(vp * 1.6 + uSeedOffset.xzy);
+        float vf = microGate > 0.01
+          ? 0.5 * microGate * snoise(vec3(df * 4.5, float(i) * 3.7) - uSeedOffset.yxz
+              + vec3(0.0, churnT, 0.0))
+          : 0.0;
         float core = exp(-rr * 0.8);
         dug += core;
-        armsSum += core * arms;
+        armsSum += core * (0.55 + 0.8 * vn + vf);
       }
       dug = clamp(dug, 0.0, 1.0);
       surface = mix(surface, uHoodColor * (0.6 + 0.5 * clamp(armsSum, 0.0, 1.0)), dug * cap * 0.7);
