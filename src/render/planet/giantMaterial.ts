@@ -71,6 +71,12 @@ float smooth01(float x) {
   return t * t * (3.0 - 2.0 * t);
 }
 
+vec3 rotateY(vec3 p, float a) {
+  float c = cos(a);
+  float s = sin(a);
+  return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+}
+
 int bandAt(float lat) {
   int band = 0;
   for (int i = 0; i < ${MAX_BANDS}; i++) {
@@ -103,6 +109,11 @@ void main() {
   float lat = asin(clamp(p.y, -1.0, 1.0));
   float lon = atan(p.z, p.x);
   float churnT = uTimeDays * uChurnPerDay;
+  // Pixel footprint on the unit sphere: micro-octaves fade in as the
+  // camera closes, so approach keeps resolving without paying at range.
+  float footprint = length(fwidth(p));
+  float microGate = 1.0 - smoothstep(0.0006, 0.0028, footprint);
+  float ultraGate = 1.0 - smoothstep(0.00012, 0.0007, footprint);
   vec3 surface;
   float cloudHOut = 0.5;
 
@@ -180,10 +191,36 @@ void main() {
       float core = exp(-rr * 1.2);
       float rim = exp(-pow((sqrt(rr) - 1.0) * 3.2, 2.0));
       float fade = s.z < 0.0 ? 1.0 - smooth01((s.w - 0.7) / 0.3) : 1.0;
-      surface = mix(surface, stormColor * (0.94 + 0.12 * swirl), clamp(core * 1.25, 0.0, 1.0) * fade);
+      // Wound cloud lanes: the anticyclone's spiral annuli, turning
+      // with the hemisphere's sense, resolving further on approach.
+      float sang = atan(dLat, dLon);
+      float rn = sqrt(rr);
+      float lanes = sin(rn * 6.5 - sang * 2.0 * sign(s.x + 1e-6) + swirl * 2.2
+        - churnT * 1.4);
+      float laneFine = microGate * snoise(vec3(dLon, dLat, 1.7) * (22.0 / sz)
+        + uSeedOffset.yzx + vec3(0.0, churnT * 1.2, 0.0));
+      vec3 stormDeck = stormColor * (0.9 + 0.1 * swirl + 0.09 * lanes * core + 0.08 * laneFine);
+      surface = mix(surface, stormDeck, clamp(core * 1.25, 0.0, 1.0) * fade);
       surface = mix(surface, stormColor * 1.13, rim * 0.45 * fade);
+      cloudH += (0.05 * lanes * core + 0.04 * laneFine) * fade;
       // Storm heads tower above the deck, fresh ones highest.
       cloudH += core * fade * (s.z < 0.0 ? 0.55 : mix(0.6, 0.25, s.w));
+    }
+
+    // Close-approach texture: micro and ultra octaves of the same
+    // stirred deck, each fading in as the pixel footprint shrinks —
+    // the deck keeps resolving all the way down.
+    if (microGate > 0.01) {
+      float micro = fbm(vec3(q.x, q.y * 5.0, q.z) * 24.0 + uSeedOffset.zxy
+        + vec3(churnT * 1.8, 0.0, 0.0));
+      surface *= 1.0 + uContrast * 0.2 * micro * microGate;
+      cloudH += uContrast * 0.06 * micro * microGate;
+    }
+    if (ultraGate > 0.01) {
+      float ultra = fbm(vec3(q.x, q.y * 4.0, q.z) * 85.0 + uSeedOffset.xzy
+        + vec3(0.0, churnT * 2.6, 0.0));
+      surface *= 1.0 + uContrast * 0.14 * ultra * ultraGate;
+      cloudH += uContrast * 0.035 * ultra * ultraGate;
     }
 
     // The polar regime: hood, hexagon-analog cap edge, cyclone cluster.
@@ -195,16 +232,23 @@ void main() {
     float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(wlat));
     if (cap > 0.01) {
       float colat = 1.5707963 - abs(lat);
-      // The cap keeps its weather: the deck shears into a polar
-      // spiral — azimuth advances with depth toward the pole — so the
-      // hood is streaked vortex cloud, not an airbrushed disc.
-      float spiralLon = lon * hemi + colat * 8.0 + uTimeDays * uPolar.w * 2.0;
-      vec3 sp = vec3(cos(spiralLon) * (0.3 + colat * 2.5), sin(spiralLon) * (0.3 + colat * 2.5),
-        2.0 * hemi);
-      float polarDeck = fbm(sp * 2.2 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5));
-      vec3 hood = uHoodColor * (1.0 + uContrast * (0.4 * polarDeck));
+      // The cap keeps its weather at full resolution: differential
+      // rotation winds the deck noise itself into the polar spiral —
+      // the swirl angle grows toward the pole, shearing isotropic
+      // texture into converging filaments the way a real vortex winds
+      // its clouds.
+      float windRad = hemi * (6.5 * smooth01((abs(lat) - capEdge + 0.25) / 0.9)
+        + uTimeDays * uPolar.w * 2.0);
+      vec3 ps = rotateY(p, windRad);
+      float polarDeck = fbm(ps * 5.0 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5));
+      float polarFine = fbm(ps * 15.0 - uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
+      float polarMicro = microGate > 0.01
+        ? fbm(ps * 42.0 + uSeedOffset.xzy + vec3(0.0, churnT * 1.5, 0.0)) * microGate
+        : 0.0;
+      vec3 hood = uHoodColor
+        * (1.0 + uContrast * (0.4 * polarDeck + 0.24 * polarFine + 0.18 * polarMicro));
       surface = mix(surface, hood, cap * 0.6);
-      cloudH = mix(cloudH, 0.5 + 0.3 * polarDeck, cap * 0.65);
+      cloudH = mix(cloudH, 0.5 + 0.3 * polarDeck + 0.15 * polarFine, cap * 0.65);
 
       // The cyclone cluster: small spiral-armed vortices ringing the
       // central one, drifting slowly, dug into the deck — not dots.
@@ -308,11 +352,31 @@ void main() {
       cos(uAurora.y),
       sin(uAurora.y) * sin(uAurora.z)
     );
-    float mColat = acos(clamp(abs(dot(p, mAxis)), 0.0, 1.0));
-    float oval = exp(-pow((mColat - uAurora.w) / 0.05, 2.0));
+    // Magnetic-frame coordinates: colatitude sets the oval, longitude
+    // carries the ray structure.
+    vec3 m1 = normalize(cross(mAxis, vec3(0.0, 0.0, 1.0)));
+    vec3 m2 = cross(mAxis, m1);
+    float mDot = dot(p, mAxis);
+    float mColat = acos(clamp(abs(mDot), 0.0, 1.0));
+    float mLon = atan(dot(p, m2), dot(p, m1)) * sign(mDot + 1e-6);
+    // A thin curtained core inside a faint wide glow.
+    float core = exp(-pow((mColat - uAurora.w) / 0.022, 2.0));
+    float glow = 0.3 * exp(-pow((mColat - uAurora.w) / 0.09, 2.0));
+    // Rays: fine filaments along the oval, flickering and drifting,
+    // sharpening further as the camera closes.
+    float rays = 0.4
+      + 0.6 * pow(0.5 + 0.5 * snoise(vec3(cos(mLon), sin(mLon), mColat * 4.0) * 11.0
+          + uSeedOffset + vec3(0.0, 0.0, uTimeDays * 1.7)), 2.0);
+    rays *= 0.55 + 0.45 * snoise(vec3(cos(mLon), sin(mLon), 2.6) * 33.0
+      - uSeedOffset.yzx + vec3(uTimeDays * 2.3, 0.0, 0.0));
+    if (microGate > 0.01) {
+      rays *= 1.0 + 0.5 * microGate
+        * snoise(vec3(cos(mLon), sin(mLon), mColat * 9.0) * 90.0 + uSeedOffset.zxy
+            + vec3(0.0, uTimeDays * 3.1, 0.0));
+    }
     float night = 1.0 - smoothstep(-0.05, 0.25, ndotl);
-    float curtain = 0.55 + 0.45 * snoise(vec3(p.x, p.z, uTimeDays * 0.6) * 9.0 + uSeedOffset);
-    color += vec3(0.5, 0.32, 0.85) * oval * uAurora.x * (0.03 + 0.6 * night) * curtain;
+    color += vec3(0.5, 0.32, 0.85) * (core * rays + glow * (0.5 + 0.5 * rays))
+      * uAurora.x * (0.05 + 0.75 * night);
   }
 
   gl_FragColor = vec4(color, 1.0);
