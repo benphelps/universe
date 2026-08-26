@@ -51,10 +51,14 @@ import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
 import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
-import { TerrainChunkManager } from '../render/terrain/chunkManager';
+import { SPLIT_RATIO, TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createCloudShell } from '../render/terrain/cloudShell';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
-import { createRockGeometry, createScatterMaterial } from '../render/terrain/scatterObjects';
+import {
+  createRockGeometry,
+  createScatterMaterial,
+  createTreeGeometry,
+} from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
@@ -76,16 +80,19 @@ import {
   beltBandCount,
   beltCellAsteroids,
 } from '../universe/smallbody/beltRegion';
+import { asteroidGravityMs2 } from '../universe/smallbody/asteroids';
 import { notableAsteroids } from '../universe/smallbody/notable';
 import type { Asteroid } from '../universe/smallbody/types';
 import type { Star } from '../universe/star/types';
 import { createAsteroidField } from '../universe/surface/asteroidField';
 import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
+import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
 import { getSkyField } from './skyService';
+import { GroundWalker, MAX_WADE_M, type WalkSurface } from './groundWalker';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
 
@@ -108,6 +115,11 @@ const ORIGIN = new Vector3();
  *  between glints stays hoverable for nebulae, rifts, and the other
  *  extended sky objects; solid pickables keep their generous reach. */
 const STAR_SNAP_PX = 10;
+
+/** Auto ride-out pace: decades of altitude per second. Constant speed
+ *  per scale decade — ground to galaxy frame spans ~17 decades (~28 s),
+ *  a system view about half that. */
+const RIDE_OUT_DECADES_PER_SEC = 0.6;
 
 export type FocusTarget = 'star' | number;
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
@@ -212,7 +224,7 @@ export class UnifiedViewer {
   private readonly pipeline: RenderPipeline;
   private readonly controls: OrbitControls;
   private readonly lut = createTemperatureLutTexture();
-  private readonly terrainMaterial = createTerrainMaterial();
+  private readonly terrainMaterial = createTerrainMaterial(SPLIT_RATIO);
   private readonly scatterMaterial = createScatterMaterial();
   /** Heliocentric content riding the focus translation and ground spin. */
   private readonly heliocentric = new Group();
@@ -277,6 +289,10 @@ export class UnifiedViewer {
   private rightShiftHeld = false;
   /** Wheel ride input, applied to the altitude during the next frame. */
   private pendingWheelFactor = 1;
+  /** Auto wheel ride: >0 while the slow pull-back to the galaxy runs. */
+  private rideOutRate = 0;
+  /** Fired when the automatic ride out starts, ends, or is cut short. */
+  onRideOutChange: ((active: boolean) => void) | null = null;
   private readonly onKeyChange = (e: KeyboardEvent): void => {
     if (e.code !== 'ShiftRight') return;
     this.rightShiftHeld = e.type === 'keydown';
@@ -288,14 +304,17 @@ export class UnifiedViewer {
 
   /**
    * Free flight belongs to the space views. On the ground — a solid
-   * body below the altitude where the horizon gaze engages — the
-   * original surface controls stand untouched until real WASD walking
-   * lands as its own feature.
+   * body below the altitude where the horizon gaze engages — descent
+   * and walking own the camera.
    */
   private freeFlightAvailable(): boolean {
     const grounded = this.field !== null || this.focusAsteroid !== null;
     return !grounded || this.altitudeKm > this.radiusKm * 0.12;
   }
+  /** WASD locomotion once the wheel ride touches down. */
+  private readonly walker = new GroundWalker();
+  private walkHint: HTMLDivElement | null = null;
+  private walkHintText = '';
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
@@ -371,9 +390,26 @@ export class UnifiedViewer {
     // Right-drag turns the head at low altitude (left-drag moves over
     // the surface via OrbitControls).
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
-      if ((e.buttons & 2) === 0 || this.rightShiftHeld) return;
+      if ((e.buttons & 2) === 0 || this.rightShiftHeld || this.walker.active) return;
       this.headingRad -= e.movementX * 0.004;
       this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.003));
+    });
+
+    // On foot the mouse is the head: click takes pointer lock, motion
+    // steers the gaze, Escape hands the cursor back.
+    this.pipeline.renderer.domElement.addEventListener('click', () => {
+      if (this.walker.phase !== 'walking') return;
+      if (document.pointerLockElement !== this.pipeline.renderer.domElement) {
+        this.pipeline.renderer.domElement.requestPointerLock();
+      }
+    });
+    this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
+      if (document.pointerLockElement !== this.pipeline.renderer.domElement) return;
+      if (this.walker.phase !== 'walking') return;
+      // Head convention, not the drag handler's grab-the-world sign:
+      // mouse right looks right.
+      this.headingRad += e.movementX * 0.0022;
+      this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - e.movementY * 0.0022));
     });
 
     // Free flight in every view: right-shift + drag grabs space itself —
@@ -404,6 +440,7 @@ export class UnifiedViewer {
       'wheel',
       (e) => {
         e.preventDefault();
+        this.stopRideOut();
         this.pendingWheelFactor *= 1.0016 ** e.deltaY;
       },
       { passive: false },
@@ -433,6 +470,10 @@ export class UnifiedViewer {
     this.tooltip.id = 'pick-tip';
     this.tooltip.style.display = 'none';
     container.appendChild(this.tooltip);
+    this.walkHint = document.createElement('div');
+    this.walkHint.id = 'walk-hint';
+    this.walkHint.style.display = 'none';
+    container.appendChild(this.walkHint);
     const lineSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     lineSvg.id = 'pick-line';
     lineSvg.setAttribute('width', '100%');
@@ -445,6 +486,7 @@ export class UnifiedViewer {
     container.appendChild(lineSvg);
 
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
+      if (document.pointerLockElement) return;
       const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
       this.cursor = [e.clientX - rect.left, e.clientY - rect.top];
       this.dragging = e.buttons !== 0;
@@ -461,7 +503,7 @@ export class UnifiedViewer {
       this.dragging = false;
       if (!down || e.button !== 0) return;
       if (Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
-      if (this.hovered?.target) this.onPick?.(this.hovered.target);
+      if (this.hovered?.target && !this.walker.active) this.onPick?.(this.hovered.target);
     });
 
     window.addEventListener('resize', this.onResize);
@@ -724,6 +766,9 @@ export class UnifiedViewer {
           this.scatterMaterial,
           { type: 'init', seedHex: planet.physical.seedHex, physical: planet.physical },
           this.radiusKm,
+          this.field.params.biosphere
+            ? deriveTreeSpecies(this.field.params).map(createTreeGeometry)
+            : [],
         );
         if (planet.physical.atmosphere.class !== 'none') {
           this.skyDome = createSkyDome(planet.physical.atmosphere.scatteringColor);
@@ -838,6 +883,7 @@ export class UnifiedViewer {
     // new focus and pending ride input clears.
     this.controls.target.set(0, 0, 0);
     this.pendingWheelFactor = 1;
+    this.stopRideOut();
     this.controls.update();
 
     // Descending pitches toward screen-up: the orbit view keeps north
@@ -900,12 +946,33 @@ export class UnifiedViewer {
     return false;
   }
 
+  /** Begin the slow pull-back: a hands-free wheel ride from wherever
+   *  the camera stands — a planet's ground included — out to the
+   *  galaxy frame. Orbit drag still steers; the wheel, a travel, or a
+   *  second press takes the ride back. */
+  startRideOut(): void {
+    if (this.rideOutRate > 0) return;
+    this.rideOutRate = RIDE_OUT_DECADES_PER_SEC;
+    this.onRideOutChange?.(true);
+  }
+
+  stopRideOut(): void {
+    if (this.rideOutRate === 0) return;
+    this.rideOutRate = 0;
+    this.onRideOutChange?.(false);
+  }
+
+  get ridingOut(): boolean {
+    return this.rideOutRate > 0;
+  }
+
   /** Find the pickable nearest the cursor and drive the tooltip. */
   private updateHover(): void {
     const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
     let best: Pickable | null = null;
     let softStarBest = false;
-    if (this.cursor && !this.dragging) {
+    // On foot the cursor is the head, not a probe.
+    if (this.cursor && !this.dragging && !this.walker.active) {
       const [cx, cy] = this.cursor;
       const v = new Vector3();
       let bestPx = 26;
@@ -1449,6 +1516,8 @@ export class UnifiedViewer {
   }
 
   private clearFocus(): void {
+    this.walker.abort();
+    if (document.pointerLockElement) document.exitPointerLock();
     this.chunkManager?.dispose();
     this.chunkManager = null;
     this.oceanMaterial?.dispose();
@@ -1643,6 +1712,55 @@ export class UnifiedViewer {
     this.pipeline.setSize(width, height);
   }
 
+  /** The focus body as the walker's surface, when it has one to stand on. */
+  private walkSurface(): WalkSurface | null {
+    const field = this.field;
+    if (!field) return null;
+    const gravityMs2 = this.focusPlanet
+      ? this.focusPlanet.physical.bulk.gravityMs2
+      : this.focusAsteroid
+        ? asteroidGravityMs2(this.focusAsteroid)
+        : 0;
+    if (gravityMs2 <= 0) return null;
+    // Feet low-pass the ground: bands finer than a stride (~0.7 m
+    // wavelength) are texture to step over, not terrain to bob across.
+    const strideLodRad = 0.00035 / this.radiusKm;
+    return {
+      radiusKm: this.radiusKm,
+      gravityMs2,
+      heightM: (u) => field.heightAt(u, strideLodRad),
+      waterLevelM: (u) => field.waterLevelAt(u),
+    };
+  }
+
+  /** One quiet line of guidance for the ground regime. */
+  private updateWalkHint(waterDepthM: number): void {
+    if (!this.walkHint) return;
+    let text = '';
+    if (this.walker.phase === 'walking') {
+      text =
+        document.pointerLockElement === this.pipeline.renderer.domElement
+          ? 'w a s d walk · shift run · space jump · scroll up to lift off'
+          : 'click to take the controls';
+    } else if (this.walker.phase === 'landing') {
+      text = 'touching down';
+    } else if (
+      this.walker.phase === 'off' &&
+      this.field &&
+      this.altitudeKm <= this.minAltitudeKm * 1.02
+    ) {
+      text =
+        waterDepthM > MAX_WADE_M
+          ? 'open water — find a shore to land'
+          : 'scroll in to land';
+    }
+    if (text !== this.walkHintText) {
+      this.walkHintText = text;
+      this.walkHint.textContent = text;
+      this.walkHint.style.display = text ? 'block' : 'none';
+    }
+  }
+
   private frame(): void {
     if (this.disposed) return;
     const now = performance.now();
@@ -1657,18 +1775,22 @@ export class UnifiedViewer {
       );
       // Orbit rotation yields to panning only where free flight applies;
       // descending into the surface regime restores the classic controls
-      // and re-anchors the orbit (and the wheel ride) on the body.
+      // and re-anchors the orbit (and the wheel ride) on the body. On
+      // foot, the walker owns the camera position outright.
+      const walking = this.walker.active;
       const freeFlight = this.freeFlightAvailable();
-      this.controls.enabled = !(this.rightShiftHeld && freeFlight);
-      if (!freeFlight && this.controls.target.lengthSq() > 0) {
-        this.controls.target.set(0, 0, 0);
+      this.controls.enabled = !walking && !(this.rightShiftHeld && freeFlight);
+      if (!walking) {
+        if (!freeFlight && this.controls.target.lengthSq() > 0) {
+          this.controls.target.set(0, 0, 0);
+        }
+        this.controls.update();
       }
-      this.controls.update();
 
-      const up = this.camera.position.clone().normalize();
-      const groundKm = this.field
-        ? Math.max(this.field.heightAt(up), this.field.seaLevelM) / 1000
-        : 0;
+      let up = this.camera.position.clone().normalize();
+      const terrainM = this.field ? this.field.heightAt(up) : 0;
+      const waterM = this.field ? this.field.waterLevelAt(up) : -Infinity;
+      const groundKm = this.field ? Math.max(terrainM, waterM) / 1000 : 0;
       // Asteroid shapes legitimately dip far below the datum sphere.
       const floorKm = this.focusAsteroid ? -this.radiusKm * 0.6 : -this.radiusKm * 0.01;
       const surfaceKm = this.radiusKm + Math.max(groundKm, floorKm);
@@ -1677,7 +1799,39 @@ export class UnifiedViewer {
       // buttery down to the ground), or the panned anchor when free
       // flight has moved it — zoom goes where you look, not back home.
       const anchor = this.controls.target;
-      if (anchor.lengthSq() < 1) {
+      if (this.rideOutRate > 0) {
+        if (this.altitudeKm >= this.maxAltitudeKm() * 0.999) {
+          this.stopRideOut();
+        } else {
+          this.pendingWheelFactor *= 10 ** (this.rideOutRate * dtSeconds);
+          // From a standstill on the ground the first push must clear
+          // the walker's liftoff threshold whatever the frame rate.
+          if (walking && this.walker.phase === 'walking') {
+            this.pendingWheelFactor = Math.max(this.pendingWheelFactor, 1.03);
+          }
+        }
+      }
+      if (walking) {
+        if (this.pendingWheelFactor > 1.02 && this.walker.phase === 'walking') {
+          this.walker.beginLiftoff(this.minAltitudeKm * 1000);
+          if (document.pointerLockElement) document.exitPointerLock();
+        }
+        this.walker.update(dtSeconds, this.camera.position, this.headingRad);
+        up = this.camera.position.clone().normalize();
+        const walkedKm = this.field
+          ? Math.max(this.field.heightAt(up), this.field.waterLevelAt(up)) / 1000
+          : 0;
+        this.altitudeKm = Math.max(
+          this.camera.position.length() - (this.radiusKm + Math.max(walkedKm, floorKm)),
+          0.0008,
+        );
+        // A jump that beat the body's gravity: hand the camera back to
+        // the orbit regime instead of coasting upward forever.
+        if (this.walker.rising && this.altitudeKm > this.minAltitudeKm * 3) {
+          this.walker.abort();
+          if (document.pointerLockElement) document.exitPointerLock();
+        }
+      } else if (anchor.lengthSq() < 1) {
         const freeAltitudeKm = Math.max(
           this.camera.position.length() - surfaceKm,
           this.minAltitudeKm,
@@ -1687,6 +1841,17 @@ export class UnifiedViewer {
           Math.max(freeAltitudeKm * this.pendingWheelFactor, this.minAltitudeKm),
         );
         this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
+        // The wheel's floor is where the ground begins: one more notch
+        // in starts the landing glide, anywhere the water is wadable.
+        if (
+          this.field &&
+          this.pendingWheelFactor < 0.999 &&
+          freeAltitudeKm <= this.minAltitudeKm * 1.001 &&
+          waterM - terrainM <= MAX_WADE_M
+        ) {
+          const surface = this.walkSurface();
+          if (surface) this.walker.beginLanding(surface);
+        }
       } else {
         if (this.pendingWheelFactor !== 1) {
           const offset = this.camera.position.clone().sub(anchor);
@@ -1724,8 +1889,12 @@ export class UnifiedViewer {
         // blending orientations (not look-at vectors) keeps the roll
         // continuous through the transition — a radial-up look-at near
         // nadir would snap screen-up from north to the heading, which
-        // reads as the whole surface suddenly rotating.
-        const forward = heading.addScaledVector(up, -0.12 + Math.sin(this.pitchRad)).normalize();
+        // reads as the whole surface suddenly rotating. On foot the
+        // pitch is literal, so looking near-vertical works.
+        const forward = walking
+          ? heading.multiplyScalar(Math.cos(this.pitchRad)).addScaledVector(up, Math.sin(this.pitchRad))
+          : heading.addScaledVector(up, -0.12 + Math.sin(this.pitchRad));
+        forward.normalize();
         const gaze = new Matrix4().lookAt(
           this.camera.position,
           this.camera.position.clone().add(forward),
@@ -1739,12 +1908,12 @@ export class UnifiedViewer {
       // Near tracks altitude (nothing sits closer than the ground below,
       // and at interstellar heights the nearest star is parsecs away);
       // far always reaches the neighborhood — every object is at its
-      // true position, so occlusion is plain depth testing.
-      this.camera.near = Math.max(
-        0.006,
-        Math.min(2000, this.altitudeKm * 0.15),
-        this.altitudeKm * 1e-4,
-      );
+      // true position, so occlusion is plain depth testing. On foot the
+      // floor drops to centimeters; mid-distance depth precision costs
+      // are accepted until the S2 precision hardening.
+      this.camera.near = walking
+        ? Math.max(0.00006, this.altitudeKm * 0.1)
+        : Math.max(0.006, Math.min(2000, this.altitudeKm * 0.15), this.altitudeKm * 1e-4);
       this.camera.far = Math.max(
         this.camera.position.length() * 2.5,
         NEIGHBOR_RADIUS_PC * PC_KM * 2.5,
@@ -1776,6 +1945,7 @@ export class UnifiedViewer {
 
       this.updateWorld(up);
       this.updateHover();
+      this.updateWalkHint(waterM - terrainM);
 
       if (this.backdrop) {
         this.backdrop.group.position.copy(this.camera.position);
@@ -1797,7 +1967,7 @@ export class UnifiedViewer {
           Math.min(this.camera.far * 0.3, 3e15),
         );
       }
-      this.chunkManager?.update(this.camera.position);
+      this.chunkManager?.update(this.camera.position, groundKm);
       // The diagrammatic orbit overlay appears at map heights.
       this.overlay.visible = this.altitudeKm > this.radiusKm * 25;
       this.stellarOrbits.visible = this.overlay.visible;

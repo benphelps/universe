@@ -83,6 +83,8 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
 
   if (!viewer) {
     viewer = new UnifiedViewer(viewElement);
+    viewer.onRideOutChange = (active) =>
+      document.getElementById('ride')!.classList.toggle('active', active);
     // Dev/test hook: inspection access to the live viewer.
     (window as unknown as { __sim: unknown }).__sim = {
       get viewer() {
@@ -202,6 +204,14 @@ const settings = new SettingsMenu(document.getElementById('settings-corner')!, {
 });
 new ChartToggle(document.getElementById('chart')!, (visible) => {
   if (viewer) viewer.chartVisible = visible;
+});
+
+// The ride-out chip: press to start the slow pull-back to the galaxy
+// frame, press again (or roll the wheel, or travel) to take it back.
+document.getElementById('ride')!.addEventListener('click', () => {
+  if (!viewer) return;
+  if (viewer.ridingOut) viewer.stopRideOut();
+  else viewer.startRideOut();
 });
 const starPanel = new StarInfoPanel(sidebar);
 const systemPanel = new SystemInfoPanel(sidebar);

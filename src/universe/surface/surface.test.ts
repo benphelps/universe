@@ -8,6 +8,8 @@ import type { PlanetClass } from '../system/types';
 import { buildChunkMesh } from './chunkMesh';
 import { faceUvToDir } from './cubeSphere';
 import { createSurfaceField } from './field';
+import { deriveTreeSpecies, TREE_SPECIES_COUNT } from './flora';
+import { SCATTER_STRIDE, scatterForChunk } from './scatter';
 
 const SUN = generateStar(1n, { massInitial: 1, ageGyr: 4.6, feH: 0, withCompanions: false });
 const CONTEXT: CharacterizeContext = {
@@ -106,6 +108,117 @@ describe('surface field', () => {
       }
     }
   });
+
+  it('waves flatten the shore band below upland slopes', () => {
+    const norm = (p: { x: number; y: number; z: number }) => {
+      const l = Math.hypot(p.x, p.y, p.z);
+      return { x: p.x / l, y: p.y / l, z: p.z / l };
+    };
+    // A short probe: it must stay inside the wave-worked band to see it.
+    const stepRad = 12 / earthLike.params.radiusM;
+    const slopeAt = (dir: { x: number; y: number; z: number }): number => {
+      const east = norm({ x: -dir.z, y: 0, z: dir.x });
+      const a = earthLike.heightAt(norm({
+        x: dir.x + east.x * stepRad, y: dir.y, z: dir.z + east.z * stepRad,
+      }));
+      return Math.abs(a - earthLike.heightAt(dir)) / 12;
+    };
+    // Bisect dry/wet sample pairs down to the waterline. Medians, not
+    // sums: some coasts are honest wave-cut cliffs and should stay steep.
+    const beachSlopes: number[] = [];
+    const dirs = sampleDirs(500);
+    for (let i = 0; i < dirs.length - 1 && beachSlopes.length < 15; i++) {
+      let dry = dirs[i];
+      let wet = dirs[i + 1];
+      if (earthLike.heightAt(dry) < earthLike.seaLevelM) [dry, wet] = [wet, dry];
+      if (earthLike.heightAt(dry) < earthLike.seaLevelM) continue;
+      if (earthLike.heightAt(wet) >= earthLike.seaLevelM) continue;
+      for (let b = 0; b < 40; b++) {
+        const mid = norm({ x: (dry.x + wet.x) / 2, y: (dry.y + wet.y) / 2, z: (dry.z + wet.z) / 2 });
+        if (earthLike.heightAt(mid) - earthLike.seaLevelM > 0.5) dry = mid;
+        else wet = mid;
+      }
+      beachSlopes.push(slopeAt(dry));
+    }
+    const uplandSlopes: number[] = [];
+    for (const dir of dirs) {
+      const rel = earthLike.heightAt(dir) - earthLike.seaLevelM;
+      if (rel > 10 && rel < 400) uplandSlopes.push(slopeAt(dir));
+    }
+    const median = (values: number[]) => values.sort((a, b) => a - b)[values.length >> 1];
+    expect(beachSlopes.length).toBeGreaterThan(5);
+    expect(uplandSlopes.length).toBeGreaterThan(20);
+    expect(median(beachSlopes)).toBeLessThan(median(uplandSlopes) * 0.6);
+  });
+
+  it('grows deterministic tree species, and forests stand in the rain', () => {
+    const forestWorld = world(19n, 'rocky', 1, 1);
+    expect(forestWorld.params.biosphere).toBe(true);
+    const species = deriveTreeSpecies(forestWorld.params);
+    expect(species).toEqual(deriveTreeSpecies(forestWorld.params));
+    expect(species.length).toBe(TREE_SPECIES_COUNT);
+    for (const tree of species) {
+      expect(tree.trunkHM).toBeGreaterThan(2);
+      expect(tree.trunkHM).toBeLessThan(15);
+      for (const c of [...tree.barkColor, ...tree.canopyColor]) {
+        expect(c).toBeGreaterThanOrEqual(0);
+        expect(c).toBeLessThanOrEqual(1);
+      }
+    }
+    // A rainy temperate lowland cell should scatter trees on its tiles.
+    const drainage = forestWorld.drainage!;
+    const climate = forestWorld.climate!;
+    const n = drainage.grid.n;
+    let trees = 0;
+    for (let cell = 0; cell < drainage.grid.cellCount && trees === 0; cell++) {
+      if (drainage.ocean[cell]) continue;
+      if (climate.precipMmYr[cell] < 1100) continue;
+      if (climate.tempK[cell] < 272 || climate.tempK[cell] > 308) continue;
+      const face = Math.floor(cell / (n * n));
+      const rem = cell % (n * n);
+      // A mid-cell tile at quadtree level 13 (tile ≈ 870 m — scatter range).
+      const x = (rem % n) * 64 + 32;
+      const y = Math.floor(rem / n) * 64 + 32;
+      const data = scatterForChunk(forestWorld, face, 13, x, y, [0, 0, 0]);
+      if (!data) continue;
+      for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
+        if (Math.round(data[i + 5]) >= 2) trees++;
+      }
+    }
+    expect(trees).toBeGreaterThan(0);
+  });
+
+  it('carries walked-scale texture that a coarse LOD does not see', () => {
+    // A step of ~30 cm on the lightly-cratered world: full detail must
+    // vary at centimeter amplitude, while a 100 m sampling of the same
+    // spots is blind to it — the fine bands respect the Nyquist gate.
+    // (The crater-saturated worlds keep steep walls at every LOD by
+    // design, so they cannot separate the band property.)
+    // Second differences: smooth mid-band gradients cancel, so only
+    // sub-meter content registers — the coarse LOD must carry none.
+    const stepRad = 0.3 / earthLike.params.radiusM;
+    const coarseLod = 100 / earthLike.params.radiusM;
+    let fine = 0;
+    let coarse = 0;
+    const dirs = sampleDirs(200);
+    for (const dir of dirs) {
+      const curvature = (lod: number): number => {
+        const forward = { x: dir.x + stepRad, y: dir.y, z: dir.z };
+        const back = { x: dir.x - stepRad, y: dir.y, z: dir.z };
+        const lf = Math.hypot(forward.x, forward.y, forward.z);
+        const lb = Math.hypot(back.x, back.y, back.z);
+        return Math.abs(
+          earthLike.heightAt({ x: forward.x / lf, y: forward.y / lf, z: forward.z / lf }, lod) -
+            2 * earthLike.heightAt(dir, lod) +
+            earthLike.heightAt({ x: back.x / lb, y: back.y / lb, z: back.z / lb }, lod),
+        );
+      };
+      fine += curvature(0);
+      coarse += curvature(coarseLod);
+    }
+    expect(fine / dirs.length).toBeGreaterThan(0.004);
+    expect(coarse / dirs.length).toBeLessThan((fine / dirs.length) * 0.2);
+  });
 });
 
 describe('chunk meshes', () => {
@@ -141,5 +254,32 @@ describe('chunk meshes', () => {
     expect(Math.abs(field.heightAt(a) - field.heightAt(b))).toBeLessThan(
       field.params.reliefM * 0.05,
     );
+  });
+
+  it('geomorph deltas reproduce the parent-LOD surface', () => {
+    const res = 16;
+    const mesh = buildChunkMesh(field, 2, 9, 130, 260, res);
+    const tiles = 2 ** 9;
+    const lod = Math.PI / 2 / tiles / res;
+    for (let j = 0; j <= res; j += 4) {
+      for (let i = 0; i <= res; i += 4) {
+        const index = j * (res + 1) + i;
+        const world = {
+          x: mesh.positions[index * 3] + mesh.centerKm[0],
+          y: mesh.positions[index * 3 + 1] + mesh.centerKm[1],
+          z: mesh.positions[index * 3 + 2] + mesh.centerKm[2],
+        };
+        const l = Math.hypot(world.x, world.y, world.z);
+        const dir = { x: world.x / l, y: world.y / l, z: world.z / l };
+        // Removing the stored delta from the vertex radius lands on the
+        // parent-LOD height — the surface a swap must match exactly.
+        const morphedM = (l - mesh.morph[index * 2]) * 1000 - field.params.radiusM / 1000 * 1000;
+        expect(morphedM).toBeCloseTo(field.heightAt(dir, lod * 2), 0);
+        expect(mesh.morph[index * 2 + 1]).toBeCloseTo(
+          ((Math.PI / 2) * (field.params.radiusM / 1000)) / tiles,
+          6,
+        );
+      }
+    }
   });
 });

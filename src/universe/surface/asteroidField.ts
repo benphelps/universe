@@ -99,6 +99,7 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
       oceanCoverage: 0,
       tectonics: 'dead',
       craterAmplitude: 1,
+      rotationPeriodHours: asteroid.spinPeriodHours,
       erosion: 0.05,
       volcanism: 0,
       surfaceMeanK: 170,
@@ -117,5 +118,8 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
     heightAt,
     colorAt,
     seaLevelM: -Infinity,
+    waterLevelAt: () => -Infinity,
+    drainage: null,
+    climate: null,
   };
 }

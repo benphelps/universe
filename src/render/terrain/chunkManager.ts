@@ -16,13 +16,20 @@ import type { TerrainInit, TerrainRequest, TerrainResponse } from '../../workers
 import { createRockGeometry, createShrubGeometry } from './scatterObjects';
 import { buildChunkIndices } from './terrainMaterial';
 
-const RES = 48;
-const MAX_LEVEL = 17;
+/** Vertices per tile edge: the detail-resolution knob. 64 puts the
+ *  walking floor at ~4 cm spacing and sharpens every LOD ring. */
+const RES = 64;
+/** Level 22 tiles are ~2.7 m across at Earth radius. */
+const MAX_LEVEL = 22;
 /** Never show tiles coarser than this within the horizon: they are pinned,
  *  so the whole-planet base layer builds once per visit. */
 const MIN_LEVEL = 3;
-const SPLIT_RATIO = 0.45;
-const MAX_CHUNKS = 1400;
+/** Split when tile size exceeds this fraction of its distance. The
+ *  terrain material's geomorph is calibrated against the same ratio. */
+export const SPLIT_RATIO = 0.45;
+/** Denser tiles cost more each: the cap keeps worst-case GPU memory
+ *  in the same envelope it had at the old resolution. */
+const MAX_CHUNKS = 2000;
 const MAX_IN_FLIGHT = 24;
 /** Levels this coarse are never evicted: they cover zoom-out instantly. */
 const PINNED_LEVEL = 3;
@@ -46,7 +53,8 @@ interface ChunkRecord {
 
 interface WantedChunk {
   record: ChunkRecord;
-  distanceKm: number;
+  /** Camera distance, discounted for tiles ahead of the motion. */
+  priorityKm: number;
 }
 
 /**
@@ -77,6 +85,8 @@ export class TerrainChunkManager {
     private readonly scatterMaterial: ShaderMaterial | null,
     init: TerrainInit,
     radiusKm: number,
+    /** Per-species tree geometries for scatter kinds ≥ 2; owned here. */
+    private readonly treeGeometries: BufferGeometry[] = [],
   ) {
     this.radiusKm = radiusKm;
     const workerCount = Math.min(5, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
@@ -90,9 +100,26 @@ export class TerrainChunkManager {
     }
   }
 
+  /** Terrain height under the camera, km above the datum: LOD distances
+   *  measure to the local ground sphere, not the datum — on a world
+   *  whose land rides hundreds of meters above datum, datum distances
+   *  stall the quadtree exactly that far short of the walker's feet. */
+  private groundOffsetKm = 0;
+  /** Unit camera motion since last frame; zero when parked. */
+  private readonly motionDir = new Vector3();
+  private readonly lastCameraKm = new Vector3(Infinity, 0, 0);
+
   /** cameraKm is the camera's planet-local position, used for LOD and culling. */
-  update(cameraKm: Vector3): void {
+  update(cameraKm: Vector3, groundKm = 0): void {
     this.frame++;
+    this.groundOffsetKm = groundKm;
+    if (Number.isFinite(this.lastCameraKm.x)) {
+      this.motionDir.copy(cameraKm).sub(this.lastCameraKm);
+      const speed = this.motionDir.length();
+      if (speed > 1e-9) this.motionDir.divideScalar(speed);
+      else this.motionDir.set(0, 0, 0);
+    }
+    this.lastCameraKm.copy(cameraKm);
     for (const record of this.chunks.values()) {
       if (record.mesh) record.mesh.visible = false;
       if (record.waterMesh) record.waterMesh.visible = false;
@@ -130,7 +157,7 @@ export class TerrainChunkManager {
 
   /** Send the nearest-needed tiles to the workers first, up to the budget. */
   private dispatch(): void {
-    this.wanted.sort((a, b) => a.distanceKm - b.distanceKm);
+    this.wanted.sort((a, b) => a.priorityKm - b.priorityKm);
     for (const { record } of this.wanted) {
       if (this.pending.size >= MAX_IN_FLIGHT) break;
       if (record.requested || record.mesh) continue;
@@ -170,10 +197,18 @@ export class TerrainChunkManager {
     if (angleToCamera > horizonAngle + angular * 1.5 + 0.15) return;
 
     const sizeKm = angular * this.radiusKm;
-    const dx = dir.x * this.radiusKm - cameraKm.x;
-    const dy = dir.y * this.radiusKm - cameraKm.y;
-    const dz = dir.z * this.radiusKm - cameraKm.z;
-    const distanceKm = Math.max(Math.hypot(dx, dy, dz), 0.02);
+    const sampleKm = this.radiusKm + this.groundOffsetKm;
+    const dx = dir.x * sampleKm - cameraKm.x;
+    const dy = dir.y * sampleKm - cameraKm.y;
+    const dz = dir.z * sampleKm - cameraKm.z;
+    const distanceKm = Math.max(Math.hypot(dx, dy, dz), 0.005);
+    // Tiles ahead of the camera's motion build first: a running walker
+    // (or a descending ride) streams into ground it hasn't reached yet.
+    const ahead = Math.max(
+      0,
+      (dx * this.motionDir.x + dy * this.motionDir.y + dz * this.motionDir.z) / distanceKm,
+    );
+    const priorityKm = distanceKm * (1 - 0.4 * ahead);
 
     if ((sizeKm / distanceKm > SPLIT_RATIO || level < MIN_LEVEL) && level < MAX_LEVEL) {
       const children: ChunkRecord[] = [];
@@ -191,7 +226,7 @@ export class TerrainChunkManager {
         return;
       }
       for (const child of children) {
-        if (!child.mesh) this.wanted.push({ record: child, distanceKm });
+        if (!child.mesh) this.wanted.push({ record: child, priorityKm });
       }
     }
 
@@ -202,7 +237,7 @@ export class TerrainChunkManager {
       if (record.waterMesh) record.waterMesh.visible = true;
       return;
     }
-    this.wanted.push({ record, distanceKm });
+    this.wanted.push({ record, priorityKm });
     // While this tile (re)builds, show any cached finer children instead of a hole.
     if (level < MAX_LEVEL) {
       for (let cy = 0; cy < 2; cy++) {
@@ -255,6 +290,13 @@ export class TerrainChunkManager {
     geometry.setAttribute('position', new BufferAttribute(response.positions, 3));
     geometry.setAttribute('normal', new BufferAttribute(response.normals, 3));
     geometry.setAttribute('color', new BufferAttribute(response.colors, 3));
+    // The pinned base has no drawn parent to morph from: beyond its
+    // swap-in distance (all of orbit) it would render one LOD coarser
+    // than the pre-geomorph planet. Zeroed deltas keep orbit exact.
+    if (record.level <= PINNED_LEVEL) {
+      for (let i = 0; i < response.morph.length; i += 2) response.morph[i] = 0;
+    }
+    geometry.setAttribute('aMorph', new BufferAttribute(response.morph, 2));
     geometry.setIndex(this.indexAttribute);
     geometry.computeBoundingSphere();
 
@@ -296,7 +338,8 @@ export class TerrainChunkManager {
     }
   }
 
-  /** Two instanced draws per scattered tile: boulders and ground cover. */
+  /** One instanced draw per scatter kind per tile: boulders, ground
+   *  cover, and each tree species present. */
   private buildScatter(
     data: Float32Array,
     centerKm: [number, number, number],
@@ -312,17 +355,20 @@ export class TerrainChunkManager {
     const yAxis = new Vector3(0, 1, 0);
 
     const meshes: InstancedMesh[] = [];
-    for (const wantShrub of [0, 1]) {
+    for (let kind = 0; kind < 2 + this.treeGeometries.length; kind++) {
+      const geometry =
+        kind === 0
+          ? this.rockGeometry
+          : kind === 1
+            ? this.shrubGeometry
+            : this.treeGeometries[kind - 2];
+      if (!geometry) continue;
       const rows: number[] = [];
       for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
-        if ((data[i + 5] >= 0.5 ? 1 : 0) === wantShrub) rows.push(i);
+        if (Math.round(data[i + 5]) === kind) rows.push(i);
       }
       if (rows.length === 0) continue;
-      const mesh = new InstancedMesh(
-        wantShrub ? this.shrubGeometry : this.rockGeometry,
-        this.scatterMaterial!,
-        rows.length,
-      );
+      const mesh = new InstancedMesh(geometry, this.scatterMaterial!, rows.length);
       rows.forEach((i, instance) => {
         position.set(data[i], data[i + 1], data[i + 2]);
         up.copy(position).add(anchor).normalize();
@@ -381,5 +427,6 @@ export class TerrainChunkManager {
     this.chunks.clear();
     this.rockGeometry.dispose();
     this.shrubGeometry.dispose();
+    for (const geometry of this.treeGeometries) geometry.dispose();
   }
 }
