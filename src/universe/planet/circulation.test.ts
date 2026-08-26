@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeStorms,
+  bandFade01,
   deriveCirculation,
   profileLatRad,
   type Circulation,
@@ -158,22 +159,81 @@ describe('activeStorms', () => {
     expect(new Set(later.map(key))).not.toEqual(new Set(now.map(key)));
   });
 
-  it('keeps storms inside their bands and the spot alive forever', () => {
+  it('keeps storms inside their bands at every epoch', () => {
     const seeds = ['1111111111111111', '2222222222222222', '3333333333333333'];
     for (const seedHex of seeds) {
       const c = deriveCirculation(giant({ seedHex }));
-      for (const t of [0, 1000, 50000]) {
+      for (const t of [0, 1000, 50000, 400000]) {
         for (const storm of activeStorms(c, t)) {
           expect(Math.abs(storm.latRad)).toBeLessThan(1.45);
           expect(storm.sizeRad).toBeGreaterThan(0);
         }
       }
-      if (c.spotIndex >= 0) {
-        for (const t of [0, 20000, 200000]) {
-          expect(activeStorms(c, t).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('spots live a century arc: swell, long shrinking maturity, death', () => {
+    let checked = 0;
+    for (let i = 0; i < 40 && checked < 3; i++) {
+      const c = deriveCirculation(giant({ seedHex: (i + 100).toString(16).padStart(16, '0') }));
+      if (c.spotIndex < 0) continue;
+      const slot = c.storms[c.spotIndex];
+      expect(slot.periodDays).toBeGreaterThan(80_000);
+      expect(slot.lifeDays).toBeLessThan(slot.periodDays);
+      const at = (frac: number) =>
+        activeStorms(c, slot.phaseDays + frac * slot.lifeDays).find((s) => s.kind === 'spot');
+      const young = at(0.02);
+      const mature = at(0.2);
+      const old = at(0.97);
+      expect(mature).toBeDefined();
+      expect(mature!.sizeRad).toBeGreaterThan(at(0.9)!.sizeRad);
+      if (young) expect(young.sizeRad).toBeLessThanOrEqual(mature!.sizeRad);
+      if (old) expect(old.age01).toBeLessThan(mature!.age01 + 1e-9);
+      // Between death and the next cycle's birth there is no spot.
+      const gap = activeStorms(c, slot.phaseDays + slot.lifeDays + (slot.periodDays - slot.lifeDays) / 2);
+      expect(gap.find((s) => s.kind === 'spot')).toBeUndefined();
+      checked++;
+    }
+    expect(checked).toBeGreaterThanOrEqual(2);
+  });
+
+  it('seasonal eruptions run on the orbital period and stay rare', () => {
+    let checked = 0;
+    for (let i = 0; i < 60 && checked < 3; i++) {
+      const seedHex = (i + 500).toString(16).padStart(16, '0');
+      const c = deriveCirculation(giant({ seedHex }), 4000);
+      const slot = c.storms.find((s) => s.kind === 'eruption');
+      if (!slot) continue;
+      expect(slot.periodDays).toBe(4000);
+      expect(slot.lifeDays).toBeLessThan(400);
+      const inWindow = activeStorms(c, slot.phaseDays + slot.lifeDays * 0.5);
+      expect(inWindow.some((s) => s.kind === 'eruption')).toBe(true);
+      const outside = activeStorms(c, slot.phaseDays + slot.lifeDays + 500);
+      expect(outside.some((s) => s.kind === 'eruption')).toBe(false);
+      checked++;
+    }
+    expect(checked).toBeGreaterThanOrEqual(2);
+  });
+
+  it('belt fade cycles bury and revive, bounded and mostly off', () => {
+    let cycling = 0;
+    for (let i = 0; i < 20; i++) {
+      const c = deriveCirculation(giant({ seedHex: (i + 900).toString(16).padStart(16, '0') }));
+      for (const band of c.bands) {
+        if (band.fadePeriodDays <= 0) {
+          expect(bandFade01(band, 12345)).toBe(0);
+          continue;
         }
+        cycling++;
+        expect(band.kind).toBe('belt');
+        const vivid = bandFade01(band, (0.2 - band.fadePhase01) * band.fadePeriodDays);
+        const faded = bandFade01(band, (0.85 - band.fadePhase01) * band.fadePeriodDays);
+        expect(vivid).toBe(0);
+        expect(faded).toBeGreaterThan(0.3);
+        expect(faded).toBeLessThanOrEqual(1);
       }
     }
+    expect(cycling).toBeGreaterThan(3);
   });
 
   it('spot analogs sit at different seeded latitudes with different drift', () => {

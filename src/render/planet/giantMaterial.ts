@@ -44,6 +44,7 @@ uniform int uStormCount;
 uniform vec4 uStorms[${MAX_ACTIVE_STORMS}]; // lat, lon, size, age
 uniform vec3 uStormFresh;
 uniform vec3 uStormAged;
+uniform float uBandFade[${MAX_BANDS}];
 uniform vec4 uPolar;                    // capStart, cycloneCount, hexWave, hemiDrift
 uniform vec3 uHoodColor;
 uniform vec4 uAurora;                   // strength, tiltRad, azimuthRad, ovalColat
@@ -61,6 +62,11 @@ ${SHADOW_GLSL}
 
 float wrapPi(float x) {
   return x - 6.2831853 * floor(x / 6.2831853 + 0.5);
+}
+
+float smooth01(float x) {
+  float t = clamp(x, 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
 }
 
 int bandAt(float lat) {
@@ -122,6 +128,9 @@ void main() {
     float wlat = lat + warp;
     int band = bandAt(wlat);
     vec3 bandColor = bandColorAt(wlat, band);
+    // Decadal fade cycles: fresh white deck buries a belt's color,
+    // then the revival scours it away (the SEB's habit).
+    bandColor = mix(bandColor, uStormFresh * 1.02, uBandFade[band]);
 
     // The deck: churned cloud texture advected with the band's own jet.
     float lonAdv = lon + uTimeDays * uBands[band].z;
@@ -143,17 +152,28 @@ void main() {
     for (int i = 0; i < ${MAX_ACTIVE_STORMS}; i++) {
       if (i >= uStormCount) break;
       vec4 s = uStorms[i];
+      // Negative size flags an eruption: a fresh white head smeared
+      // down its band by the jet until it circles the planet.
+      float sz = abs(s.z);
+      float elong = 1.3;
+      vec3 stormColor;
+      if (s.z < 0.0) {
+        elong = mix(1.5, 45.0, s.w * s.w);
+        stormColor = uStormFresh * 1.08;
+      } else {
+        stormColor = mix(uStormFresh, uStormAged, s.w);
+      }
       float dLat = lat - s.x;
       float dLon = wrapPi(lon - s.y) * cos(s.x);
-      float rr = (dLat * dLat) / (s.z * s.z * 0.42) + (dLon * dLon) / (s.z * s.z * 1.69);
+      float rr = (dLat * dLat) / (sz * sz * 0.42) + (dLon * dLon) / (sz * sz * elong * elong);
       if (rr > 5.0) continue;
-      vec3 stormColor = mix(uStormFresh, uStormAged, s.w);
-      float swirl = snoise(vec3(dLon, dLat, 0.4) * (5.0 / s.z) + uSeedOffset.zxy
+      float swirl = snoise(vec3(dLon, dLat, 0.4) * (5.0 / sz) + uSeedOffset.zxy
         + vec3(churnT * 0.5, 0.0, 0.0));
       float core = exp(-rr * 1.2);
       float rim = exp(-pow((sqrt(rr) - 1.0) * 3.2, 2.0));
-      surface = mix(surface, stormColor * (0.94 + 0.12 * swirl), clamp(core * 1.25, 0.0, 1.0));
-      surface = mix(surface, stormColor * 1.13, rim * 0.45);
+      float fade = s.z < 0.0 ? 1.0 - smooth01((s.w - 0.7) / 0.3) : 1.0;
+      surface = mix(surface, stormColor * (0.94 + 0.12 * swirl), clamp(core * 1.25, 0.0, 1.0) * fade);
+      surface = mix(surface, stormColor * 1.13, rim * 0.45 * fade);
     }
 
     // The polar regime: hood, hexagon-analog cap edge, cyclone cluster.
@@ -267,6 +287,7 @@ export function createGiantMaterial(
       uStorms: {
         value: Array.from({ length: MAX_ACTIVE_STORMS }, () => new Vector4()),
       },
+      uBandFade: { value: new Array(MAX_BANDS).fill(0) },
       uStormFresh: { value: new Color(...circulation.stormFresh) },
       uStormAged: { value: new Color(...circulation.stormAged) },
       uPolar: {

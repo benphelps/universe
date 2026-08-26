@@ -21,6 +21,7 @@ import {
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState, orbitPath } from '../core/math/kepler';
+import { orbitalPeriod } from '../core/math/orbit';
 import {
   AU,
   DAY,
@@ -126,6 +127,11 @@ const STAR_SNAP_PX = 10;
  *  per scale decade — ground to galaxy frame spans ~17 decades (~28 s),
  *  a system view about half that. */
 const RIDE_OUT_DECADES_PER_SEC = 0.6;
+
+/** A planet's year in days — the seasonal clock its weather runs on. */
+function orbitDays(mu: Mu, planet: Planet): number {
+  return orbitalPeriod(mu, planet.elements.semiMajorAxis) / 86400;
+}
 
 export type FocusTarget = 'star' | number | { planet: number; moon: number };
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
@@ -673,7 +679,8 @@ export class UnifiedViewer {
 
     const starRgb = hostStar.linearRgb;
     this.planetNodes = planets.map((planet) => {
-      const object = new PlanetObject(planet.physical, planet.rings);
+      const mu = companion ? companionPlanetMu(companion, planet) : planetMu(system, planet);
+      const object = new PlanetObject(planet.physical, planet.rings, orbitDays(mu, planet));
       object.group.scale.setScalar(EARTH_RADIUS_KM);
       this.heliocentric.add(object.group);
       const marker = new Mesh(
@@ -685,7 +692,7 @@ export class UnifiedViewer {
         planet,
         object,
         marker,
-        mu: companion ? companionPlanetMu(companion, planet) : planetMu(system, planet),
+        mu,
       };
     });
 
@@ -786,7 +793,11 @@ export class UnifiedViewer {
       } else {
         // Gas envelope: the banded shader sphere carries the body, its
         // atmosphere limb, and its rings (all inside PlanetObject).
-        this.bodyObject = new PlanetObject(planet.physical, planet.rings);
+        this.bodyObject = new PlanetObject(
+          planet.physical,
+          planet.rings,
+          orbitDays(planetMu(this.system, planet), planet),
+        );
         this.bodyObject.group.scale.setScalar(EARTH_RADIUS_KM);
         this.scene.add(this.bodyObject.group);
       }
@@ -1521,7 +1532,11 @@ export class UnifiedViewer {
     if (this.focusMoon) {
       // The parent planet hangs in the focused moon's sky, rings and
       // all, positioned each frame at its true planet-centric offset.
-      this.parentObject = new PlanetObject(planet.physical, planet.rings);
+      this.parentObject = new PlanetObject(
+        planet.physical,
+        planet.rings,
+        orbitDays(planetMu(this.system!, planet), planet),
+      );
       this.parentObject.group.scale.setScalar(EARTH_RADIUS_KM);
       this.moonGroup.add(this.parentObject.group);
     }

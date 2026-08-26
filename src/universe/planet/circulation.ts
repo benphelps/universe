@@ -15,11 +15,16 @@ export interface CloudBand {
   edgeShear: number;
   color: Rgb;
   kind: 'zone' | 'belt';
+  /** Decadal fade-and-revival cycle (SEB-style): fresh ammonia decks
+   *  bury the belt color, then a revival scours them away. 0 = steady. */
+  fadePeriodDays: number;
+  fadePhase01: number;
 }
 
 /** A recurring storm slot: one anticyclone habit at one latitude band.
  *  The live population at any time is a pure function of (slot, t). */
 export interface StormSlot {
+  kind: 'oval' | 'spot' | 'eruption';
   band: number;
   periodDays: number;
   lifeDays: number;
@@ -32,10 +37,12 @@ export interface StormSlot {
 }
 
 export interface ActiveStorm {
+  kind: 'oval' | 'spot' | 'eruption';
   latRad: number;
   lonRad: number;
   sizeRad: number;
-  /** 0 fresh (bright upwelling) → 1 aged (chromophore-stained). */
+  /** Ovals and spots: 0 fresh (bright) → 1 aged (chromophore-stained).
+   *  Eruptions: how far the fresh white head has spread down its band. */
   age01: number;
 }
 
@@ -91,7 +98,10 @@ export const MAX_ACTIVE_STORMS = 16;
  * drift, and jet speeds all emerge from rotation and interior heat
  * flux; everything downstream (bands, storm habits, poles) reads them.
  */
-export function deriveCirculation(physical: Characterization): Circulation {
+export function deriveCirculation(
+  physical: Characterization,
+  orbitalPeriodDays?: number,
+): Circulation {
   const rng = new Rng(seedFromHex(physical.seedHex)).fork('circulation');
   const { rotation, interior, climate, bulk } = physical;
 
@@ -111,6 +121,7 @@ export function deriveCirculation(physical: Characterization): Circulation {
     bands,
     convectiveMs,
     climate.equilibriumK,
+    orbitalPeriodDays,
   );
 
   const spinFactor = Math.sqrt(24 / Math.max(rotation.periodHours, 4));
@@ -409,6 +420,7 @@ function extractBands(
     // north, toward the equator in the south.
     const shearSign = (u[band.hi] - u[band.lo]) * Math.sign(mid || 1);
     const kind: CloudBand['kind'] = shearSign > 0 ? 'zone' : 'belt';
+    const fades = kind === 'belt' && rng.bool(0.35);
     const base = kind === 'zone' ? palette.zone : palette.belt;
     const jitter = 1 + rng.range(-0.09, 0.09);
     const fade = 1 - (1 - contrast) * 0.55;
@@ -424,6 +436,8 @@ function extractBands(
       edgeShear: Math.abs(u[band.hi] - u[band.lo]) / maxShear,
       color,
       kind,
+      fadePeriodDays: fades ? rng.range(3000, 15000) : 0,
+      fadePhase01: fades ? rng.float() : 0,
     };
   });
   return { bands, rawCount };
@@ -441,6 +455,7 @@ function buildStormCatalog(
   bands: CloudBand[],
   convectiveMs: number,
   equilibriumK: number,
+  orbitalPeriodDays?: number,
 ): { storms: StormSlot[]; spotIndex: number } {
   const storms: StormSlot[] = [];
   if (bands.length === 0) return { storms, spotIndex: -1 };
@@ -455,18 +470,46 @@ function buildStormCatalog(
   const spotChance = equilibriumK < 90 ? 0.3 : equilibriumK < 250 ? 0.45 : 0.25;
   let spotIndex = -1;
   if (zones.length > 0 && rng.bool(spotChance)) {
+    // The great-spot analog lives for centuries, not forever: it
+    // swells quickly, spends a long maturity shrinking (the Great Red
+    // Spot has lost half its width in 150 years), pales, and dies —
+    // and a successor eventually spins up at a freshly hashed
+    // latitude of its zone.
     const { band, i } = zones[rng.int(zones.length)];
+    const periodDays = rng.range(250, 1200) * 365.25;
     storms.push({
+      kind: 'spot',
       band: i,
-      periodDays: 1e9,
-      lifeDays: 1e9,
-      phaseDays: 0,
-      sizeRad: rng.range(0.06, 0.15),
+      periodDays,
+      lifeDays: periodDays * rng.range(0.55, 0.85),
+      phaseDays: rng.range(0, periodDays),
+      sizeRad: rng.range(0.07, 0.16),
       driftRadPerDay: band.driftRadPerDay * rng.range(0.75, 0.92),
       wobbleRad: rng.range(0.01, 0.03),
       seed: rng.int(1 << 30),
     });
     spotIndex = 0;
+  }
+
+  // Seasonal eruptions on condensable-rich giants: a planet-circling
+  // white storm once per orbit (Saturn's Great White Spots), or on a
+  // seeded multi-year cadence when the orbit is too short to store a
+  // season's worth of condensables.
+  if (equilibriumK < 250 && zones.length > 0 && rng.bool(0.5)) {
+    const { band, i } = zones[rng.int(zones.length)];
+    const seasonal = orbitalPeriodDays !== undefined && orbitalPeriodDays > 1500;
+    const periodDays = seasonal ? orbitalPeriodDays : rng.range(8, 35) * 365.25;
+    storms.push({
+      kind: 'eruption',
+      band: i,
+      periodDays,
+      lifeDays: rng.range(120, 320),
+      phaseDays: rng.range(0, periodDays),
+      sizeRad: rng.range(0.045, 0.08),
+      driftRadPerDay: band.driftRadPerDay,
+      wobbleRad: 0,
+      seed: rng.int(1 << 30),
+    });
   }
 
   const slotCount = Math.round(rng.range(0.8, 1.2) * (2 + 9 * Math.min(1, convectiveMs / 22)));
@@ -488,6 +531,7 @@ function buildStormCatalog(
     }
     const period = rng.range(240, 1600);
     storms.push({
+      kind: 'oval',
       band: bandIndex,
       periodDays: period,
       lifeDays: period * rng.range(0.25, 0.6),
@@ -512,7 +556,8 @@ function hash01(x: number): number {
  * The live storm population at a sim time: pure function of the
  * catalog and t, so any visitor at any time — forward, backward,
  * fast-forwarded — sees the same weather. Each incarnation of a slot
- * rehashes its longitude and latitude inside its band.
+ * rehashes its longitude and latitude inside its band; spots run a
+ * century arc, eruptions spread down their band and fade.
  */
 export function activeStorms(circulation: Circulation, tDays: number): ActiveStorm[] {
   const out: ActiveStorm[] = [];
@@ -529,18 +574,50 @@ export function activeStorms(circulation: Circulation, tDays: number): ActiveSto
     const lat =
       band.latStartRad + span * (0.3 + 0.4 * h1) + Math.sin(tDays * 0.011) * slot.wobbleRad;
     const lon = h2 * 2 * Math.PI + slot.driftRadPerDay * tDays;
-    // Grow fast, fade slow; permanent spots hold steady.
     const age01 = Math.min(1, ageDays / Math.max(slot.lifeDays, 1));
-    const envelope =
-      slot.lifeDays > 1e8 ? 1 : Math.min(1, ageDays / (slot.lifeDays * 0.15)) * (1 - age01 ** 3);
-    if (envelope <= 0.02) continue;
-    out.push({
-      latRad: lat,
-      lonRad: lon,
-      sizeRad: slot.sizeRad * (0.55 + 0.45 * envelope),
-      age01: slot.lifeDays > 1e8 ? 1 : age01,
-    });
+
+    if (slot.kind === 'spot') {
+      // The century arc: swell fast, shrink through the long maturity
+      // (the Great Red Spot has lost half its width in 150 years),
+      // pale out at the end.
+      const grow = Math.min(1, ageDays / (slot.lifeDays * 0.06));
+      const shrink = 1 - 0.6 * smooth01((age01 - 0.25) / 0.75);
+      const size = slot.sizeRad * grow * shrink;
+      if (size < 0.012) continue;
+      const redden = Math.min(1, age01 * 8) * (1 - 0.7 * smooth01((age01 - 0.85) / 0.15));
+      out.push({ kind: 'spot', latRad: lat, lonRad: lon, sizeRad: size, age01: redden });
+    } else if (slot.kind === 'eruption') {
+      // A fresh white head that spreads down its band until the jet
+      // has smeared it planet-wide, then dissipates.
+      out.push({ kind: 'eruption', latRad: lat, lonRad: lon, sizeRad: slot.sizeRad, age01 });
+    } else {
+      // Grow fast, fade slow.
+      const envelope = Math.min(1, ageDays / (slot.lifeDays * 0.15)) * (1 - age01 ** 3);
+      if (envelope <= 0.02) continue;
+      out.push({
+        kind: 'oval',
+        latRad: lat,
+        lonRad: lon,
+        sizeRad: slot.sizeRad * (0.55 + 0.45 * envelope),
+        age01,
+      });
+    }
     if (out.length >= MAX_ACTIVE_STORMS) break;
   }
   return out;
+}
+
+function smooth01(x: number): number {
+  const t = Math.min(1, Math.max(0, x));
+  return t * t * (3 - 2 * t);
+}
+
+/** Where a band sits in its fade-and-revival cycle: 0 vivid, 1 buried
+ *  under fresh white deck (SEB-style). Pure function of time. */
+export function bandFade01(band: CloudBand, tDays: number): number {
+  if (band.fadePeriodDays <= 0) return 0;
+  const phase = (((tDays / band.fadePeriodDays + band.fadePhase01) % 1) + 1) % 1;
+  // Vivid for most of the cycle; the fade rolls in, lingers, revives.
+  if (phase < 0.7) return 0;
+  return Math.sin(((phase - 0.7) / 0.3) * Math.PI) * 0.85;
 }

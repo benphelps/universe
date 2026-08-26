@@ -1,6 +1,7 @@
 import { Group, Mesh, Quaternion, ShaderMaterial, SphereGeometry, Vector3, Vector4 } from 'three';
 import {
   activeStorms,
+  bandFade01,
   deriveCirculation,
   MAX_ACTIVE_STORMS,
   type Circulation,
@@ -35,8 +36,11 @@ export class PlanetObject {
   constructor(
     readonly physical: Characterization,
     rings: RingSystem | null = null,
+    orbitalPeriodDays?: number,
   ) {
-    this.circulation = physical.appearance.banding ? deriveCirculation(physical) : null;
+    this.circulation = physical.appearance.banding
+      ? deriveCirculation(physical, orbitalPeriodDays)
+      : null;
     const material = this.circulation
       ? createGiantMaterial(physical, this.circulation)
       : createSolidPlanetMaterial(physical);
@@ -112,9 +116,19 @@ export class PlanetObject {
     const slots = uniforms.uStorms.value as Vector4[];
     for (let i = 0; i < MAX_ACTIVE_STORMS; i++) {
       const storm = storms[i];
-      if (storm) slots[i].set(storm.latRad, storm.lonRad, storm.sizeRad, storm.age01);
+      if (storm) {
+        // Eruptions ride a negative size: the shader reads the flag.
+        const size = storm.kind === 'eruption' ? -storm.sizeRad : storm.sizeRad;
+        slots[i].set(storm.latRad, storm.lonRad, size, storm.age01);
+      }
     }
     uniforms.uStormCount.value = storms.length;
+
+    const fades = uniforms.uBandFade.value as number[];
+    for (let i = 0; i < fades.length; i++) {
+      const band = circulation.bands[i];
+      fades[i] = band ? bandFade01(band, simTimeDays) : 0;
+    }
 
     const toObject = this.body.getWorldQuaternion(new Quaternion()).invert();
     const lightObj = lightDirWorld.clone().applyQuaternion(toObject).normalize();
