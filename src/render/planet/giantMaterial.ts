@@ -253,15 +253,22 @@ void main() {
       vec3 ps = rotateY(p, windRad);
       vec3 psFine = rotateY(p, windRad * 0.35);
       vec3 psMicro = rotateY(p, windRad * 0.12);
-      float polarDeck = fbm(ps * 5.0 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5));
-      float polarFine = fbm(psFine * 15.0 - uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
+      // Two taps along the rotation smear the isotropic grains into
+      // short curved filaments — polar cloud is arcs, not orange peel.
+      vec3 psB = rotateY(p, windRad + 0.09 * hemi);
+      vec3 psFineB = rotateY(p, windRad * 0.35 + 0.05 * hemi);
+      float polarDeck = 0.5 * (fbm(ps * 5.0 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5))
+        + fbm(psB * 5.0 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5)));
+      float polarFine = 0.5 * (fbm(psFine * 15.0 - uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0))
+        + fbm(psFineB * 15.0 - uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0)));
       float polarMicro = microGate > 0.01
         ? fbm(psMicro * 42.0 + uSeedOffset.xzy + vec3(0.0, churnT * 1.5, 0.0)) * microGate
         : 0.0;
       vec3 hood = uHoodColor
-        * (1.0 + uContrast * (0.4 * polarDeck + 0.24 * polarFine + 0.18 * polarMicro));
+        * (1.0 + uContrast * (0.4 * polarDeck + 0.24 * polarFine + 0.12 * polarMicro));
       surface = mix(surface, hood, cap * 0.6);
-      cloudH = mix(cloudH, 0.5 + 0.3 * polarDeck + 0.15 * polarFine, cap * 0.65);
+      // Gentle relief only: embossed cap grain reads as orange skin.
+      cloudH = mix(cloudH, 0.5 + 0.2 * polarDeck + 0.05 * polarFine, cap * 0.65);
 
       // The cyclone cluster: small spiral-armed vortices ringing the
       // central one, drifting slowly, dug into the deck — not dots.
@@ -280,29 +287,21 @@ void main() {
         vec2 d = pp - c;
         float rr = dot(d, d) * sizeInv;
         if (rr > 7.0) continue;
-        // Each cyclone winds its own patch of cloud: a solid-body core
-        // whose swirl decays outward shears local noise into spiral
-        // arms — organic, unique per vortex, resolving on approach.
-        float w = hemi * ((2.0 + 0.3 * float(i)) * exp(-rr * 0.45)
-          + uTimeDays * (1.5 + 0.25 * float(i)));
+        // A gentle swirl — under a radian, so local cloud bends into
+        // curves without ringing — and the vortex modulates the cap's
+        // own texture rather than pasting a disc over it.
+        float w = hemi * (0.9 * exp(-rr * 0.5) + uTimeDays * (1.5 + 0.25 * float(i)));
         float cw = cos(w);
         float sw = sin(w);
         vec2 dw = vec2(cw * d.x - sw * d.y, sw * d.x + cw * d.y) * sqrt(sizeInv);
-        vec2 df = vec2(cos(w * 0.3) * d.x - sin(w * 0.3) * d.y,
-          sin(w * 0.3) * d.x + cos(w * 0.3) * d.y) * sqrt(sizeInv);
-        vec3 vp = vec3(dw * 1.5, float(i) * 3.7);
-        float vn = fbm(vp * 1.6 + uSeedOffset.xzy);
-        float vf = microGate > 0.01
-          ? 0.5 * microGate * snoise(vec3(df * 4.5, float(i) * 3.7) - uSeedOffset.yxz
-              + vec3(0.0, churnT, 0.0))
-          : 0.0;
+        float vn = fbm(vec3(dw * 1.4, float(i) * 3.7) + uSeedOffset.xzy);
         float core = exp(-rr * 0.8);
         dug += core;
-        armsSum += core * (0.55 + 0.8 * vn + vf);
+        armsSum += core * (0.45 + 0.9 * vn);
       }
       dug = clamp(dug, 0.0, 1.0);
-      surface = mix(surface, uHoodColor * (0.6 + 0.5 * clamp(armsSum, 0.0, 1.0)), dug * cap * 0.7);
-      cloudHOut = cloudH - dug * cap * 0.35 + clamp(armsSum, 0.0, 1.0) * cap * 0.15;
+      surface *= mix(1.0, 0.5 + 0.7 * clamp(armsSum, 0.0, 1.2), dug * cap * 0.8);
+      cloudHOut = cloudH - dug * cap * 0.25 + clamp(armsSum, 0.0, 1.0) * cap * 0.1;
     } else {
       cloudHOut = cloudH;
     }
