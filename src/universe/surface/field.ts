@@ -4,8 +4,10 @@ import { createSimplex3 } from '../../core/noise/simplex3';
 import { createWorley3 } from '../../core/noise/worley3';
 import { deriveSeed, seedFromHex } from '../../core/rng/hash';
 import type { Characterization } from '../planet/types';
+import { buildClimate, type ClimateField } from './climate';
 import { createCraterField } from './craters';
-import { buildDrainage, type DrainageGraph } from './drainage';
+import { createCubeGrid } from './cubeGrid';
+import { buildDrainage, sampleCellHeights, type DrainageGraph } from './drainage';
 import { deriveSurfaceParams, type SurfaceParams } from './params';
 
 type Rgb = [number, number, number];
@@ -325,17 +327,35 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
 
   const seaLevelM = solveSeaLevel(heightAt, params.oceanCoverage);
   solvedSeaLevelM = seaLevelM;
+  let climate: ClimateField | null = null;
   if (fluvialStrength > 0.02) {
     // Arid eroded worlds carve with their paleo-discharge: the erosion
     // parameter encodes the wet history that shaped them, even where
     // today's mean rainfall rounds to nothing.
     const carvingWetness = Math.max(wetness, 0.45 * fluvialStrength);
+    const grid = createCubeGrid(128);
+    const cellHeights = sampleCellHeights(grid, heightAt);
+    const oceanMask = new Uint8Array(grid.cellCount);
+    for (let cell = 0; cell < grid.cellCount; cell++) {
+      if (cellHeights[cell] < seaLevelM) oceanMask[cell] = 1;
+    }
+    climate = buildClimate(
+      grid,
+      cellHeights,
+      oceanMask,
+      params.surfaceMeanK,
+      params.poleDeltaK,
+      params.lapseKPerKm,
+      params.rotationPeriodHours,
+      carvingWetness,
+    );
     drainage = buildDrainage(
-      heightAt,
+      grid,
+      cellHeights,
+      oceanMask,
+      climate.precipMmYr,
       params.radiusM,
       seaLevelM,
-      carvingWetness,
-      128,
       channelDropM,
     );
   }
@@ -394,10 +414,15 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     let ground = mixRgb(palette.landA, palette.landB, blend);
 
     if (params.biosphere) {
-      const moisture =
-        0.45 +
-        0.4 * moistureNoise(dir.x * 2.2, dir.y * 2.2, dir.z * 2.2) +
-        (params.oceanCoverage > 0 ? 0.1 : -0.2);
+      // Moisture from the climate field where one exists — rain shadows
+      // and continental interiors read as the deserts they are — with
+      // sub-cell noise texture; the plain noise stands in otherwise.
+      const moisture = climate
+        ? Math.min(1.1, 0.1 + climate.precipAt(dir) / 1500) +
+          0.14 * moistureNoise(dir.x * 2.2, dir.y * 2.2, dir.z * 2.2)
+        : 0.45 +
+          0.4 * moistureNoise(dir.x * 2.2, dir.y * 2.2, dir.z * 2.2) +
+          (params.oceanCoverage > 0 ? 0.1 : -0.2);
       // Continuous biome transitions: hard thresholds alias into blocky
       // borders at vertex resolution.
       const desertness =

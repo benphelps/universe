@@ -8,6 +8,19 @@ const continent = (dir: Vec3): number => (dir.x - 0.35) * 3000;
 /** A carve-depth law shaped like the field's: deeper with discharge. */
 const drop = (hM: number, q: number): number => Math.min(40 * q ** 0.25, hM * 0.9 + 4);
 
+/** Grid + uniform-rain drainage for a synthetic height function. */
+function graphFor(heightFn: (dir: Vec3) => number, n = 32) {
+  const grid = createCubeGrid(n);
+  const heights = new Float32Array(grid.cellCount);
+  const ocean = new Uint8Array(grid.cellCount);
+  for (let cell = 0; cell < grid.cellCount; cell++) {
+    heights[cell] = heightFn(grid.centerOf(cell));
+    if (heights[cell] < 0) ocean[cell] = 1;
+  }
+  const precip = new Float32Array(grid.cellCount).fill(650);
+  return buildDrainage(grid, heights, ocean, precip, 6.4e6, 0, drop);
+}
+
 describe('cube grid', () => {
   const grid = createCubeGrid(8);
 
@@ -36,10 +49,10 @@ describe('cube grid', () => {
 });
 
 describe('drainage graph', () => {
-  const graph = buildDrainage(continent, 6.4e6, 0, 0.7, 32, drop);
+  const graph = graphFor(continent);
 
   it('is deterministic', () => {
-    const again = buildDrainage(continent, 6.4e6, 0, 0.7, 32, drop);
+    const again = graphFor(continent);
     expect(again.flowTo).toEqual(graph.flowTo);
     expect(again.dischargeM3s).toEqual(graph.dischargeM3s);
   });
@@ -111,7 +124,7 @@ describe('drainage graph', () => {
       const a = Math.acos(Math.min(1, Math.max(-1, dir.x)));
       return (dir.x - 0.35) * 3000 + 1500 * Math.exp(-(((a - 0.35) / 0.06) ** 2));
     };
-    const basin = buildDrainage(rimmed, 6.4e6, 0, 0.7, 32, drop);
+    const basin = graphFor(rimmed);
     const moat = { x: Math.cos(0.26), y: Math.sin(0.26), z: 0 };
     const lake = basin.lakeLevelAt(moat);
     expect(lake).toBeGreaterThan(rimmed(moat));

@@ -28,6 +28,8 @@ export interface SurfaceParams {
   poleDeltaK: number;
   /** Altitude lapse rate, K per km. */
   lapseKPerKm: number;
+  /** Sets the circulation regime: fast rotators band, slow ones don't. */
+  rotationPeriodHours: number;
   biosphere: boolean;
   globalIce: boolean;
   palette: {
@@ -78,6 +80,7 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
     surfaceMeanK: climate.surfaceMeanK,
     poleDeltaK: 30,
     lapseKPerKm: atmosphere.class === 'none' ? 0 : 5.5,
+    rotationPeriodHours: physical.rotation.periodHours,
     biosphere: climate.biosphere,
     globalIce: climate.hydrosphere === 'ice-sheet',
     palette: {

@@ -1,13 +1,29 @@
 import type { Vec3 } from '../../core/math/vec3';
 import { YEAR } from '../../core/physics/constants';
-import { createCubeGrid, type CubeGrid } from './cubeGrid';
+import type { CubeGrid } from './cubeGrid';
 
 /** Fraction of rainfall that runs off instead of evaporating. */
 const RUNOFF_FRACTION = 0.35;
-/** Peak precipitation at full wetness, mm/yr. */
-const PRECIP_PEAK_MM_YR = 1100;
 /** A cell is river-bearing once it gathers this many cells' runoff. */
 const RIVER_CELLS_MIN = 3.5;
+
+/** Cell-center terrain heights at the grid's own resolution — sampled
+ *  once and shared by the climate and drainage builds. */
+export function sampleCellHeights(
+  grid: CubeGrid,
+  heightAt: (dir: Vec3, lodAngularRad?: number) => number,
+): Float32Array {
+  const heights = new Float32Array(grid.cellCount);
+  const dir = { x: 0, y: 0, z: 0 };
+  const lod = grid.cellAngularRad / 2;
+  for (let cell = 0; cell < grid.cellCount; cell++) {
+    dir.x = grid.centers[cell * 3];
+    dir.y = grid.centers[cell * 3 + 1];
+    dir.z = grid.centers[cell * 3 + 2];
+    heights[cell] = heightAt(dir, lod);
+  }
+  return heights;
+}
 
 /**
  * The planet's water finds its way: flow routing over a global cube-
@@ -59,31 +75,21 @@ export interface DrainageGraph {
 }
 
 export function buildDrainage(
-  heightAt: (dir: Vec3, lodAngularRad?: number) => number,
+  grid: CubeGrid,
+  heightsM: Float32Array,
+  ocean: Uint8Array,
+  /** Per-cell precipitation (the climate field's, or a paleo stand-in). */
+  precipMmYr: Float32Array,
   radiusM: number,
   seaLevelM: number,
-  wetness: number,
-  n: number,
   /** Total carve depth below local terrain at the channel line — the
    *  field's own formula, so graph beds and carved ground agree. */
   channelDropM: (hM: number, dischargeM3s: number) => number,
 ): DrainageGraph {
-  const grid = createCubeGrid(n);
   const { cellCount, centers } = grid;
-  const sampleLod = grid.cellAngularRad / 2;
-
-  const heightsM = new Float32Array(cellCount);
-  const ocean = new Uint8Array(cellCount);
-  const dir = { x: 0, y: 0, z: 0 };
   let lowest = 0;
   for (let cell = 0; cell < cellCount; cell++) {
-    dir.x = centers[cell * 3];
-    dir.y = centers[cell * 3 + 1];
-    dir.z = centers[cell * 3 + 2];
-    const h = heightAt(dir, sampleLod);
-    heightsM[cell] = h;
-    if (h < heightsM[lowest]) lowest = cell;
-    if (h < seaLevelM) ocean[cell] = 1;
+    if (heightsM[cell] < heightsM[lowest]) lowest = cell;
   }
 
   // Priority-flood from the sea (or the deepest basin on a dry world):
@@ -128,10 +134,8 @@ export function buildDrainage(
   let meanRunoff = 0;
   for (let cell = 0; cell < cellCount; cell++) {
     if (ocean[cell]) continue;
-    const latitude = Math.asin(Math.max(-1, Math.min(1, centers[cell * 3 + 1])));
-    const precipMYr =
-      (PRECIP_PEAK_MM_YR / 1000) * wetness * (0.3 + 0.7 * Math.cos(latitude));
-    dischargeM3s[cell] = (cellAreaM2 * precipMYr * RUNOFF_FRACTION) / YEAR;
+    dischargeM3s[cell] =
+      (cellAreaM2 * (precipMmYr[cell] / 1000) * RUNOFF_FRACTION) / YEAR;
     meanRunoff += dischargeM3s[cell];
   }
   meanRunoff /= Math.max(1, cellCount - countOnes(ocean));
