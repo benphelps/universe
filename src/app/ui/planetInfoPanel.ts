@@ -69,6 +69,7 @@ export class PlanetInfoPanel {
     planet: Planet,
     index: number,
     onStep: (delta: number) => void,
+    onMoon?: (moonIndex: number) => void,
   ): void {
     const { bulk, interior, rotation, atmosphere, climate } = planet.physical;
     const aAu = planet.elements.semiMajorAxis / AU;
@@ -131,7 +132,7 @@ export class PlanetInfoPanel {
 
     const moons = planet.moons;
     const moonRows = moons
-      .map((moon) => {
+      .map((moon, moonIndex) => {
         const radiusKm = moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000);
         const notes = [
           moon.retrograde ? 'retrograde capture' : '',
@@ -141,7 +142,7 @@ export class PlanetInfoPanel {
         ]
           .filter(Boolean)
           .join(' · ');
-        return `<tr>
+        return `<tr class="pick" data-index="${moonIndex}">
           <td>${moon.name.split(' ').pop()}</td>
           <td class="n">${fmt(radiusKm, 3)}</td>
           <td class="n">${fmt(moon.semiMajorAxisPlanetRadii, 3)}</td>
@@ -161,6 +162,66 @@ export class PlanetInfoPanel {
           : '<div class="empty">no moons</div>'
       }
     `;
+    if (onMoon) {
+      for (const row of this.sidebar.level.querySelectorAll<HTMLElement>('tr.pick')) {
+        row.addEventListener('click', () => onMoon(Number(row.dataset.index)));
+      }
+    }
+  }
+
+  /** A focused moon's plate: its own physics, its parent one click up. */
+  renderMoon(
+    hostStar: Star,
+    parent: Planet,
+    parentIndex: number,
+    moonIndex: number,
+    onStep: (delta: number) => void,
+    onParent: () => void,
+  ): void {
+    const moon = parent.moons[moonIndex];
+    const { bulk, interior, rotation, atmosphere, climate } = moon.physical;
+    const radiusKm = bulk.radiusEarth * (EARTH_RADIUS / 1000);
+    const rows: Array<[string, string]> = [
+      ['Origin', moon.channel === 'capture' ? 'captured body' : `${moon.channel} moon`],
+      ['Radius', `${fmt(radiusKm)} km · ${fmt(bulk.densityGcc)} g/cm³`],
+      ['Gravity', `${fmt(bulk.gravityMs2 / 9.81, 2)} g`],
+      [
+        'Orbit',
+        `${fmt(moon.semiMajorAxisPlanetRadii)} R_p${moon.retrograde ? ' · retrograde' : ''}`,
+      ],
+      [
+        'Rotation',
+        rotation.locked ? 'tidally locked' : fmtDays(rotation.periodHours / 24),
+      ],
+      [
+        'Atmosphere',
+        atmosphere.class === 'none'
+          ? 'airless'
+          : `${ATMOSPHERE_LABEL[atmosphere.class]} · ${fmt(atmosphere.surfacePressureBar)} bar`,
+      ],
+      ['T', `${fmt(climate.surfaceMeanK, 3)} K`],
+      ['Surface', HYDROSPHERE_LABEL[climate.hydrosphere]],
+      ['Geology', REGIME_LABEL[interior.regime]],
+    ];
+    if (moon.tidalState !== 'dead') {
+      rows.push(['Tidal state', `${TIDAL_LABEL[moon.tidalState]} · ${fmt(moon.tidalHeatFluxWm2)} W/m²`]);
+    }
+    renderPlate(this.sidebar.focus, {
+      title: moon.name,
+      subtitle: `moon ${moonIndex + 1} of ${parent.moons.length} · ${parent.name} · ${hostStar.spectralType}`,
+      color: CLASS_COLOR[parent.class],
+      rows,
+      onStep,
+    });
+    this.sidebar.level.innerHTML = `
+      <h2>Parent</h2>
+      <table class="list">
+        <tr class="pick" data-index="${parentIndex}"><td>${parent.name}</td><td>${parent.class}</td></tr>
+      </table>
+    `;
+    this.sidebar.level
+      .querySelector('tr.pick')!
+      .addEventListener('click', onParent);
   }
 
   renderAsteroid(
