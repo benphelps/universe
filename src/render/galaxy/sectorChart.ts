@@ -90,9 +90,9 @@ function createLabelSprite(label: SectorLabel): Sprite {
  * province map around home — organic borders traced from the 3D
  * territory field's midplane slice, faded out where the discrete star
  * catalog's reach ends, provinces lettered, home outlined and named
- * bright — and the constellation-style borders across the local sky
- * with each neighboring territory's patch of sky named. The layers
- * crossfade: star map inside the neighborhood, province map from above.
+ * bright — and the constellations across the local sky, each region
+ * named for the nebula or rift at its heart. The layers crossfade:
+ * star map inside the neighborhood, province map from above.
  */
 export class SectorChart {
   readonly group = new Group();
@@ -114,7 +114,7 @@ export class SectorChart {
     for (const [positions, material] of [
       [sky.sectorBounds, this.borderMaterial],
       [sky.sectorHomeBounds, this.homeMaterial],
-      [sky.sectorSkyBounds, this.skyMaterial],
+      [sky.constellationBounds, this.skyMaterial],
     ] as Array<[Float32Array, ShaderMaterial]>) {
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
@@ -130,7 +130,7 @@ export class SectorChart {
       this.chartLabels.push(sprite);
       this.group.add(sprite);
     }
-    for (const label of sky.sectorSkyLabels) {
+    for (const label of sky.constellationLabels) {
       const sprite = createLabelSprite(label);
       this.skyLabels.push({ sprite, base: new Vector3(label.x, label.y, label.z) });
       this.group.add(sprite);
@@ -160,7 +160,7 @@ export class SectorChart {
     this.apply();
   }
 
-  /** The constellation-style borders across the local sky. */
+  /** The constellation borders across the local sky. */
   set skyOpacity(value: number) {
     this.skyValue = value;
     this.apply();

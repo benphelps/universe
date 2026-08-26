@@ -115,15 +115,14 @@ export interface SkyField {
   sectorBounds: Float32Array;
   /** The borders of the home locale's own territory, same encoding. */
   sectorHomeBounds: Float32Array;
-  /** Constellation-style sky borders: where lines of sight from home
-   *  cross into different neighboring territories, at true exit
-   *  distances (scene-frame pc segments relative to home). */
-  sectorSkyBounds: Float32Array;
+  /** Constellation borders: the local sky cut around its prominent
+   *  landmarks (scene-frame pc, on the SKY_DRAW_RADIUS_PC sphere). */
+  constellationBounds: Float32Array;
   /** Names for the chart provinces around home (scene-frame pc). */
   sectorLabels: SectorLabel[];
-  /** Names for the sky regions the borders enclose, on the same
-   *  celestial sphere as sectorSkyBounds. */
-  sectorSkyLabels: SectorLabel[];
+  /** A name per constellation at its region's center direction — the
+   *  name of the nebula or rift that organizes it. */
+  constellationLabels: SectorLabel[];
 }
 
 export interface SectorLabel {
@@ -270,7 +269,7 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     darkAtlas,
     sceneFromGalaxy: sceneFromGalaxy(seed),
     ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
-    ...buildSectorSkyBounds(viewpoint, sceneFromGalaxy(seed)),
+    ...buildConstellations(nebulae, darkClouds, sceneFromGalaxy(seed)),
     ...buildGlow(viewpoint, spriteSeeds),
   };
 }
@@ -724,55 +723,124 @@ function buildSectorBounds(
   };
 }
 
-/** Sky-map direction lattice and the reach of the exit march. */
+/** Sky-chart direction lattice (marching resolution of the borders). */
 const SKY_LON_STEPS = 160;
 const SKY_LAT_STEPS = 80;
-const SKY_MARCH_STEP_PC = 130;
-const SKY_MARCH_MAX_PC = 2800;
-/** Border curves draw on a celestial sphere, star-map style: their
- *  directions are honest (marched through the 3D territory field); the
- *  drawing radius is presentation — exit distances are unstable where a
- *  sight line grazes along a territory edge. */
+/** Border curves draw on a celestial sphere, star-map style; the
+ *  radius is presentation, shrunk about home to fit the camera. */
 const SKY_DRAW_RADIUS_PC = 800;
+/** At most this many landmarks organize a sky. */
+const CONSTELLATION_COUNT = 28;
+/** No landmark is seated closer than this to another (rad). */
+const CONSTELLATION_MIN_SEP = 0.15;
+/** Seating margin, in Voronoi cost: a landmark joins only if it would
+ *  hold its own heart against every seated anchor by at least this. */
+const CONSTELLATION_MARGIN = 0.1;
+
+interface SkyAnchor {
+  seed: bigint;
+  dir: [number, number, number];
+  /** Angular half-size of the landmark's face on the sky (rad). */
+  face: number;
+  /** Reach beyond the face: grander landmarks claim more sky. */
+  weight: number;
+}
+
+const angleBetween = (a: [number, number, number], b: [number, number, number]): number =>
+  Math.acos(Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])));
 
 /**
- * The territory borders as they cross the sky — the analog of the
- * constellation boundaries on an Earth star map, except nothing is
- * projected: every line of sight from home is marched to where it
- * leaves the home territory, the sky partitions by which neighbor each
- * direction enters, and the border curves live at their true 3D exit
- * distances, so they parallax correctly when the camera flies.
+ * The constellations: the local sky cut into named regions around the
+ * landmarks that actually organize it — the prominent nebulae and
+ * rifts, which are the same first-class clouds the chart provinces
+ * anchor on, so a sky region, the landmark at its heart, and the
+ * province that landmark anchors all share one name. Human charts work
+ * the same way (the Orion Nebula sits in Orion), and as on those
+ * charts the cut is a viewpoint artifact: every home system letters
+ * its own sky. Regions come from a prominence-weighted angular
+ * Voronoi — each landmark owns its own face outright and reaches
+ * beyond it by its stature, so the great complexes spread wide and the
+ * borders settle organically between them.
  */
-function buildSectorSkyBounds(
-  viewpoint: GalacticPosition,
+function buildConstellations(
+  nebulae: NebulaPatch[],
+  darkClouds: DarkCloudPatch[],
   orientation: Float32Array,
-): { sectorSkyBounds: Float32Array; sectorSkyLabels: SectorLabel[] } {
-  const homeId = sectorSeedAt(viewpoint);
-  const idAtDistance = (dir: [number, number, number], s: number): bigint =>
-    sectorSeedAt({
-      xPc: viewpoint.xPc + dir[0] * s,
-      yPc: viewpoint.yPc + dir[1] * s,
-      zPc: viewpoint.zPc + dir[2] * s,
-    });
-
-  /** First neighbor a sight-line enters, and the refined exit distance. */
-  const exitFor = (dir: [number, number, number]): { id: bigint; distancePc: number } => {
-    let inside = 0;
-    for (let s = SKY_MARCH_STEP_PC; s <= SKY_MARCH_MAX_PC; s += SKY_MARCH_STEP_PC) {
-      const id = idAtDistance(dir, s);
-      if (id !== homeId) {
-        let lo = inside;
-        let hi = s;
-        for (let i = 0; i < 4; i++) {
-          const mid = (lo + hi) / 2;
-          if (idAtDistance(dir, mid) === homeId) lo = mid;
-          else hi = mid;
-        }
-        return { id, distancePc: (lo + hi) / 2 };
-      }
-      inside = s;
+): { constellationBounds: Float32Array; constellationLabels: SectorLabel[] } {
+  // One candidate per cloud — the lit and dark faces of the same
+  // complex share a seed. Salience ranks the landmarks: angular size,
+  // with emission counting beyond bulk, so a glowing nebula outranks a
+  // dim rift of equal spread; geometry keeps the honest face.
+  const bySeed = new Map<
+    bigint,
+    { dir: [number, number, number]; face: number; salience: number }
+  >();
+  const offer = (
+    seed: bigint,
+    dir: [number, number, number],
+    face: number,
+    salience: number,
+  ): void => {
+    const held = bySeed.get(seed);
+    if (!held) bySeed.set(seed, { dir, face, salience });
+    else {
+      held.face = Math.max(held.face, face);
+      held.salience = Math.max(held.salience, salience);
     }
-    return { id: homeId, distancePc: SKY_MARCH_MAX_PC };
+  };
+  for (const nebula of nebulae) {
+    const face = nebula.angularRadius * 1.6;
+    offer(nebula.seed, nebula.dir, face, face * (1 + 1.5 * Math.sqrt(nebula.brightness)));
+  }
+  for (const cloud of darkClouds) offer(cloud.seed, cloud.dir, cloud.halfExtent, cloud.halfExtent);
+  const candidates = [...bySeed.entries()]
+    .map(([seed, { dir, face, salience }]) => {
+      const clamped = Math.min(face, 0.5);
+      return {
+        seed,
+        dir,
+        face: clamped,
+        salience,
+        weight: Math.min(1.9, Math.max(0.65, Math.cbrt(clamped / 0.15))),
+      };
+    })
+    .sort((a, b) => b.salience - a.salience || (a.seed < b.seed ? -1 : 1));
+
+  // Seat the landmarks in salience order. One that could no longer win
+  // its own heart against the seated — or would letter on top of a
+  // neighbor — stays a named object inside a greater constellation,
+  // the way minor nebulae live inside Orion.
+  const anchors: SkyAnchor[] = [];
+  for (const candidate of candidates) {
+    if (anchors.length >= CONSTELLATION_COUNT) break;
+    const crowded = anchors.some((anchor) => {
+      const angle = angleBetween(anchor.dir, candidate.dir);
+      return (
+        angle < CONSTELLATION_MIN_SEP ||
+        (angle - anchor.face) / anchor.weight <
+          -candidate.face / candidate.weight + CONSTELLATION_MARGIN
+      );
+    });
+    if (crowded) continue;
+    anchors.push(candidate);
+  }
+  if (anchors.length === 0) {
+    return { constellationBounds: new Float32Array(0), constellationLabels: [] };
+  }
+
+  /** The constellation a direction belongs to: negative inside a face,
+   *  then edge distance scaled by stature — a power diagram on the sphere. */
+  const idFor = (dir: [number, number, number]): bigint => {
+    let best = anchors[0].seed;
+    let bestCost = Infinity;
+    for (const anchor of anchors) {
+      const cost = (angleBetween(anchor.dir, dir) - anchor.face) / anchor.weight;
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = anchor.seed;
+      }
+    }
+    return best;
   };
 
   const dirAt = (i: number, j: number): [number, number, number] => {
@@ -785,12 +853,12 @@ function buildSectorSkyBounds(
   const ids: bigint[] = new Array(SKY_LON_STEPS * SKY_LAT_STEPS);
   for (let j = 0; j < SKY_LAT_STEPS; j++) {
     for (let i = 0; i < SKY_LON_STEPS; i++) {
-      ids[j * SKY_LON_STEPS + i] = exitFor(dirAt(i, j)).id;
+      ids[j * SKY_LON_STEPS + i] = idFor(dirAt(i, j));
     }
   }
 
-  // A label per sky region: each neighboring territory's patch of sky,
-  // named at its solid-angle-weighted center direction.
+  // A name per region at its solid-angle-weighted center direction;
+  // sliver regions go unlettered rather than cramped.
   const regionSums = new Map<
     bigint,
     { x: number; y: number; z: number; weight: number }
@@ -801,7 +869,6 @@ function buildSectorSkyBounds(
     for (let i = 0; i < SKY_LON_STEPS; i++) {
       const id = ids[j * SKY_LON_STEPS + i];
       totalWeight += weight;
-      if (id === homeId) continue;
       const dir = dirAt(i, j);
       const entry = regionSums.get(id) ?? { x: 0, y: 0, z: 0, weight: 0 };
       entry.x += dir[0] * weight;
@@ -811,9 +878,9 @@ function buildSectorSkyBounds(
       regionSums.set(id, entry);
     }
   }
-  const sectorSkyLabels: SectorLabel[] = [];
+  const constellationLabels: SectorLabel[] = [];
   for (const [id, sum] of regionSums) {
-    if (sum.weight < totalWeight * 0.015) continue;
+    if (sum.weight < totalWeight * 0.005) continue;
     const length = Math.hypot(sum.x, sum.y, sum.z);
     if (length < 1e-6) continue;
     const [sx, sy, sz] = rotateToScene(
@@ -822,11 +889,11 @@ function buildSectorSkyBounds(
       (sum.y / length) * SKY_DRAW_RADIUS_PC,
       (sum.z / length) * SKY_DRAW_RADIUS_PC,
     );
-    sectorSkyLabels.push({ name: sectorNameForSeed(id), x: sx, y: sy, z: sz, home: false });
+    constellationLabels.push({ name: sectorNameForSeed(id), x: sx, y: sy, z: sz, home: false });
   }
 
-  // Border crossing between two adjacent sight-lines: bisect the
-  // direction, then place the point on the exit surface itself.
+  // Border crossing between two adjacent sight-lines, bisected in
+  // direction and drawn on the celestial sphere.
   const mix = (
     a: [number, number, number],
     b: [number, number, number],
@@ -847,7 +914,7 @@ function buildSectorSkyBounds(
     let hi = 1;
     for (let i = 0; i < 4; i++) {
       const mid = (lo + hi) / 2;
-      if (exitFor(mix(a, b, mid)).id === idA) lo = mid;
+      if (idFor(mix(a, b, mid)) === idA) lo = mid;
       else hi = mid;
     }
     const dir = mix(a, b, (lo + hi) / 2);
@@ -910,7 +977,7 @@ function buildSectorSkyBounds(
       }
     }
   }
-  return { sectorSkyBounds: new Float32Array(segments), sectorSkyLabels };
+  return { constellationBounds: new Float32Array(segments), constellationLabels };
 }
 
 /**

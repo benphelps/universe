@@ -20,7 +20,7 @@ import {
 } from './density';
 import { sceneFromGalaxy } from './orientation';
 import { starPhotometry } from './photometry';
-import { galacticAddress, sectorName } from './regions';
+import { galacticAddress, sectorName, sectorNameForSeed } from './regions';
 import { populationFromUnit, metallicityFor } from './population';
 import { viewpointForSeed } from './sectors';
 import { buildSkyField, imfFractionAbove, type SkyField } from './skyfield';
@@ -369,11 +369,22 @@ describe('sky field', () => {
 
   it('charts and letters the local territories', () => {
     expect(sky.sectorBounds.length).toBeGreaterThan(60);
-    expect(sky.sectorSkyBounds.length).toBeGreaterThan(60);
     expect(sky.sectorLabels.length).toBeGreaterThan(3);
     expect(sky.sectorLabels.filter((l) => l.home).length).toBe(1);
-    expect(sky.sectorSkyLabels.length).toBeGreaterThan(2);
     for (const label of sky.sectorLabels) expect(label.name.length).toBeGreaterThan(2);
+  });
+
+  it('cuts the sky into constellations named for its own landmarks', () => {
+    expect(sky.constellationBounds.length).toBeGreaterThan(60);
+    expect(sky.constellationLabels.length).toBeGreaterThan(2);
+    // Every constellation is organized by a nebula or rift this very
+    // sky renders, under the same name the hover gives the object.
+    const landmarkNames = new Set(
+      [...sky.nebulae, ...sky.darkClouds].map((patch) => sectorNameForSeed(patch.seed)),
+    );
+    for (const label of sky.constellationLabels) {
+      expect(landmarkNames.has(label.name)).toBe(true);
+    }
   });
 
   it('carries clusters and nebulae in the far field', () => {
