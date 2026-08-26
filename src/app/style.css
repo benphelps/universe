@@ -481,6 +481,25 @@ tr.here .swatch {
   z-index: 4;
 }
 
+#walk-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 6;
+  pointer-events: none;
+  white-space: nowrap;
+  padding: 5px 14px;
+  font: 600 11px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  background: rgba(10, 14, 20, 0.8);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  backdrop-filter: blur(6px);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   #sidebar button,
   tr.pick td {

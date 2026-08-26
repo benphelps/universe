@@ -1,4 +1,4 @@
-import { AU } from '../../core/physics/constants';
+import { AU, G } from '../../core/physics/constants';
 import { powerLaw, rayleigh } from '../../core/rng/distributions';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
@@ -7,6 +7,21 @@ import type { Asteroid, AsteroidTaxonomy } from './types';
 
 /** Cumulative size-frequency slope N(>D) ∝ D^-q, collisional equilibrium. */
 export const SFD_SLOPE = 2.3;
+
+/** Bulk densities by taxonomy, kg/m³, from meteorite-analog measurements. */
+const TAXONOMY_DENSITY_KGM3: Record<AsteroidTaxonomy, number> = {
+  S: 2700,
+  C: 1400,
+  M: 4800,
+  D: 1100,
+};
+
+/** Surface gravity of a uniform sphere at the mean radius: g = 4πGρr/3.
+ *  Rubble piles carry ~25% macroporosity. */
+export function asteroidGravityMs2(asteroid: Asteroid): number {
+  const density = TAXONOMY_DENSITY_KGM3[asteroid.taxonomy] * (asteroid.rubblePile ? 0.75 : 1);
+  return ((4 / 3) * Math.PI * G * density * asteroid.diameterKm * 1000) / 2;
+}
 
 /** Rubble piles fly apart below this spin period. */
 const SPIN_BARRIER_HOURS = 2.2;
