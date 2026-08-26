@@ -201,6 +201,16 @@ tr.pick:hover td {
   color: var(--ink);
 }
 
+/* The row you are already at. */
+tr.here td {
+  color: var(--ink);
+}
+
+tr.here td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+  padding-left: 6px;
+}
+
 .empty {
   color: var(--faint);
   font-size: 12px;

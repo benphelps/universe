@@ -16,11 +16,19 @@ const STAGE_LABEL: Record<Star['stage'], string> = {
   'black-hole': 'black hole',
 };
 
-/** Star level: the star's physics up top, its companions listed below. */
+/**
+ * Star level: the focused star's physics up top; below, the system's
+ * stars — primary first, then companions — each row a click away.
+ */
 export class StarInfoPanel {
   constructor(private readonly sidebar: Sidebar) {}
 
-  render(star: Star): void {
+  render(
+    star: Star,
+    primary: Star,
+    focusedIndex: number,
+    onSelect: (index: number) => void,
+  ): void {
     const rows: Array<[string, string]> = [
       ['Mass', `${fmt(star.mass)} M☉${massLossNote(star)}`],
       ['Radius', `${fmt(star.radius)} R☉`],
@@ -58,29 +66,35 @@ export class StarInfoPanel {
       rows,
     });
 
-    const companionRows = star.companions
-      .map(
-        ({ star: companion, orbit }) => `<tr>
-          <td><span class="swatch" style="background:${cssColor(companion.linearRgb)}"></span> ${companion.spectralType}</td>
-          <td class="n">${fmt(companion.mass)}</td>
-          <td class="n">${fmt(orbit.semiMajorAxisAu)}</td>
-          <td class="n">${fmtDays(orbit.periodDays)}</td>
-          <td class="n">${fmt(orbit.eccentricity, 2)}</td>
-        </tr>`,
-      )
-      .join('');
+    const starRow = (
+      rowStar: Star,
+      index: number,
+      orbit: { semiMajorAxisAu: number; periodDays: number; eccentricity: number } | null,
+    ): string => `<tr class="pick${index === focusedIndex ? ' here' : ''}" data-index="${index}">
+      <td><span class="swatch" style="background:${cssColor(rowStar.linearRgb)}"></span> ${rowStar.spectralType}</td>
+      <td class="n">${fmt(rowStar.mass)}</td>
+      <td class="n">${orbit ? fmt(orbit.semiMajorAxisAu) : '—'}</td>
+      <td class="n">${orbit ? fmtDays(orbit.periodDays) : '—'}</td>
+      <td class="n">${orbit ? fmt(orbit.eccentricity, 2) : '—'}</td>
+    </tr>`;
 
-    this.sidebar.level.innerHTML = `
-      <h2>Companions · ${star.companions.length}</h2>
-      ${
-        companionRows
-          ? `<table class="list">
-              <tr><th></th><th class="n">M☉</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th></tr>
-              ${companionRows}
-            </table>`
-          : '<div class="empty">a single star — no companions</div>'
-      }
-    `;
+    const starRows = [
+      starRow(primary, 0, null),
+      ...primary.companions.map(({ star: companion, orbit }, i) => starRow(companion, i + 1, orbit)),
+    ].join('');
+
+    this.sidebar.level.innerHTML =
+      primary.companions.length > 0
+        ? `<h2>System stars · ${primary.companions.length + 1}</h2>
+           <table class="list">
+             <tr><th></th><th class="n">M☉</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th></tr>
+             ${starRows}
+           </table>`
+        : '<h2>System stars · 1</h2><div class="empty">a single star — no companions</div>';
+
+    for (const row of this.sidebar.level.querySelectorAll<HTMLElement>('tr.pick')) {
+      row.addEventListener('click', () => onSelect(Number(row.dataset.index)));
+    }
   }
 }
 

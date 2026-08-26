@@ -18,6 +18,7 @@ const viewElement = document.getElementById('view')!;
 let viewMode: ViewMode = 'star';
 let seedHex = '';
 let planetIndex = 0;
+let companionIndex = 0;
 let viewer: UnifiedViewer | null = null;
 let system: StarSystem | null = null;
 let currentLocaleKey = '';
@@ -55,6 +56,13 @@ function selectPlanet(index: number): void {
   load(seedHex);
 }
 
+/** Focus one of the system's stars: 0 the primary, then the companions. */
+function selectStar(index: number): void {
+  viewMode = 'star';
+  companionIndex = index;
+  load(seedHex);
+}
+
 /**
  * Every view is a preset of the one unified viewer — the same scene
  * focused and framed differently — so switching between them (or
@@ -88,8 +96,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
       } else if (target.kind === 'notable') {
         selectPlanet(system.planets.length + target.index);
       } else if (target.kind === 'star') {
-        viewMode = 'star';
-        load(seedHex);
+        selectStar((target.companion ?? -1) + 1);
       } else if (target.kind === 'belt') {
         viewer.focusBeltAsteroid(target.asteroid);
         planetPanel.renderAsteroid(system, target.asteroid, 'belt member');
@@ -101,14 +108,17 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   const localeKey = localePc ? localeParam(localePc) : '';
   if (!system || system.seedHex !== seedHex || currentLocaleKey !== localeKey) {
     currentLocaleKey = localeKey;
+    if (system) companionIndex = 0;
     system = generateSystem(seed, localePc);
     viewer.setSystem(system);
   }
   const address = galacticAddress(system.localePc);
   sidebar.address = address;
   if (viewMode === 'star') {
-    viewer.setFocus('star', 'star');
-    starPanel.render(system.star);
+    companionIndex = Math.max(0, Math.min(companionIndex, system.companions.length));
+    viewer.setFocus(companionIndex === 0 ? 'star' : { companion: companionIndex - 1 }, 'star');
+    const focused = companionIndex === 0 ? system.star : system.companions[companionIndex - 1].star;
+    starPanel.render(focused, system.star, companionIndex, selectStar);
   } else if (viewMode === 'system') {
     viewer.setFocus('star', 'system');
     systemPanel.render(system, selectPlanet);
@@ -157,6 +167,11 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   } else {
     url.searchParams.delete('planet');
   }
+  if (viewMode === 'star' && companionIndex > 0) {
+    url.searchParams.set('companion', String(companionIndex));
+  } else {
+    url.searchParams.delete('companion');
+  }
   history.replaceState(null, '', url);
 }
 
@@ -196,4 +211,5 @@ viewMode =
       ? 'planet'
       : 'star';
 planetIndex = Number(params.get('planet') ?? 0) || 0;
+companionIndex = Number(params.get('companion') ?? 0) || 0;
 load(params.get('seed') ?? randomSeedHex(), parseLocale(params.get('at')));

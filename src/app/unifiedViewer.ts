@@ -108,12 +108,12 @@ const ORIGIN = new Vector3();
  *  extended sky objects; solid pickables keep their generous reach. */
 const STAR_SNAP_PX = 10;
 
-export type FocusTarget = 'star' | number;
+export type FocusTarget = 'star' | number | { companion: number };
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 /** What a pick resolved to; main decides how to act on it. */
 export type PickTarget =
-  | { kind: 'star' }
+  | { kind: 'star'; companion?: number }
   | { kind: 'planet'; index: number }
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
@@ -304,6 +304,7 @@ export class UnifiedViewer {
   private field: SurfaceField | null = null;
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
+  private focusCompanion = -1;
   private focusPlanet: Planet | null = null;
   private focusAsteroid: Asteroid | null = null;
   private extentAu = 1;
@@ -329,6 +330,9 @@ export class UnifiedViewer {
   private pointerDownAt: [number, number] | null = null;
   /** Everything hoverable this frame; nearest to the cursor tooltips. */
   private pickables: Pickable[] = [];
+  /** Body discs that block the hover: a star behind a planet is not
+   *  under the cursor. World-frame spheres, rebuilt with pickables. */
+  private occluders: Array<{ x: number; y: number; z: number; rKm: number }> = [];
   private hovered: Pickable | null = null;
   private hoveredKey = '';
   private cursor: [number, number] | null = null;
@@ -625,6 +629,7 @@ export class UnifiedViewer {
     if (!this.system) return;
     this.clearFocus();
     this.focus = target;
+    this.focusCompanion = typeof target === 'object' ? target.companion : -1;
     // Numeric targets index the planets, then the notable asteroids.
     const planetCount = this.system.planets.length;
     this.focusPlanet =
@@ -698,7 +703,9 @@ export class UnifiedViewer {
     } else if (this.focusAsteroid) {
       this.applyAsteroidFocus(this.focusAsteroid);
     } else {
-      this.radiusKm = Math.max(this.system.star.radius, 1e-4) * SOLAR_RADIUS_KM;
+      const focusStar =
+        this.system.companions[this.focusCompanion]?.star ?? this.system.star;
+      this.radiusKm = Math.max(focusStar.radius, 1e-4) * SOLAR_RADIUS_KM;
       this.minAltitudeKm = this.radiusKm * 0.3;
       this.altitudeKm =
         preset === 'system'
@@ -780,20 +787,46 @@ export class UnifiedViewer {
   }
 
   /** True when the segment camera→point passes behind the focus body. */
-  private occludedByFocus(x: number, y: number, z: number): boolean {
-    const cam = this.camera.position;
+  /** Sight-line test against a sphere: does cam→point pass inside it? */
+  private static segmentHitsSphere(
+    cam: Vector3,
+    x: number,
+    y: number,
+    z: number,
+    cx: number,
+    cy: number,
+    cz: number,
+    r: number,
+  ): boolean {
     const dx = x - cam.x;
     const dy = y - cam.y;
     const dz = z - cam.z;
     const lengthSq = dx * dx + dy * dy + dz * dz;
     if (lengthSq < 1) return false;
-    // Closest approach of the segment to the focus body at the origin.
-    const t = Math.max(0, Math.min(1, -(cam.x * dx + cam.y * dy + cam.z * dz) / lengthSq));
-    const px = cam.x + dx * t;
-    const py = cam.y + dy * t;
-    const pz = cam.z + dz * t;
-    const r = this.radiusKm * 0.98;
+    const ox = cam.x - cx;
+    const oy = cam.y - cy;
+    const oz = cam.z - cz;
+    // Closest approach of the segment to the sphere's center.
+    const t = Math.max(0, Math.min(1, -(ox * dx + oy * dy + oz * dz) / lengthSq));
+    const px = ox + dx * t;
+    const py = oy + dy * t;
+    const pz = oz + dz * t;
     return t > 0 && t < 1 && px * px + py * py + pz * pz < r * r;
+  }
+
+  /** Whether any body disc — the focus at the origin, or a star,
+   *  planet, or moon on its orbit — hides this point from the camera. */
+  private occluded(x: number, y: number, z: number): boolean {
+    const cam = this.camera.position;
+    if (UnifiedViewer.segmentHitsSphere(cam, x, y, z, 0, 0, 0, this.radiusKm * 0.98)) {
+      return true;
+    }
+    for (const body of this.occluders) {
+      if (UnifiedViewer.segmentHitsSphere(cam, x, y, z, body.x, body.y, body.z, body.rKm * 0.98)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Find the pickable nearest the cursor and drive the tooltip. */
@@ -812,7 +845,7 @@ export class UnifiedViewer {
         const sy = (-v.y * 0.5 + 0.5) * rect.height;
         const d = Math.hypot(sx - cx, sy - cy) * bias;
         if (d >= bestPx) return;
-        if (this.occludedByFocus(pickable.x, pickable.y, pickable.z)) return;
+        if (this.occluded(pickable.x, pickable.y, pickable.z)) return;
         bestPx = d;
         best = pickable;
       };
@@ -838,7 +871,7 @@ export class UnifiedViewer {
           if (px > STAR_SNAP_PX) continue;
           const d = px * 1.5;
           if (d >= bestPx) continue;
-          if (this.occludedByFocus(wx, wy, wz)) continue;
+          if (this.occluded(wx, wy, wz)) continue;
           bestPx = d;
           bestStar = i;
           best = null;
@@ -865,6 +898,8 @@ export class UnifiedViewer {
             if (px > STAR_SNAP_PX) continue;
             const d = px * 1.45;
             if (d >= bestPx) continue;
+            v.fromBufferAttribute(farPositions, i).applyMatrix4(matrix);
+            if (this.occluded(v.x, v.y, v.z)) continue;
             bestPx = d;
             bestFar = i;
             best = null;
@@ -972,8 +1007,17 @@ export class UnifiedViewer {
         const [ox, oy, oz] = rotateToScene(sky.sceneFromGalaxy, ...patchDir);
         dir.set(ox, oy, oz).applyQuaternion(this.frameQuat);
         if (dir.dot(ray) < Math.cos(angularRadius)) return;
-        bestAngular = angularRadius;
         const reach = this.camera.far * 0.25;
+        if (
+          this.occluded(
+            this.camera.position.x + dir.x * reach,
+            this.camera.position.y + dir.y * reach,
+            this.camera.position.z + dir.z * reach,
+          )
+        ) {
+          return;
+        }
+        bestAngular = angularRadius;
         best = {
           x: this.camera.position.x + dir.x * reach,
           y: this.camera.position.y + dir.y * reach,
@@ -1470,7 +1514,10 @@ export class UnifiedViewer {
       );
       return toWorld(position).divideScalar(1000);
     }
-    if (!this.focusPlanet) return this.stellarPositionsKm(tSeconds)[0];
+    if (!this.focusPlanet) {
+      const positions = this.stellarPositionsKm(tSeconds);
+      return positions[this.focusCompanion + 1] ?? positions[0];
+    }
     const { position } = elementsToState(
       this.focusPlanet.elements,
       planetMu(this.system, this.focusPlanet),
@@ -1653,6 +1700,7 @@ export class UnifiedViewer {
   private updateWorld(up: Vector3): void {
     if (!this.system) return;
     this.pickables.length = 0;
+    this.occluders.length = 0;
     const solid = this.field !== null;
     const tSeconds = seconds(this.simTimeDays * DAY);
     const yAxis = new Vector3(0, 1, 0);
@@ -1700,9 +1748,19 @@ export class UnifiedViewer {
         node.object.group.position.z,
       );
       const star = i === 0 ? this.system.star : this.system.companions[i - 1]?.star;
-      // Companions identify themselves everywhere; the primary only when
-      // it isn't already the focus filling the screen.
-      if (star && (i > 0 || this.focus !== 'star')) {
+      if (star) {
+        this.occluders.push({
+          x: node.object.group.position.x,
+          y: node.object.group.position.y,
+          z: node.object.group.position.z,
+          rKm: star.radius * SOLAR_RADIUS_KM,
+        });
+      }
+      // Every star identifies itself except the one already filling
+      // the screen as the focus.
+      const focusedNode =
+        this.focus === 'star' ? 0 : this.focusCompanion >= 0 ? this.focusCompanion + 1 : -1;
+      if (star && i !== focusedNode) {
         this.pickables.push({
           x: node.object.group.position.x,
           y: node.object.group.position.y,
@@ -1710,7 +1768,7 @@ export class UnifiedViewer {
           name: star.designation,
           info: `${star.spectralType} · ${i === 0 ? 'primary' : 'companion'}`,
           action: 'click for star view',
-          target: { kind: 'star' },
+          target: i === 0 ? { kind: 'star' } : { kind: 'star', companion: i - 1 },
         });
       }
     }
@@ -1775,6 +1833,7 @@ export class UnifiedViewer {
         node.marker.scale.setScalar(cameraDistance * 0.0035);
       }
       const { climate, bulk } = node.planet.physical;
+      this.occluders.push({ x: worldPos.x, y: worldPos.y, z: worldPos.z, rKm: bodyRadiusKm });
       this.pickables.push({
         x: worldPos.x,
         y: worldPos.y,
@@ -1830,6 +1889,7 @@ export class UnifiedViewer {
       const moonRadiusKm = moon.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
       marker.visible = moonRadiusKm / cameraDistance < 0.004;
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
+      this.occluders.push({ x: moonWorld.x, y: moonWorld.y, z: moonWorld.z, rKm: moonRadiusKm });
       this.pickables.push({
         x: moonWorld.x,
         y: moonWorld.y,
