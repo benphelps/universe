@@ -95,6 +95,17 @@ Milestones build outward-in: foundations → one star → its system → its wor
 - [ ] Performance hardening (belt LOD, chunk budgets, memory eviction, terrain geomorphing)
 - [ ] WebGPU renderer evaluation
 
+## M8 — Human Scale ([plan](plan/09-human-scale.md))
+
+Walking the worlds: to-scale terrain from orbit to the footstep, every feature a model object. Ordering: S1 → S2 → S4-graph → S3 → S4-rendering → S5 → S6.
+
+- [ ] S1 Boots: WASD + mouse-look ground camera — eye height, body-g gravity, terrain collision, slope limits; land-anywhere transition from orbit and clean exit back to it
+- [ ] S2 Ground truth: detail cascade extended ~100 m → ~5 cm with per-substrate band parameters; geomorphing; normal-map micro-detail; chunk budget/eviction and local-frame precision hardening
+- [ ] S3 The lay of the land: structural ridge/valley networks with consistent divides, fault scarps, talus at angle of repose, strata in cliff faces, coastal morphology (beaches, cliffs, tidal flats)
+- [ ] S4 Water finds its way: global drainage graph (uplift × precipitation → basins, reaches with discharge/width/slope) as first-class model objects; valleys carved by the graph; rivers, lakes, waterfalls, deltas rendered to scale; orbital river traces and walked banks from the same data
+- [ ] S5 Weather on the map: spatial climate fields (circulation bands, orographic rain, rain shadows, soil moisture, snowline) feeding hydrology and a first-class Whittaker biome field that colors every scale
+- [ ] S6 The living ground: procedural plant species per biome (star-spectrum pigments), deterministic hierarchical placement, instanced trees → impostors → canopy-in-terrain-color LOD chain, undergrowth near the camera
+
 ---
 
 ## Log
