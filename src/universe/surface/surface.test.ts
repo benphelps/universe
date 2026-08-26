@@ -114,20 +114,20 @@ describe('surface field', () => {
       const l = Math.hypot(p.x, p.y, p.z);
       return { x: p.x / l, y: p.y / l, z: p.z / l };
     };
-    const stepRad = 40 / earthLike.params.radiusM;
+    // A short probe: it must stay inside the wave-worked band to see it.
+    const stepRad = 12 / earthLike.params.radiusM;
     const slopeAt = (dir: { x: number; y: number; z: number }): number => {
       const east = norm({ x: -dir.z, y: 0, z: dir.x });
       const a = earthLike.heightAt(norm({
         x: dir.x + east.x * stepRad, y: dir.y, z: dir.z + east.z * stepRad,
       }));
-      return Math.abs(a - earthLike.heightAt(dir)) / 40;
+      return Math.abs(a - earthLike.heightAt(dir)) / 12;
     };
-    // Bisect dry/wet sample pairs down to the waterline.
-    let beach = 0;
-    let upland = 0;
-    let shores = 0;
+    // Bisect dry/wet sample pairs down to the waterline. Medians, not
+    // sums: some coasts are honest wave-cut cliffs and should stay steep.
+    const beachSlopes: number[] = [];
     const dirs = sampleDirs(500);
-    for (let i = 0; i < dirs.length - 1 && shores < 15; i++) {
+    for (let i = 0; i < dirs.length - 1 && beachSlopes.length < 15; i++) {
       let dry = dirs[i];
       let wet = dirs[i + 1];
       if (earthLike.heightAt(dry) < earthLike.seaLevelM) [dry, wet] = [wet, dry];
@@ -138,19 +138,17 @@ describe('surface field', () => {
         if (earthLike.heightAt(mid) - earthLike.seaLevelM > 0.5) dry = mid;
         else wet = mid;
       }
-      beach += slopeAt(dry);
-      // Control band: the same coast, 25 m of elevation higher — walk
-      // uphill by resampling a short ray toward the dry sample.
-      const inland = norm({
-        x: dry.x + (dirs[i].x - dry.x) * 0.02,
-        y: dry.y + (dirs[i].y - dry.y) * 0.02,
-        z: dry.z + (dirs[i].z - dry.z) * 0.02,
-      });
-      upland += slopeAt(inland);
-      shores++;
+      beachSlopes.push(slopeAt(dry));
     }
-    expect(shores).toBeGreaterThan(5);
-    expect(beach).toBeLessThan(upland * 0.7);
+    const uplandSlopes: number[] = [];
+    for (const dir of dirs) {
+      const rel = earthLike.heightAt(dir) - earthLike.seaLevelM;
+      if (rel > 10 && rel < 400) uplandSlopes.push(slopeAt(dir));
+    }
+    const median = (values: number[]) => values.sort((a, b) => a - b)[values.length >> 1];
+    expect(beachSlopes.length).toBeGreaterThan(5);
+    expect(uplandSlopes.length).toBeGreaterThan(20);
+    expect(median(beachSlopes)).toBeLessThan(median(uplandSlopes) * 0.6);
   });
 
   it('grows deterministic tree species, and forests stand in the rain', () => {

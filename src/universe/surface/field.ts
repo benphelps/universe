@@ -40,6 +40,9 @@ interface DetailBand {
   frequency: number;
   octaves: number;
   amplitudeM: number;
+  /** 0 = smooth fbm bumps; toward 1, crests sharpen along noise
+   *  zero-sets into connected ridge-valley systems. */
+  ridge: number;
 }
 
 /**
@@ -64,6 +67,8 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   const moistureNoise = fbm(createSimplex3(deriveSeed(seed, 'moisture')), { octaves: 3 });
   const paletteNoise = fbm(createSimplex3(deriveSeed(seed, 'palette')), { octaves: 4 });
   const meander = createSimplex3(deriveSeed(seed, 'meanders'));
+  const warpMacro = createSimplex3(deriveSeed(seed, 'warp-macro'));
+  const warpMicro = createSimplex3(deriveSeed(seed, 'warp-micro'));
   const ravineRidge = ridged(createSimplex3(deriveSeed(seed, 'ravines')), { octaves: 2 });
   const glacialRidge = ridged(createSimplex3(deriveSeed(seed, 'glacial')), { octaves: 1 });
   const duneWarp = createSimplex3(deriveSeed(seed, 'dunes'));
@@ -98,21 +103,24 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     return patch * lowland * duneStrength;
   };
 
-  // Roughness cascade below the continental scale, ~1/f amplitude falloff
-  // from ~100 km structure to ~20 cm ground texture. Erosion damps it;
-  // cratered dead worlds stay rugged. Bands from FINE_BAND down are the
-  // walked-scale texture (outcrop, gravel) and take the substrate factor.
+  // Roughness cascade below the continental scale, from ~100 km
+  // structure to ~20 cm ground texture. The falloff runs much flatter
+  // than 1/f through the middle: Earth's feel lives in ridge-and-valley
+  // relief at 100 m–25 km wavelengths (5–20% slopes), and a spectrum
+  // tuned for orbital smoothness starves exactly that band. Erosion
+  // damps it all; cratered dead worlds stay rugged. Bands from
+  // FINE_BAND down are walked-scale texture and take the substrate.
   const roughness = (1 - 0.72 * erosion) * (1 + 0.4 * params.craterAmplitude);
   const detailBands: DetailBand[] = [
-    { frequency: 45, octaves: 3, amplitudeM: reliefM * 0.055 * roughness },
-    { frequency: 280, octaves: 3, amplitudeM: reliefM * 0.016 * roughness },
-    { frequency: 1700, octaves: 2, amplitudeM: reliefM * 0.005 * roughness },
-    { frequency: 9000, octaves: 2, amplitudeM: reliefM * 0.0016 * roughness },
-    { frequency: 45000, octaves: 2, amplitudeM: reliefM * 0.0005 * roughness },
-    { frequency: 240000, octaves: 2, amplitudeM: reliefM * 0.00016 * roughness },
-    { frequency: 1300000, octaves: 2, amplitudeM: reliefM * 0.000052 * roughness },
-    { frequency: 7000000, octaves: 2, amplitudeM: reliefM * 0.000017 * roughness },
-    { frequency: 30000000, octaves: 1, amplitudeM: reliefM * 0.0000065 * roughness },
+    { frequency: 45, octaves: 3, amplitudeM: reliefM * 0.07 * roughness, ridge: 0.35 },
+    { frequency: 280, octaves: 3, amplitudeM: reliefM * 0.065 * roughness, ridge: 0.55 },
+    { frequency: 1700, octaves: 2, amplitudeM: reliefM * 0.032 * roughness, ridge: 0.6 },
+    { frequency: 9000, octaves: 2, amplitudeM: reliefM * 0.012 * roughness, ridge: 0.6 },
+    { frequency: 45000, octaves: 2, amplitudeM: reliefM * 0.0038 * roughness, ridge: 0.5 },
+    { frequency: 240000, octaves: 2, amplitudeM: reliefM * 0.0011 * roughness, ridge: 0.4 },
+    { frequency: 1300000, octaves: 2, amplitudeM: reliefM * 0.00028 * roughness, ridge: 0.25 },
+    { frequency: 7000000, octaves: 2, amplitudeM: reliefM * 0.00007 * roughness, ridge: 0.15 },
+    { frequency: 30000000, octaves: 1, amplitudeM: reliefM * 0.00002 * roughness, ridge: 0 },
   ];
   const FINE_BAND = 5;
 
@@ -255,6 +263,27 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     const lowland = smooth01((reliefM * 0.12 - h) / (reliefM * 0.12));
     const substrate = (1 - 0.85 * erg) * (1 - 0.7 * erosion * lowland);
 
+    // The band domains shear through vector warp fields, so landforms
+    // sweep and flow instead of sitting as isotropic bumps: a ~120 km
+    // field bends the hill systems, a ~3 km field bends the walked
+    // ground. Each activates only at LODs where its bands exist.
+    let wax = dir.x;
+    let way = dir.y;
+    let waz = dir.z;
+    if (lodAngularRad < 0.011) {
+      wax += 0.004 * warpMacro(dir.x * 60, dir.y * 60, dir.z * 60);
+      way += 0.004 * warpMacro(dir.x * 60 + 19.1, dir.y * 60, dir.z * 60);
+      waz += 0.004 * warpMacro(dir.x * 60, dir.y * 60 + 47.3, dir.z * 60);
+    }
+    let wbx = dir.x;
+    let wby = dir.y;
+    let wbz = dir.z;
+    if (lodAngularRad < 2.5e-6) {
+      wbx += 1.2e-4 * warpMicro(dir.x * 2400, dir.y * 2400, dir.z * 2400);
+      wby += 1.2e-4 * warpMicro(dir.x * 2400 + 7.7, dir.y * 2400, dir.z * 2400);
+      wbz += 1.2e-4 * warpMicro(dir.x * 2400, dir.y * 2400 + 29.3, dir.z * 2400);
+    }
+
     for (let bandIndex = 0; bandIndex < detailBands.length; bandIndex++) {
       const band = detailBands[bandIndex];
       // Fade each band in across a LOD level: a hard Nyquist cut would
@@ -266,17 +295,24 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       if (lodAngularRad > 0 && bandIndex > 0) {
         const wavelengthRatio = 1 / band.frequency / (2 * lodAngularRad);
         if (wavelengthRatio <= 1) break;
-        // Fade across ~two LOD levels so ring boundaries stay subtle.
-        fade = Math.min(1, (wavelengthRatio - 1) / 4);
+        // The geomorph absorbs LOD transitions, so detail can arrive
+        // fast; this divisor sets how much of a band survives at the
+        // finest level that can carry it at all.
+        fade = Math.min(1, (wavelengthRatio - 1) / 2.5);
       }
       const offset = 17.31 * (bandIndex + 1);
       let amplitude = band.amplitudeM * fade * (1 - 0.5 * glacial);
       if (bandIndex >= FINE_BAND) amplitude *= substrate;
+      const wx = bandIndex < FINE_BAND ? wax : wbx;
+      const wy = bandIndex < FINE_BAND ? way : wby;
+      const wz = bandIndex < FINE_BAND ? waz : wbz;
       let frequency = band.frequency;
       let sum = 0;
       for (let o = 0; o < band.octaves; o++) {
-        sum +=
-          amplitude * bandNoise(dir.x * frequency + offset, dir.y * frequency, dir.z * frequency);
+        const n = bandNoise(wx * frequency + offset, wy * frequency, wz * frequency);
+        const shaped =
+          band.ridge > 0 ? (1 - band.ridge) * n + band.ridge * (0.7 - 2 * Math.abs(n)) : n;
+        sum += amplitude * shaped;
         amplitude *= 0.5;
         frequency *= 2.1;
       }
