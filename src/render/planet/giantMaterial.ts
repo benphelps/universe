@@ -56,6 +56,8 @@ uniform vec3 uLightDirObj;
 uniform vec3 uHotspotDirObj;
 uniform vec3 uThermalColor;
 uniform float uThermalStrength;
+uniform float uCloudReliefKm;
+uniform float uHazeAmount;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
@@ -102,6 +104,7 @@ void main() {
   float lon = atan(p.z, p.x);
   float churnT = uTimeDays * uChurnPerDay;
   vec3 surface;
+  float cloudHOut = 0.5;
 
   if (uRegime < 0.5) {
     // ——— Banded regime: the circulation model, rendered. ———
@@ -131,6 +134,10 @@ void main() {
     // Decadal fade cycles: fresh white deck buries a belt's color,
     // then the revival scours it away (the SEB's habit).
     bandColor = mix(bandColor, uStormFresh * 1.02, uBandFade[band]);
+    // Cloud-top height rides with brightness: high fresh ammonia decks
+    // are the bright ones, dark belts are the deep holes. Fades,
+    // feathering, and stirring all inherit through the color.
+    float cloudH = dot(bandColor, vec3(0.35, 0.45, 0.2));
 
     // The deck: churned cloud texture advected with the band's own jet.
     float lonAdv = lon + uTimeDays * uBands[band].z;
@@ -139,6 +146,7 @@ void main() {
     float fine = fbm(vec3(q.x, q.y * 7.0, q.z) * 9.0 + uSeedOffset.yzx
       + vec3(0.0, churnT * 1.6, 0.0));
     surface = bandColor * (1.0 + uContrast * (0.5 * deck + 0.28 * fine));
+    cloudH += uContrast * (0.2 * deck + 0.055 * fine);
 
     // The physics often asks for more bands than the macro budget
     // carries: the surplus renders as faint striping within them.
@@ -174,6 +182,8 @@ void main() {
       float fade = s.z < 0.0 ? 1.0 - smooth01((s.w - 0.7) / 0.3) : 1.0;
       surface = mix(surface, stormColor * (0.94 + 0.12 * swirl), clamp(core * 1.25, 0.0, 1.0) * fade);
       surface = mix(surface, stormColor * 1.13, rim * 0.45 * fade);
+      // Storm heads tower above the deck, fresh ones highest.
+      cloudH += core * fade * (s.z < 0.0 ? 0.55 : mix(0.6, 0.25, s.w));
     }
 
     // The polar regime: hood, hexagon-analog cap edge, cyclone cluster.
@@ -184,6 +194,7 @@ void main() {
     }
     float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(wlat));
     surface = mix(surface, uHoodColor * (0.92 + 0.16 * fbm(p * 5.0 + uSeedOffset)), cap * 0.85);
+    cloudH = mix(cloudH, 0.55, cap * 0.7);
     if (cap > 0.01) {
       float colat = 1.5707963 - abs(lat);
       vec2 pp = vec2(colat * cos(lon), colat * sin(lon));
@@ -195,6 +206,9 @@ void main() {
         vortices += exp(-dot(pp - c, pp - c) / 0.0022);
       }
       surface = mix(surface, uHoodColor * 0.68, clamp(vortices, 0.0, 1.0) * cap * 0.85);
+      cloudHOut = cloudH - clamp(vortices, 0.0, 1.0) * cap * 0.3;
+    } else {
+      cloudHOut = cloudH;
     }
   } else {
     // ——— Locked regime: day-night circulation, no bands. ———
@@ -209,17 +223,44 @@ void main() {
     float crescent = exp(-pow(dot(p, uLightDirObj) / 0.22, 2.0))
       * smoothstep(0.0, 0.5, dot(p, west));
     surface = mix(surface, uStormFresh, crescent * 0.55);
+    cloudHOut = 0.5 + 0.3 * streaks + 0.4 * crescent;
   }
 
-  // Lighting: star, second light, self-luminosity, aurora.
+  // Lighting: the cloud tops are a relief surface, not a shell. The
+  // height field bumps the shading normal via screen derivatives, so
+  // low sun rakes across zone edges and storm heads exactly where a
+  // terminator crosses them (relief exaggerated ~8× actual cloud-deck
+  // scale so it reads at planetary distance — disclosed).
   vec3 normal = normalize(vWorldNormal);
+  vec3 sx = dFdx(vWorldPos);
+  vec3 sy = dFdy(vWorldPos);
+  float hKm = cloudHOut * uCloudReliefKm;
+  float slopeX = dFdx(hKm) / max(length(sx), 1e-5);
+  float slopeY = dFdy(hKm) / max(length(sy), 1e-5);
+  vec3 tx = normalize(sx - normal * dot(sx, normal) + vec3(1e-7));
+  vec3 ty = normalize(sy - normal * dot(sy, normal) + vec3(1e-7));
+  vec3 bumped = normalize(normal - clamp(slopeX, -0.6, 0.6) * tx - clamp(slopeY, -0.6, 0.6) * ty);
+
   float ndotl = dot(normal, uLightDir);
-  float diffuse = max(ndotl, 0.0) * shadowFactor(vWorldPos, uLightDir);
+  float diffuse = max(dot(bumped, uLightDir), 0.0) * shadowFactor(vWorldPos, uLightDir);
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   float mu = clamp(dot(normal, viewDir), 0.0, 1.0);
   float limb = 1.0 - 0.45 * (1.0 - mu);
 
-  float diffuse2 = max(dot(normal, uLight2Dir), 0.0) * shadowFactor(vWorldPos, uLight2Dir);
+  // The high haze layer: a thin veil with its own slow drift, nearly
+  // clear overhead and thickening toward the limb with the slant
+  // path — the deck visibly sits below it.
+  if (uHazeAmount > 0.01) {
+    float hazeLon = lon + uTimeDays * 0.35;
+    vec3 hp = vec3(cos(lat) * cos(hazeLon), sin(lat) * 1.6, cos(lat) * sin(hazeLon));
+    float hazeN = fbm(hp * 1.9 + uSeedOffset.zyx + vec3(0.0, 0.0, churnT * 0.15));
+    float slant = 1.0 - mu * 0.85;
+    float cover = uHazeAmount * clamp(0.35 + 0.65 * hazeN, 0.0, 1.0) * slant * slant;
+    surface = mix(surface, uStormFresh * 1.04, clamp(cover, 0.0, 0.85));
+    diffuse = mix(diffuse, max(ndotl, 0.0), clamp(cover, 0.0, 0.85));
+  }
+
+  float diffuse2 = max(dot(bumped, uLight2Dir), 0.0) * shadowFactor(vWorldPos, uLight2Dir);
   vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2) * limb;
 
   // Stratospheric haze: a forward-scattering bright rim on the lit limb.
@@ -308,6 +349,8 @@ export function createGiantMaterial(
         ),
       },
       uContrast: { value: circulation.contrast },
+      uCloudReliefKm: { value: physical.bulk.radiusEarth * 6371 * 0.008 },
+      uHazeAmount: { value: 0.12 + 0.4 * (1 - circulation.contrast) },
       uFineBands: { value: circulation.fineBandCount },
       uChurnPerDay: { value: circulation.churnPerDay },
       uRegime: { value: circulation.regime === 'locked' ? 1 : 0 },
