@@ -2,22 +2,27 @@ import { deriveSeed, mix64 } from '../../core/rng/hash';
 import { poisson } from '../../core/rng/distributions';
 import { Rng } from '../../core/rng/rng';
 import { createSimplex3 } from '../../core/noise/simplex3';
+import { cloudsInCell, type MolecularCloud } from './clouds';
 import { nearestArm, stellarDensity, type GalacticPosition } from './density';
 import { UNIVERSE_SEED } from './sectors';
 
 /**
  * The galactic gazetteer: names for the structure the model already
  * carries, the way human astronomy named the Orion Arm or the Perseus
- * Arm. Chart sectors are organic 3D territories, not a grid: one seed
- * site per span cell (jittered across the whole cell, in all three
- * axes), each locale belonging to the nearest of its 27 neighboring
- * sites through a noise-warped metric — so borders meander like
- * hand-drawn provinces and stack in shells above the disk, yet every
- * chart of this universe agrees on every border and every name.
+ * Arm. Chart sectors are the territories of real landmarks: each
+ * province anchors on a prominent molecular-cloud complex — the same
+ * first-class objects that carve the rifts and light the nebulae — and
+ * a locale belongs to the nearest anchor through a mass-weighted,
+ * noise-bent metric, so great complexes claim broad regions and the
+ * borders settle organically between them. A province and its anchor
+ * cloud share a seed, and therefore a name. Where the cloud population
+ * thins out — the far rim, the halo — sparsely seeded frontier anchors
+ * keep the map complete. Every chart of this universe agrees on every
+ * border and every name.
  */
 
-/** Mean territory span; actual shapes are irregular Voronoi volumes. */
-export const SECTOR_SITE_SPAN_PC = 900;
+/** Anchor-search cell span (4 cloud cells; provinces are its scale). */
+export const SECTOR_SITE_SPAN_PC = 1000;
 
 const warpNoise = createSimplex3(deriveSeed(UNIVERSE_SEED, 'sector-warp'));
 const SITE_SALT = deriveSeed(UNIVERSE_SEED, 'sector-site');
@@ -48,17 +53,29 @@ interface SectorSite {
   yPc: number;
   zPc: number;
   seed: bigint;
+  /** Territorial reach: prominent complexes claim broader regions. */
+  weight: number;
+}
+
+/** Landmark prominence: the cloud's excess dust mass, roughly. */
+function cloudScore(cloud: MolecularCloud): number {
+  return cloud.amplitude * cloud.radiusPc ** 3;
 }
 
 // Border tracing sweeps thousands of lookups over the same few hundred
 // cells; the per-cell derivation is BigInt-priced, so memoize.
 const siteCache = new Map<number, SectorSite[]>();
 
+/** Score of a typical landmark cloud, for weight normalization. */
+const SCORE_REF = 4.5 * 45 ** 3;
+const CLOUD_CELLS_PER_SPAN = 4;
+
 /**
- * The sites of one span cell: at least one, plus extras where the
- * stellar density runs high — so provinces come out small along the
- * arms and in the inner disk, and sprawl in the rim and halo, the way
- * human administrative maps subdivide where the population is.
+ * The anchors of one span cell: its most prominent molecular clouds,
+ * as many as the local stellar density warrants — so provinces run
+ * small along the arms and inner disk and sprawl in the rim — with
+ * jittered frontier anchors only where clouds are too sparse to carry
+ * the map (the outer rim, the halo).
  */
 function sitesFor(ix: number, iy: number, iz: number): SectorSite[] {
   const key = ((ix + 1024) * 2048 + (iy + 1024)) * 64 + (iz + 32);
@@ -78,20 +95,48 @@ function sitesFor(ix: number, iy: number, iz: number): SectorSite[] {
     6,
     1 + poisson(rng, Math.max(0, 2 * Math.sqrt(density / 0.1) - 1)),
   );
+
+  const clouds: MolecularCloud[] = [];
+  for (let cx = 0; cx < CLOUD_CELLS_PER_SPAN; cx++) {
+    for (let cy = 0; cy < CLOUD_CELLS_PER_SPAN; cy++) {
+      for (let cz = 0; cz < CLOUD_CELLS_PER_SPAN; cz++) {
+        clouds.push(
+          ...cloudsInCell(
+            ix * CLOUD_CELLS_PER_SPAN + cx,
+            iy * CLOUD_CELLS_PER_SPAN + cy,
+            iz * CLOUD_CELLS_PER_SPAN + cz,
+          ),
+        );
+      }
+    }
+  }
+  clouds.sort((a, b) => cloudScore(b) - cloudScore(a));
+
   const sites: SectorSite[] = [];
-  for (let k = 0; k < count; k++) {
+  for (const cloud of clouds.slice(0, count)) {
+    sites.push({
+      xPc: cloud.positionPc.xPc,
+      yPc: cloud.positionPc.yPc,
+      zPc: cloud.positionPc.zPc,
+      seed: cloud.seed,
+      weight: Math.min(2.2, Math.max(0.6, (cloudScore(cloud) / SCORE_REF) ** (1 / 3))),
+    });
+  }
+  for (let k = sites.length; k < count; k++) {
     sites.push({
       xPc: (ix + rng.float()) * SECTOR_SITE_SPAN_PC,
       yPc: (iy + rng.float()) * SECTOR_SITE_SPAN_PC,
       zPc: (iz + rng.float()) * SECTOR_SITE_SPAN_PC,
       seed: deriveSeed(cellSeed, 'site', k),
+      weight: 0.8,
     });
   }
   siteCache.set(key, sites);
   return sites;
 }
 
-/** Border-bending warp: territories meander instead of meeting on planes. */
+/** Border-bending warp: territories meander instead of meeting on
+ *  planes. Modest — the anchors themselves carry the real structure. */
 function warped(xPc: number, yPc: number, zPc: number): [number, number, number] {
   const sx = xPc / 750;
   const sy = yPc / 750;
@@ -100,27 +145,30 @@ function warped(xPc: number, yPc: number, zPc: number): [number, number, number]
   const fy = yPc / 270;
   const fz = zPc / 270;
   return [
-    xPc + 190 * warpNoise(sx, sy, sz) + 75 * warpNoise(fx, fy, fz + 11),
-    yPc + 190 * warpNoise(sx, sy, sz + 101) + 75 * warpNoise(fx, fy, fz + 112),
-    zPc + 190 * warpNoise(sx, sy, sz + 203) + 75 * warpNoise(fx, fy, fz + 214),
+    xPc + 120 * warpNoise(sx, sy, sz) + 50 * warpNoise(fx, fy, fz + 11),
+    yPc + 120 * warpNoise(sx, sy, sz + 101) + 50 * warpNoise(fx, fy, fz + 112),
+    zPc + 120 * warpNoise(sx, sy, sz + 203) + 50 * warpNoise(fx, fy, fz + 214),
   ];
 }
 
-/** The territory a locale belongs to: nearest site in the warped metric. */
+/** The territory a locale belongs to: the anchor whose weighted reach
+ *  wins in the warped metric — a power diagram over the landmarks. */
 export function sectorSeedAt(positionPc: GalacticPosition): bigint {
   const [wx, wy, wz] = warped(positionPc.xPc, positionPc.yPc, positionPc.zPc);
   const cx = Math.floor(wx / SECTOR_SITE_SPAN_PC);
   const cy = Math.floor(wy / SECTOR_SITE_SPAN_PC);
   const cz = Math.floor(wz / SECTOR_SITE_SPAN_PC);
   let best = 0n;
-  let bestSq = Infinity;
+  let bestCost = Infinity;
   for (let ix = cx - 1; ix <= cx + 1; ix++) {
     for (let iy = cy - 1; iy <= cy + 1; iy++) {
       for (let iz = cz - 1; iz <= cz + 1; iz++) {
         for (const site of sitesFor(ix, iy, iz)) {
-          const dSq = (site.xPc - wx) ** 2 + (site.yPc - wy) ** 2 + (site.zPc - wz) ** 2;
-          if (dSq < bestSq) {
-            bestSq = dSq;
+          const cost =
+            ((site.xPc - wx) ** 2 + (site.yPc - wy) ** 2 + (site.zPc - wz) ** 2) /
+            site.weight;
+          if (cost < bestCost) {
+            bestCost = cost;
             best = site.seed;
           }
         }
