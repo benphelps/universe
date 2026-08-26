@@ -1989,8 +1989,11 @@ export class UnifiedViewer {
         );
       }
       this.chunkManager?.update(this.camera.position, groundKm);
-      // The diagrammatic orbit overlay appears at map heights.
-      this.overlay.visible = this.altitudeKm > this.radiusKm * 25;
+      // The diagrammatic orbit overlay appears at map heights — capped
+      // by the system extent, since 25 radii of a giant star can lie
+      // beyond its own planets and the map would never surface.
+      this.overlay.visible =
+        this.altitudeKm > Math.min(this.radiusKm * 25, this.extentKm * 0.5);
       this.stellarOrbits.visible = this.overlay.visible;
     }
 
