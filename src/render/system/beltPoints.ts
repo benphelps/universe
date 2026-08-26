@@ -19,6 +19,8 @@ attribute float phase;
 uniform float uTimeYears;
 uniform float uSqrtCentralMass;
 uniform float uPointScale;
+uniform float uLumBase;
+uniform float uKmPerPc;
 
 varying float vFade;
 
@@ -28,10 +30,18 @@ void main() {
   vec3 pos = vec3(aAu * cos(theta), aAu * sin(theta), yAmp * sin(theta + phase));
   vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
   float rawSize = uPointScale / -mvPosition.z;
-  // Sub-pixel points fade out: thousands of clamped additive points
-  // would otherwise stack into a saturated blob at extreme distances.
+  // Honest reflected light, no marker floor: each point carries its
+  // represented member's luminosity through the same photometric
+  // mapping as every star glint — a belt seen from afar is invisible,
+  // and glints only surface as the camera genuinely closes in.
+  float dPc = max(length(mvPosition.xyz) / uKmPerPc, 1e-12);
+  float lum = uLumBase / (aAu * aAu);
+  float logE = log2(max(lum / (dPc * dPc), 1e-12));
+  float energy = clamp(0.055 * exp2(0.36 * (logE + 17.0)), 0.0, 1.7);
+  // Sub-pixel points still fade: additive stacking must not fabricate
+  // surface brightness the population doesn't have.
   vFade = clamp(rawSize / 0.5, 0.0, 1.0);
-  vFade *= vFade;
+  vFade *= vFade * energy;
   gl_PointSize = clamp(rawSize, 0.5, 3.0);
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -45,12 +55,18 @@ varying float vFade;
 void main() {
   vec2 c = gl_PointCoord * 2.0 - 1.0;
   float alpha = 1.0 - smoothstep(0.4, 1.0, length(c));
-  gl_FragColor = vec4(uColor * alpha * 0.55 * vFade, 1.0);
+  gl_FragColor = vec4(uColor * alpha * vFade, 1.0);
 }
 `;
 
 const MAIN_BELT_COLOR = 0x9a8f82;
 const OUTER_BELT_COLOR = 0x8fa3b5;
+const AU_KM = 1.495978707e8;
+const PC_KM = 3.0856775814913673e13;
+// Each cloud point stands for one of the belt's few thousand largest
+// members: a ~40 km body at ~10% albedo, reflecting its host's light.
+const MEMBER_RADIUS_KM = 40;
+const MEMBER_ALBEDO = 0.1;
 
 /**
  * A belt as an orbiting point cloud: every particle carries its own
@@ -58,7 +74,12 @@ const OUTER_BELT_COLOR = 0x8fa3b5;
  * vertex shader, so belts shear differentially with time. Kirkwood gaps
  * are enforced at sampling time.
  */
-export function createBeltPoints(belt: Belt, beltSeed: bigint, count: number): Points {
+export function createBeltPoints(
+  belt: Belt,
+  beltSeed: bigint,
+  count: number,
+  hostLuminosity: number,
+): Points {
   const rng = new Rng(beltSeed);
   const aAu = new Float32Array(count);
   const theta0 = new Float32Array(count);
@@ -109,6 +130,10 @@ export function createBeltPoints(belt: Belt, beltSeed: bigint, count: number): P
       uTimeYears: { value: 0 },
       uSqrtCentralMass: { value: 1 },
       uPointScale: { value: 40 },
+      uLumBase: {
+        value: hostLuminosity * MEMBER_ALBEDO * 4 * (MEMBER_RADIUS_KM / (2 * AU_KM)) ** 2,
+      },
+      uKmPerPc: { value: PC_KM },
       uColor: {
         value: new Color(belt.kind === 'main' ? MAIN_BELT_COLOR : OUTER_BELT_COLOR),
       },
@@ -126,12 +151,14 @@ export function createBeltPoints(belt: Belt, beltSeed: bigint, count: number): P
 export function createBeltPointsForSystem(
   belts: Belt[],
   systemSeedHex: string,
+  hostLuminosity: number,
 ): Points[] {
   return belts.map((belt, i) =>
     createBeltPoints(
       belt,
       seedFromHex(systemSeedHex) ^ BigInt(0x5b + i),
       belt.kind === 'main' ? 3500 : 4500,
+      hostLuminosity,
     ),
   );
 }

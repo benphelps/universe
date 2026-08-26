@@ -50,7 +50,7 @@ import {
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
-import { createZoneRings } from '../render/system/zoneRings';
+import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
 import { TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createCloudShell } from '../render/terrain/cloudShell';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
@@ -637,7 +637,7 @@ export class UnifiedViewer {
       };
     });
 
-    for (const points of createBeltPointsForSystem(belts, this.hostSeedHex)) {
+    for (const points of createBeltPointsForSystem(belts, this.hostSeedHex, hostStar.luminosity)) {
       const material = points.material as ShaderMaterial;
       material.uniforms.uSqrtCentralMass.value = Math.sqrt(centralMassSolar);
       // Point sizing was tuned for AU-unit view distances.
@@ -655,6 +655,9 @@ export class UnifiedViewer {
     }
 
     this.overlay.add(createZoneRings(zones));
+    for (const belt of belts) {
+      this.overlay.add(createBeltAnnulus(belt.innerAu, belt.outerAu));
+    }
     for (const planet of planets) {
       this.overlay.add(
         createOrbitLine(planet.elements, planet.inHabitableZone ? 0x4fbf7f : 0x6a7484, 0.45),

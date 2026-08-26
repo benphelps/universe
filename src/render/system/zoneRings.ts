@@ -44,3 +44,20 @@ export function createZoneRings(zones: SystemZones): Group {
   group.add(circle(zones.tidalLockAu, 0xcc7766, 0.3));
   return group;
 }
+
+/**
+ * A belt's chart annulus: map ink, not light — the honest way to keep
+ * a population legible that reflects far too little to see.
+ */
+export function createBeltAnnulus(innerAu: number, outerAu: number): Mesh {
+  return new Mesh(
+    new RingGeometry(innerAu, outerAu, 128),
+    new MeshBasicMaterial({
+      color: 0x8a94a4,
+      transparent: true,
+      opacity: 0.05,
+      side: DoubleSide,
+      depthWrite: false,
+    }),
+  );
+}
