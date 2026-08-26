@@ -50,7 +50,8 @@ interface ChunkRecord {
 
 interface WantedChunk {
   record: ChunkRecord;
-  distanceKm: number;
+  /** Camera distance, discounted for tiles ahead of the motion. */
+  priorityKm: number;
 }
 
 /**
@@ -99,11 +100,21 @@ export class TerrainChunkManager {
    *  whose land rides hundreds of meters above datum, datum distances
    *  stall the quadtree exactly that far short of the walker's feet. */
   private groundOffsetKm = 0;
+  /** Unit camera motion since last frame; zero when parked. */
+  private readonly motionDir = new Vector3();
+  private readonly lastCameraKm = new Vector3(Infinity, 0, 0);
 
   /** cameraKm is the camera's planet-local position, used for LOD and culling. */
   update(cameraKm: Vector3, groundKm = 0): void {
     this.frame++;
     this.groundOffsetKm = groundKm;
+    if (Number.isFinite(this.lastCameraKm.x)) {
+      this.motionDir.copy(cameraKm).sub(this.lastCameraKm);
+      const speed = this.motionDir.length();
+      if (speed > 1e-9) this.motionDir.divideScalar(speed);
+      else this.motionDir.set(0, 0, 0);
+    }
+    this.lastCameraKm.copy(cameraKm);
     for (const record of this.chunks.values()) {
       if (record.mesh) record.mesh.visible = false;
       if (record.waterMesh) record.waterMesh.visible = false;
@@ -141,7 +152,7 @@ export class TerrainChunkManager {
 
   /** Send the nearest-needed tiles to the workers first, up to the budget. */
   private dispatch(): void {
-    this.wanted.sort((a, b) => a.distanceKm - b.distanceKm);
+    this.wanted.sort((a, b) => a.priorityKm - b.priorityKm);
     for (const { record } of this.wanted) {
       if (this.pending.size >= MAX_IN_FLIGHT) break;
       if (record.requested || record.mesh) continue;
@@ -186,6 +197,13 @@ export class TerrainChunkManager {
     const dy = dir.y * sampleKm - cameraKm.y;
     const dz = dir.z * sampleKm - cameraKm.z;
     const distanceKm = Math.max(Math.hypot(dx, dy, dz), 0.005);
+    // Tiles ahead of the camera's motion build first: a running walker
+    // (or a descending ride) streams into ground it hasn't reached yet.
+    const ahead = Math.max(
+      0,
+      (dx * this.motionDir.x + dy * this.motionDir.y + dz * this.motionDir.z) / distanceKm,
+    );
+    const priorityKm = distanceKm * (1 - 0.4 * ahead);
 
     if ((sizeKm / distanceKm > SPLIT_RATIO || level < MIN_LEVEL) && level < MAX_LEVEL) {
       const children: ChunkRecord[] = [];
@@ -203,7 +221,7 @@ export class TerrainChunkManager {
         return;
       }
       for (const child of children) {
-        if (!child.mesh) this.wanted.push({ record: child, distanceKm });
+        if (!child.mesh) this.wanted.push({ record: child, priorityKm });
       }
     }
 
@@ -214,7 +232,7 @@ export class TerrainChunkManager {
       if (record.waterMesh) record.waterMesh.visible = true;
       return;
     }
-    this.wanted.push({ record, distanceKm });
+    this.wanted.push({ record, priorityKm });
     // While this tile (re)builds, show any cached finer children instead of a hole.
     if (level < MAX_LEVEL) {
       for (let cy = 0; cy < 2; cy++) {
@@ -267,6 +285,12 @@ export class TerrainChunkManager {
     geometry.setAttribute('position', new BufferAttribute(response.positions, 3));
     geometry.setAttribute('normal', new BufferAttribute(response.normals, 3));
     geometry.setAttribute('color', new BufferAttribute(response.colors, 3));
+    // The pinned base has no drawn parent to morph from: beyond its
+    // swap-in distance (all of orbit) it would render one LOD coarser
+    // than the pre-geomorph planet. Zeroed deltas keep orbit exact.
+    if (record.level <= PINNED_LEVEL) {
+      for (let i = 0; i < response.morph.length; i += 2) response.morph[i] = 0;
+    }
     geometry.setAttribute('aMorph', new BufferAttribute(response.morph, 2));
     geometry.setIndex(this.indexAttribute);
     geometry.computeBoundingSphere();

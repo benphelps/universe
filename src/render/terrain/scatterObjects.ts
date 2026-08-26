@@ -64,9 +64,10 @@ export function createScatterMaterial(): ShaderMaterial {
   });
 }
 
-/** Deterministically lumpy unit rock, shared by every boulder instance. */
+/** Deterministically lumpy unit rock, shared by every boulder instance.
+ *  Dense enough to stand next to: the walker sees these at arm's reach. */
 export function createRockGeometry(): BufferGeometry {
-  const geometry = new IcosahedronGeometry(0.55, 1);
+  const geometry = new IcosahedronGeometry(0.55, 2);
   const positions = geometry.getAttribute('position');
   for (let i = 0; i < positions.count; i++) {
     const x = positions.getX(i);
@@ -75,8 +76,9 @@ export function createRockGeometry(): BufferGeometry {
     // Hash-displaced vertices: irregular but identical every run.
     const wobble =
       1 +
-      0.34 * Math.sin(x * 37.7 + y * 17.3 + z * 51.1) +
-      0.18 * Math.sin(x * 91.3 - z * 63.7);
+      0.3 * Math.sin(x * 37.7 + y * 17.3 + z * 51.1) +
+      0.16 * Math.sin(x * 91.3 - z * 63.7) +
+      0.07 * Math.sin(x * 171.1 + y * 133.7 + z * 89.3);
     positions.setXYZ(i, x * wobble, y * wobble * 0.8, z * wobble);
   }
   geometry.computeVertexNormals();
