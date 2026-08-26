@@ -86,15 +86,23 @@ function selectStar(index: number): void {
  * stepping bodies, or travelling to a neighbor star) never rebuilds
  * the renderer. Travel to a catalog star carries its true galactic
  * position, so the destination is built where the star actually is;
- * bare seeds settle at their seed-derived locale.
+ * bare seeds settle at their seed-derived locale. The locale is part
+ * of the system's identity: reloads of the same seed (tab switches,
+ * body steps) must keep it, or the same hex regenerates as a
+ * different star somewhere else.
  */
 function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
-  seedHex = seedToHex(seedFromHex(nextSeedHex));
-  localePc = nextLocalePc && {
-    xPc: Number(nextLocalePc.xPc.toFixed(4)),
-    yPc: Number(nextLocalePc.yPc.toFixed(4)),
-    zPc: Number(nextLocalePc.zPc.toFixed(4)),
-  };
+  const normalized = seedToHex(seedFromHex(nextSeedHex));
+  localePc = nextLocalePc
+    ? {
+        xPc: Number(nextLocalePc.xPc.toFixed(4)),
+        yPc: Number(nextLocalePc.yPc.toFixed(4)),
+        zPc: Number(nextLocalePc.zPc.toFixed(4)),
+      }
+    : normalized === seedHex
+      ? localePc
+      : undefined;
+  seedHex = normalized;
   const seed = seedFromHex(seedHex);
 
   if (!viewer) {

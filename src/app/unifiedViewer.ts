@@ -1614,14 +1614,11 @@ export class UnifiedViewer {
       (this.starSprites.material as ShaderMaterial).dispose();
       this.starSprites = null;
     }
-    for (const node of this.planetNodes) {
-      this.heliocentric.remove(node.object.group);
-      this.heliocentric.remove(node.marker);
-      node.object.dispose();
-      node.marker.geometry.dispose();
-      (node.marker.material as MeshBasicMaterial).dispose();
-    }
-    this.planetNodes = [];
+    // Host teardown must go through clearHostContent: it resets
+    // hostIndex, and setHost's change guard trusts that — a stale
+    // index here left the whole travel destination running on the
+    // previous system's planets, belts, and host star.
+    this.clearHostContent();
     for (const child of [...this.stellarOrbits.children]) {
       this.stellarOrbits.remove(child);
       if (child instanceof Line) {
@@ -1629,9 +1626,6 @@ export class UnifiedViewer {
         (child.material as LineBasicMaterial).dispose();
       }
     }
-    for (const comet of this.cometObjects) comet.dispose();
-    this.cometObjects = [];
-    this.beltMaterials = [];
     if (this.neighborPoints) {
       this.pcGroup.remove(this.neighborPoints);
       this.neighborPoints.geometry.dispose();
