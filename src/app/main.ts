@@ -1,4 +1,3 @@
-import './style.css';
 import { seedFromHex, seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galacticAddress } from '../universe/galaxy/regions';
