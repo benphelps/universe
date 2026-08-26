@@ -392,6 +392,15 @@ describe('sky field', () => {
     for (const label of sky.constellationLabels) {
       expect(landmarkNames.has(label.name)).toBe(true);
     }
+    // Each region's brightest addressable glint is its α — a handful
+    // of stars per sky, named for the region that holds them.
+    expect(sky.bayerNames.size).toBeGreaterThan(2);
+    expect(sky.bayerNames.size).toBeLessThanOrEqual(28);
+    const seeds = new Set(sky.starSeeds);
+    for (const [seed, name] of sky.bayerNames) {
+      expect(seeds.has(seed)).toBe(true);
+      expect(name.startsWith('α ')).toBe(true);
+    }
   });
 
   it('carries clusters and nebulae in the far field', () => {

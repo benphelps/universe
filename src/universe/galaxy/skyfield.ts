@@ -123,6 +123,9 @@ export interface SkyField {
   /** A name per constellation at its region's center direction — the
    *  name of the nebula or rift that organizes it. */
   constellationLabels: SectorLabel[];
+  /** Bayer garnish, local to this sky: the brightest addressable glint
+   *  in each constellation, star seed → "α <Constellation>". */
+  bayerNames: Map<bigint, string>;
 }
 
 export interface SectorLabel {
@@ -258,13 +261,15 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
   const starSeeds = new BigUint64Array(starCount);
   for (let i = 0; i < nearStarCount; i++) starSeeds[i] = near.seeds[i];
   for (let i = 0; i < far.seeds.length; i++) starSeeds[nearStarCount + i] = far.seeds[i];
+  const starDirs = join(near.dirs, far.dirs);
+  const starBrightness = join(near.brightness, far.brightness);
 
   return {
     starCount,
     nearStarCount,
-    starDirs: join(near.dirs, far.dirs),
+    starDirs,
     starColors: join(near.colors, far.colors),
-    starBrightness: join(near.brightness, far.brightness),
+    starBrightness,
     starDistances: join(near.distances, far.distances),
     starTeffs: join(near.teffs, far.teffs),
     starSeeds,
@@ -274,7 +279,14 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     darkAtlas,
     sceneFromGalaxy: sceneFromGalaxy(seed),
     ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
-    ...buildConstellations(nebulae, darkClouds, sceneFromGalaxy(seed)),
+    ...buildConstellations(
+      nebulae,
+      darkClouds,
+      sceneFromGalaxy(seed),
+      starDirs,
+      starBrightness,
+      starSeeds,
+    ),
     ...buildGlow(viewpoint, spriteSeeds),
   };
 }
@@ -771,7 +783,14 @@ function buildConstellations(
   nebulae: NebulaPatch[],
   darkClouds: DarkCloudPatch[],
   orientation: Float32Array,
-): { constellationBounds: Float32Array; constellationLabels: SectorLabel[] } {
+  starDirs: Float32Array,
+  starBrightness: Float32Array,
+  starSeeds: BigUint64Array,
+): {
+  constellationBounds: Float32Array;
+  constellationLabels: SectorLabel[];
+  bayerNames: Map<bigint, string>;
+} {
   // One candidate per cloud — the lit and dark faces of the same
   // complex share a seed. Salience ranks the landmarks: angular size,
   // with emission counting beyond bulk, so a glowing nebula outranks a
@@ -830,7 +849,11 @@ function buildConstellations(
     anchors.push(candidate);
   }
   if (anchors.length === 0) {
-    return { constellationBounds: new Float32Array(0), constellationLabels: [] };
+    return {
+      constellationBounds: new Float32Array(0),
+      constellationLabels: [],
+      bayerNames: new Map(),
+    };
   }
 
   /** The constellation a direction belongs to: negative inside a face,
@@ -847,6 +870,27 @@ function buildConstellations(
     }
     return best;
   };
+
+  // The Bayer garnish, exactly as Earth got its own: within each region
+  // of this sky, the brightest glint that answers to a name is its α.
+  // Viewpoint-local by nature — every home system letters its own.
+  const brightestPerRegion = new Map<bigint, { seed: bigint; brightness: number }>();
+  for (let i = 0; i < starSeeds.length; i++) {
+    const seed = starSeeds[i];
+    if (seed === 0n) continue;
+    const brightness = starBrightness[i];
+    const id = idFor([starDirs[i * 3], starDirs[i * 3 + 1], starDirs[i * 3 + 2]]);
+    const region = brightestPerRegion.get(id);
+    if (!region) brightestPerRegion.set(id, { seed, brightness });
+    else if (brightness > region.brightness) {
+      region.seed = seed;
+      region.brightness = brightness;
+    }
+  }
+  const bayerNames = new Map<bigint, string>();
+  for (const [id, { seed }] of brightestPerRegion) {
+    bayerNames.set(seed, `α ${sectorNameForSeed(id)}`);
+  }
 
   const dirAt = (i: number, j: number): [number, number, number] => {
     const latitude = (((j + 0.5) / SKY_LAT_STEPS) - 0.5) * Math.PI;
@@ -982,7 +1026,7 @@ function buildConstellations(
       }
     }
   }
-  return { constellationBounds: new Float32Array(segments), constellationLabels };
+  return { constellationBounds: new Float32Array(segments), constellationLabels, bayerNames };
 }
 
 /**

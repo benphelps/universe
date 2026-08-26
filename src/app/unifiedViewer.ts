@@ -993,10 +993,11 @@ export class UnifiedViewer {
                 zPc: this.viewpointPc.zPc + sky.starDirs[s * 3 + 2] * distance,
               };
               const physical = starPhotometry(starSeed, starPc);
+              const bayer = sky.bayerNames.get(starSeed);
               best = {
                 ...position,
                 name: starDesignation(starSeed, starPc, physical.luminosity),
-                info: `${spectralType(physical)} · ${fmt(distance, 3)} pc`,
+                info: `${bayer ? `${bayer} · ` : ''}${spectralType(physical)} · ${fmt(distance, 3)} pc`,
                 action: 'click to travel',
                 target: { kind: 'neighbor', seedHex, positionPc: starPc },
               };
@@ -1031,12 +1032,13 @@ export class UnifiedViewer {
             this.neighborPositionsPc[bestStar * 3 + 2],
           );
           v.fromBufferAttribute(positions, bestStar).applyMatrix4(matrix);
+          const bayer = this.skyData?.bayerNames.get(seedFromHex(seedHex));
           best = {
             x: v.x,
             y: v.y,
             z: v.z,
             name: starDesignation(seedFromHex(seedHex), starPc, physical.luminosity),
-            info: `${spectralType(physical)} · ${fmt(distancePc)} pc`,
+            info: `${bayer ? `${bayer} · ` : ''}${spectralType(physical)} · ${fmt(distancePc)} pc`,
             action: 'click to travel',
             target: { kind: 'neighbor', seedHex, positionPc: starPc },
           };

@@ -2,6 +2,7 @@ import { seedFromHex } from '../../core/rng/hash';
 import { NEIGHBOR_RADIUS_PC, type Neighbor } from '../../universe/galaxy/neighborhood';
 import type { GalacticAddress } from '../../universe/galaxy/regions';
 import { generateStar } from '../../universe/star/generate';
+import { shortDesignation } from '../../universe/star/naming';
 import type { Star } from '../../universe/star/types';
 import { fmt } from './format';
 import { cssColor, renderPlate } from './markup';
@@ -47,7 +48,7 @@ export class GalaxyInfoPanel {
       });
       return `<tr class="pick" data-index="${i}">
         <td><span class="swatch" style="background:${cssColor(star.linearRgb)}"></span> ${star.spectralType}</td>
-        <td>${star.designation}</td>
+        <td>${shortDesignation(star.designation)}</td>
         <td class="n">${fmt(neighbor.distancePc, 3)}</td>
       </tr>`;
     });

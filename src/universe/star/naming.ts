@@ -30,3 +30,10 @@ export function starDesignation(
   const number = 1 + Number(deriveSeed(seed, 'catalog-number') % BigInt(36 ** 4 - 1));
   return `${sectorName(positionPc)} ${number.toString(36).toUpperCase()}`;
 }
+
+/** Table-compact form: atlases write "61 Cyg" — the sector prefix
+ *  trims to three letters; proper names stand whole. */
+export function shortDesignation(designation: string): string {
+  const match = /^([A-Za-z]{4,}) ([0-9A-Z]{1,4})$/.exec(designation);
+  return match ? `${match[1].slice(0, 3)} ${match[2]}` : designation;
+}
