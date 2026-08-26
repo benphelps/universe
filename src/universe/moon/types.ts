@@ -7,7 +7,7 @@ export type MoonChannel = 'coaccretion' | 'impact' | 'capture';
 export type TidalState = 'dead' | 'subsurface-ocean' | 'cryovolcanic' | 'volcanic';
 
 export interface Moon {
-  /** Parent planet name + roman numeral, e.g. "SIM-00000001 c II". */
+  /** Parent planet name + roman numeral, e.g. "Talouvelux c II". */
   name: string;
   channel: MoonChannel;
   /** Orbit around the parent planet (planet-centric SI elements). */

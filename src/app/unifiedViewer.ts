@@ -68,6 +68,7 @@ import { starPhotometry } from '../universe/galaxy/photometry';
 import { sectorNameForSeed } from '../universe/galaxy/regions';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { spectralType } from '../universe/star/classification';
+import { starDesignation } from '../universe/star/naming';
 import type { Moon } from '../universe/moon/types';
 import {
   bandMeanMotion,
@@ -988,10 +989,11 @@ export class UnifiedViewer {
                 yPc: this.viewpointPc.yPc + sky.starDirs[s * 3 + 1] * distance,
                 zPc: this.viewpointPc.zPc + sky.starDirs[s * 3 + 2] * distance,
               };
+              const physical = starPhotometry(starSeed, starPc);
               best = {
                 ...position,
-                name: `SIM-${seedHex.slice(-8).toUpperCase()}`,
-                info: `${spectralType(starPhotometry(starSeed, starPc))} · ${fmt(distance, 3)} pc`,
+                name: starDesignation(starSeed, starPc, physical.luminosity),
+                info: `${spectralType(physical)} · ${fmt(distance, 3)} pc`,
                 action: 'click to travel',
                 target: { kind: 'neighbor', seedHex, positionPc: starPc },
               };
@@ -1030,7 +1032,7 @@ export class UnifiedViewer {
             x: v.x,
             y: v.y,
             z: v.z,
-            name: `SIM-${seedHex.slice(-8).toUpperCase()}`,
+            name: starDesignation(seedFromHex(seedHex), starPc, physical.luminosity),
             info: `${spectralType(physical)} · ${fmt(distancePc)} pc`,
             action: 'click to travel',
             target: { kind: 'neighbor', seedHex, positionPc: starPc },

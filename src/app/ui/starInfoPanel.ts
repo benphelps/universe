@@ -58,6 +58,8 @@ export class StarInfoPanel {
     if (star.activity.flareRatePerDay > 0.1) {
       rows.push(['Flares', `~${fmt(star.activity.flareRatePerDay, 2)}/day`]);
     }
+    // The chart name above is a designation; the seed is the identity.
+    rows.push(['Survey id', `SIM-${star.seedHex.slice(-8).toUpperCase()}`]);
 
     renderPlate(this.sidebar.focus, {
       title: star.designation,

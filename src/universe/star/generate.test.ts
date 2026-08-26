@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../../core/rng/rng';
 import { generateStar } from './generate';
+import { PROPER_NAME_LUMINOSITY, starDesignation } from './naming';
 import { sampleInitialMass } from './imf';
 import { luminosityMultiplierAt } from './variability';
 
@@ -112,5 +113,25 @@ describe('population statistics', () => {
     }
     expect(withCompanion / n).toBeGreaterThan(0.35);
     expect(withCompanion / n).toBeLessThan(0.55);
+  });
+});
+
+describe('designations', () => {
+  it('layer proper names over sector catalog numbers', () => {
+    const locale = { xPc: -7920, yPc: 7086, zPc: 12 };
+    // The luminous carry proper names; the bulk file into the sector.
+    expect(starDesignation(11n, locale, PROPER_NAME_LUMINOSITY * 2)).toMatch(/^[A-Z][a-z]+$/);
+    const faint = starDesignation(11n, locale, 0.01);
+    expect(faint).toMatch(/^[A-Z][a-z]+ \d{1,5}$/);
+    // Deterministic, and the catalog prefix is the star's own sector.
+    expect(starDesignation(11n, locale, 0.01)).toBe(faint);
+
+    const star = generateStar(7n, { localePc: locale, massInitial: 0.5, ageGyr: 3 });
+    expect(star.designation).toMatch(/^[A-Z][a-z]+ \d{1,5}$/);
+    for (let i = 0; i < star.companions.length; i++) {
+      expect(star.companions[i].star.designation).toBe(
+        `${star.designation} ${'BCDEFGH'[i]}`,
+      );
+    }
   });
 });

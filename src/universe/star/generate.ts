@@ -9,6 +9,7 @@ import { classifyVariability } from './variability';
 import { evolve } from './evolution';
 import { ageUnitOf, initialMassOf } from './identity';
 import { generateCompanionSpecs } from './multiplicity';
+import { COMPONENT_LETTERS, starDesignation } from './naming';
 import { spectralType } from './classification';
 import type { Star, StellarPopulation } from './types';
 
@@ -33,11 +34,11 @@ export interface StarGenOptions {
  */
 export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
   const rng = new Rng(seed);
+  const locale = options.localePc ?? viewpointForSeed(seed);
   let ageGyr = options.ageGyr;
   let feH = options.feH;
   let population = options.population;
   if (ageGyr === undefined || feH === undefined) {
-    const locale = options.localePc ?? viewpointForSeed(seed);
     const draw = populationFromUnit(ageUnitOf(seed), locale);
     ageGyr ??= draw.ageGyr;
     feH ??= metallicityFor(rng, draw, locale);
@@ -52,7 +53,7 @@ export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
   const star: Star = {
     ...phys,
     seedHex: seedToHex(seed),
-    designation: `SIM-${seedToHex(seed).slice(-8).toUpperCase()}`,
+    designation: starDesignation(seed, locale, phys.luminosity),
     massInitial,
     ageGyr,
     feH,
@@ -67,16 +68,20 @@ export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
 
   if (options.withCompanions !== false) {
     const specs = generateCompanionSpecs(rng.fork('multiplicity'), massInitial);
-    star.companions = specs.map((spec, i) => ({
-      orbit: spec.orbit,
-      star: generateStar(deriveSeed(seed, 'companion', i), {
+    star.companions = specs.map((spec, i) => {
+      const companion = generateStar(deriveSeed(seed, 'companion', i), {
         massInitial: spec.massSolar,
         ageGyr,
         feH,
         population,
+        localePc: locale,
         withCompanions: false,
-      }),
-    }));
+      });
+      // Components share the system's name: Talouvelux B, C — the
+      // primary keeps the bare name, the way Sirius names its pair.
+      companion.designation = `${star.designation} ${COMPONENT_LETTERS[Math.min(i, COMPONENT_LETTERS.length - 1)]}`;
+      return { orbit: spec.orbit, star: companion };
+    });
   }
 
   return star;

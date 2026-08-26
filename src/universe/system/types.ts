@@ -10,7 +10,7 @@ import type { Star } from '../star/types';
 export type PlanetClass = 'rocky' | 'super-earth' | 'mini-neptune' | 'ice-giant' | 'gas-giant';
 
 export interface Planet {
-  /** e.g. "SIM-00000001 b", letters outward from the star. */
+  /** e.g. "Talouvelux b", letters outward from the star. */
   name: string;
   class: PlanetClass;
   /** SI elements referenced to the system invariable plane; epoch 0. */
