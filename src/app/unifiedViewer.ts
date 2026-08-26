@@ -42,6 +42,11 @@ import { applyOccluders } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
 import { applySecondSun } from '../render/lighting/secondSun';
+import {
+  reflectedFluxRatio,
+  shineTint,
+  type ShineBody,
+} from '../render/lighting/reflectedLight';
 import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import {
   createNeighborStars,
@@ -2187,8 +2192,15 @@ export class UnifiedViewer {
           { position: new Vector3(0, 0, 0), radius: this.radiusKm },
         ]
       : [{ position: new Vector3(0, 0, 0), radius: this.radiusKm }];
+    const shineBodies: ShineBody[] = [];
     if (this.parentObject && this.focusPlanet) {
       this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
+      shineBodies.push({
+        positionKm: groupShift.clone(),
+        radiusKm: parentRadiusKm,
+        bondAlbedo: this.focusPlanet.physical.climate.bondAlbedo,
+        tint: shineTint(this.focusPlanet.physical.appearance),
+      });
       this.occluders.push({ x: groupShift.x, y: groupShift.y, z: groupShift.z, rKm: parentRadiusKm });
       this.pickables.push({
         x: groupShift.x,
@@ -2220,6 +2232,12 @@ export class UnifiedViewer {
       marker.visible = moonRadiusKm / cameraDistance < 0.004;
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
       this.occluders.push({ x: moonWorld.x, y: moonWorld.y, z: moonWorld.z, rKm: moonRadiusKm });
+      shineBodies.push({
+        positionKm: moonWorld.clone(),
+        radiusKm: moonRadiusKm,
+        bondAlbedo: moon.physical.climate.bondAlbedo,
+        tint: shineTint(moon.physical.appearance),
+      });
       this.pickables.push({
         x: moonWorld.x,
         y: moonWorld.y,
@@ -2237,6 +2255,40 @@ export class UnifiedViewer {
     }
     const { atmosphere } = focusBody;
     const sunElevation = Math.max(0, sunDir.dot(up));
+
+    // Reflected light joins the night: the brightest sunlit companion
+    // body — a moon over its planet, the parent planet over its moon —
+    // becomes the surface's second light. The flux ratio is physical
+    // (a full Moon delivers ~2e-6 of sunlight); what the display adds
+    // is a scotopic lift (ratio^0.2) fading in as the sun sets —
+    // disclosed eye adaptation, not extra photons — so moonlight
+    // shapes the night and vanishes into daylight as it should. The
+    // exponent is calibrated so a bright gibbous renders near a tenth
+    // of a day exposure — the brightness a dark-adapted eye reports.
+    const nightness = 1 - Math.min(1, sunElevation / 0.03);
+    let surf2Dir = light2Dir;
+    let surf2Color = light2Color;
+    let bestLum = surf2Color
+      ? surf2Color[0] * 0.2126 + surf2Color[1] * 0.7152 + surf2Color[2] * 0.0722
+      : 0;
+    const sunAtBody = new Vector3();
+    for (const body of shineBodies) {
+      sunAtBody.copy(hostWorld).sub(body.positionKm).normalize();
+      const ratio = reflectedFluxRatio(body, sunAtBody);
+      if (ratio <= 0) continue;
+      const scale = ratio + (ratio ** 0.2 - ratio) * nightness;
+      const color: [number, number, number] = [
+        lightColor[0] * body.tint[0] * scale,
+        lightColor[1] * body.tint[1] * scale,
+        lightColor[2] * body.tint[2] * scale,
+      ];
+      const lum = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
+      if (lum > bestLum) {
+        bestLum = lum;
+        surf2Dir = body.positionKm.clone().normalize();
+        surf2Color = color;
+      }
+    }
     const scaleHeightKm = Math.max(atmosphere.scaleHeightKm, 3);
     const immersion = Math.exp(-this.altitudeKm / (8 * scaleHeightKm));
     const density =
@@ -2260,20 +2312,20 @@ export class UnifiedViewer {
       const material = this.atmosphereShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
     }
     if (this.cloudShell) {
       const material = this.cloudShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
       material.uniforms.uTimeDays.value = this.simTimeDays;
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
     }
     if (this.ringMesh) {
       const material = this.ringMesh.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
       applyOccluders(material, casters, angularRadius);
     }
 
@@ -2281,7 +2333,7 @@ export class UnifiedViewer {
       if (!material) continue;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
       material.uniforms.uFogColor.value.copy(fog);
       material.uniforms.uFogDensity.value = density;
     }
@@ -2292,7 +2344,7 @@ export class UnifiedViewer {
       material.uniforms.uSunDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uUp.value = [up.x, up.y, up.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
       // Sky radiance tracks optical depth: thin atmospheres barely glow.
       material.uniforms.uStrength.value =
         Math.exp(-this.altitudeKm / (10 * scaleHeightKm)) *
