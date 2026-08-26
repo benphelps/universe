@@ -32,6 +32,8 @@ export interface SurfaceField {
   waterLevelAt(dir: Vec3, lodAngularRad?: number): number;
   /** The river network carving this world, on wet worlds. */
   drainage?: DrainageGraph | null;
+  /** The climate field feeding it, on the same grid. */
+  climate?: ClimateField | null;
 }
 
 interface DetailBand {
@@ -489,7 +491,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     return ground;
   };
 
-  return { params, heightAt, colorAt, seaLevelM, waterLevelAt, drainage };
+  return { params, heightAt, colorAt, seaLevelM, waterLevelAt, drainage, climate };
 }
 
 /** Height whose flooded fraction matches coverage, via a golden-spiral sample. */

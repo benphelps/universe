@@ -54,7 +54,11 @@ import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
 import { SPLIT_RATIO, TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createCloudShell } from '../render/terrain/cloudShell';
 import { createOceanMaterial } from '../render/terrain/oceanSphere';
-import { createRockGeometry, createScatterMaterial } from '../render/terrain/scatterObjects';
+import {
+  createRockGeometry,
+  createScatterMaterial,
+  createTreeGeometry,
+} from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
@@ -83,6 +87,7 @@ import type { Star } from '../universe/star/types';
 import { createAsteroidField } from '../universe/surface/asteroidField';
 import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
+import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
@@ -751,6 +756,9 @@ export class UnifiedViewer {
           this.scatterMaterial,
           { type: 'init', seedHex: planet.physical.seedHex, physical: planet.physical },
           this.radiusKm,
+          this.field.params.biosphere
+            ? deriveTreeSpecies(this.field.params).map(createTreeGeometry)
+            : [],
         );
         if (planet.physical.atmosphere.class !== 'none') {
           this.skyDome = createSkyDome(planet.physical.atmosphere.scatteringColor);

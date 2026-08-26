@@ -1,7 +1,18 @@
-import { BufferGeometry, Color, IcosahedronGeometry, ShaderMaterial } from 'three';
+import {
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  CylinderGeometry,
+  IcosahedronGeometry,
+  ShaderMaterial,
+} from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import type { TreeSpecies } from '../../universe/surface/flora';
 import { secondSunUniforms } from '../lighting/secondSun';
 
 const VERTEX = /* glsl */ `
+attribute vec3 color;
+
 varying vec3 vColor;
 varying vec3 vNormal;
 varying vec3 vViewPos;
@@ -13,10 +24,11 @@ void main() {
     local = instanceMatrix * local;
     n = mat3(instanceMatrix) * n;
   #endif
+  // Baked per-vertex color (bark vs canopy) tinted by the instance.
   #ifdef USE_INSTANCING_COLOR
-    vColor = instanceColor;
+    vColor = color * instanceColor;
   #else
-    vColor = vec3(0.4);
+    vColor = color * vec3(0.4);
   #endif
   // Chunk-anchored groups never rotate: model rotation is identity.
   vNormal = normalize(n);
@@ -64,6 +76,18 @@ export function createScatterMaterial(): ShaderMaterial {
   });
 }
 
+/** Fill a geometry's vertex-color attribute with one flat color. */
+function bakeColor(geometry: BufferGeometry, r: number, g: number, b: number): void {
+  const count = geometry.getAttribute('position').count;
+  const colors = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    colors[i * 3] = r;
+    colors[i * 3 + 1] = g;
+    colors[i * 3 + 2] = b;
+  }
+  geometry.setAttribute('color', new BufferAttribute(colors, 3));
+}
+
 /** Deterministically lumpy unit rock, shared by every boulder instance.
  *  Dense enough to stand next to: the walker sees these at arm's reach. */
 export function createRockGeometry(): BufferGeometry {
@@ -82,7 +106,55 @@ export function createRockGeometry(): BufferGeometry {
     positions.setXYZ(i, x * wobble, y * wobble * 0.8, z * wobble);
   }
   geometry.computeVertexNormals();
+  bakeColor(geometry, 1, 1, 1);
   return geometry;
+}
+
+/**
+ * One tree species grown from its numeric recipe, at unit trunk height
+ * (the instance scale is the tree's height in meters). Bark and canopy
+ * colors are baked per vertex; instances tint with a neutral tone.
+ */
+export function createTreeGeometry(species: TreeSpecies): BufferGeometry {
+  const parts: BufferGeometry[] = [];
+  // Non-indexed to match the polyhedron blobs, or the merge refuses.
+  const trunk = new CylinderGeometry(0.035, 0.06, 0.68, 5, 1).toNonIndexed();
+  trunk.translate(0, 0.34, 0);
+  bakeColor(trunk, ...species.barkColor);
+  parts.push(trunk);
+
+  const spread = species.canopySpread;
+  for (let b = 0; b < species.blobs; b++) {
+    const angle = (b / species.blobs) * 2 * Math.PI + species.trunkHM;
+    const blobR = spread * (species.blobs === 1 ? 1 : 0.62);
+    const blob = new IcosahedronGeometry(blobR, 1);
+    const positions = blob.getAttribute('position');
+    for (let i = 0; i < positions.count; i++) {
+      const x = positions.getX(i);
+      const y = positions.getY(i);
+      const z = positions.getZ(i);
+      const wobble = 1 + 0.22 * Math.sin(x * 47.9 + y * 31.1 + z * 67.3 + b * 2.1);
+      positions.setXYZ(i, x * wobble, y * wobble * species.canopyTaper, z * wobble);
+    }
+    const offset = species.blobs === 1 ? 0 : spread * 0.45;
+    blob.translate(
+      Math.cos(angle) * offset,
+      0.62 + blobR * species.canopyTaper * 0.5 + (b % 2) * spread * 0.2,
+      Math.sin(angle) * offset,
+    );
+    blob.computeVertexNormals();
+    const shade = 0.82 + 0.3 * ((b * 0.37) % 0.6);
+    bakeColor(
+      blob,
+      species.canopyColor[0] * shade,
+      species.canopyColor[1] * shade,
+      species.canopyColor[2] * shade,
+    );
+    parts.push(blob);
+  }
+  const merged = mergeGeometries(parts);
+  for (const part of parts) part.dispose();
+  return merged;
 }
 
 /** Broad low tuft for ground cover, shared by every shrub instance. */
@@ -97,5 +169,6 @@ export function createShrubGeometry(): BufferGeometry {
     positions.setXYZ(i, x * wobble, Math.max(-0.1, y * 0.55 * wobble), z * wobble);
   }
   geometry.computeVertexNormals();
+  bakeColor(geometry, 1, 1, 1);
   return geometry;
 }

@@ -82,6 +82,8 @@ export class TerrainChunkManager {
     private readonly scatterMaterial: ShaderMaterial | null,
     init: TerrainInit,
     radiusKm: number,
+    /** Per-species tree geometries for scatter kinds ≥ 2; owned here. */
+    private readonly treeGeometries: BufferGeometry[] = [],
   ) {
     this.radiusKm = radiusKm;
     const workerCount = Math.min(5, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
@@ -333,7 +335,8 @@ export class TerrainChunkManager {
     }
   }
 
-  /** Two instanced draws per scattered tile: boulders and ground cover. */
+  /** One instanced draw per scatter kind per tile: boulders, ground
+   *  cover, and each tree species present. */
   private buildScatter(
     data: Float32Array,
     centerKm: [number, number, number],
@@ -349,17 +352,20 @@ export class TerrainChunkManager {
     const yAxis = new Vector3(0, 1, 0);
 
     const meshes: InstancedMesh[] = [];
-    for (const wantShrub of [0, 1]) {
+    for (let kind = 0; kind < 2 + this.treeGeometries.length; kind++) {
+      const geometry =
+        kind === 0
+          ? this.rockGeometry
+          : kind === 1
+            ? this.shrubGeometry
+            : this.treeGeometries[kind - 2];
+      if (!geometry) continue;
       const rows: number[] = [];
       for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
-        if ((data[i + 5] >= 0.5 ? 1 : 0) === wantShrub) rows.push(i);
+        if (Math.round(data[i + 5]) === kind) rows.push(i);
       }
       if (rows.length === 0) continue;
-      const mesh = new InstancedMesh(
-        wantShrub ? this.shrubGeometry : this.rockGeometry,
-        this.scatterMaterial!,
-        rows.length,
-      );
+      const mesh = new InstancedMesh(geometry, this.scatterMaterial!, rows.length);
       rows.forEach((i, instance) => {
         position.set(data[i], data[i + 1], data[i + 2]);
         up.copy(position).add(anchor).normalize();
@@ -418,5 +424,6 @@ export class TerrainChunkManager {
     this.chunks.clear();
     this.rockGeometry.dispose();
     this.shrubGeometry.dispose();
+    for (const geometry of this.treeGeometries) geometry.dispose();
   }
 }

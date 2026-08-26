@@ -8,6 +8,8 @@ import type { PlanetClass } from '../system/types';
 import { buildChunkMesh } from './chunkMesh';
 import { faceUvToDir } from './cubeSphere';
 import { createSurfaceField } from './field';
+import { deriveTreeSpecies, TREE_SPECIES_COUNT } from './flora';
+import { SCATTER_STRIDE, scatterForChunk } from './scatter';
 
 const SUN = generateStar(1n, { massInitial: 1, ageGyr: 4.6, feH: 0, withCompanions: false });
 const CONTEXT: CharacterizeContext = {
@@ -149,6 +151,43 @@ describe('surface field', () => {
     }
     expect(shores).toBeGreaterThan(5);
     expect(beach).toBeLessThan(upland * 0.7);
+  });
+
+  it('grows deterministic tree species, and forests stand in the rain', () => {
+    const forestWorld = world(19n, 'rocky', 1, 1);
+    expect(forestWorld.params.biosphere).toBe(true);
+    const species = deriveTreeSpecies(forestWorld.params);
+    expect(species).toEqual(deriveTreeSpecies(forestWorld.params));
+    expect(species.length).toBe(TREE_SPECIES_COUNT);
+    for (const tree of species) {
+      expect(tree.trunkHM).toBeGreaterThan(2);
+      expect(tree.trunkHM).toBeLessThan(15);
+      for (const c of [...tree.barkColor, ...tree.canopyColor]) {
+        expect(c).toBeGreaterThanOrEqual(0);
+        expect(c).toBeLessThanOrEqual(1);
+      }
+    }
+    // A rainy temperate lowland cell should scatter trees on its tiles.
+    const drainage = forestWorld.drainage!;
+    const climate = forestWorld.climate!;
+    const n = drainage.grid.n;
+    let trees = 0;
+    for (let cell = 0; cell < drainage.grid.cellCount && trees === 0; cell++) {
+      if (drainage.ocean[cell]) continue;
+      if (climate.precipMmYr[cell] < 1100) continue;
+      if (climate.tempK[cell] < 272 || climate.tempK[cell] > 308) continue;
+      const face = Math.floor(cell / (n * n));
+      const rem = cell % (n * n);
+      // A mid-cell tile at quadtree level 13 (tile ≈ 870 m — scatter range).
+      const x = (rem % n) * 64 + 32;
+      const y = Math.floor(rem / n) * 64 + 32;
+      const data = scatterForChunk(forestWorld, face, 13, x, y, [0, 0, 0]);
+      if (!data) continue;
+      for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
+        if (Math.round(data[i + 5]) >= 2) trees++;
+      }
+    }
+    expect(trees).toBeGreaterThan(0);
   });
 
   it('carries walked-scale texture that a coarse LOD does not see', () => {
