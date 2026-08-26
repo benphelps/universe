@@ -108,13 +108,13 @@ const ORIGIN = new Vector3();
  *  extended sky objects; solid pickables keep their generous reach. */
 const STAR_SNAP_PX = 10;
 
-export type FocusTarget = 'star' | number | { companion: number };
+export type FocusTarget = 'star' | number | { companion: number; planet?: number };
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 /** What a pick resolved to; main decides how to act on it. */
 export type PickTarget =
   | { kind: 'star'; companion?: number }
-  | { kind: 'planet'; index: number }
+  | { kind: 'planet'; index: number; companion?: number }
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
   | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition };
@@ -226,7 +226,12 @@ export class UnifiedViewer {
    *  persist through the backdrop→volume crossfade — only the
    *  unresolved-glow representations swap. */
   private farPoints: Points | null = null;
-  private secondSunIndex = -1;
+  private companionGroups: Array<{
+    group: Group;
+    lines: Group;
+    nodes: Array<{ planet: Planet; object: PlanetObject; marker: Mesh; mu: Mu }>;
+  }> = [];
+  private familyExtentsKm: number[] = [];
   private neighborSeedHexes: string[] = [];
   private neighborGalacticPc: Float32Array = new Float32Array(0);
   private viewpointPc: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
@@ -555,6 +560,55 @@ export class UnifiedViewer {
       );
     }
 
+    // Each companion's own system rides its star: orbit lines, zone
+    // rings, and true-scale planet spheres in a group whose position
+    // tracks the companion every frame.
+    this.companionGroups = system.companions.map((companion) => {
+      const group = new Group();
+      this.heliocentric.add(group);
+      // Chart lines share the overlay's convention: AU units, flat in
+      // the model plane — the sub-group carries the mapping to km.
+      const lines = new Group();
+      lines.rotation.x = -Math.PI / 2;
+      lines.scale.setScalar(AU_KM);
+      group.add(lines);
+      if (companion.planets.length > 0) lines.add(createZoneRings(companion.zones));
+      const nodes = companion.planets.map((planet) => {
+        const object = new PlanetObject(planet.physical, planet.rings);
+        object.group.scale.setScalar(EARTH_RADIUS_KM);
+        group.add(object.group);
+        lines.add(
+          createOrbitLine(planet.elements, planet.inHabitableZone ? 0x4fbf7f : 0x6a7484, 0.45),
+        );
+        const marker = new Mesh(
+          new SphereGeometry(1, 12, 6),
+          new MeshBasicMaterial({
+            color: markerColor(planet.physical.appearance, companion.star.linearRgb),
+          }),
+        );
+        group.add(marker);
+        return {
+          planet,
+          object,
+          marker,
+          mu: muOf(
+            G * (companion.star.mass * SOLAR_MASS + planet.physical.bulk.massEarth * EARTH_MASS),
+          ),
+        };
+      });
+      return { group, lines, nodes };
+    });
+    this.familyExtentsKm = [
+      this.extentKm,
+      ...system.companions.map((companion) => {
+        const orbitAu = companion.planets.length
+          ? Math.max(...companion.planets.map((pl) => pl.elements.semiMajorAxis / AU))
+          : 0.4;
+        const beltAu = Math.max(0, ...companion.belts.map((b) => b.outerAu));
+        return Math.max(orbitAu * 1.2, beltAu * 1.1, 0.4) * AU_KM;
+      }),
+    ];
+
     // The neighborhood rides in the scene as true 3D points: the night
     // sky's near field from the ground, the flyable galaxy layer from
     // interstellar altitude — the same objects, parallax-correct.
@@ -629,13 +683,17 @@ export class UnifiedViewer {
     if (!this.system) return;
     this.clearFocus();
     this.focus = target;
-    this.focusCompanion = typeof target === 'object' ? target.companion : -1;
-    // Numeric targets index the planets, then the notable asteroids.
+    const hosted = typeof target === 'object' ? target : null;
+    this.focusCompanion = hosted ? hosted.companion : -1;
+    // Numeric targets index the primary's planets, then the notable
+    // asteroids; hosted targets address a companion's system.
     const planetCount = this.system.planets.length;
     this.focusPlanet =
       typeof target === 'number' && target < planetCount
         ? (this.system.planets[target] ?? null)
-        : null;
+        : hosted && hosted.planet !== undefined
+          ? (this.system.companions[hosted.companion]?.planets[hosted.planet] ?? null)
+          : null;
     this.focusAsteroid =
       typeof target === 'number' && target >= planetCount
         ? (this.asteroids[target - planetCount] ?? null)
@@ -709,7 +767,7 @@ export class UnifiedViewer {
       this.minAltitudeKm = this.radiusKm * 0.3;
       this.altitudeKm =
         preset === 'system'
-          ? this.extentKm
+          ? (this.familyExtentsKm[this.focusCompanion + 1] ?? this.extentKm)
           : preset === 'galaxy'
             ? GALAXY_ARRIVAL_ALTITUDE_KM
             : this.radiusKm * 3.2;
@@ -748,9 +806,16 @@ export class UnifiedViewer {
     // relief; at the star, near-horizontal for the limb close-up,
     // overhead for the system map, or oblique for the neighborhood.
     const focusPos = this.focusPositionKm();
+    // A hosted planet's lit face looks at its own sun, not the system
+    // origin the primary's planets face.
+    const hostPos =
+      this.focusCompanion >= 0 && this.focusPlanet
+        ? (this.stellarPositionsKm(seconds(this.simTimeDays * DAY))[this.focusCompanion + 1] ??
+          new Vector3())
+        : new Vector3();
     const toStar =
       this.focusPlanet || this.focusAsteroid
-        ? focusPos.normalize().negate()
+        ? hostPos.sub(focusPos).normalize()
         : preset === 'galaxy'
           ? new Vector3(3, 5, 14).normalize()
           : preset === 'system'
@@ -1295,24 +1360,45 @@ export class UnifiedViewer {
   }
 
   /**
-   * Second-sun direction (written into `out`) and flux-premultiplied
-   * color at a world position; null when no companion contributes.
+   * Strongest other-star light at a world position, relative to the
+   * host star's flux there: direction written into `out`, color
+   * premultiplied by the flux ratio. Null when nothing contributes —
+   * single-star systems pay one cheap loop.
    */
-  private secondSunAt(worldPos: Vector3, out: Vector3): [number, number, number] | null {
-    if (this.secondSunIndex < 0 || !this.system) return null;
-    const companion = this.system.companions[this.secondSunIndex - 1];
-    const node = this.starNodes[this.secondSunIndex];
-    if (!companion || !node) return null;
-    out.copy(node.object.group.position).sub(worldPos);
-    const fluxRatio =
-      (companion.star.luminosity / Math.max(out.lengthSq(), 1)) /
-      (this.system.star.luminosity /
-        Math.max(this.starNodes[0].object.group.position.distanceToSquared(worldPos), 1));
-    if (fluxRatio < 0.004) return null;
-    out.normalize();
-    const scale = Math.min(fluxRatio, 4);
-    const [r, g, b] = companion.star.linearRgb;
-    return [r * scale, g * scale, b * scale];
+  private otherSunAt(
+    worldPos: Vector3,
+    hostIndex: number,
+    out: Vector3,
+  ): [number, number, number] | null {
+    if (!this.system || this.starNodes.length < 2) return null;
+    const hostNode = this.starNodes[hostIndex];
+    const hostStar =
+      hostIndex === 0 ? this.system.star : this.system.companions[hostIndex - 1]?.star;
+    if (!hostNode || !hostStar) return null;
+    const hostFlux =
+      hostStar.luminosity /
+      Math.max(hostNode.object.group.position.distanceToSquared(worldPos), 1);
+    let bestRatio = 0.004;
+    let bestIndex = -1;
+    for (let i = 0; i < this.starNodes.length; i++) {
+      if (i === hostIndex) continue;
+      const star = i === 0 ? this.system.star : this.system.companions[i - 1]?.star;
+      if (!star) continue;
+      const ratio =
+        star.luminosity /
+        Math.max(this.starNodes[i].object.group.position.distanceToSquared(worldPos), 1) /
+        Math.max(hostFlux, 1e-30);
+      if (ratio > bestRatio) {
+        bestRatio = ratio;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0) return null;
+    out.copy(this.starNodes[bestIndex].object.group.position).sub(worldPos).normalize();
+    const scale = Math.min(bestRatio, 4);
+    const star =
+      bestIndex === 0 ? this.system.star : this.system.companions[bestIndex - 1].star;
+    return [star.linearRgb[0] * scale, star.linearRgb[1] * scale, star.linearRgb[2] * scale];
   }
 
   private buildMoons(planet: Planet): void {
@@ -1411,6 +1497,21 @@ export class UnifiedViewer {
       (node.marker.material as MeshBasicMaterial).dispose();
     }
     this.planetNodes = [];
+    for (const family of this.companionGroups) {
+      for (const node of family.nodes) {
+        node.object.dispose();
+        node.marker.geometry.dispose();
+        (node.marker.material as MeshBasicMaterial).dispose();
+      }
+      family.group.traverse((obj) => {
+        if (obj instanceof Line) {
+          obj.geometry.dispose();
+          (obj.material as LineBasicMaterial).dispose();
+        }
+      });
+      this.heliocentric.remove(family.group);
+    }
+    this.companionGroups = [];
     for (const comet of this.cometObjects) comet.dispose();
     this.cometObjects = [];
     this.beltMaterials = [];
@@ -1517,11 +1618,20 @@ export class UnifiedViewer {
       const positions = this.stellarPositionsKm(tSeconds);
       return positions[this.focusCompanion + 1] ?? positions[0];
     }
-    const { position } = elementsToState(
-      this.focusPlanet.elements,
-      planetMu(this.system, this.focusPlanet),
-      tSeconds,
-    );
+    const mu =
+      this.focusCompanion >= 0
+        ? muOf(
+            G *
+              (this.system.companions[this.focusCompanion].star.mass * SOLAR_MASS +
+                this.focusPlanet.physical.bulk.massEarth * EARTH_MASS),
+          )
+        : planetMu(this.system, this.focusPlanet);
+    const { position } = elementsToState(this.focusPlanet.elements, mu, tSeconds);
+    if (this.focusCompanion >= 0) {
+      return toWorld(position)
+        .divideScalar(1000)
+        .add(this.stellarPositionsKm(tSeconds)[this.focusCompanion + 1] ?? new Vector3());
+    }
     return toWorld(position).divideScalar(1000);
   }
 
@@ -1775,36 +1885,21 @@ export class UnifiedViewer {
     const primaryWorld = this.starNodes.length
       ? this.starNodes[0].object.group.position
       : new Vector3();
-    this.starDistanceKm = Math.max(primaryWorld.length(), this.radiusKm * 4);
+    // The focus family's host star: the primary, or — focused into a
+    // companion's system — that companion. The focus body's terrain,
+    // sky, and moons are lit by their own sun; any other star bright
+    // enough joins as the second light.
+    const hostIndex = this.focusPlanet && this.focusCompanion >= 0 ? this.focusCompanion + 1 : 0;
+    const hostStar =
+      hostIndex === 0 ? this.system.star : this.system.companions[hostIndex - 1].star;
+    const hostWorld = this.starNodes[hostIndex]?.object.group.position ?? primaryWorld;
+    this.starDistanceKm = Math.max(hostWorld.length(), this.radiusKm * 4);
     const sunDir =
-      primaryWorld.lengthSq() > 1 ? primaryWorld.clone().normalize() : new Vector3(0, 0, 1);
-    const angularRadius =
-      (this.system.star.radius * SOLAR_RADIUS_KM) / Math.max(this.starDistanceKm, 1);
-    const lightColor = this.system.star.linearRgb;
-
-    // The second sun: whichever companion delivers the strongest flux
-    // at the focus. Below threshold a companion stays a glint, not a
-    // light, so single-star systems pay nothing.
-    this.secondSunIndex = -1;
-    {
-      const primaryFlux =
-        this.system.star.luminosity / Math.max(primaryWorld.lengthSq(), 1);
-      let bestRatio = 0.004;
-      for (let i = 1; i < this.starNodes.length; i++) {
-        const companion = this.system.companions[i - 1];
-        if (!companion) continue;
-        const ratio =
-          companion.star.luminosity /
-          Math.max(this.starNodes[i].object.group.position.lengthSq(), 1) /
-          Math.max(primaryFlux, 1e-30);
-        if (ratio > bestRatio) {
-          bestRatio = ratio;
-          this.secondSunIndex = i;
-        }
-      }
-    }
+      hostWorld.lengthSq() > 1 ? hostWorld.clone().normalize() : new Vector3(0, 0, 1);
+    const angularRadius = (hostStar.radius * SOLAR_RADIUS_KM) / Math.max(this.starDistanceKm, 1);
+    const lightColor = hostStar.linearRgb;
     const light2Dir = new Vector3(0, 0, 1);
-    const light2Color = this.secondSunAt(ORIGIN, light2Dir);
+    const light2Color = this.otherSunAt(ORIGIN, hostIndex, light2Dir);
 
     // Planets on their orbits. The focused one is rendered at the origin
     // by terrain or the envelope sphere, so its node hides; the rest are
@@ -1821,7 +1916,7 @@ export class UnifiedViewer {
       node.object.group.position.copy(positionKm);
       const worldPos = toFocusWorld(positionKm);
       const lightDir = primaryWorld.clone().sub(worldPos).normalize();
-      const node2Color = this.secondSunAt(worldPos, node2Dir);
+      const node2Color = this.otherSunAt(worldPos, 0, node2Dir);
       node.object.update(this.simTimeDays, lightDir, lightColor, node2Dir, node2Color);
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
@@ -1842,6 +1937,56 @@ export class UnifiedViewer {
         action: 'click to visit',
         target: { kind: 'planet', index: i },
       });
+    }
+
+    // Companion-hosted planets: each family rides its star, lit by its
+    // own sun with the rest of the system's stars as second lights.
+    for (let ci = 0; ci < this.companionGroups.length; ci++) {
+      const family = this.companionGroups[ci];
+      const starNode = this.starNodes[ci + 1];
+      const companion = this.system.companions[ci];
+      if (!starNode || !companion) continue;
+      family.group.position.copy(starPositions[ci + 1]);
+      family.lines.visible = this.overlay.visible;
+      const hostWorldPos = starNode.object.group.position;
+      for (let pi = 0; pi < family.nodes.length; pi++) {
+        const node = family.nodes[pi];
+        const isFocus = this.focusCompanion === ci && this.focusPlanet === node.planet;
+        node.object.group.visible = !isFocus;
+        node.marker.visible = false;
+        if (isFocus) continue;
+        const state = elementsToState(node.planet.elements, node.mu, tSeconds);
+        const positionKm = toWorld(state.position).divideScalar(1000);
+        node.object.group.position.copy(positionKm);
+        const worldPos = toFocusWorld(positionKm.clone().add(family.group.position));
+        const lightDir = hostWorldPos.clone().sub(worldPos).normalize();
+        const node2Color = this.otherSunAt(worldPos, ci + 1, node2Dir);
+        node.object.update(
+          this.simTimeDays,
+          lightDir,
+          companion.star.linearRgb,
+          node2Dir,
+          node2Color,
+        );
+
+        const cameraDistance = this.camera.position.distanceTo(worldPos);
+        const bodyRadiusKm = node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
+        if (bodyRadiusKm / cameraDistance < 0.004) {
+          node.marker.visible = true;
+          node.marker.position.copy(positionKm);
+          node.marker.scale.setScalar(cameraDistance * 0.0035);
+        }
+        const { climate, bulk } = node.planet.physical;
+        this.pickables.push({
+          x: worldPos.x,
+          y: worldPos.y,
+          z: worldPos.z,
+          name: node.planet.name,
+          info: `${node.planet.class} · ${fmt(bulk.massEarth)} M⊕ · ${fmt(climate.surfaceMeanK, 3)} K`,
+          action: 'click to visit',
+          target: { kind: 'planet', index: pi, companion: ci },
+        });
+      }
     }
 
     for (const material of this.beltMaterials) {

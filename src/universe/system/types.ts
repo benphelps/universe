@@ -61,6 +61,10 @@ export interface SystemZones {
 export interface StellarCompanion {
   star: Star;
   elements: OrbitalElements;
+  /** The companion's own circumstellar system, truncated by the binary. */
+  planets: Planet[];
+  belts: Belt[];
+  zones: SystemZones;
 }
 
 export type SystemConfiguration = 'single' | 's-type' | 'p-type';

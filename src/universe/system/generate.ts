@@ -39,9 +39,77 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
   const rng = new Rng(deriveSeed(seed, 'system'));
 
   const companions = companionOrbits(rng.fork('companions'), star);
-  const { configuration, centralMassSolar, innerLimitAu, outerLimitAu, centralLuminosity } =
-    resolveConfiguration(star, companions);
+  const config = resolveConfiguration(star, companions);
+  const primary = generatePlanetary(seed, rng, star, config);
 
+  // Each companion hosts its own circumstellar system, truncated by
+  // the primary's tide — an Alpha-Centauri arrangement. A close pair's
+  // partner has no room of its own (the circumbinary planets are the
+  // pair's system).
+  for (let i = 0; i < companions.length; i++) {
+    const companion = companions[i];
+    const companionSeed = deriveSeed(seed, 'companion', i);
+    const outerLimitAu = sTypeCriticalAu(
+      companion.elements.semiMajorAxis / AU,
+      companion.elements.eccentricity,
+      star.mass / (star.mass + companion.star.mass),
+    );
+    const sub = generatePlanetary(
+      companionSeed,
+      new Rng(deriveSeed(companionSeed, 'system')),
+      companion.star,
+      {
+        centralMassSolar: companion.star.mass,
+        centralLuminosity: companion.star.luminosity,
+        innerLimitAu: 0.02,
+        outerLimitAu: config.configuration === 'p-type' && i === 0 ? 0 : outerLimitAu,
+      },
+    );
+    companion.planets = sub.planets;
+    companion.belts = sub.belts;
+    companion.zones = sub.zones;
+  }
+
+  const reservoirs = generateReservoirs(rng.fork('reservoirs'), primary.stable);
+  return {
+    seedHex: seedToHex(seed),
+    localePc: locale,
+    star,
+    companions,
+    configuration: config.configuration,
+    centralMassSolar: config.centralMassSolar,
+    planets: primary.planets,
+    belts: primary.belts,
+    comets: generateComets(rng.fork('comets'), star.designation, reservoirs),
+    reservoirs,
+    zones: primary.zones,
+  };
+}
+
+interface HostLimits {
+  centralMassSolar: number;
+  centralLuminosity: number;
+  innerLimitAu: number;
+  outerLimitAu: number;
+}
+
+/**
+ * The planetary-formation pipeline for one host star: disk, layout,
+ * elements, stability, characterization, end-state pruning. Fork names
+ * match the original inline pipeline, so a primary's system is
+ * identical to what it was before companions hosted systems.
+ */
+function generatePlanetary(
+  seedBase: bigint,
+  rng: Rng,
+  star: Star,
+  limits: HostLimits,
+): { planets: Planet[]; stable: StablePlanet[]; belts: StarSystem['belts']; zones: StarSystem['zones'] } {
+  const { centralMassSolar, centralLuminosity, innerLimitAu, outerLimitAu } = limits;
+  const zones = computeZones(centralLuminosity, star.tEff, star.ageGyr, centralMassSolar);
+  if (outerLimitAu <= innerLimitAu * 1.2) {
+    return { planets: [], stable: [], belts: [], zones };
+  }
   const disk = generateDisk(rng.fork('disk'), star);
   const slots = layoutPlanets(
     rng.fork('architecture'),
@@ -55,7 +123,6 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
   let stable = filterStable(slots, elements, centralMassSolar);
   stable = applyStellarEndState(star, stable);
 
-  const zones = computeZones(centralLuminosity, star.tEff, star.ageGyr, centralMassSolar);
   const planets: Planet[] = stable.map(({ slot, elements: el }, i) => {
     const planet: Planet = {
       name: `${star.designation} ${PLANET_LETTERS[Math.min(i, PLANET_LETTERS.length - 1)]}`,
@@ -66,16 +133,22 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
         el.semiMajorAxis / AU <= zones.habitableOuterAu,
       tidallyLocked: el.semiMajorAxis / AU < zones.tidalLockAu,
       resonanceWithInner: slot.resonanceWithInner,
-      physical: characterizePlanet(deriveSeed(seed, 'planet', i), slot.class, slot.massEarth, el, {
-        star,
-        centralLuminosity,
-        mu: muOf(G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS)),
-        zones,
-      }),
+      physical: characterizePlanet(
+        deriveSeed(seedBase, 'planet', i),
+        slot.class,
+        slot.massEarth,
+        el,
+        {
+          star,
+          centralLuminosity,
+          mu: muOf(G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS)),
+          zones,
+        },
+      ),
       moons: [],
       rings: null,
     };
-    planet.moons = generateMoons(deriveSeed(seed, 'moons', i), planet, {
+    planet.moons = generateMoons(deriveSeed(seedBase, 'moons', i), planet, {
       star,
       centralLuminosity,
       zones,
@@ -90,20 +163,7 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
     return planet;
   });
 
-  const reservoirs = generateReservoirs(rng.fork('reservoirs'), stable);
-  return {
-    seedHex: seedToHex(seed),
-    localePc: locale,
-    star,
-    companions,
-    configuration,
-    centralMassSolar,
-    planets,
-    belts: generateBelts(rng.fork('belts'), stable),
-    comets: generateComets(rng.fork('comets'), star.designation, reservoirs),
-    reservoirs,
-    zones,
-  };
+  return { planets, stable, belts: generateBelts(rng.fork('belts'), stable), zones };
 }
 
 /** Gravitational parameter for planet propagation around the system center. */
@@ -111,10 +171,18 @@ export function planetMu(system: StarSystem, planet: Planet): Mu {
   return muOf(G * (system.centralMassSolar * SOLAR_MASS + planet.physical.bulk.massEarth * EARTH_MASS));
 }
 
+/** Gravitational parameter for a companion-hosted planet around its star. */
+export function companionPlanetMu(companion: StellarCompanion, planet: Planet): Mu {
+  return muOf(G * (companion.star.mass * SOLAR_MASS + planet.physical.bulk.massEarth * EARTH_MASS));
+}
+
 /** Full orbits for stellar companions (mildly inclined to the planet plane). */
 function companionOrbits(rng: Rng, star: Star): StellarCompanion[] {
   return star.companions.map(({ star: companion, orbit }) => ({
     star: companion,
+    planets: [],
+    belts: [],
+    zones: computeZones(companion.luminosity, companion.tEff, companion.ageGyr, companion.mass),
     elements: {
       semiMajorAxis: orbit.semiMajorAxisAu * AU,
       eccentricity: orbit.eccentricity,

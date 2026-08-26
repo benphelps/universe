@@ -2,6 +2,7 @@ import { AU, EARTH_RADIUS } from '../../core/physics/constants';
 import type { Moon } from '../../universe/moon/types';
 import { asteroidDesignation } from '../../universe/smallbody/notable';
 import type { Asteroid } from '../../universe/smallbody/types';
+import type { Star } from '../../universe/star/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { fmt, fmtDays } from './format';
 import { renderPlate } from './markup';
@@ -62,7 +63,13 @@ const REGIME_LABEL: Record<string, string> = {
 export class PlanetInfoPanel {
   constructor(private readonly sidebar: Sidebar) {}
 
-  render(system: StarSystem, planet: Planet, index: number, onStep: (delta: number) => void): void {
+  render(
+    hostStar: Star,
+    hostPlanets: Planet[],
+    planet: Planet,
+    index: number,
+    onStep: (delta: number) => void,
+  ): void {
     const { bulk, interior, rotation, atmosphere, climate } = planet.physical;
     const aAu = planet.elements.semiMajorAxis / AU;
 
@@ -114,7 +121,7 @@ export class PlanetInfoPanel {
 
     renderPlate(this.sidebar.focus, {
       title: planet.name,
-      subtitle: `planet ${index + 1} of ${system.planets.length} · ${system.star.spectralType}`,
+      subtitle: `planet ${index + 1} of ${hostPlanets.length} · ${hostStar.spectralType}`,
       badges,
       color: CLASS_COLOR[planet.class],
       rows,
@@ -193,10 +200,10 @@ export class PlanetInfoPanel {
     });
   }
 
-  renderEmpty(system: StarSystem): void {
+  renderEmpty(hostStar: Star): void {
     renderPlate(this.sidebar.focus, {
-      title: system.star.designation,
-      subtitle: 'this system has no planets',
+      title: hostStar.designation,
+      subtitle: 'this star hosts no planets',
       rows: [],
     });
     this.sidebar.level.innerHTML = '';

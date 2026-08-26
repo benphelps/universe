@@ -1,6 +1,6 @@
 import { orbitalPeriod } from '../../core/math/orbit';
 import { AU } from '../../core/physics/constants';
-import { planetMu } from '../../universe/system/generate';
+import { companionPlanetMu, planetMu } from '../../universe/system/generate';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { fmt, fmtDays } from './format';
 import { cssColor, renderPlate } from './markup';
@@ -29,10 +29,15 @@ export const CLASS_COLOR: Record<Planet['class'], string> = {
 export class SystemInfoPanel {
   constructor(private readonly sidebar: Sidebar) {}
 
-  render(system: StarSystem, onSelectPlanet: (index: number) => void): void {
-    const { star, zones } = system;
-    const configuration =
-      system.configuration === 'p-type'
+  render(system: StarSystem, hostIndex: number, onSelectPlanet: (index: number) => void): void {
+    const companion = hostIndex > 0 ? (system.companions[hostIndex - 1] ?? null) : null;
+    const star = companion ? companion.star : system.star;
+    const planets = companion ? companion.planets : system.planets;
+    const belts = companion ? companion.belts : system.belts;
+    const zones = companion ? companion.zones : system.zones;
+    const configuration = companion
+      ? ` · companion of ${system.star.designation}`
+      : system.configuration === 'p-type'
         ? ' · circumbinary'
         : system.configuration === 's-type'
           ? ' · binary'
@@ -40,7 +45,7 @@ export class SystemInfoPanel {
 
     renderPlate(this.sidebar.focus, {
       title: star.designation,
-      subtitle: `${star.spectralType}${configuration} · ${system.planets.length} planets`,
+      subtitle: `${star.spectralType}${configuration} · ${planets.length} planets`,
       color: cssColor(star.linearRgb),
       rows: [
         ['Star', `${fmt(star.mass)} M☉ · ${fmt(star.luminosity)} L☉`],
@@ -49,11 +54,14 @@ export class SystemInfoPanel {
       ],
     });
 
-    const planetRows = system.planets
+    const planetRows = planets
       .map((planet, index) => {
         const aAu = planet.elements.semiMajorAxis / AU;
         const periodDays =
-          orbitalPeriod(planetMu(system, planet), planet.elements.semiMajorAxis) / 86400;
+          orbitalPeriod(
+            companion ? companionPlanetMu(companion, planet) : planetMu(system, planet),
+            planet.elements.semiMajorAxis,
+          ) / 86400;
         const badges = [
           planet.inHabitableZone ? '<span class="badge hz">HZ</span>' : '',
           planet.tidallyLocked ? '<span class="badge lock">lock</span>' : '',
@@ -74,7 +82,7 @@ export class SystemInfoPanel {
       })
       .join('');
 
-    const beltRows = system.belts
+    const beltRows = belts
       .map(
         (belt) =>
           `<div class="belt-row">${belt.kind === 'main' ? 'asteroid belt' : 'debris belt'}
@@ -85,14 +93,14 @@ export class SystemInfoPanel {
       .join('');
 
     this.sidebar.level.innerHTML = `
-      <h2>Planets · ${system.planets.length}</h2>
+      <h2>Planets · ${planets.length}</h2>
       ${
-        system.planets.length > 0
+        planets.length > 0
           ? `<table class="list">
                <tr><th></th><th>class</th><th class="n">M⊕</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th><th></th></tr>
                ${planetRows}
              </table>`
-          : '<div class="empty">no planets formed here</div>'
+          : `<div class="empty">${companion ? 'no room for planets this close to the primary' : 'no planets formed here'}</div>`
       }
       ${beltRows}
     `;

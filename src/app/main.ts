@@ -50,9 +50,10 @@ function stepBody(delta: number): void {
   load(seedHex);
 }
 
-function selectPlanet(index: number): void {
+function selectPlanet(index: number, host = 0): void {
   viewMode = 'planet';
   planetIndex = index;
+  companionIndex = host;
   load(seedHex);
 }
 
@@ -92,7 +93,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     viewer.onPick = (target) => {
       if (!viewer || !system) return;
       if (target.kind === 'planet') {
-        selectPlanet(target.index);
+        selectPlanet(target.index, (target.companion ?? -1) + 1);
       } else if (target.kind === 'notable') {
         selectPlanet(system.planets.length + target.index);
       } else if (target.kind === 'star') {
@@ -114,32 +115,39 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   }
   const address = galacticAddress(system.localePc);
   sidebar.address = address;
+  companionIndex = Math.max(0, Math.min(companionIndex, system.companions.length));
+  const hostPlanets =
+    companionIndex === 0 ? system.planets : system.companions[companionIndex - 1].planets;
+  const hostStar = companionIndex === 0 ? system.star : system.companions[companionIndex - 1].star;
   if (viewMode === 'star') {
-    companionIndex = Math.max(0, Math.min(companionIndex, system.companions.length));
     viewer.setFocus(companionIndex === 0 ? 'star' : { companion: companionIndex - 1 }, 'star');
-    const focused = companionIndex === 0 ? system.star : system.companions[companionIndex - 1].star;
-    starPanel.render(focused, system.star, companionIndex, selectStar);
+    starPanel.render(hostStar, system.star, companionIndex, selectStar);
   } else if (viewMode === 'system') {
-    viewer.setFocus('star', 'system');
-    systemPanel.render(system, selectPlanet);
+    viewer.setFocus(companionIndex === 0 ? 'star' : { companion: companionIndex - 1 }, 'system');
+    systemPanel.render(system, companionIndex, (index) => selectPlanet(index, companionIndex));
   } else if (viewMode === 'galaxy') {
     viewer.setFocus('star', 'galaxy');
     galaxyPanel.render(system.star, address, viewer.neighbors, (neighbor) =>
       load(neighbor.seedHex, neighbor.positionPc),
     );
   } else {
-    // The body stepper walks the planets, then the notable belt asteroids.
-    const count = system.planets.length + viewer.asteroids.length;
+    // The body stepper walks the host's planets — for the primary, the
+    // notable belt asteroids follow them.
+    const count =
+      companionIndex === 0 ? hostPlanets.length + viewer.asteroids.length : hostPlanets.length;
     if (count === 0) {
-      viewer.setFocus('star', 'star');
-      planetPanel.renderEmpty(system);
+      viewer.setFocus(companionIndex === 0 ? 'star' : { companion: companionIndex - 1 }, 'star');
+      planetPanel.renderEmpty(hostStar);
     } else {
       planetIndex = ((planetIndex % count) + count) % count;
-      viewer.setFocus(planetIndex, 'planet');
-      if (planetIndex < system.planets.length) {
-        planetPanel.render(system, system.planets[planetIndex], planetIndex, stepBody);
+      viewer.setFocus(
+        companionIndex === 0 ? planetIndex : { companion: companionIndex - 1, planet: planetIndex },
+        'planet',
+      );
+      if (planetIndex < hostPlanets.length) {
+        planetPanel.render(hostStar, hostPlanets, hostPlanets[planetIndex], planetIndex, stepBody);
       } else {
-        const ordinal = planetIndex - system.planets.length;
+        const ordinal = planetIndex - hostPlanets.length;
         planetPanel.renderAsteroid(
           system,
           viewer.asteroids[ordinal],
@@ -167,7 +175,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   } else {
     url.searchParams.delete('planet');
   }
-  if (viewMode === 'star' && companionIndex > 0) {
+  if (companionIndex > 0) {
     url.searchParams.set('companion', String(companionIndex));
   } else {
     url.searchParams.delete('companion');

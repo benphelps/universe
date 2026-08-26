@@ -201,14 +201,15 @@ tr.pick:hover td {
   color: var(--ink);
 }
 
-/* The row you are already at. */
+/* The row you are already at: its dot wears a ring. */
 tr.here td {
   color: var(--ink);
 }
 
-tr.here td:first-child {
-  box-shadow: inset 2px 0 0 var(--accent);
-  padding-left: 6px;
+tr.here .swatch {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 3.5px var(--accent);
 }
 
 .empty {
