@@ -129,8 +129,9 @@ void main() {
     float capEdge = uPolar.x;
     // The hexagon analog belongs to one hemisphere: the jet that
     // carries the standing wave.
-    if (uPolar.z * hemi > 0.5) {
-      capEdge += 0.03 * cos(abs(uPolar.z) * lon * hemi + uTimeDays * uPolar.w);
+    bool hexHere = uPolar.z * hemi > 0.5;
+    if (hexHere) {
+      capEdge += 0.05 * cos(abs(uPolar.z) * lon * hemi + uTimeDays * uPolar.w);
     }
     // Zonal anisotropy and stirring belong to the jets: both fade into
     // the caps, where the turbulence is isotropic (as Juno found).
@@ -237,7 +238,14 @@ void main() {
     }
 
     // The polar regime: hood, hexagon-analog cap edge, cyclone cluster.
-    float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(wlat));
+    // A standing-wave jet holds a crisp boundary and draws its own
+    // bright cloud lane, the way Saturn's hexagon reads.
+    float capSharp = hexHere ? 0.022 : 0.06;
+    float cap = smoothstep(capEdge - capSharp, capEdge + capSharp, abs(wlat));
+    if (hexHere) {
+      float lane = exp(-pow((abs(wlat) - capEdge) / 0.014, 2.0));
+      surface = mix(surface, uStormFresh * 1.08, lane * 0.4);
+    }
     if (cap > 0.01) {
       float colat = 1.5707963 - abs(lat);
       // The cap keeps its weather at full resolution: differential
