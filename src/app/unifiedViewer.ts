@@ -42,6 +42,11 @@ import { applyOccluders } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
 import { applySecondSun } from '../render/lighting/secondSun';
+import {
+  reflectedFluxRatio,
+  shineTint,
+  type ShineBody,
+} from '../render/lighting/reflectedLight';
 import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import {
   createNeighborStars,
@@ -74,13 +79,14 @@ import type { GalacticPosition } from '../universe/galaxy/density';
 import { spectralType } from '../universe/star/classification';
 import { starDesignation } from '../universe/star/naming';
 import type { Moon } from '../universe/moon/types';
+import type { Characterization } from '../universe/planet/types';
+import type { RingSystem } from '../universe/rings/types';
 import {
   bandMeanMotion,
   BELT_SECTORS,
   beltBandCount,
   beltCellAsteroids,
 } from '../universe/smallbody/beltRegion';
-import { asteroidGravityMs2 } from '../universe/smallbody/asteroids';
 import { notableAsteroids } from '../universe/smallbody/notable';
 import type { Asteroid } from '../universe/smallbody/types';
 import type { Star } from '../universe/star/types';
@@ -92,7 +98,7 @@ import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
 import { getSkyField } from './skyService';
-import { GroundWalker, MAX_WADE_M, type WalkSurface } from './groundWalker';
+import { FlightCamera, type FlightSurface } from './flightCamera';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
 
@@ -121,13 +127,14 @@ const STAR_SNAP_PX = 10;
  *  a system view about half that. */
 const RIDE_OUT_DECADES_PER_SEC = 0.6;
 
-export type FocusTarget = 'star' | number;
+export type FocusTarget = 'star' | number | { planet: number; moon: number };
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 /** What a pick resolved to; main decides how to act on it. */
 export type PickTarget =
   | { kind: 'star'; companion?: number }
   | { kind: 'planet'; index: number }
+  | { kind: 'moon'; planet: number; index: number }
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
   | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition };
@@ -305,14 +312,14 @@ export class UnifiedViewer {
   /**
    * Free flight belongs to the space views. On the ground — a solid
    * body below the altitude where the horizon gaze engages — descent
-   * and walking own the camera.
+   * and ground flight own the camera.
    */
   private freeFlightAvailable(): boolean {
     const grounded = this.field !== null || this.focusAsteroid !== null;
     return !grounded || this.altitudeKm > this.radiusKm * 0.12;
   }
   /** WASD locomotion once the wheel ride touches down. */
-  private readonly walker = new GroundWalker();
+  private readonly flight = new FlightCamera();
   private walkHint: HTMLDivElement | null = null;
   private walkHintText = '';
   private oceanMaterial: ShaderMaterial | null = null;
@@ -328,6 +335,9 @@ export class UnifiedViewer {
   private field: SurfaceField | null = null;
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
+  private focusMoon: Moon | null = null;
+  /** The parent planet hanging in a focused moon's sky. */
+  private parentObject: PlanetObject | null = null;
   private focusPlanet: Planet | null = null;
   private focusAsteroid: Asteroid | null = null;
   private extentAu = 1;
@@ -390,7 +400,7 @@ export class UnifiedViewer {
     // Right-drag turns the head at low altitude (left-drag moves over
     // the surface via OrbitControls).
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
-      if ((e.buttons & 2) === 0 || this.rightShiftHeld || this.walker.active) return;
+      if ((e.buttons & 2) === 0 || this.rightShiftHeld || this.flight.active) return;
       this.headingRad -= e.movementX * 0.004;
       this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.003));
     });
@@ -398,14 +408,14 @@ export class UnifiedViewer {
     // On foot the mouse is the head: click takes pointer lock, motion
     // steers the gaze, Escape hands the cursor back.
     this.pipeline.renderer.domElement.addEventListener('click', () => {
-      if (this.walker.phase !== 'walking') return;
+      if (!this.flight.active) return;
       if (document.pointerLockElement !== this.pipeline.renderer.domElement) {
         this.pipeline.renderer.domElement.requestPointerLock();
       }
     });
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       if (document.pointerLockElement !== this.pipeline.renderer.domElement) return;
-      if (this.walker.phase !== 'walking') return;
+      if (!this.flight.active) return;
       // Head convention, not the drag handler's grab-the-world sign:
       // mouse right looks right.
       this.headingRad += e.movementX * 0.0022;
@@ -503,7 +513,7 @@ export class UnifiedViewer {
       this.dragging = false;
       if (!down || e.button !== 0) return;
       if (Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
-      if (this.hovered?.target && !this.walker.active) this.onPick?.(this.hovered.target);
+      if (this.hovered?.target && !this.flight.active) this.onPick?.(this.hovered.target);
     });
 
     window.addEventListener('resize', this.onResize);
@@ -738,17 +748,32 @@ export class UnifiedViewer {
     this.clearFocus();
     this.focus = target;
     // Numeric targets index the host's planets; past them, the notable
-    // asteroids (the primary's belts only).
+    // asteroids (the primary's belts only). Object targets name a moon
+    // of one of those planets.
     const hostPlanets = this.planetNodes.map((node) => node.planet);
     const planetCount = hostPlanets.length;
+    const planetIndex =
+      typeof target === 'object' ? target.planet : typeof target === 'number' ? target : -1;
     this.focusPlanet =
-      typeof target === 'number' && target < planetCount ? (hostPlanets[target] ?? null) : null;
+      planetIndex >= 0 && planetIndex < planetCount ? (hostPlanets[planetIndex] ?? null) : null;
+    this.focusMoon =
+      typeof target === 'object' && this.focusPlanet
+        ? (this.focusPlanet.moons[target.moon] ?? null)
+        : null;
     this.focusAsteroid =
       typeof target === 'number' && target >= planetCount && this.hostIndex === 0
         ? (this.asteroids[target - planetCount] ?? null)
         : null;
 
-    if (this.focusPlanet) {
+    if (this.focusPlanet && this.focusMoon) {
+      // A moon focuses exactly like a planet — same terrain streamer,
+      // same regimes — with its parent's system in the sky around it.
+      this.radiusKm = this.focusMoon.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
+      this.minAltitudeKm = 0.05;
+      this.altitudeKm = this.radiusKm * 2.2;
+      this.applySolidBodyFocus(this.focusMoon.physical, null);
+      this.buildMoons(this.focusPlanet);
+    } else if (this.focusPlanet) {
       const planet = this.focusPlanet;
       const solid = !planet.physical.appearance.banding;
       this.radiusKm = planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
@@ -757,51 +782,7 @@ export class UnifiedViewer {
       this.altitudeKm = this.radiusKm * 2.2;
 
       if (solid) {
-        this.field = createSurfaceField(planet.physical.seedHex, planet.physical);
-        this.oceanMaterial = createOceanMaterial(planet.physical.appearance.oceanColor);
-        this.chunkManager = new TerrainChunkManager(
-          this.scene,
-          this.terrainMaterial,
-          this.oceanMaterial,
-          this.scatterMaterial,
-          { type: 'init', seedHex: planet.physical.seedHex, physical: planet.physical },
-          this.radiusKm,
-          this.field.params.biosphere
-            ? deriveTreeSpecies(this.field.params).map(createTreeGeometry)
-            : [],
-        );
-        if (planet.physical.atmosphere.class !== 'none') {
-          this.skyDome = createSkyDome(planet.physical.atmosphere.scatteringColor);
-          this.scene.add(this.skyDome);
-        }
-        this.atmosphereShell = createAtmosphereShell(planet.physical, this.radiusKm);
-        if (this.atmosphereShell) this.scene.add(this.atmosphereShell);
-        this.cloudShell = createCloudShell(
-          planet.physical,
-          this.radiusKm,
-          this.field.seaLevelM / 1000,
-          this.field.params.reliefM / 1000,
-        );
-        if (this.cloudShell) this.scene.add(this.cloudShell);
-        if (planet.rings) {
-          this.ringMesh = createRingMesh(planet.rings, this.radiusKm);
-          this.ringMesh.rotation.x = -Math.PI / 2;
-          this.scene.add(this.ringMesh);
-        }
-        // Depth-only globe: writes the planet body's depth even where
-        // terrain isn't loaded, so sky objects eclipse per-fragment.
-        // Sized below the deepest terrain — crater excavation included,
-        // or bowls dip under it and render as black holes.
-        const depthBudgetKm =
-          (this.field.params.reliefM * 1.3 +
-            maxCraterDepthM(this.field.params.radiusM, this.field.params.craterAmplitude)) /
-          1000;
-        this.occlusionGlobe = new Mesh(
-          new SphereGeometry(this.radiusKm - depthBudgetKm, 96, 48),
-          new MeshBasicMaterial({ colorWrite: false }),
-        );
-        this.occlusionGlobe.renderOrder = -5;
-        this.scene.add(this.occlusionGlobe);
+        this.applySolidBodyFocus(planet.physical, planet.rings);
       } else {
         // Gas envelope: the banded shader sphere carries the body, its
         // atmosphere limb, and its rings (all inside PlanetObject).
@@ -825,6 +806,56 @@ export class UnifiedViewer {
     }
 
     this.arriveAtFocus(preset);
+  }
+
+  /** Focus-specific content for any solid terrain body — planet or moon:
+   *  the streamed surface, its air and clouds, and the depth globe. */
+  private applySolidBodyFocus(physical: Characterization, rings: RingSystem | null): void {
+    this.field = createSurfaceField(physical.seedHex, physical);
+    this.oceanMaterial = createOceanMaterial(physical.appearance.oceanColor);
+    this.chunkManager = new TerrainChunkManager(
+      this.scene,
+      this.terrainMaterial,
+      this.oceanMaterial,
+      this.scatterMaterial,
+      { type: 'init', seedHex: physical.seedHex, physical },
+      this.radiusKm,
+      this.field.params.biosphere
+        ? deriveTreeSpecies(this.field.params).map(createTreeGeometry)
+        : [],
+    );
+    if (physical.atmosphere.class !== 'none') {
+      this.skyDome = createSkyDome(physical.atmosphere.scatteringColor);
+      this.scene.add(this.skyDome);
+    }
+    this.atmosphereShell = createAtmosphereShell(physical, this.radiusKm);
+    if (this.atmosphereShell) this.scene.add(this.atmosphereShell);
+    this.cloudShell = createCloudShell(
+      physical,
+      this.radiusKm,
+      this.field.seaLevelM / 1000,
+      this.field.params.reliefM / 1000,
+    );
+    if (this.cloudShell) this.scene.add(this.cloudShell);
+    if (rings) {
+      this.ringMesh = createRingMesh(rings, this.radiusKm);
+      this.ringMesh.rotation.x = -Math.PI / 2;
+      this.scene.add(this.ringMesh);
+    }
+    // Depth-only globe: writes the body's depth even where terrain
+    // isn't loaded, so sky objects eclipse per-fragment. Sized below
+    // the deepest terrain — crater excavation included, or bowls dip
+    // under it and render as black holes.
+    const depthBudgetKm =
+      (this.field.params.reliefM * 1.3 +
+        maxCraterDepthM(this.field.params.radiusM, this.field.params.craterAmplitude)) /
+      1000;
+    this.occlusionGlobe = new Mesh(
+      new SphereGeometry(this.radiusKm - depthBudgetKm, 96, 48),
+      new MeshBasicMaterial({ colorWrite: false }),
+    );
+    this.occlusionGlobe.renderOrder = -5;
+    this.scene.add(this.occlusionGlobe);
   }
 
   /** Focus-specific content for a small body: streamed irregular terrain. */
@@ -971,8 +1002,8 @@ export class UnifiedViewer {
     const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
     let best: Pickable | null = null;
     let softStarBest = false;
-    // On foot the cursor is the head, not a probe.
-    if (this.cursor && !this.dragging && !this.walker.active) {
+    // In flight the cursor is the head, not a probe.
+    if (this.cursor && !this.dragging && !this.flight.active) {
       const [cx, cy] = this.cursor;
       const v = new Vector3();
       let bestPx = 26;
@@ -1487,6 +1518,13 @@ export class UnifiedViewer {
     if (!this.system) return;
     const starRgb = this.system.star.linearRgb;
     this.moonGroup = new Group();
+    if (this.focusMoon) {
+      // The parent planet hangs in the focused moon's sky, rings and
+      // all, positioned each frame at its true planet-centric offset.
+      this.parentObject = new PlanetObject(planet.physical, planet.rings);
+      this.parentObject.group.scale.setScalar(EARTH_RADIUS_KM);
+      this.moonGroup.add(this.parentObject.group);
+    }
     this.moons = planet.moons.map((moon) => {
         const object = new PlanetObject(moon.physical, null);
         object.group.scale.setScalar(EARTH_RADIUS_KM);
@@ -1516,7 +1554,8 @@ export class UnifiedViewer {
   }
 
   private clearFocus(): void {
-    this.walker.abort();
+    this.focusMoon = null;
+    this.flight.stop();
     if (document.pointerLockElement) document.exitPointerLock();
     this.chunkManager?.dispose();
     this.chunkManager = null;
@@ -1547,6 +1586,8 @@ export class UnifiedViewer {
     }
     if (this.moonGroup) {
       this.scene.remove(this.moonGroup);
+      this.parentObject?.dispose();
+      this.parentObject = null;
       for (const entry of this.moons) entry.object.dispose();
       this.moonGroup.traverse((obj) => {
         if (obj instanceof Line) {
@@ -1573,14 +1614,11 @@ export class UnifiedViewer {
       (this.starSprites.material as ShaderMaterial).dispose();
       this.starSprites = null;
     }
-    for (const node of this.planetNodes) {
-      this.heliocentric.remove(node.object.group);
-      this.heliocentric.remove(node.marker);
-      node.object.dispose();
-      node.marker.geometry.dispose();
-      (node.marker.material as MeshBasicMaterial).dispose();
-    }
-    this.planetNodes = [];
+    // Host teardown must go through clearHostContent: it resets
+    // hostIndex, and setHost's change guard trusts that — a stale
+    // index here left the whole travel destination running on the
+    // previous system's planets, belts, and host star.
+    this.clearHostContent();
     for (const child of [...this.stellarOrbits.children]) {
       this.stellarOrbits.remove(child);
       if (child instanceof Line) {
@@ -1588,9 +1626,6 @@ export class UnifiedViewer {
         (child.material as LineBasicMaterial).dispose();
       }
     }
-    for (const comet of this.cometObjects) comet.dispose();
-    this.cometObjects = [];
-    this.beltMaterials = [];
     if (this.neighborPoints) {
       this.pcGroup.remove(this.neighborPoints);
       this.neighborPoints.geometry.dispose();
@@ -1697,11 +1732,17 @@ export class UnifiedViewer {
     const node = this.planetNodes.find((candidate) => candidate.planet === this.focusPlanet);
     const mu = node ? node.mu : planetMu(this.system, this.focusPlanet);
     const { position } = elementsToState(this.focusPlanet.elements, mu, tSeconds);
+    const planetPos = toWorld(position).divideScalar(1000);
     const hostPos = this.stellarPositionsKm(tSeconds)[Math.max(this.hostIndex, 0)];
-    if (hostPos) {
-      return toWorld(position).divideScalar(1000).add(hostPos);
+    if (hostPos) planetPos.add(hostPos);
+    const moonEntry = this.focusMoon
+      ? this.moons.find((entry) => entry.moon === this.focusMoon)
+      : null;
+    if (moonEntry) {
+      const moonState = elementsToState(moonEntry.moon.elements, moonEntry.mu, tSeconds);
+      planetPos.add(toWorld(moonState.position).divideScalar(1000));
     }
-    return toWorld(position).divideScalar(1000);
+    return planetPos;
   }
 
   private resize(): void {
@@ -1712,47 +1753,31 @@ export class UnifiedViewer {
     this.pipeline.setSize(width, height);
   }
 
-  /** The focus body as the walker's surface, when it has one to stand on. */
-  private walkSurface(): WalkSurface | null {
+  /** The focus body as the flyer's surface, when it has one to clamp to. */
+  private flightSurface(): FlightSurface | null {
     const field = this.field;
     if (!field) return null;
-    const gravityMs2 = this.focusPlanet
-      ? this.focusPlanet.physical.bulk.gravityMs2
-      : this.focusAsteroid
-        ? asteroidGravityMs2(this.focusAsteroid)
-        : 0;
-    if (gravityMs2 <= 0) return null;
-    // Feet low-pass the ground: bands finer than a stride (~0.7 m
-    // wavelength) are texture to step over, not terrain to bob across.
+    // The clamp low-passes the ground: bands finer than ~0.7 m
+    // wavelength are texture to skim over, not terrain to bob across.
     const strideLodRad = 0.00035 / this.radiusKm;
     return {
       radiusKm: this.radiusKm,
-      gravityMs2,
       heightM: (u) => field.heightAt(u, strideLodRad),
       waterLevelM: (u) => field.waterLevelAt(u),
     };
   }
 
   /** One quiet line of guidance for the ground regime. */
-  private updateWalkHint(waterDepthM: number): void {
+  private updateWalkHint(): void {
     if (!this.walkHint) return;
     let text = '';
-    if (this.walker.phase === 'walking') {
+    if (this.flight.active) {
       text =
         document.pointerLockElement === this.pipeline.renderer.domElement
-          ? 'w a s d walk · shift run · space jump · scroll up to lift off'
+          ? 'w a s d fly · space rise · c dive · shift boost · scroll up to leave'
           : 'click to take the controls';
-    } else if (this.walker.phase === 'landing') {
-      text = 'touching down';
-    } else if (
-      this.walker.phase === 'off' &&
-      this.field &&
-      this.altitudeKm <= this.minAltitudeKm * 1.02
-    ) {
-      text =
-        waterDepthM > MAX_WADE_M
-          ? 'open water — find a shore to land'
-          : 'scroll in to land';
+    } else if (this.field && this.altitudeKm <= this.minAltitudeKm * 1.02) {
+      text = 'scroll in to fly';
     }
     if (text !== this.walkHintText) {
       this.walkHintText = text;
@@ -1775,12 +1800,12 @@ export class UnifiedViewer {
       );
       // Orbit rotation yields to panning only where free flight applies;
       // descending into the surface regime restores the classic controls
-      // and re-anchors the orbit (and the wheel ride) on the body. On
-      // foot, the walker owns the camera position outright.
-      const walking = this.walker.active;
+      // and re-anchors the orbit (and the wheel ride) on the body. In
+      // ground flight, the flight camera owns the position outright.
+      const flying = this.flight.active;
       const freeFlight = this.freeFlightAvailable();
-      this.controls.enabled = !walking && !(this.rightShiftHeld && freeFlight);
-      if (!walking) {
+      this.controls.enabled = !flying && !(this.rightShiftHeld && freeFlight);
+      if (!flying) {
         if (!freeFlight && this.controls.target.lengthSq() > 0) {
           this.controls.target.set(0, 0, 0);
         }
@@ -1804,33 +1829,29 @@ export class UnifiedViewer {
           this.stopRideOut();
         } else {
           this.pendingWheelFactor *= 10 ** (this.rideOutRate * dtSeconds);
-          // From a standstill on the ground the first push must clear
-          // the walker's liftoff threshold whatever the frame rate.
-          if (walking && this.walker.phase === 'walking') {
+          // From a standstill near the ground the first push must clear
+          // the flight camera's exit threshold whatever the frame rate.
+          if (flying) {
             this.pendingWheelFactor = Math.max(this.pendingWheelFactor, 1.03);
           }
         }
       }
-      if (walking) {
-        if (this.pendingWheelFactor > 1.02 && this.walker.phase === 'walking') {
-          this.walker.beginLiftoff(this.minAltitudeKm * 1000);
+      if (flying) {
+        if (this.pendingWheelFactor > 1.02) {
+          // One notch out hands the camera back to the wheel ride,
+          // which resumes from wherever the flight left it.
+          this.flight.stop();
           if (document.pointerLockElement) document.exitPointerLock();
         }
-        this.walker.update(dtSeconds, this.camera.position, this.headingRad);
+        this.flight.update(dtSeconds, this.camera.position, this.headingRad, this.pitchRad);
         up = this.camera.position.clone().normalize();
-        const walkedKm = this.field
+        const flownKm = this.field
           ? Math.max(this.field.heightAt(up), this.field.waterLevelAt(up)) / 1000
           : 0;
         this.altitudeKm = Math.max(
-          this.camera.position.length() - (this.radiusKm + Math.max(walkedKm, floorKm)),
+          this.camera.position.length() - (this.radiusKm + Math.max(flownKm, floorKm)),
           0.0008,
         );
-        // A jump that beat the body's gravity: hand the camera back to
-        // the orbit regime instead of coasting upward forever.
-        if (this.walker.rising && this.altitudeKm > this.minAltitudeKm * 3) {
-          this.walker.abort();
-          if (document.pointerLockElement) document.exitPointerLock();
-        }
       } else if (anchor.lengthSq() < 1) {
         const freeAltitudeKm = Math.max(
           this.camera.position.length() - surfaceKm,
@@ -1842,15 +1863,15 @@ export class UnifiedViewer {
         );
         this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
         // The wheel's floor is where the ground begins: one more notch
-        // in starts the landing glide, anywhere the water is wadable.
+        // in hands the camera over to free flight, anywhere at all —
+        // open ocean included, since a camera doesn't wade.
         if (
           this.field &&
           this.pendingWheelFactor < 0.999 &&
-          freeAltitudeKm <= this.minAltitudeKm * 1.001 &&
-          waterM - terrainM <= MAX_WADE_M
+          freeAltitudeKm <= this.minAltitudeKm * 1.001
         ) {
-          const surface = this.walkSurface();
-          if (surface) this.walker.beginLanding(surface);
+          const surface = this.flightSurface();
+          if (surface) this.flight.begin(surface);
         }
       } else {
         if (this.pendingWheelFactor !== 1) {
@@ -1889,9 +1910,9 @@ export class UnifiedViewer {
         // blending orientations (not look-at vectors) keeps the roll
         // continuous through the transition — a radial-up look-at near
         // nadir would snap screen-up from north to the heading, which
-        // reads as the whole surface suddenly rotating. On foot the
+        // reads as the whole surface suddenly rotating. In flight the
         // pitch is literal, so looking near-vertical works.
-        const forward = walking
+        const forward = flying
           ? heading.multiplyScalar(Math.cos(this.pitchRad)).addScaledVector(up, Math.sin(this.pitchRad))
           : heading.addScaledVector(up, -0.12 + Math.sin(this.pitchRad));
         forward.normalize();
@@ -1908,10 +1929,10 @@ export class UnifiedViewer {
       // Near tracks altitude (nothing sits closer than the ground below,
       // and at interstellar heights the nearest star is parsecs away);
       // far always reaches the neighborhood — every object is at its
-      // true position, so occlusion is plain depth testing. On foot the
-      // floor drops to centimeters; mid-distance depth precision costs
-      // are accepted until the S2 precision hardening.
-      this.camera.near = walking
+      // true position, so occlusion is plain depth testing. In ground
+      // flight the floor drops to centimeters; mid-distance depth
+      // precision costs are accepted until the S2 precision hardening.
+      this.camera.near = flying
         ? Math.max(0.00006, this.altitudeKm * 0.1)
         : Math.max(0.006, Math.min(2000, this.altitudeKm * 0.15), this.altitudeKm * 1e-4);
       this.camera.far = Math.max(
@@ -1945,7 +1966,7 @@ export class UnifiedViewer {
 
       this.updateWorld(up);
       this.updateHover();
-      this.updateWalkHint(waterM - terrainM);
+      this.updateWalkHint();
 
       if (this.backdrop) {
         this.backdrop.group.position.copy(this.camera.position);
@@ -1968,8 +1989,11 @@ export class UnifiedViewer {
         );
       }
       this.chunkManager?.update(this.camera.position, groundKm);
-      // The diagrammatic orbit overlay appears at map heights.
-      this.overlay.visible = this.altitudeKm > this.radiusKm * 25;
+      // The diagrammatic orbit overlay appears at map heights — capped
+      // by the system extent, since 25 radii of a giant star can lie
+      // beyond its own planets and the map would never surface.
+      this.overlay.visible =
+        this.altitudeKm > Math.min(this.radiusKm * 25, this.extentKm * 0.5);
       this.stellarOrbits.visible = this.overlay.visible;
     }
 
@@ -1988,8 +2012,8 @@ export class UnifiedViewer {
     // Ground-fixed frame: the heliocentric world (stars, planets, belts,
     // sky) sweeps around a spinning solid focus; envelopes spin their
     // cloud bands instead (mesh rotation inside PlanetObject).
-    const spinPeriodHours =
-      this.focusAsteroid?.spinPeriodHours ?? this.focusPlanet?.physical.rotation.periodHours;
+    const focusBody = this.focusMoon?.physical ?? this.focusPlanet?.physical;
+    const spinPeriodHours = this.focusAsteroid?.spinPeriodHours ?? focusBody?.rotation.periodHours;
     // Negative: the body rotates prograde — the same sense it revolves,
     // and the same sense the envelope planets spin their bands — so the
     // solar day runs longer than the sidereal day and moons lag the
@@ -1999,7 +2023,7 @@ export class UnifiedViewer {
     // Terrain worlds put their spin axis on world Y, so their axial tilt
     // lives in the frame: the ecliptic leans by the obliquity. Envelope
     // focuses tilt the body instead (inside PlanetObject).
-    const tilt = solid && this.focusPlanet ? this.focusPlanet.physical.rotation.obliquityRad : 0;
+    const tilt = solid && focusBody ? focusBody.rotation.obliquityRad : 0;
     this.frameQuat
       .setFromAxisAngle(yAxis, spin)
       .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), tilt));
@@ -2075,7 +2099,8 @@ export class UnifiedViewer {
     const node2Dir = new Vector3();
     for (let i = 0; i < this.planetNodes.length; i++) {
       const node = this.planetNodes[i];
-      const isFocus = this.focus === i;
+      const isFocus =
+        this.focus === i || (this.focusMoon !== null && node.planet === this.focusPlanet);
       node.object.group.visible = !isFocus;
       node.marker.visible = false;
       if (isFocus) continue;
@@ -2137,38 +2162,130 @@ export class UnifiedViewer {
     // content spins without the ecliptic's obliquity lean — so moons
     // rise and set over a fixed landscape like everything else in the
     // sky, lagging the stars by their own orbital rate.
-    if (this.moonGroup) this.moonGroup.rotation.y = spin;
-    const planetCaster = { position: new Vector3(0, 0, 0), radius: this.radiusKm };
+    // With a moon focused, the whole moon system — parent planet
+    // included — shifts by the focus moon's planet-centric position, so
+    // the focus sits at the origin and everything else keeps its true
+    // geometry. A tidally locked moon then holds its parent fixed in
+    // the sky by construction.
+    const focusEntry = this.focusMoon
+      ? this.moons.find((entry) => entry.moon === this.focusMoon)
+      : undefined;
+    const groupShift = new Vector3();
+    if (focusEntry) {
+      const state = elementsToState(focusEntry.moon.elements, focusEntry.mu, tSeconds);
+      groupShift.copy(toWorld(state.position)).divideScalar(1000).negate().applyAxisAngle(yAxis, spin);
+    }
+    if (this.moonGroup) {
+      this.moonGroup.rotation.y = spin;
+      this.moonGroup.position.copy(groupShift);
+    }
+    const parentIndex = this.planetNodes.findIndex((node) => node.planet === this.focusPlanet);
+    const parentRadiusKm = this.focusPlanet
+      ? this.focusPlanet.physical.bulk.radiusEarth * EARTH_RADIUS_KM
+      : 0;
+    const casters = focusEntry
+      ? [
+          { position: groupShift, radius: parentRadiusKm },
+          { position: new Vector3(0, 0, 0), radius: this.radiusKm },
+        ]
+      : [{ position: new Vector3(0, 0, 0), radius: this.radiusKm }];
+    const shineBodies: ShineBody[] = [];
+    if (this.parentObject && this.focusPlanet) {
+      this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
+      shineBodies.push({
+        positionKm: groupShift.clone(),
+        radiusKm: parentRadiusKm,
+        bondAlbedo: this.focusPlanet.physical.climate.bondAlbedo,
+        tint: shineTint(this.focusPlanet.physical.appearance),
+      });
+      this.occluders.push({ x: groupShift.x, y: groupShift.y, z: groupShift.z, rKm: parentRadiusKm });
+      this.pickables.push({
+        x: groupShift.x,
+        y: groupShift.y,
+        z: groupShift.z,
+        name: this.focusPlanet.name,
+        info: `parent planet · ${fmt(parentRadiusKm)} km`,
+        action: 'click to visit',
+        target: { kind: 'planet', index: parentIndex },
+      });
+    }
     const moonWorld = new Vector3();
-    for (const { moon, object, marker, mu } of this.moons) {
+    for (let j = 0; j < this.moons.length; j++) {
+      const { moon, object, marker, mu } = this.moons[j];
+      const isFocusMoon = moon === this.focusMoon;
+      object.group.visible = !isFocusMoon;
+      if (isFocusMoon) {
+        marker.visible = false;
+        continue;
+      }
       const state = elementsToState(moon.elements, mu, tSeconds);
       object.group.position.copy(toWorld(state.position)).divideScalar(1000);
-      moonWorld.copy(object.group.position).applyAxisAngle(yAxis, spin);
+      moonWorld.copy(object.group.position).applyAxisAngle(yAxis, spin).add(groupShift);
       object.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
-      object.setOccluders([planetCaster], angularRadius);
+      object.setOccluders(casters, angularRadius);
 
       const cameraDistance = this.camera.position.distanceTo(moonWorld);
       const moonRadiusKm = moon.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
       marker.visible = moonRadiusKm / cameraDistance < 0.004;
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
       this.occluders.push({ x: moonWorld.x, y: moonWorld.y, z: moonWorld.z, rKm: moonRadiusKm });
+      shineBodies.push({
+        positionKm: moonWorld.clone(),
+        radiusKm: moonRadiusKm,
+        bondAlbedo: moon.physical.climate.bondAlbedo,
+        tint: shineTint(moon.physical.appearance),
+      });
       this.pickables.push({
         x: moonWorld.x,
         y: moonWorld.y,
         z: moonWorld.z,
         name: moon.name,
         info: `moon · ${fmt(moonRadiusKm)} km${moon.tidalState !== 'dead' ? ` · ${moon.tidalState}` : ''}`,
-        action: null,
-        target: null,
+        action: parentIndex >= 0 ? 'click to visit' : null,
+        target: parentIndex >= 0 ? { kind: 'moon', planet: parentIndex, index: j } : null,
       });
     }
 
-    if (!this.focusPlanet) {
+    if (!focusBody) {
       this.setSkyIntensity(1);
       return;
     }
-    const { atmosphere } = this.focusPlanet.physical;
+    const { atmosphere } = focusBody;
     const sunElevation = Math.max(0, sunDir.dot(up));
+
+    // Reflected light joins the night: the brightest sunlit companion
+    // body — a moon over its planet, the parent planet over its moon —
+    // becomes the surface's second light. The flux ratio is physical
+    // (a full Moon delivers ~2e-6 of sunlight); what the display adds
+    // is a scotopic lift (ratio^0.2) fading in as the sun sets —
+    // disclosed eye adaptation, not extra photons — so moonlight
+    // shapes the night and vanishes into daylight as it should. The
+    // exponent is calibrated so a bright gibbous renders near a tenth
+    // of a day exposure — the brightness a dark-adapted eye reports.
+    const nightness = 1 - Math.min(1, sunElevation / 0.03);
+    let surf2Dir = light2Dir;
+    let surf2Color = light2Color;
+    let bestLum = surf2Color
+      ? surf2Color[0] * 0.2126 + surf2Color[1] * 0.7152 + surf2Color[2] * 0.0722
+      : 0;
+    const sunAtBody = new Vector3();
+    for (const body of shineBodies) {
+      sunAtBody.copy(hostWorld).sub(body.positionKm).normalize();
+      const ratio = reflectedFluxRatio(body, sunAtBody);
+      if (ratio <= 0) continue;
+      const scale = ratio + (ratio ** 0.2 - ratio) * nightness;
+      const color: [number, number, number] = [
+        lightColor[0] * body.tint[0] * scale,
+        lightColor[1] * body.tint[1] * scale,
+        lightColor[2] * body.tint[2] * scale,
+      ];
+      const lum = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
+      if (lum > bestLum) {
+        bestLum = lum;
+        surf2Dir = body.positionKm.clone().normalize();
+        surf2Color = color;
+      }
+    }
     const scaleHeightKm = Math.max(atmosphere.scaleHeightKm, 3);
     const immersion = Math.exp(-this.altitudeKm / (8 * scaleHeightKm));
     const density =
@@ -2192,28 +2309,28 @@ export class UnifiedViewer {
       const material = this.atmosphereShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
     }
     if (this.cloudShell) {
       const material = this.cloudShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
       material.uniforms.uTimeDays.value = this.simTimeDays;
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
     }
     if (this.ringMesh) {
       const material = this.ringMesh.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
-      applyOccluders(material, [planetCaster], angularRadius);
+      applySecondSun(material, surf2Dir, surf2Color);
+      applyOccluders(material, casters, angularRadius);
     }
 
     for (const material of [this.terrainMaterial, this.scatterMaterial, this.oceanMaterial]) {
       if (!material) continue;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
       material.uniforms.uFogColor.value.copy(fog);
       material.uniforms.uFogDensity.value = density;
     }
@@ -2224,7 +2341,7 @@ export class UnifiedViewer {
       material.uniforms.uSunDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uUp.value = [up.x, up.y, up.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, surf2Dir, surf2Color);
       // Sky radiance tracks optical depth: thin atmospheres barely glow.
       material.uniforms.uStrength.value =
         Math.exp(-this.altitudeKm / (10 * scaleHeightKm)) *

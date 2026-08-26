@@ -61,10 +61,14 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
 
   const craterRetention = tectonics === 'dead' ? 1 : tectonics === 'stagnant' ? 0.35 : 0.05;
 
+  const radiusM = bulk.radiusEarth * EARTH_RADIUS;
   return {
     seedHex,
-    radiusM: bulk.radiusEarth * EARTH_RADIUS,
-    reliefM: Math.min(26000, Math.max(900, 5500 * gravityRatio ** 0.7)),
+    radiusM,
+    // Crust strength sets relief against gravity, but never more than a
+    // few percent of the body: beyond that it's shape, not terrain
+    // (Moon 0.5% R, Mars 0.9% R, Vesta ~8% R at the small-body limit).
+    reliefM: Math.min(26000, radiusM * 0.08, Math.max(900, 5500 * gravityRatio ** 0.7)),
     oceanCoverage: climate.hydrosphere === 'oceans' ? climate.oceanCoverage : 0,
     tectonics,
     craterAmplitude: craterRetention * (1 - erosion * 0.85),

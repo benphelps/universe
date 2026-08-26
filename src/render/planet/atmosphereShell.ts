@@ -32,7 +32,10 @@ void main() {
   float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.2);
   // Scattering needs sunlight: fade across the terminator, tint by the star.
   float day = clamp(dot(normal, uLightDir) * 0.8 + 0.25, 0.0, 1.0);
-  float day2 = clamp(dot(normal, uLight2Dir) * 0.8 + 0.25, 0.0, 1.0);
+  // The second light keeps only a sliver of wrap: it is often a
+  // display-lifted moon, and the sun's twilight floor would wash the
+  // whole night sky with it from inside the shell.
+  float day2 = clamp(dot(normal, uLight2Dir) * 0.9 + 0.05, 0.0, 1.0);
   gl_FragColor = vec4(uColor * (uLightColor * day + uLight2Color * day2) * fresnel * uStrength, 1.0);
 }
 `;

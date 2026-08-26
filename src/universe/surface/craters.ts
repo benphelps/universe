@@ -20,6 +20,8 @@ const BANDS: CraterBand[] = [
 interface Crater {
   center: Vec3;
   angularRadius: number;
+  /** Degradation state: 1 = fresh bowl, →0 = gardened nearly flat. */
+  depthScale: number;
 }
 
 /**
@@ -60,15 +62,22 @@ export function createCraterField(
     const craters: Crater[] = [];
     const count = Math.floor(unit(0) * (spec.countScale * amplitude * 2.2 + 0.5));
     for (let i = 0; i < count; i++) {
-      const px = (cx + unit(1 + i * 4)) * spec.cellSize;
-      const py = (cy + unit(2 + i * 4)) * spec.cellSize;
-      const pz = (cz + unit(3 + i * 4)) * spec.cellSize;
+      const px = (cx + unit(1 + i * 5)) * spec.cellSize;
+      const py = (cy + unit(2 + i * 5)) * spec.cellSize;
+      const pz = (cz + unit(3 + i * 5)) * spec.cellSize;
       const length = Math.hypot(px, py, pz);
       if (length < 0.55 || length > 1.45) continue;
+      // Populations skew degraded: later impacts garden earlier bowls
+      // toward flat, and only saturated (old, high-amplitude) surfaces
+      // have accumulated that history. Summing every crater at fresh
+      // depth runs saturated highlands ~3× steeper than the
+      // repose-limited real thing.
+      const preservation = unit(5 + i * 5) ** (0.5 + 3 * amplitude);
       craters.push({
         center: { x: px / length, y: py / length, z: pz / length },
         angularRadius:
-          spec.minRadius * (spec.maxRadius / spec.minRadius) ** unit(4 + i * 4) ** 2,
+          spec.minRadius * (spec.maxRadius / spec.minRadius) ** unit(4 + i * 5) ** 2,
+        depthScale: 0.2 + 0.8 * preservation,
       });
     }
     cache.set(key, craters);
@@ -129,7 +138,7 @@ export function createCraterField(
         const theta = Math.hypot(chordX, chordY, chordZ);
         const x = theta / crater.angularRadius;
         if (x >= 1.6) continue;
-        height += craterProfile(x, crater.angularRadius, radiusM) * fade;
+        height += craterProfile(x, crater.angularRadius, radiusM) * fade * crater.depthScale;
       }
     }
     return height;

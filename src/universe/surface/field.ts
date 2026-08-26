@@ -116,17 +116,58 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   // 0.3% plains of a smooth one). Structure over size: the ridge blend
   // and the warps carry the character.
   const roughness = (1 - 0.72 * erosion) * (1 + 0.4 * params.craterAmplitude);
-  const detailBands: DetailBand[] = [
-    { frequency: 45, octaves: 3, amplitudeM: reliefM * 0.062 * roughness, ridge: 0.35 },
-    { frequency: 280, octaves: 3, amplitudeM: reliefM * 0.048 * roughness, ridge: 0.55 },
-    { frequency: 1700, octaves: 2, amplitudeM: reliefM * 0.022 * roughness, ridge: 0.6 },
-    { frequency: 9000, octaves: 2, amplitudeM: reliefM * 0.0065 * roughness, ridge: 0.6 },
-    { frequency: 45000, octaves: 2, amplitudeM: reliefM * 0.002 * roughness, ridge: 0.5 },
-    { frequency: 240000, octaves: 2, amplitudeM: reliefM * 0.0005 * roughness, ridge: 0.4 },
-    { frequency: 1300000, octaves: 2, amplitudeM: reliefM * 0.0001 * roughness, ridge: 0.25 },
-    { frequency: 7000000, octaves: 2, amplitudeM: reliefM * 0.000032 * roughness, ridge: 0.15 },
-    { frequency: 30000000, octaves: 1, amplitudeM: reliefM * 0.00001 * roughness, ridge: 0 },
+
+  // Mantling: every old surface is blanketed at short wavelengths by
+  // some diffusive resurfacing process — impact-gardened regolith on
+  // airless worlds, dust under thin atmospheres, tephra on volcanic
+  // ones, creep on ice — so fine-scale relief is a property of the
+  // mantle, not a fixed fraction of the mountain relief. Each band is
+  // capped at the grade its wavelength can hold: bedrock repose at
+  // long wavelengths, easing below the ~180 m gardening scale to the
+  // mantled grade. Only young unmantled surfaces (fresh volcanic
+  // flows, actively resurfacing airless crust) keep blocky fine
+  // texture. Without this, low-erosion worlds run 50–5000% median
+  // slopes at a 5 m step; the Moon's real figure is under 10%.
+  const freshness = Math.min(
+    1,
+    volcanism * 0.5 + (erosion < 0.2 && params.craterAmplitude < 0.15 ? 0.5 : 0),
+  );
+  const mantledSlope = 0.1 + 0.35 * freshness;
+  // Gyr of impact gardening relaxes relief out to basin scales — the
+  // Moon's megaregolith runs kilometers deep, and highland slopes at
+  // km baselines are 10–15%, not bedrock grades; barely-cratered young
+  // surfaces are only softened at the outcrop scale. Even the long
+  // wavelengths a gardened world keeps stand at degraded-front grades,
+  // not fresh repose.
+  const gardening = params.craterAmplitude * (1 - freshness);
+  const bedrockSlope = 0.6 - 0.32 * gardening;
+  const mantleWavelengthM = 200 + 20000 * gardening;
+  // The cap is on delivered grade, so the ridge transform's gradient
+  // gain (1+ridge) and the extra slope of a band's internal octaves
+  // divide out of the allowed amplitude.
+  const bandCapM = (frequency: number, octaves: number, ridge: number): number => {
+    const wavelengthM = (2 * Math.PI * params.radiusM) / frequency;
+    const bedrock = wavelengthM ** 2 / (wavelengthM ** 2 + mantleWavelengthM ** 2);
+    const capSlope = mantledSlope + (bedrockSlope - mantledSlope) * bedrock;
+    return (capSlope * params.radiusM) / (frequency * (1 + ridge) * Math.sqrt(octaves));
+  };
+  const bandSpec: [frequency: number, octaves: number, coeff: number, ridge: number][] = [
+    [45, 3, 0.062, 0.35],
+    [280, 3, 0.048, 0.55],
+    [1700, 2, 0.022, 0.6],
+    [9000, 2, 0.0065, 0.6],
+    [45000, 2, 0.002, 0.5],
+    [240000, 2, 0.0005, 0.4],
+    [1300000, 2, 0.0001, 0.25],
+    [7000000, 2, 0.000032, 0.15],
+    [30000000, 1, 0.00001, 0],
   ];
+  const detailBands: DetailBand[] = bandSpec.map(([frequency, octaves, coeff, ridge]) => ({
+    frequency,
+    octaves,
+    amplitudeM: Math.min(reliefM * coeff * roughness, bandCapM(frequency, octaves, ridge)),
+    ridge,
+  }));
   const FINE_BAND = 5;
 
   // Null while the structural surface is solved and sampled: the sea

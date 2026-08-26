@@ -18,6 +18,8 @@ const viewElement = document.getElementById('view')!;
 let viewMode: ViewMode = 'star';
 let seedHex = '';
 let planetIndex = 0;
+/** −1 = the planet itself; otherwise which of its moons is focused. */
+let moonIndex = -1;
 let companionIndex = 0;
 let viewer: UnifiedViewer | null = null;
 let system: StarSystem | null = null;
@@ -47,13 +49,28 @@ let localePc: GalacticPosition | undefined;
 
 function stepBody(delta: number): void {
   planetIndex += delta;
+  moonIndex = -1;
   load(seedHex);
 }
 
 function selectPlanet(index: number, host = companionIndex): void {
   viewMode = 'planet';
   planetIndex = index;
+  moonIndex = -1;
   companionIndex = host;
+  load(seedHex);
+}
+
+function selectMoon(planet: number, moon: number): void {
+  viewMode = 'planet';
+  planetIndex = planet;
+  moonIndex = moon;
+  load(seedHex);
+}
+
+/** The moon plate's stepper walks the parent's moons, wrapping. */
+function stepMoon(delta: number): void {
+  moonIndex += delta;
   load(seedHex);
 }
 
@@ -70,15 +87,23 @@ function selectStar(index: number): void {
  * stepping bodies, or travelling to a neighbor star) never rebuilds
  * the renderer. Travel to a catalog star carries its true galactic
  * position, so the destination is built where the star actually is;
- * bare seeds settle at their seed-derived locale.
+ * bare seeds settle at their seed-derived locale. The locale is part
+ * of the system's identity: reloads of the same seed (tab switches,
+ * body steps) must keep it, or the same hex regenerates as a
+ * different star somewhere else.
  */
 function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
-  seedHex = seedToHex(seedFromHex(nextSeedHex));
-  localePc = nextLocalePc && {
-    xPc: Number(nextLocalePc.xPc.toFixed(4)),
-    yPc: Number(nextLocalePc.yPc.toFixed(4)),
-    zPc: Number(nextLocalePc.zPc.toFixed(4)),
-  };
+  const normalized = seedToHex(seedFromHex(nextSeedHex));
+  localePc = nextLocalePc
+    ? {
+        xPc: Number(nextLocalePc.xPc.toFixed(4)),
+        yPc: Number(nextLocalePc.yPc.toFixed(4)),
+        zPc: Number(nextLocalePc.zPc.toFixed(4)),
+      }
+    : normalized === seedHex
+      ? localePc
+      : undefined;
+  seedHex = normalized;
   const seed = seedFromHex(seedHex);
 
   if (!viewer) {
@@ -96,6 +121,8 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
       if (!viewer || !system) return;
       if (target.kind === 'planet') {
         selectPlanet(target.index);
+      } else if (target.kind === 'moon') {
+        selectMoon(target.planet, target.index);
       } else if (target.kind === 'notable') {
         selectPlanet(system.planets.length + target.index);
       } else if (target.kind === 'star') {
@@ -143,10 +170,21 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
       planetPanel.renderEmpty(hostStar);
     } else {
       planetIndex = ((planetIndex % count) + count) % count;
-      viewer.setFocus(planetIndex, 'planet');
-      if (planetIndex < hostPlanets.length) {
-        planetPanel.render(hostStar, hostPlanets, hostPlanets[planetIndex], planetIndex, stepBody);
+      const moons = planetIndex < hostPlanets.length ? hostPlanets[planetIndex].moons : [];
+      if (moonIndex >= 0 && moons.length > 0) {
+        moonIndex = ((moonIndex % moons.length) + moons.length) % moons.length;
+        viewer.setFocus({ planet: planetIndex, moon: moonIndex }, 'planet');
+        planetPanel.renderMoon(hostStar, hostPlanets[planetIndex], planetIndex, moonIndex, stepMoon, () =>
+          selectPlanet(planetIndex),
+        );
+      } else if (planetIndex < hostPlanets.length) {
+        moonIndex = -1;
+        viewer.setFocus(planetIndex, 'planet');
+        planetPanel.render(hostStar, hostPlanets, hostPlanets[planetIndex], planetIndex, stepBody, (moon) =>
+          selectMoon(planetIndex, moon),
+        );
       } else {
+        viewer.setFocus(planetIndex, 'planet');
         const ordinal = planetIndex - hostPlanets.length;
         planetPanel.renderAsteroid(
           system,
@@ -174,6 +212,11 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     url.searchParams.set('planet', String(planetIndex));
   } else {
     url.searchParams.delete('planet');
+  }
+  if (viewMode === 'planet' && moonIndex >= 0) {
+    url.searchParams.set('moon', String(moonIndex));
+  } else {
+    url.searchParams.delete('moon');
   }
   if (companionIndex > 0) {
     url.searchParams.set('companion', String(companionIndex));
@@ -227,6 +270,7 @@ viewMode =
       ? 'planet'
       : 'star';
 planetIndex = Number(params.get('planet') ?? 0) || 0;
+moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
 companionIndex = Number(params.get('companion') ?? 0) || 0;
 load(params.get('seed') ?? randomSeedHex(), parseLocale(params.get('at')));
 
