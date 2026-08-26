@@ -16,9 +16,10 @@ import type { TerrainInit, TerrainRequest, TerrainResponse } from '../../workers
 import { createRockGeometry, createShrubGeometry } from './scatterObjects';
 import { buildChunkIndices } from './terrainMaterial';
 
-const RES = 48;
-/** Level 22 tiles are ~2.7 m across at Earth radius: ~6 cm vertex
- *  spacing, the walking regime's geometric detail floor. */
+/** Vertices per tile edge: the detail-resolution knob. 64 puts the
+ *  walking floor at ~4 cm spacing and sharpens every LOD ring. */
+const RES = 64;
+/** Level 22 tiles are ~2.7 m across at Earth radius. */
 const MAX_LEVEL = 22;
 /** Never show tiles coarser than this within the horizon: they are pinned,
  *  so the whole-planet base layer builds once per visit. */
@@ -26,7 +27,9 @@ const MIN_LEVEL = 3;
 /** Split when tile size exceeds this fraction of its distance. The
  *  terrain material's geomorph is calibrated against the same ratio. */
 export const SPLIT_RATIO = 0.45;
-const MAX_CHUNKS = 2400;
+/** Denser tiles cost more each: the cap keeps worst-case GPU memory
+ *  in the same envelope it had at the old resolution. */
+const MAX_CHUNKS = 2000;
 const MAX_IN_FLIGHT = 24;
 /** Levels this coarse are never evicted: they cover zoom-out instantly. */
 const PINNED_LEVEL = 3;

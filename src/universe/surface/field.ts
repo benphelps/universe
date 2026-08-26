@@ -110,17 +110,22 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   // tuned for orbital smoothness starves exactly that band. Erosion
   // damps it all; cratered dead worlds stay rugged. Bands from
   // FINE_BAND down are walked-scale texture and take the substrate.
+  // Amplitudes sit at Earth-reference relief per wavelength (a steppe
+  // reads ~1 m over 30 m, ~15 m over 800 m, ~50 m over 4 km — not the
+  // crumpled exaggeration of a raised spectrum, and not the starved
+  // 0.3% plains of a smooth one). Structure over size: the ridge blend
+  // and the warps carry the character.
   const roughness = (1 - 0.72 * erosion) * (1 + 0.4 * params.craterAmplitude);
   const detailBands: DetailBand[] = [
-    { frequency: 45, octaves: 3, amplitudeM: reliefM * 0.07 * roughness, ridge: 0.35 },
-    { frequency: 280, octaves: 3, amplitudeM: reliefM * 0.065 * roughness, ridge: 0.55 },
-    { frequency: 1700, octaves: 2, amplitudeM: reliefM * 0.032 * roughness, ridge: 0.6 },
-    { frequency: 9000, octaves: 2, amplitudeM: reliefM * 0.012 * roughness, ridge: 0.6 },
-    { frequency: 45000, octaves: 2, amplitudeM: reliefM * 0.0038 * roughness, ridge: 0.5 },
-    { frequency: 240000, octaves: 2, amplitudeM: reliefM * 0.0011 * roughness, ridge: 0.4 },
-    { frequency: 1300000, octaves: 2, amplitudeM: reliefM * 0.00028 * roughness, ridge: 0.25 },
-    { frequency: 7000000, octaves: 2, amplitudeM: reliefM * 0.00007 * roughness, ridge: 0.15 },
-    { frequency: 30000000, octaves: 1, amplitudeM: reliefM * 0.00002 * roughness, ridge: 0 },
+    { frequency: 45, octaves: 3, amplitudeM: reliefM * 0.062 * roughness, ridge: 0.35 },
+    { frequency: 280, octaves: 3, amplitudeM: reliefM * 0.048 * roughness, ridge: 0.55 },
+    { frequency: 1700, octaves: 2, amplitudeM: reliefM * 0.022 * roughness, ridge: 0.6 },
+    { frequency: 9000, octaves: 2, amplitudeM: reliefM * 0.0065 * roughness, ridge: 0.6 },
+    { frequency: 45000, octaves: 2, amplitudeM: reliefM * 0.002 * roughness, ridge: 0.5 },
+    { frequency: 240000, octaves: 2, amplitudeM: reliefM * 0.0005 * roughness, ridge: 0.4 },
+    { frequency: 1300000, octaves: 2, amplitudeM: reliefM * 0.0001 * roughness, ridge: 0.25 },
+    { frequency: 7000000, octaves: 2, amplitudeM: reliefM * 0.000032 * roughness, ridge: 0.15 },
+    { frequency: 30000000, octaves: 1, amplitudeM: reliefM * 0.00001 * roughness, ridge: 0 },
   ];
   const FINE_BAND = 5;
 

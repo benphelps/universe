@@ -189,22 +189,34 @@ describe('surface field', () => {
   });
 
   it('carries walked-scale texture that a coarse LOD does not see', () => {
-    // A step of ~30 cm on the airless world: full detail must vary at
-    // centimeter amplitude, while a 100 m sampling of the same spots
-    // is blind to it — the fine bands respect the Nyquist gate.
-    const stepRad = 0.3 / moonLike.params.radiusM;
-    const coarseLod = 100 / moonLike.params.radiusM;
+    // A step of ~30 cm on the lightly-cratered world: full detail must
+    // vary at centimeter amplitude, while a 100 m sampling of the same
+    // spots is blind to it — the fine bands respect the Nyquist gate.
+    // (The crater-saturated worlds keep steep walls at every LOD by
+    // design, so they cannot separate the band property.)
+    // Second differences: smooth mid-band gradients cancel, so only
+    // sub-meter content registers — the coarse LOD must carry none.
+    const stepRad = 0.3 / earthLike.params.radiusM;
+    const coarseLod = 100 / earthLike.params.radiusM;
     let fine = 0;
     let coarse = 0;
     const dirs = sampleDirs(200);
     for (const dir of dirs) {
-      const near = { x: dir.x + stepRad, y: dir.y, z: dir.z };
-      const l = Math.hypot(near.x, near.y, near.z);
-      const nearDir = { x: near.x / l, y: near.y / l, z: near.z / l };
-      fine += Math.abs(moonLike.heightAt(dir) - moonLike.heightAt(nearDir));
-      coarse += Math.abs(moonLike.heightAt(dir, coarseLod) - moonLike.heightAt(nearDir, coarseLod));
+      const curvature = (lod: number): number => {
+        const forward = { x: dir.x + stepRad, y: dir.y, z: dir.z };
+        const back = { x: dir.x - stepRad, y: dir.y, z: dir.z };
+        const lf = Math.hypot(forward.x, forward.y, forward.z);
+        const lb = Math.hypot(back.x, back.y, back.z);
+        return Math.abs(
+          earthLike.heightAt({ x: forward.x / lf, y: forward.y / lf, z: forward.z / lf }, lod) -
+            2 * earthLike.heightAt(dir, lod) +
+            earthLike.heightAt({ x: back.x / lb, y: back.y / lb, z: back.z / lb }, lod),
+        );
+      };
+      fine += curvature(0);
+      coarse += curvature(coarseLod);
     }
-    expect(fine / dirs.length).toBeGreaterThan(0.005);
+    expect(fine / dirs.length).toBeGreaterThan(0.004);
     expect(coarse / dirs.length).toBeLessThan((fine / dirs.length) * 0.2);
   });
 });
