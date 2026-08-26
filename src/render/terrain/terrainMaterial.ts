@@ -14,9 +14,14 @@ void main() {
   vColor = color;
   // Chunk meshes never rotate: attribute normals are world-frame already.
   vNormal = normal;
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPos = worldPos.xyz;
-  vec4 mvPosition = viewMatrix * worldPos;
+  // World position only feeds planet-frame noise directions: its f32
+  // rounding is a static sub-arcsecond error. The clip transform must
+  // run through modelViewMatrix — its translation is composed camera-
+  // relative on the CPU in f64. Materializing worldPos and applying
+  // viewMatrix on the GPU subtracts two planet-radius f32 values and
+  // makes the ground shake at eye height.
+  vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   vViewPos = mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
 }

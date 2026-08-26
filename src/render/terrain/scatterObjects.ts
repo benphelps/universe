@@ -20,8 +20,9 @@ void main() {
   #endif
   // Chunk-anchored groups never rotate: model rotation is identity.
   vNormal = normalize(n);
-  vec4 worldPos = modelMatrix * local;
-  vec4 mvPosition = viewMatrix * worldPos;
+  // Through modelViewMatrix (CPU-composed camera-relative in f64), never
+  // via a materialized f32 world position — see terrainMaterial.
+  vec4 mvPosition = modelViewMatrix * local;
   vViewPos = mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
 }

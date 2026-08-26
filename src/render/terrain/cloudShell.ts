@@ -10,9 +10,10 @@ varying vec3 vWorldPos;
 
 void main() {
   vObjPos = position;
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPos = worldPos.xyz;
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
+  // vWorldPos feeds directions only; clip runs through modelViewMatrix
+  // for f32 stability near the ground — see terrainMaterial.
+  vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+  gl_Position = projectionMatrix * (modelViewMatrix * vec4(position, 1.0));
 }
 `;
 
