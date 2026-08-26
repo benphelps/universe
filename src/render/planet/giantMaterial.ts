@@ -193,20 +193,46 @@ void main() {
       capEdge += 0.03 * cos(uPolar.z * lon * hemi + uTimeDays * uPolar.w);
     }
     float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(wlat));
-    surface = mix(surface, uHoodColor * (0.92 + 0.16 * fbm(p * 5.0 + uSeedOffset)), cap * 0.85);
-    cloudH = mix(cloudH, 0.55, cap * 0.7);
     if (cap > 0.01) {
       float colat = 1.5707963 - abs(lat);
+      // The cap keeps its weather: the deck shears into a polar
+      // spiral — azimuth advances with depth toward the pole — so the
+      // hood is streaked vortex cloud, not an airbrushed disc.
+      float spiralLon = lon * hemi + colat * 8.0 + uTimeDays * uPolar.w * 2.0;
+      vec3 sp = vec3(cos(spiralLon) * (0.3 + colat * 2.5), sin(spiralLon) * (0.3 + colat * 2.5),
+        2.0 * hemi);
+      float polarDeck = fbm(sp * 2.2 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5));
+      vec3 hood = uHoodColor * (1.0 + uContrast * (0.4 * polarDeck));
+      surface = mix(surface, hood, cap * 0.6);
+      cloudH = mix(cloudH, 0.5 + 0.3 * polarDeck, cap * 0.65);
+
+      // The cyclone cluster: small spiral-armed vortices ringing the
+      // central one, drifting slowly, dug into the deck — not dots.
       vec2 pp = vec2(colat * cos(lon), colat * sin(lon));
-      float vortices = exp(-dot(pp, pp) / 0.0018);
-      for (int i = 0; i < 9; i++) {
-        if (float(i) >= uPolar.y) break;
-        float a = 6.2831853 * float(i) / uPolar.y + uTimeDays * uPolar.w * 1.7 * hemi;
-        vec2 c = vec2(0.13 * cos(a), 0.13 * sin(a));
-        vortices += exp(-dot(pp - c, pp - c) / 0.0022);
+      float dug = 0.0;
+      float armsSum = 0.0;
+      for (int i = 0; i < 10; i++) {
+        if (float(i) > uPolar.y) break;
+        vec2 c = vec2(0.0);
+        float sizeInv = 1400.0;
+        if (i > 0) {
+          float a = 6.2831853 * float(i - 1) / uPolar.y + uTimeDays * uPolar.w * 1.7 * hemi;
+          c = vec2(0.1 * cos(a), 0.1 * sin(a));
+          sizeInv = 2400.0;
+        }
+        vec2 d = pp - c;
+        float rr = dot(d, d) * sizeInv;
+        if (rr > 7.0) continue;
+        float ang = atan(d.y, d.x);
+        float arms = 0.5 + 0.5 * sin(ang * 3.0 + float(i) * 2.7 + sqrt(rr) * 6.0
+          - uTimeDays * (2.2 + 0.3 * float(i)) * hemi);
+        float core = exp(-rr * 0.8);
+        dug += core;
+        armsSum += core * arms;
       }
-      surface = mix(surface, uHoodColor * 0.68, clamp(vortices, 0.0, 1.0) * cap * 0.85);
-      cloudHOut = cloudH - clamp(vortices, 0.0, 1.0) * cap * 0.3;
+      dug = clamp(dug, 0.0, 1.0);
+      surface = mix(surface, uHoodColor * (0.6 + 0.5 * clamp(armsSum, 0.0, 1.0)), dug * cap * 0.7);
+      cloudHOut = cloudH - dug * cap * 0.35 + clamp(armsSum, 0.0, 1.0) * cap * 0.15;
     } else {
       cloudHOut = cloudH;
     }
