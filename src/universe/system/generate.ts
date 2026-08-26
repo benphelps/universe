@@ -1,4 +1,3 @@
-import type { OrbitalElements } from '../../core/math/orbit';
 import { mu as muOf, type Mu } from '../../core/physics/units';
 import { AU, G, SOLAR_MASS, EARTH_MASS } from '../../core/physics/constants';
 import { rayleigh } from '../../core/rng/distributions';

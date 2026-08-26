@@ -2,15 +2,11 @@ import { Color, type ShaderMaterial, type Vector3 } from 'three';
 
 /**
  * The second sun: a close binary lights its worlds from two directions.
- * uLight2Color arrives premultiplied by the companion's flux ratio
- * against the primary and stays black when the contribution is
- * negligible, so single-star systems pay nothing.
+ * Shaders declare uLight2Dir/uLight2Color themselves; uLight2Color
+ * arrives premultiplied by the flux ratio against the shader's own
+ * host light and stays black when the contribution is negligible, so
+ * single-star systems pay nothing.
  */
-export const SECOND_SUN_GLSL = /* glsl */ `
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
-`;
-
 export function secondSunUniforms(): Record<string, { value: unknown }> {
   return {
     uLight2Dir: { value: [0, 0, 1] },
