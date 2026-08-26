@@ -19,7 +19,7 @@ import {
 } from './clouds';
 import { dustDensity, stellarDensity, type GalacticPosition } from './density';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
-import { starPhotometry } from './photometry';
+import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
 import { sectorNameForSeed, sectorSeedAt } from './regions';
 
@@ -224,7 +224,10 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
           const starSeed = seedForIdentity(massBits, ageBits, entropy);
           const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
           if (physical.luminosity <= 0) return;
-          pushTo(near, dx, dy, dz, physical.luminosity, physical.tEff, starSeed);
+          // Unresolved binaries glint with the pair's combined light.
+          const luminosity =
+            physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
+          pushTo(near, dx, dy, dz, luminosity, physical.tEff, starSeed);
           return;
         }
         if (d2 > skySq) return;
@@ -233,7 +236,9 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
         const starSeed = seedForIdentity(massBits, ageBits, entropy);
         const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
         if (physical.luminosity / d2 < MIN_FAR_IRRADIANCE) return;
-        pushTo(far, dx, dy, dz, physical.luminosity, physical.tEff, starSeed);
+        const luminosity =
+          physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
+        pushTo(far, dx, dy, dz, luminosity, physical.tEff, starSeed);
       },
     );
   }

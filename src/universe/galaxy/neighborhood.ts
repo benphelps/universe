@@ -3,7 +3,7 @@ import { seedToHex } from '../../core/rng/hash';
 import { starsNear } from './catalog';
 import type { GalacticPosition } from './density';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
-import { starPhotometry } from './photometry';
+import { companionLuminosity, starPhotometry } from './photometry';
 import { viewpointForSeed } from './sectors';
 
 /** Matches the sky field's near radius so 3D points hand off to the backdrop. */
@@ -62,7 +62,8 @@ export function computeNeighborhood(
     positions.push(...rotateToScene(orientation, dx, dy, dz));
     const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(physical.tEff) * 95)) * 4;
     colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
-    luminosities.push(physical.luminosity);
+    // Unresolved binaries glint with the pair's combined light.
+    luminosities.push(physical.luminosity + companionLuminosity(slot.seed, slot.positionPc));
     galactic.push(slot.positionPc.xPc, slot.positionPc.yPc, slot.positionPc.zPc);
     seedHexes.push(seedToHex(slot.seed));
     neighbors.push({

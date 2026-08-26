@@ -19,7 +19,7 @@ import {
   stellarDensityCeiling,
 } from './density';
 import { sceneFromGalaxy } from './orientation';
-import { starPhotometry } from './photometry';
+import { companionLuminosity, starPhotometry } from './photometry';
 import { galacticAddress, sectorName, sectorNameForSeed } from './regions';
 import { populationFromUnit, metallicityFor } from './population';
 import { viewpointForSeed } from './sectors';
@@ -358,7 +358,14 @@ describe('sky field', () => {
         yPc: HOME_POSITION.yPc + sky.starDirs[i * 3 + 1] * distance,
         zPc: HOME_POSITION.zPc + sky.starDirs[i * 3 + 2] * distance,
       });
-      const expected = physical.luminosity / (distance * distance);
+      const luminosity =
+        physical.luminosity +
+        companionLuminosity(starSeed, {
+          xPc: HOME_POSITION.xPc + sky.starDirs[i * 3] * distance,
+          yPc: HOME_POSITION.yPc + sky.starDirs[i * 3 + 1] * distance,
+          zPc: HOME_POSITION.zPc + sky.starDirs[i * 3 + 2] * distance,
+        });
+      const expected = luminosity / (distance * distance);
       expect(sky.starBrightness[i] / expected).toBeGreaterThan(0.999);
       expect(sky.starBrightness[i] / expected).toBeLessThan(1.001);
       expect(Math.abs(sky.starTeffs[i] - physical.tEff) / physical.tEff).toBeLessThan(1e-3);
