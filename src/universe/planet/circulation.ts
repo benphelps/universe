@@ -47,10 +47,14 @@ export interface ActiveStorm {
 }
 
 export interface PolarRegime {
-  /** Cap boundary latitude, radians. */
+  /** Cap boundary latitude, radians — the poleward-most strong jet. */
   capStartRad: number;
+  /** Total polar cyclones: 1 = a single merged vortex (Saturn-style),
+   *  more = a shielded polygon (Jupiter-style). */
   cycloneCount: number;
-  /** Standing polar-jet wavenumber (the hexagon analog); 0 = none. */
+  /** Standing polar-jet wavenumber (the hexagon analog), signed by the
+   *  hemisphere that carries it (+north/−south); 0 = none. Derived as
+   *  the stationary Rossby wavenumber of the cap jet. */
   hexWave: number;
   hoodColor: Rgb;
 }
@@ -125,12 +129,15 @@ export function deriveCirculation(
   );
 
   const spinFactor = Math.sqrt(24 / Math.max(rotation.periodHours, 4));
-  const polar: PolarRegime = {
-    capStartRad: (rng.range(62, 72) * Math.PI) / 180,
-    cycloneCount: Math.max(2, Math.min(9, Math.round(2 + 5 * spinFactor * rng.range(0.7, 1.3)))),
-    hexWave: rng.bool(0.18) ? 4 + rng.int(4) : 0,
-    hoodColor: palette.hood,
-  };
+  const polar = derivePolarRegime(
+    rng.fork('polar'),
+    uProfileMs,
+    radiusM,
+    omega,
+    convectiveMs,
+    spinFactor,
+    palette.hood,
+  );
 
   // Aurora wants a dynamo and a magnetosphere to feed it.
   const field = interior.magneticFieldRelEarth;
@@ -291,6 +298,83 @@ function invertWind(q: Float64Array, radiusM: number, omega: number): Float32Arr
     u[i] = uCos / Math.max(Math.cos(lat), 0.05);
   }
   return u;
+}
+
+/**
+ * The polar regime falls out of the spun-up jets. The cap snaps to the
+ * poleward-most strong jet; whether that jet meanders into a standing
+ * polygon (the hexagon analog) is its stationary Rossby wavenumber,
+ * m = R·cosφ·√(β_eff/u), with β steepened by the jet's own curvature —
+ * the classic estimate that yields six for Saturn's real numbers. And
+ * whether the pole holds a shielded polygon of cyclones or one merged
+ * vortex depends on both spin and convective forcing: fast vigorous
+ * planets keep Jupiter's crowd, fast quiet ones merge to Saturn's
+ * single eye, slow cold ones to a lone vortex.
+ */
+function derivePolarRegime(
+  rng: Rng,
+  u: Float32Array,
+  radiusM: number,
+  omega: number,
+  convectiveMs: number,
+  spinFactor: number,
+  hood: Rgb,
+): PolarRegime {
+  const dLat = Math.PI / (LAT_SAMPLES - 1);
+  const lo = (55 * Math.PI) / 180;
+  const hi = (80 * Math.PI) / 180;
+  // The strongest jet core in each hemisphere's cap-candidate belt.
+  let bestIndex = -1;
+  let bestHemi = 1;
+  for (let i = 1; i < LAT_SAMPLES - 1; i++) {
+    const lat = profileLatRad(i);
+    if (Math.abs(lat) < lo || Math.abs(lat) > hi) continue;
+    const extremum = (u[i] - u[i - 1]) * (u[i + 1] - u[i]) < 0;
+    if (!extremum) continue;
+    if (bestIndex < 0 || Math.abs(u[i]) > Math.abs(u[bestIndex])) {
+      bestIndex = i;
+      bestHemi = lat > 0 ? 1 : -1;
+    }
+  }
+
+  let capStartRad = (rng.range(62, 72) * Math.PI) / 180;
+  let hexWave = 0;
+  if (bestIndex >= 0) {
+    const lat = profileLatRad(bestIndex);
+    capStartRad = Math.abs(lat);
+    const jetMs = Math.abs(u[bestIndex]);
+    const dyM = radiusM * dLat;
+    const curvature = Math.abs(u[bestIndex + 1] - 2 * u[bestIndex] + u[bestIndex - 1]) / (dyM * dyM);
+    const beta = (2 * omega * Math.cos(lat)) / radiusM;
+    const wavenumber = Math.round(
+      radiusM * Math.cos(lat) * Math.sqrt((beta + curvature) / Math.max(jetMs, 5)),
+    );
+    // A standing wave needs an outlier jet — fast in absolute terms
+    // and standing far above the planet's typical winds (Saturn's
+    // hexagon jet outruns its neighbors several-fold). Ordinary cap
+    // jets just circle.
+    let sum = 0;
+    let weight = 0;
+    for (let i = 0; i < LAT_SAMPLES; i++) {
+      const w = Math.cos(profileLatRad(i));
+      sum += u[i] * u[i] * w;
+      weight += w;
+    }
+    const rmsMs = Math.sqrt(sum / weight);
+    if (jetMs > 35 && jetMs > 1.35 * rmsMs && wavenumber >= 3 && wavenumber <= 8) {
+      hexWave = wavenumber * bestHemi;
+    }
+  }
+
+  const stability = spinFactor * Math.min(1, convectiveMs / 20);
+  const cycloneCount =
+    stability > 1.15
+      ? Math.max(4, Math.min(9, Math.round(2 + 4.5 * stability * rng.range(0.85, 1.15))))
+      : stability > 0.75
+        ? 1 + rng.int(2)
+        : 1;
+
+  return { capStartRad, cycloneCount, hexWave, hoodColor: hood };
 }
 
 interface Palette {

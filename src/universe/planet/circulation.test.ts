@@ -139,6 +139,40 @@ describe('deriveCirculation', () => {
     ).toBeGreaterThan(0.3);
   });
 
+  it('poles split into polygons, single eyes, and lone vortices by spin and forcing', () => {
+    const jupiter = deriveCirculation(giant({ periodHours: 10, heatFluxWm2: 5.4 }));
+    const saturn = deriveCirculation(giant({ periodHours: 10.7, heatFluxWm2: 2.0 }));
+    const uranus = deriveCirculation(giant({ periodHours: 17, heatFluxWm2: 0.04 }));
+    expect(jupiter.polar.cycloneCount).toBeGreaterThanOrEqual(4);
+    expect(saturn.polar.cycloneCount).toBeLessThanOrEqual(2);
+    expect(uranus.polar.cycloneCount).toBe(1);
+  });
+
+  it('the hexagon analog is earned by its jet, not rolled', () => {
+    let hexagons = 0;
+    for (let i = 0; i < 30; i++) {
+      const c = deriveCirculation(giant({ seedHex: (i + 300).toString(16).padStart(16, '0') }));
+      const m = Math.abs(c.polar.hexWave);
+      expect(m === 0 || (m >= 3 && m <= 8)).toBe(true);
+      expect(c.polar.capStartRad).toBeGreaterThan(0.9);
+      expect(c.polar.capStartRad).toBeLessThan(1.45);
+      if (m === 0) continue;
+      hexagons++;
+      // Self-consistency: the wave rides a real jet — the wind at the
+      // cap latitude in the carrying hemisphere is strong.
+      const hemi = Math.sign(c.polar.hexWave);
+      let peak = 0;
+      for (let j = 0; j < c.uProfileMs.length; j++) {
+        const lat = profileLatRad(j);
+        if (Math.sign(lat) !== hemi) continue;
+        if (Math.abs(Math.abs(lat) - c.polar.capStartRad) > 0.04) continue;
+        peak = Math.max(peak, Math.abs(c.uProfileMs[j]));
+      }
+      expect(peak).toBeGreaterThan(18);
+    }
+    expect(hexagons).toBeGreaterThan(0);
+  });
+
   it('locked giants trade bands for a shifted hotspot', () => {
     const locked = deriveCirculation(giant({ locked: true, equilibriumK: 1400 }));
     expect(locked.regime).toBe('locked');

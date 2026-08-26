@@ -45,7 +45,7 @@ uniform vec4 uStorms[${MAX_ACTIVE_STORMS}]; // lat, lon, size, age
 uniform vec3 uStormFresh;
 uniform vec3 uStormAged;
 uniform float uBandFade[${MAX_BANDS}];
-uniform vec4 uPolar;                    // capStart, cycloneCount, hexWave, hemiDrift
+uniform vec4 uPolar;                    // capStart, ringCyclones, hexWave(signed), hemiDrift
 uniform vec3 uHoodColor;
 uniform vec4 uAurora;                   // strength, tiltRad, azimuthRad, ovalColat
 uniform float uContrast;
@@ -127,8 +127,10 @@ void main() {
     // the shear is.
     float hemi = sign(p.y + 1e-6);
     float capEdge = uPolar.x;
-    if (uPolar.z > 0.5) {
-      capEdge += 0.03 * cos(uPolar.z * lon * hemi + uTimeDays * uPolar.w);
+    // The hexagon analog belongs to one hemisphere: the jet that
+    // carries the standing wave.
+    if (uPolar.z * hemi > 0.5) {
+      capEdge += 0.03 * cos(abs(uPolar.z) * lon * hemi + uTimeDays * uPolar.w);
     }
     // Zonal anisotropy and stirring belong to the jets: both fade into
     // the caps, where the turbulence is isotropic (as Juno found).
@@ -449,7 +451,7 @@ export function createGiantMaterial(
       uPolar: {
         value: new Vector4(
           circulation.polar.capStartRad,
-          circulation.polar.cycloneCount,
+          circulation.polar.cycloneCount - 1,
           circulation.polar.hexWave,
           0.12,
         ),
