@@ -488,9 +488,12 @@ export class UnifiedViewer {
     };
     addStar(system.star);
     for (const companion of system.companions) {
-      if (companion.elements.semiMajorAxis / AU > this.extentAu * 3) continue;
+      // Every companion shines — a wide binary partner hangs in the sky
+      // as a brilliant glint; only its orbit line stays map-scaled.
       addStar(companion.star);
-      this.overlay.add(createOrbitLine(companion.elements, 0x8888aa, 0.25));
+      if (companion.elements.semiMajorAxis / AU <= this.extentAu * 3) {
+        this.overlay.add(createOrbitLine(companion.elements, 0x8888aa, 0.25));
+      }
     }
 
     // Photometric glints carry the stars once their discs fall subpixel
@@ -1673,7 +1676,9 @@ export class UnifiedViewer {
         node.object.group.position.z,
       );
       const star = i === 0 ? this.system.star : this.system.companions[i - 1]?.star;
-      if (star && this.focus !== 'star') {
+      // Companions identify themselves everywhere; the primary only when
+      // it isn't already the focus filling the screen.
+      if (star && (i > 0 || this.focus !== 'star')) {
         this.pickables.push({
           x: node.object.group.position.x,
           y: node.object.group.position.y,
