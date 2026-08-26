@@ -72,6 +72,24 @@ int bandAt(float lat) {
   return band;
 }
 
+/** Band color at a (stirred) latitude, feathered across the edges so
+ *  boundaries read as mixing fronts, not lines. */
+vec3 bandColorAt(float l, int band) {
+  vec3 c = uBandColors[band];
+  // Strong jets hold a crisp front; weak boundaries smear wide.
+  if (band + 1 < uBandCount) {
+    float feather = mix(0.045, 0.008, uBands[band + 1].w);
+    float t = smoothstep(feather, 0.0, uBands[band + 1].x - l);
+    c = mix(c, uBandColors[band + 1], 0.5 * t);
+  }
+  if (band > 0) {
+    float feather = mix(0.045, 0.008, uBands[band].w);
+    float t = smoothstep(feather, 0.0, l - uBands[band].x);
+    c = mix(c, uBandColors[band - 1], 0.5 * t);
+  }
+  return c;
+}
+
 void main() {
   vec3 p = normalize(vObjPos);
   float lat = asin(clamp(p.y, -1.0, 1.0));
@@ -81,24 +99,29 @@ void main() {
 
   if (uRegime < 0.5) {
     // ——— Banded regime: the circulation model, rendered. ———
-    // Festoons: the band-edge latitude wobbles with advected noise,
-    // strongest where the model says the shear is.
-    float warp = 0.0;
+    // The deck is a tracer stirred by the same eddies that drive the
+    // jets: a multi-scale displacement field moves the band lookup
+    // itself, so belt material curls deep into the zones, band widths
+    // wander with longitude, and the boundaries are wakes, not lines.
+    // The stirring rides everywhere and doubles where the model says
+    // the shear is.
+    float edgeFactor = 0.0;
     for (int i = 1; i < ${MAX_BANDS}; i++) {
       if (i >= uBandCount) break;
-      float g = exp(-pow((lat - uBands[i].x) / 0.05, 2.0));
-      if (g < 0.02) continue;
-      float edgeDrift = 0.5 * (uBands[i - 1].z + uBands[i].z);
-      float adv = lon + uTimeDays * edgeDrift;
-      float n = snoise(vec3(cos(adv), sin(adv), uBands[i].x * 9.0) * 2.6 + uSeedOffset
-        + vec3(0.0, 0.0, churnT * 0.4));
-      float n2 = snoise(vec3(cos(adv), sin(adv), uBands[i].x * 9.0) * 6.5 - uSeedOffset.yzx
-        + vec3(0.0, churnT * 0.7, 0.0));
-      warp += g * uBands[i].w * (n * 0.042 + n2 * 0.016);
+      edgeFactor += uBands[i].w * exp(-pow((lat - uBands[i].x) / 0.09, 2.0));
     }
+    edgeFactor = min(edgeFactor, 1.0);
+    int band0 = bandAt(lat);
+    float advLon = lon + uTimeDays * uBands[band0].z;
+    vec3 e = vec3(cos(lat) * cos(advLon), sin(lat), cos(lat) * sin(advLon));
+    float amp = (0.35 + 0.65 * edgeFactor) * (0.35 + 0.65 * uContrast);
+    float w1 = snoise(vec3(e.x, e.y * 2.2, e.z) * 1.7 + uSeedOffset + vec3(0.0, 0.0, churnT * 0.3));
+    float w2 = snoise(vec3(e.x, e.y * 3.4, e.z) * 4.4 - uSeedOffset.yzx + vec3(0.0, churnT * 0.6, 0.0));
+    float w3 = snoise(vec3(e.x, e.y * 5.0, e.z) * 11.0 + uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
+    float warp = amp * (0.06 * w1 + 0.03 * w2 + 0.013 * w3);
     float wlat = lat + warp;
     int band = bandAt(wlat);
-    vec3 bandColor = uBandColors[band];
+    vec3 bandColor = bandColorAt(wlat, band);
 
     // The deck: churned cloud texture advected with the band's own jet.
     float lonAdv = lon + uTimeDays * uBands[band].z;
@@ -139,7 +162,7 @@ void main() {
     if (uPolar.z > 0.5) {
       capEdge += 0.03 * cos(uPolar.z * lon * hemi + uTimeDays * uPolar.w);
     }
-    float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(lat));
+    float cap = smoothstep(capEdge - 0.06, capEdge + 0.06, abs(wlat));
     surface = mix(surface, uHoodColor * (0.92 + 0.16 * fbm(p * 5.0 + uSeedOffset)), cap * 0.85);
     if (cap > 0.01) {
       float colat = 1.5707963 - abs(lat);
