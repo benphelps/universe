@@ -122,12 +122,12 @@ describe('designations', () => {
     // The luminous carry proper names; the bulk file into the sector.
     expect(starDesignation(11n, locale, PROPER_NAME_LUMINOSITY * 2)).toMatch(/^[A-Z][a-z]+$/);
     const faint = starDesignation(11n, locale, 0.01);
-    expect(faint).toMatch(/^[A-Z][a-z]+ \d{1,5}$/);
+    expect(faint).toMatch(/^[A-Z][a-z]+ [0-9A-Z]{1,4}$/);
     // Deterministic, and the catalog prefix is the star's own sector.
     expect(starDesignation(11n, locale, 0.01)).toBe(faint);
 
     const star = generateStar(7n, { localePc: locale, massInitial: 0.5, ageGyr: 3 });
-    expect(star.designation).toMatch(/^[A-Z][a-z]+ \d{1,5}$/);
+    expect(star.designation).toMatch(/^[A-Z][a-z]+ [0-9A-Z]{1,4}$/);
     for (let i = 0; i < star.companions.length; i++) {
       expect(star.companions[i].star.designation).toBe(
         `${star.designation} ${'BCDEFGH'[i]}`,
