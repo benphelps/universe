@@ -392,7 +392,9 @@ export class UnifiedViewer {
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       if (document.pointerLockElement !== this.pipeline.renderer.domElement) return;
       if (this.walker.phase !== 'walking') return;
-      this.headingRad -= e.movementX * 0.0022;
+      // Head convention, not the drag handler's grab-the-world sign:
+      // mouse right looks right.
+      this.headingRad += e.movementX * 0.0022;
       this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - e.movementY * 0.0022));
     });
 
