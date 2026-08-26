@@ -817,8 +817,9 @@ export class UnifiedViewer {
           const wx = v.x;
           const wy = v.y;
           const wz = v.z;
-          v.project(this.camera);
-          if (v.z > 1 || v.z < -1) continue;
+          v.applyMatrix4(this.camera.matrixWorldInverse);
+          if (v.z >= 0) continue;
+          v.applyMatrix4(this.camera.projectionMatrix);
           const sx = (v.x * 0.5 + 0.5) * rect.width;
           const sy = (-v.y * 0.5 + 0.5) * rect.height;
           const d = Math.hypot(sx - cx, sy - cy) * 1.5;
@@ -830,7 +831,9 @@ export class UnifiedViewer {
         }
         // The far field: catalog stars with seeds of their own — any
         // glint in the sky identifies itself and can be traveled to.
-        // They are true 3D points; project their actual positions.
+        // They are true 3D points, mostly beyond the far plane (the
+        // shader clamps their depth so they still draw), so the only
+        // valid rejection is behind-the-camera — never the z range.
         if (this.skyData && this.farPoints) {
           const sky = this.skyData;
           const farPositions = this.farPoints.geometry.getAttribute(
@@ -839,8 +842,9 @@ export class UnifiedViewer {
           let bestFar = -1;
           for (let i = 0; i < farPositions.count; i++) {
             v.fromBufferAttribute(farPositions, i).applyMatrix4(matrix);
-            v.project(this.camera);
-            if (v.z > 1 || v.z < -1) continue;
+            v.applyMatrix4(this.camera.matrixWorldInverse);
+            if (v.z >= 0) continue;
+            v.applyMatrix4(this.camera.projectionMatrix);
             const sx = (v.x * 0.5 + 0.5) * rect.width;
             const sy = (-v.y * 0.5 + 0.5) * rect.height;
             const d = Math.hypot(sx - cx, sy - cy) * 1.45;

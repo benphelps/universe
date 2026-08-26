@@ -34,6 +34,9 @@ void main() {
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   gl_PointSize = size;
   gl_Position = projectionMatrix * mvPosition;
+  // Sky points sit far beyond the camera's far plane at low altitude;
+  // clamp depth just inside the range so they draw regardless of it.
+  gl_Position.z = min(gl_Position.z, gl_Position.w * 0.999999);
 }
 `;
 
