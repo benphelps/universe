@@ -180,6 +180,9 @@ const controls = new Controls(document.getElementById('controls')!, {
     exposure = value;
     if (viewer) viewer.exposure = value;
   },
+  onChartToggle: (visible) => {
+    if (viewer) viewer.chartVisible = visible;
+  },
 });
 
 const params = new URLSearchParams(location.search);

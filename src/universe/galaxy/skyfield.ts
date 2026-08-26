@@ -30,6 +30,9 @@ import { sectorNameForSeed, sectorSeedAt } from './regions';
  * unresolved Milky Way band with dust-lane extinction.
  */
 export interface NebulaPatch {
+  /** The natal cloud's seed: the nebula's identity (and its name). */
+  seed: bigint;
+  distancePc: number;
   /** Unit view direction (galactic frame, like starDirs). */
   dir: [number, number, number];
   angularRadius: number;
@@ -59,6 +62,9 @@ export const DARK_ATLAS_COLS = 8;
 export const DARK_ATLAS_ROWS = 8;
 
 export interface DarkCloudPatch {
+  /** The cloud's seed: the dark nebula's identity (and its name). */
+  seed: bigint;
+  distancePc: number;
   /** Unit view direction (galactic frame). */
   dir: [number, number, number];
   /** Tangent half-extent of the sprite, radians. */
@@ -493,6 +499,8 @@ function buildGroups(
       candidate.maxTeff,
     );
     return {
+      seed: candidate.cloud.seed,
+      distancePc: candidate.distancePc,
       dir: candidate.view,
       angularRadius: Math.min(0.35, candidate.cloud.radiusPc / candidate.distancePc),
       color: nebulaColor(candidate.maxTeff),
@@ -1011,7 +1019,15 @@ function buildDarkClouds(
       }
     }
 
-    return { dir: view, halfExtent: reachPc / distance, right, up, tile };
+    return {
+      seed: cloud.seed,
+      distancePc: distance,
+      dir: view,
+      halfExtent: reachPc / distance,
+      right,
+      up,
+      tile,
+    };
   });
 
   return { darkClouds, darkAtlas, spriteSeeds };

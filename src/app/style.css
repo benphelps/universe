@@ -146,7 +146,8 @@ body {
   border-left: none;
 }
 
-.view-toggle button.active {
+.view-toggle button.active,
+#controls #chart.active {
   background: #35507f;
   color: #fff;
 }

@@ -64,6 +64,7 @@ import {
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
 import { starPhotometry } from '../universe/galaxy/photometry';
+import { sectorNameForSeed } from '../universe/galaxy/regions';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { spectralType } from '../universe/star/classification';
 import type { Moon } from '../universe/moon/types';
@@ -256,6 +257,8 @@ export class UnifiedViewer {
   private galaxyVolume: GalaxyVolume | null = null;
   private galaxyFade = 0;
   private sectorChart: SectorChart | null = null;
+  /** User toggle: sector borders, sky-region borders, and their names. */
+  chartVisible = true;
 
   /** Free flight: right-shift + drag pans the camera through space. */
   private rightShiftHeld = false;
@@ -911,6 +914,70 @@ export class UnifiedViewer {
       }
     }
 
+    // Nothing solid under the cursor: the extended sky objects get to
+    // introduce themselves. A nebula is its natal cloud lit up, a rift
+    // is the same kind of cloud unlit — both carry the cloud's name,
+    // the one its province is charted under. Containment-only and last
+    // in priority, so the big patches never steal a star's hover.
+    if (!best && this.cursor && !this.dragging && this.skyData && this.galaxyFade < 0.6) {
+      const [cx, cy] = this.cursor;
+      const sky = this.skyData;
+      const ray = new Vector3(
+        (cx / rect.width) * 2 - 1,
+        -(cy / rect.height) * 2 + 1,
+        0.5,
+      )
+        .unproject(this.camera)
+        .sub(this.camera.position)
+        .normalize();
+      const dir = new Vector3();
+      let bestAngular = Infinity;
+      const consider = (
+        patchDir: [number, number, number],
+        angularRadius: number,
+        seed: bigint,
+        distancePc: number,
+        kind: string,
+        info: string,
+      ): void => {
+        if (angularRadius >= bestAngular) return;
+        const [ox, oy, oz] = rotateToScene(sky.sceneFromGalaxy, ...patchDir);
+        dir.set(ox, oy, oz).applyQuaternion(this.frameQuat);
+        if (dir.dot(ray) < Math.cos(angularRadius)) return;
+        bestAngular = angularRadius;
+        const reach = this.camera.far * 0.25;
+        best = {
+          x: this.camera.position.x + dir.x * reach,
+          y: this.camera.position.y + dir.y * reach,
+          z: this.camera.position.z + dir.z * reach,
+          name: `the ${sectorNameForSeed(seed)} ${kind}`,
+          info: `${info} · ≈${fmt(distancePc, 3)} pc`,
+          action: null,
+          target: null,
+        };
+      };
+      for (const nebula of sky.nebulae) {
+        consider(
+          nebula.dir,
+          nebula.angularRadius,
+          nebula.seed,
+          nebula.distancePc,
+          'Nebula',
+          'molecular cloud lit by its newborn stars',
+        );
+      }
+      for (const cloud of sky.darkClouds) {
+        consider(
+          cloud.dir,
+          cloud.halfExtent,
+          cloud.seed,
+          cloud.distancePc,
+          'Rift',
+          'dark molecular cloud',
+        );
+      }
+    }
+
     this.hovered = best;
     if (!best) {
       if (this.hoveredKey) {
@@ -1492,10 +1559,12 @@ export class UnifiedViewer {
         // The flat chart surfaces as the camera leaves the neighborhood;
         // the constellation borders belong to the local sky and hand off
         // to it — one gesture, star map to province map.
-        const chart = Math.min(1, Math.max(0, (distancePc - 30) / 270));
+        const chart = this.chartVisible
+          ? Math.min(1, Math.max(0, (distancePc - 30) / 270))
+          : 0;
         const eased = chart * chart * (3 - 2 * chart);
         this.sectorChart.opacity = eased;
-        this.sectorChart.skyOpacity = 1 - eased;
+        this.sectorChart.skyOpacity = this.chartVisible ? 1 - eased : 0;
         this.sectorChart.skyRadiusLimitPc = (this.camera.far / PC_KM) * 0.45;
         this.sectorChart.labelFade =
           1 - Math.min(1, Math.max(0, (distancePc - 3500) / 3500));

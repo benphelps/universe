@@ -7,6 +7,7 @@ export interface ControlsCallbacks {
   onPlanetStep: (delta: number) => void;
   onTimeScale: (daysPerSecond: number) => void;
   onExposure: (exposure: number) => void;
+  onChartToggle: (visible: boolean) => void;
 }
 
 const VIEWS: ViewMode[] = ['star', 'system', 'planet', 'galaxy'];
@@ -30,6 +31,7 @@ export class Controls {
       </span>
       <label>seed <input id="seed" type="text" spellcheck="false" maxlength="16" /></label>
       <button id="random">random</button>
+      <button id="chart" class="active" title="sector borders and names">chart</button>
       <label>time <input id="timescale" type="range" min="-3" max="4" step="0.1" value="-1.3" /></label>
       <label>exposure <input id="exposure" type="range" min="0.1" max="4" step="0.05" value="1" /></label>
     `;
@@ -48,6 +50,12 @@ export class Controls {
       if (hex.length > 0) callbacks.onSeed(hex.padStart(16, '0'));
     });
     element.querySelector('#random')!.addEventListener('click', callbacks.onRandom);
+    const chartButton = element.querySelector<HTMLButtonElement>('#chart')!;
+    chartButton.addEventListener('click', () => {
+      const visible = !chartButton.classList.contains('active');
+      chartButton.classList.toggle('active', visible);
+      callbacks.onChartToggle(visible);
+    });
     element.querySelector('#planet-prev')!.addEventListener('click', () => callbacks.onPlanetStep(-1));
     element.querySelector('#planet-next')!.addEventListener('click', () => callbacks.onPlanetStep(1));
     element.querySelector<HTMLInputElement>('#timescale')!.addEventListener('input', (e) => {
