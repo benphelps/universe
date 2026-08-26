@@ -20,6 +20,16 @@ const RIVER_CELLS_MIN = 3.5;
  * water. Precipitation is a placeholder latitude curve until the S5
  * climate field replaces it.
  */
+export interface RiverHit {
+  distRad: number;
+  dischargeM3s: number;
+  spillM: number;
+  /** Graded channel-floor elevation at the nearest point, m. */
+  bedM: number;
+  /** Water surface at the nearest point, m (lake level inside lakes). */
+  stageM: number;
+}
+
 export interface DrainageGraph {
   grid: CubeGrid;
   radiusM: number;
@@ -35,13 +45,17 @@ export interface DrainageGraph {
   ocean: Uint8Array;
   /** Discharge above which a cell carries a carving river. */
   riverMinM3s: number;
+  /** The standing-water surface over dir's cell: lake fill level inside
+   *  lake basins, −Infinity elsewhere. */
+  lakeLevelAt(dir: Vec3): number;
   /**
    * Distance (radians) from dir to the nearest river segment in the
-   * surrounding cells, with that segment's discharge and spill level.
+   * surrounding cells, with the segment's discharge and its graded bed
+   * and water-surface elevations interpolated at the nearest point.
    * Returns null when no river runs nearby. The result object is
    * reused across calls — read it before calling again.
    */
-  nearestRiver(dir: Vec3): { distRad: number; dischargeM3s: number; spillM: number } | null;
+  nearestRiver(dir: Vec3): RiverHit | null;
 }
 
 export function buildDrainage(
@@ -50,6 +64,9 @@ export function buildDrainage(
   seaLevelM: number,
   wetness: number,
   n: number,
+  /** Total carve depth below local terrain at the channel line — the
+   *  field's own formula, so graph beds and carved ground agree. */
+  channelDropM: (hM: number, dischargeM3s: number) => number,
 ): DrainageGraph {
   const grid = createCubeGrid(n);
   const { cellCount, centers } = grid;
@@ -125,14 +142,49 @@ export function buildDrainage(
   }
   const riverMinM3s = meanRunoff * RIVER_CELLS_MIN;
 
+  // Graded channel profile: the carve target per cell, forced monotone
+  // downstream — a bed never sits below its downstream neighbor. Water
+  // rides the bed at hydraulic-geometry depth, clamped monotone too:
+  // where beds dip below the downstream-controlled level, the stage
+  // flattens into a pool — lakes emerge at the level of their breached
+  // outlet, so a big river cuts through a basin rim that a small creek
+  // fills behind. Filling depressions to their full coarse spill would
+  // drown valleys the fine terrain actually drains. Pop order visits
+  // downstream before upstream, so the clamps see finished values.
+  const bedM = new Float32Array(cellCount);
+  const stageM = new Float32Array(cellCount);
+  const lakeM = new Float32Array(cellCount).fill(-Infinity);
+  for (let p = 0; p < popCount; p++) {
+    const cell = popOrder[p];
+    if (ocean[cell]) {
+      bedM[cell] = seaLevelM - 2;
+      stageM[cell] = seaLevelM;
+      continue;
+    }
+    const q = dischargeM3s[cell];
+    let bed = heightsM[cell] - channelDropM(heightsM[cell], q);
+    const downstream = flowTo[cell];
+    if (downstream >= 0) bed = Math.max(bed, bedM[downstream]);
+    bedM[cell] = bed;
+    let stage = bed + 0.27 * q ** 0.3;
+    if (downstream >= 0) stage = Math.max(stage, stageM[downstream]);
+    stageM[cell] = stage;
+    // A cell whose coarse ground sits under the pooled stage is lake
+    // floor: the surface there spans the whole cell, not a channel.
+    if (stage > heightsM[cell] + 1) lakeM[cell] = stage;
+  }
+
+  const lakeLevelAt = (at: Vec3): number => lakeM[grid.cellOfDir(at)];
+
   // Zero-allocation nearest-segment query over the 3×3 neighborhood's
   // downstream segments; chord distances stand in for arcs at cell scale.
-  const result = { distRad: 0, dischargeM3s: 0, spillM: 0 };
+  const result: RiverHit = { distRad: 0, dischargeM3s: 0, spillM: 0, bedM: 0, stageM: 0 };
   const nearestRiver = (at: Vec3) => {
     const home = grid.cellOfDir(at);
     const around = grid.neighborsOf(home);
     let best = -1;
     let bestDist = Infinity;
+    let bestT = 0;
     for (let k = -1; k < 8; k++) {
       const cell = k < 0 ? home : around[k];
       if (cell < 0 || ocean[cell]) continue;
@@ -159,12 +211,18 @@ export function buildDrainage(
       if (dist < bestDist) {
         bestDist = dist;
         best = cell;
+        bestT = t;
       }
     }
     if (best < 0) return null;
+    const downstream = flowTo[best];
+    const endBed = ocean[downstream] ? seaLevelM - 2 : bedM[downstream];
+    const endStage = ocean[downstream] ? seaLevelM : stageM[downstream];
     result.distRad = bestDist;
     result.dischargeM3s = dischargeM3s[best];
     result.spillM = spillM[best];
+    result.bedM = bedM[best] + (endBed - bedM[best]) * bestT;
+    result.stageM = stageM[best] + (endStage - stageM[best]) * bestT;
     return result;
   };
 
@@ -178,6 +236,7 @@ export function buildDrainage(
     spillM,
     ocean,
     riverMinM3s,
+    lakeLevelAt,
     nearestRiver,
   };
 }

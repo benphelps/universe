@@ -125,24 +125,50 @@ export function buildChunkMesh(
     }
   }
 
+  // Water rides its local surface: the sea, lake fill levels, and river
+  // stages on their graded beds. Each vertex takes its own level; dry
+  // vertices tuck 25 m under their terrain so mixed tiles blend out.
   let waterPositions: Float32Array | null = null;
   let waterNormals: Float32Array | null = null;
-  if (field.seaLevelM > -1e8 && minHeight < field.seaLevelM + 5) {
-    const seaKm = radiusKm + field.seaLevelM / 1000;
-    waterPositions = new Float32Array((gridCount + skirtCount) * 3);
-    waterNormals = new Float32Array((gridCount + skirtCount) * 3);
+  const maybeWet = field.drainage
+    ? true
+    : field.seaLevelM > -1e8 && minHeight < field.seaLevelM + 5;
+  if (maybeWet) {
+    const levels = new Float64Array(gridCount);
+    let wet = false;
     for (let j = 0; j <= res; j++) {
       for (let i = 0; i <= res; i++) {
         const outIndex = j * (res + 1) + i;
         const extIndex = (j + 1) * ext + (i + 1);
-        for (let c = 0; c < 3; c++) {
-          const d = dirs[extIndex * 3 + c];
-          waterPositions[outIndex * 3 + c] = d * seaKm - centerKm[c];
-          waterNormals[outIndex * 3 + c] = d;
-        }
+        const dir = {
+          x: dirs[extIndex * 3],
+          y: dirs[extIndex * 3 + 1],
+          z: dirs[extIndex * 3 + 2],
+        };
+        const level = field.waterLevelAt(dir, lodAngularRad);
+        levels[outIndex] = level;
+        if (level > heights[extIndex] - 5) wet = true;
       }
     }
-    buildSkirt(waterPositions, waterNormals, waterNormals, res, radiusKm / tiles, centerKm, radiusKm);
+    if (wet) {
+      waterPositions = new Float32Array((gridCount + skirtCount) * 3);
+      waterNormals = new Float32Array((gridCount + skirtCount) * 3);
+      for (let j = 0; j <= res; j++) {
+        for (let i = 0; i <= res; i++) {
+          const outIndex = j * (res + 1) + i;
+          const extIndex = (j + 1) * ext + (i + 1);
+          const level =
+            levels[outIndex] > -1e8 ? levels[outIndex] : heights[extIndex] - 25;
+          const rKm = radiusKm + level / 1000;
+          for (let c = 0; c < 3; c++) {
+            const d = dirs[extIndex * 3 + c];
+            waterPositions[outIndex * 3 + c] = d * rKm - centerKm[c];
+            waterNormals[outIndex * 3 + c] = d;
+          }
+        }
+      }
+      buildSkirt(waterPositions, waterNormals, waterNormals, res, radiusKm / tiles, centerKm, radiusKm);
+    }
   }
 
   return { centerKm, positions, normals, colors, morph, waterPositions, waterNormals };

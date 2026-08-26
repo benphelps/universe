@@ -1,13 +1,14 @@
 import { Vector3 } from 'three';
 
 /** The body underfoot, as the walker sees it: a datum sphere, a height
- *  field, its gravity, and its sea. */
+ *  field, its gravity, and its water. */
 export interface WalkSurface {
   radiusKm: number;
   gravityMs2: number;
   /** Full-detail terrain height above the datum, meters. */
   heightM(up: Vector3): number;
-  seaLevelM: number;
+  /** Local water surface (sea, lake, or river stage), meters; −Infinity dry. */
+  waterLevelM(up: Vector3): number;
 }
 
 export type WalkPhase = 'off' | 'landing' | 'walking' | 'liftoff';
@@ -183,7 +184,7 @@ export class GroundWalker {
       const aheadM = surface.heightM(aheadUp);
       const grade = (aheadM - groundM) / PROBE_M;
       if (grade > 0) speedMs *= Math.max(0, 1 - grade / CLIMB_LIMIT_GRADE);
-      if (surface.seaLevelM - aheadM > MAX_WADE_M) speedMs = 0;
+      if (surface.waterLevelM(aheadUp) - aheadM > MAX_WADE_M) speedMs = 0;
     }
 
     if (this.keys.has('Space')) {

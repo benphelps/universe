@@ -1690,12 +1690,12 @@ export class UnifiedViewer {
       radiusKm: this.radiusKm,
       gravityMs2,
       heightM: (u) => field.heightAt(u, strideLodRad),
-      seaLevelM: field.seaLevelM,
+      waterLevelM: (u) => field.waterLevelAt(u),
     };
   }
 
   /** One quiet line of guidance for the ground regime. */
-  private updateWalkHint(terrainM: number): void {
+  private updateWalkHint(waterDepthM: number): void {
     if (!this.walkHint) return;
     let text = '';
     if (this.walker.phase === 'walking') {
@@ -1711,7 +1711,7 @@ export class UnifiedViewer {
       this.altitudeKm <= this.minAltitudeKm * 1.02
     ) {
       text =
-        this.field.seaLevelM - terrainM > MAX_WADE_M
+        waterDepthM > MAX_WADE_M
           ? 'open water — find a shore to land'
           : 'scroll in to land';
     }
@@ -1750,7 +1750,8 @@ export class UnifiedViewer {
 
       let up = this.camera.position.clone().normalize();
       const terrainM = this.field ? this.field.heightAt(up) : 0;
-      const groundKm = this.field ? Math.max(terrainM, this.field.seaLevelM) / 1000 : 0;
+      const waterM = this.field ? this.field.waterLevelAt(up) : -Infinity;
+      const groundKm = this.field ? Math.max(terrainM, waterM) / 1000 : 0;
       // Asteroid shapes legitimately dip far below the datum sphere.
       const floorKm = this.focusAsteroid ? -this.radiusKm * 0.6 : -this.radiusKm * 0.01;
       const surfaceKm = this.radiusKm + Math.max(groundKm, floorKm);
@@ -1767,7 +1768,7 @@ export class UnifiedViewer {
         this.walker.update(dtSeconds, this.camera.position, this.headingRad);
         up = this.camera.position.clone().normalize();
         const walkedKm = this.field
-          ? Math.max(this.field.heightAt(up), this.field.seaLevelM) / 1000
+          ? Math.max(this.field.heightAt(up), this.field.waterLevelAt(up)) / 1000
           : 0;
         this.altitudeKm = Math.max(
           this.camera.position.length() - (this.radiusKm + Math.max(walkedKm, floorKm)),
@@ -1795,7 +1796,7 @@ export class UnifiedViewer {
           this.field &&
           this.pendingWheelFactor < 0.999 &&
           freeAltitudeKm <= this.minAltitudeKm * 1.001 &&
-          this.field.seaLevelM - terrainM <= MAX_WADE_M
+          waterM - terrainM <= MAX_WADE_M
         ) {
           const surface = this.walkSurface();
           if (surface) this.walker.beginLanding(surface);
@@ -1893,7 +1894,7 @@ export class UnifiedViewer {
 
       this.updateWorld(up);
       this.updateHover();
-      this.updateWalkHint(terrainM);
+      this.updateWalkHint(waterM - terrainM);
 
       if (this.backdrop) {
         this.backdrop.group.position.copy(this.camera.position);

@@ -5,6 +5,8 @@ import { buildDrainage } from './drainage';
 
 /** One smooth continent centered on +X, shores at dot = 0.35, peak 3 km. */
 const continent = (dir: Vec3): number => (dir.x - 0.35) * 3000;
+/** A carve-depth law shaped like the field's: deeper with discharge. */
+const drop = (hM: number, q: number): number => Math.min(40 * q ** 0.25, hM * 0.9 + 4);
 
 describe('cube grid', () => {
   const grid = createCubeGrid(8);
@@ -34,10 +36,10 @@ describe('cube grid', () => {
 });
 
 describe('drainage graph', () => {
-  const graph = buildDrainage(continent, 6.4e6, 0, 0.7, 32);
+  const graph = buildDrainage(continent, 6.4e6, 0, 0.7, 32, drop);
 
   it('is deterministic', () => {
-    const again = buildDrainage(continent, 6.4e6, 0, 0.7, 32);
+    const again = buildDrainage(continent, 6.4e6, 0, 0.7, 32, drop);
     expect(again.flowTo).toEqual(graph.flowTo);
     expect(again.dischargeM3s).toEqual(graph.dischargeM3s);
   });
@@ -76,6 +78,45 @@ describe('drainage graph', () => {
     }
     expect(rivers).toBeGreaterThan(20);
     expect(maxQ).toBeGreaterThan(graph.riverMinM3s * 5);
+  });
+
+  it('water grades downhill: stage rides the bed and never climbs', () => {
+    let riverCell = -1;
+    for (let cell = 0; cell < graph.grid.cellCount; cell++) {
+      if (!graph.ocean[cell] && graph.dischargeM3s[cell] >= graph.riverMinM3s * 3) {
+        riverCell = cell;
+        break;
+      }
+    }
+    expect(riverCell).toBeGreaterThanOrEqual(0);
+    let current = riverCell;
+    let lastStage = Infinity;
+    let steps = 0;
+    while (!graph.ocean[current] && steps++ < graph.grid.cellCount) {
+      const hit = graph.nearestRiver(graph.grid.centerOf(current));
+      if (hit && hit.distRad < graph.grid.cellAngularRad * 0.25) {
+        expect(hit.stageM).toBeGreaterThan(hit.bedM);
+        expect(hit.stageM).toBeLessThanOrEqual(lastStage + 1e-3);
+        lastStage = hit.stageM;
+      }
+      current = graph.flowTo[current];
+    }
+    expect(lastStage).toBeLessThan(Infinity);
+  });
+
+  it('a rimmed basin pools an emergent lake at its breached outlet', () => {
+    // A 1,500 m ring rim around the summit cone closes an annular moat
+    // whose streams cannot cut the rim down to their own grade.
+    const rimmed = (dir: Vec3): number => {
+      const a = Math.acos(Math.min(1, Math.max(-1, dir.x)));
+      return (dir.x - 0.35) * 3000 + 1500 * Math.exp(-(((a - 0.35) / 0.06) ** 2));
+    };
+    const basin = buildDrainage(rimmed, 6.4e6, 0, 0.7, 32, drop);
+    const moat = { x: Math.cos(0.26), y: Math.sin(0.26), z: 0 };
+    const lake = basin.lakeLevelAt(moat);
+    expect(lake).toBeGreaterThan(rimmed(moat));
+    // The pool sits below the raw rim crest: the outlet is breached, not full.
+    expect(lake).toBeLessThan(rimmed({ x: Math.cos(0.35), y: Math.sin(0.35), z: 0 }));
   });
 
   it('finds a river from a point on its course, none from open ocean', () => {

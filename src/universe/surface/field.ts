@@ -22,6 +22,12 @@ export interface SurfaceField {
   colorAt(dir: Vec3, heightM: number, slopeCos: number, lodAngularRad?: number): Rgb;
   /** Sea surface height, meters above datum (−Infinity when dry). */
   seaLevelM: number;
+  /**
+   * Local water surface, meters above datum: the sea, a lake's fill
+   * level, or a river's stage on its graded bed — −Infinity where the
+   * ground is dry.
+   */
+  waterLevelAt(dir: Vec3, lodAngularRad?: number): number;
   /** The river network carving this world, on wet worlds. */
   drainage?: DrainageGraph | null;
 }
@@ -116,11 +122,10 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   const meanderAmpRad = 0.0008;
   const warped = { x: 0, y: 0, z: 0 };
 
-  /** Valley + channel carved by the nearest river segment, meters (≤ 0). */
-  const riverCarve = (dir: Vec3, h: number, lodAngularRad: number): number => {
-    if (h <= solvedSeaLevelM || lodAngularRad > 0.012) return 0;
-    // Meanders: the graph fixes topology and discharge; a seeded warp
-    // bends the straight cell-to-cell course at sub-cell scale.
+  /** Meanders: the graph fixes topology and discharge; a seeded warp
+   *  bends the straight cell-to-cell course at sub-cell scale. Fills
+   *  the reused `warped` vector. */
+  const warpDir = (dir: Vec3): Vec3 => {
     const wx = dir.x + meanderAmpRad * meander(dir.x * 130, dir.y * 130, dir.z * 130);
     const wy = dir.y + meanderAmpRad * meander(dir.x * 130 + 31.7, dir.y * 130, dir.z * 130);
     const wz = dir.z + meanderAmpRad * meander(dir.x * 130, dir.y * 130 + 57.3, dir.z * 130);
@@ -128,20 +133,35 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     warped.x = wx / wl;
     warped.y = wy / wl;
     warped.z = wz / wl;
-    const river = drainage!.nearestRiver(warped);
+    return warped;
+  };
+
+  /** Stream-power-flavored valley depth: grows with discharge, digs
+   *  hardest in highlands, grades toward the sea near the coast. */
+  const valleyDepthM = (hM: number, q: number): number => {
+    const rel = 0.3 + 0.7 * smooth01(hM / (reliefM * 0.5));
+    return Math.min(
+      45 * q ** 0.25 * rel * (0.35 + 0.65 * fluvialStrength),
+      (hM - solvedSeaLevelM) * 0.9 + 4,
+    );
+  };
+
+  /** Total drop to the channel floor — the graph grades its beds with
+   *  the same formula the carve uses, so the two always agree. */
+  const channelDropM = (hM: number, q: number): number =>
+    valleyDepthM(hM, q) + 1.5 * q ** 0.2;
+
+  /** Valley + channel carved by the nearest river segment, meters (≤ 0). */
+  const riverCarve = (dir: Vec3, h: number, lodAngularRad: number): number => {
+    if (h <= solvedSeaLevelM || lodAngularRad > 0.012) return 0;
+    const river = drainage!.nearestRiver(warpDir(dir));
     if (!river) return 0;
     const q = river.dischargeM3s;
     const halfWidthM = Math.min(25000, Math.max(220, 1200 * Math.sqrt(q / 1000)));
     const widthRad = halfWidthM / params.radiusM;
     const zoneRad = widthRad * 2.5;
     if (river.distRad >= zoneRad) return 0;
-    // Stream-power-flavored depth: grows with discharge, digs hardest
-    // in highlands, grades toward the sea near the coast.
-    const rel = 0.3 + 0.7 * smooth01(h / (reliefM * 0.5));
-    const depthM = Math.min(
-      45 * q ** 0.25 * rel * (0.35 + 0.65 * fluvialStrength),
-      (h - solvedSeaLevelM) * 0.9 + 4,
-    );
+    const depthM = valleyDepthM(h, q);
     let carve = 0;
     if (river.distRad < widthRad) {
       // A valley narrower than the sample spacing fades like the detail
@@ -151,12 +171,14 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       if (fade > 0.02) {
         const across = river.distRad / widthRad;
         carve -= depthM * (1 - across * across) ** 1.5 * fade;
-        // The channel itself: hydraulic-geometry width, a few meters deep.
+        // The channel floor meets the graph's graded bed absolutely, so
+        // the water that fills it steps downhill reach by reach instead
+        // of stranding on local band noise.
         const channelRad = Math.max(6, 4 * Math.sqrt(q)) / params.radiusM;
         if (river.distRad < channelRad) {
           const chFade = lodAngularRad > 0 ? Math.min(1, channelRad / lodAngularRad / 1.5) : 1;
           const chAcross = river.distRad / channelRad;
-          carve -= 1.5 * q ** 0.2 * (1 - chAcross * chAcross) * chFade * fade;
+          carve += (river.bedM - (h + carve)) * (1 - chAcross * chAcross) * chFade * fade;
         }
       }
     }
@@ -308,8 +330,38 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     // parameter encodes the wet history that shaped them, even where
     // today's mean rainfall rounds to nothing.
     const carvingWetness = Math.max(wetness, 0.45 * fluvialStrength);
-    drainage = buildDrainage(heightAt, params.radiusM, seaLevelM, carvingWetness, 128);
+    drainage = buildDrainage(
+      heightAt,
+      params.radiusM,
+      seaLevelM,
+      carvingWetness,
+      128,
+      channelDropM,
+    );
   }
+
+  // Standing and flowing water: the sea, lake basins at their fill
+  // levels, and river stages riding the graded beds. Paleo-carved dry
+  // worlds keep their channels empty — today's rain fills nothing.
+  const wetWorld = wetness > 0.05;
+  const waterLevelAt = (dir: Vec3, lodAngularRad = 0): number => {
+    let level = solvedSeaLevelM;
+    if (drainage && wetWorld && lodAngularRad < 0.012) {
+      const river = drainage.nearestRiver(warpDir(dir));
+      if (river) {
+        const halfWidthM = Math.min(
+          25000,
+          Math.max(220, 1200 * Math.sqrt(river.dischargeM3s / 1000)),
+        );
+        if (river.distRad < (halfWidthM / params.radiusM) * 1.2 && river.stageM > level) {
+          level = river.stageM;
+        }
+      }
+      const lake = drainage.lakeLevelAt(warped);
+      if (lake > level) level = lake;
+    }
+    return level;
+  };
   const sand: Rgb = [
     Math.min(1, params.palette.landB[0] * 1.25 + 0.08),
     Math.min(1, params.palette.landB[1] * 1.2 + 0.06),
@@ -412,7 +464,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     return ground;
   };
 
-  return { params, heightAt, colorAt, seaLevelM, drainage };
+  return { params, heightAt, colorAt, seaLevelM, waterLevelAt, drainage };
 }
 
 /** Height whose flooded fraction matches coverage, via a golden-spiral sample. */

@@ -117,5 +117,6 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
     heightAt,
     colorAt,
     seaLevelM: -Infinity,
+    waterLevelAt: () => -Infinity,
   };
 }

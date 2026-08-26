@@ -10,7 +10,7 @@ function surface(overrides: Partial<WalkSurface> = {}): WalkSurface {
     radiusKm: R_KM,
     gravityMs2: 9.8,
     heightM: () => 0,
-    seaLevelM: -Infinity,
+    waterLevelM: () => -Infinity,
     ...overrides,
   };
 }
@@ -90,7 +90,7 @@ describe('ground walker', () => {
 
   it('stops at chest-deep water', () => {
     const walker = new GroundWalker();
-    const ground = surface({ heightM: () => -3, seaLevelM: 0 });
+    const ground = surface({ heightM: () => -3, waterLevelM: () => 0 });
     const position = standing(walker, ground);
     const start = position.clone();
     walker.press('KeyW');
