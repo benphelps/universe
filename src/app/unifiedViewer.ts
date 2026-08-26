@@ -101,6 +101,11 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
 
+/** Point stars snap the hover only from this close (px), so the space
+ *  between glints stays hoverable for nebulae, rifts, and the other
+ *  extended sky objects; solid pickables keep their generous reach. */
+const STAR_SNAP_PX = 10;
+
 export type FocusTarget = 'star' | number;
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
@@ -789,6 +794,7 @@ export class UnifiedViewer {
   private updateHover(): void {
     const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
     let best: Pickable | null = null;
+    let softStarBest = false;
     if (this.cursor && !this.dragging) {
       const [cx, cy] = this.cursor;
       const v = new Vector3();
@@ -822,7 +828,9 @@ export class UnifiedViewer {
           v.applyMatrix4(this.camera.projectionMatrix);
           const sx = (v.x * 0.5 + 0.5) * rect.width;
           const sy = (-v.y * 0.5 + 0.5) * rect.height;
-          const d = Math.hypot(sx - cx, sy - cy) * 1.5;
+          const px = Math.hypot(sx - cx, sy - cy);
+          if (px > STAR_SNAP_PX) continue;
+          const d = px * 1.5;
           if (d >= bestPx) continue;
           if (this.occludedByFocus(wx, wy, wz)) continue;
           bestPx = d;
@@ -847,7 +855,9 @@ export class UnifiedViewer {
             v.applyMatrix4(this.camera.projectionMatrix);
             const sx = (v.x * 0.5 + 0.5) * rect.width;
             const sy = (-v.y * 0.5 + 0.5) * rect.height;
-            const d = Math.hypot(sx - cx, sy - cy) * 1.45;
+            const px = Math.hypot(sx - cx, sy - cy);
+            if (px > STAR_SNAP_PX) continue;
+            const d = px * 1.45;
             if (d >= bestPx) continue;
             bestPx = d;
             bestFar = i;
@@ -863,6 +873,7 @@ export class UnifiedViewer {
               .applyMatrix4(matrix);
             const position = { x: world.x, y: world.y, z: world.z };
             if (starSeed !== 0n) {
+              softStarBest = false;
               const seedHex = seedToHex(starSeed);
               const starPc = {
                 xPc: this.viewpointPc.xPc + sky.starDirs[s * 3] * distance,
@@ -887,11 +898,13 @@ export class UnifiedViewer {
                 action: null,
                 target: null,
               };
+              softStarBest = true;
             }
           }
         }
 
         if (bestStar >= 0 && this.neighborSeedHexes[bestStar]) {
+          softStarBest = false;
           const seedHex = this.neighborSeedHexes[bestStar];
           const starPc = {
             xPc: this.neighborGalacticPc[bestStar * 3],
@@ -918,12 +931,17 @@ export class UnifiedViewer {
       }
     }
 
-    // Nothing solid under the cursor: the extended sky objects get to
-    // introduce themselves. A nebula is its natal cloud lit up, a rift
-    // is the same kind of cloud unlit — both carry the cloud's name,
-    // the one its province is charted under. Containment-only and last
-    // in priority, so the big patches never steal a star's hover.
-    if (!best && this.cursor && !this.dragging && this.skyData && this.galaxyFade < 0.6) {
+    // Nothing travelable under the cursor: the extended sky objects
+    // get to introduce themselves. A nebula is its natal cloud lit up,
+    // a rift is the same kind of cloud unlit — both carry the cloud's
+    // name, the one its province is charted under. Containment-only
+    // and behind every seeded star in priority, so the big patches
+    // never steal a clickable hover — but an anonymous cluster member
+    // yields to the named cloud it lights, keeping the nebula's face
+    // hoverable, and stands only where no cloud claims the cursor.
+    if ((!best || softStarBest) && this.cursor && !this.dragging && this.skyData && this.galaxyFade < 0.6) {
+      const fallback = best;
+      best = null;
       const [cx, cy] = this.cursor;
       const sky = this.skyData;
       const ray = new Vector3(
@@ -980,6 +998,7 @@ export class UnifiedViewer {
           'dark molecular cloud',
         );
       }
+      if (!best) best = fallback;
     }
 
     this.hovered = best;
