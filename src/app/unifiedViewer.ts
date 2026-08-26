@@ -993,8 +993,16 @@ export class UnifiedViewer {
         .unproject(this.camera)
         .sub(this.camera.position)
         .normalize();
+      // A body disc under the cursor blocks the whole sky behind it:
+      // test the sight line itself, out past everything in the scene.
+      const beyond = this.camera.far * 40;
+      const blocked = this.occluded(
+        this.camera.position.x + ray.x * beyond,
+        this.camera.position.y + ray.y * beyond,
+        this.camera.position.z + ray.z * beyond,
+      );
       const dir = new Vector3();
-      let bestAngular = Infinity;
+      let bestAngular = blocked ? -Infinity : Infinity;
       const consider = (
         patchDir: [number, number, number],
         angularRadius: number,
@@ -1007,17 +1015,8 @@ export class UnifiedViewer {
         const [ox, oy, oz] = rotateToScene(sky.sceneFromGalaxy, ...patchDir);
         dir.set(ox, oy, oz).applyQuaternion(this.frameQuat);
         if (dir.dot(ray) < Math.cos(angularRadius)) return;
-        const reach = this.camera.far * 0.25;
-        if (
-          this.occluded(
-            this.camera.position.x + dir.x * reach,
-            this.camera.position.y + dir.y * reach,
-            this.camera.position.z + dir.z * reach,
-          )
-        ) {
-          return;
-        }
         bestAngular = angularRadius;
+        const reach = this.camera.far * 0.25;
         best = {
           x: this.camera.position.x + dir.x * reach,
           y: this.camera.position.y + dir.y * reach,

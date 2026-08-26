@@ -53,35 +53,45 @@ function createLineMaterial(color: [number, number, number]): ShaderMaterial {
 
 function createLabelSprite(label: SectorLabel): Sprite {
   const emphasized = label.home;
-  const font = `${emphasized ? 600 : 500} ${emphasized ? 34 : 26}px ui-monospace, Menlo, monospace`;
+  // Atlas lettering in the console's own display face: condensed caps,
+  // tracked wide, rendered at 2x for crisp glyphs at sprite scale.
+  const fontPx = emphasized ? 64 : 48;
+  const font = `600 ${fontPx}px 'Avenir Next Condensed', 'Arial Narrow', system-ui, sans-serif`;
+  const tracking = `${Math.round(fontPx * 0.14)}px`;
+  const text = label.name.toUpperCase();
   const canvas = document.createElement('canvas');
   const measure = canvas.getContext('2d')!;
   measure.font = font;
-  const width = Math.ceil(measure.measureText(label.name).width) + 16;
-  const height = emphasized ? 44 : 36;
+  measure.letterSpacing = tracking;
+  const width = Math.ceil(measure.measureText(text).width) + 24;
+  const height = emphasized ? 84 : 64;
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
   ctx.font = font;
+  ctx.letterSpacing = tracking;
   ctx.textBaseline = 'middle';
   ctx.fillStyle = emphasized ? 'rgba(205, 220, 246, 0.95)' : 'rgba(156, 173, 203, 0.8)';
-  ctx.fillText(label.name, 8, height / 2);
+  ctx.fillText(text, 12, height / 2);
   const texture = new CanvasTexture(canvas);
   texture.generateMipmaps = false;
   texture.minFilter = LinearFilter;
+  // Lettering sits at the very back of the draw: depth-tested so any
+  // body occludes it, ordered with the sky domes so stars, borders,
+  // and nebulae all paint over the names, never the reverse.
   const material = new SpriteMaterial({
     map: texture,
     transparent: true,
     opacity: 0,
     depthWrite: false,
-    depthTest: false,
+    depthTest: true,
     sizeAttenuation: false,
   });
   const sprite = new Sprite(material);
-  const scale = (emphasized ? 0.05 : 0.037) / PARENT_SCALE;
+  const scale = (emphasized ? 0.042 : 0.032) / PARENT_SCALE;
   sprite.scale.set((scale * width) / height, scale, 1);
   sprite.position.set(label.x, label.y, label.z);
-  sprite.renderOrder = 5;
+  sprite.renderOrder = -3;
   return sprite;
 }
 
