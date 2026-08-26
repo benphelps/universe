@@ -584,6 +584,12 @@ tr.here .swatch {
   font-weight: 600;
 }
 
+#welcome-card .perf-note {
+  margin: 0 0 12px;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
 #welcome-card .controls-hint {
   margin: 0 0 16px;
   padding-top: 12px;

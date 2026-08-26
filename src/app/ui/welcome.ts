@@ -43,6 +43,11 @@ export function showWelcome(): void {
         atmospheres, and climates; terrain streams continuously from
         orbit to the ground under your feet.</li>
       </ul>
+      <div class="perf-note">
+        Fair warning: all of this is computed live on your machine —
+        expect 1&thinsp;GB+ of GPU memory in use and sustained CPU/GPU
+        load. A reasonably capable computer makes for a better visit.
+      </div>
       <div class="controls-hint">
         scroll to ride between scales · drag to orbit · click any glint
         to travel · chart toggles the borders
