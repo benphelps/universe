@@ -4,12 +4,14 @@ import type { GalacticPosition } from '../universe/galaxy/density';
 import { galacticAddress } from '../universe/galaxy/regions';
 import { generateSystem } from '../universe/system/generate';
 import type { StarSystem } from '../universe/system/types';
+import { ChartToggle } from './ui/chartToggle';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
+import { SettingsMenu, SLOWEST_TIME_EXP } from './ui/settingsMenu';
 import { Sidebar, type ViewMode } from './ui/sidebar';
 import { StarInfoPanel } from './ui/starInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
-import { PRESET_TIME_SCALE, UnifiedViewer } from './unifiedViewer';
+import { UnifiedViewer } from './unifiedViewer';
 
 const viewElement = document.getElementById('view')!;
 
@@ -20,7 +22,7 @@ let viewer: UnifiedViewer | null = null;
 let system: StarSystem | null = null;
 let currentLocaleKey = '';
 let exposure = 1;
-let timeScale: number | null = null;
+let timeScale = 10 ** SLOWEST_TIME_EXP;
 
 function randomSeedHex(): string {
   const words = new Uint32Array(2);
@@ -137,10 +139,10 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
       }
     }
   }
-  viewer.timeScaleDaysPerSecond = timeScale ?? PRESET_TIME_SCALE[viewMode];
+  viewer.timeScaleDaysPerSecond = timeScale;
   viewer.exposure = exposure;
 
-  sidebar.seed = seedHex;
+  settings.seed = seedHex;
   sidebar.view = viewMode;
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
@@ -159,14 +161,15 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
 }
 
 const sidebar = new Sidebar(document.getElementById('sidebar')!, {
-  onSeed: load,
-  onRandom: () => load(randomSeedHex()),
   onView: (mode) => {
     if (mode === viewMode) return;
     viewMode = mode;
-    timeScale = null;
     load(seedHex);
   },
+});
+const settings = new SettingsMenu(document.getElementById('settings-corner')!, {
+  onSeed: load,
+  onRandom: () => load(randomSeedHex()),
   onTimeScale: (daysPerSecond) => {
     timeScale = daysPerSecond;
     if (viewer) viewer.timeScaleDaysPerSecond = daysPerSecond;
@@ -175,9 +178,9 @@ const sidebar = new Sidebar(document.getElementById('sidebar')!, {
     exposure = value;
     if (viewer) viewer.exposure = value;
   },
-  onChartToggle: (visible) => {
-    if (viewer) viewer.chartVisible = visible;
-  },
+});
+new ChartToggle(document.getElementById('chart')!, (visible) => {
+  if (viewer) viewer.chartVisible = visible;
 });
 const starPanel = new StarInfoPanel(sidebar);
 const systemPanel = new SystemInfoPanel(sidebar);
