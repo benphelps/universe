@@ -327,14 +327,9 @@ tr.pick:hover td {
   gap: 1px;
   background: none;
   border: none;
-  border-left: 1px solid var(--line);
   border-radius: 0;
   padding: 8px 0 7px;
   box-shadow: inset 0 2px 0 transparent;
-}
-
-#level-nav button:first-child {
-  border-left: none;
 }
 
 #level-nav button .name {
@@ -349,7 +344,7 @@ tr.pick:hover td {
 }
 
 #level-nav button:hover {
-  background: var(--accent-soft);
+  box-shadow: inset 0 2px 0 rgba(70, 174, 198, 0.45);
   color: var(--ink);
 }
 
