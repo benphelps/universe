@@ -116,6 +116,11 @@ const ORIGIN = new Vector3();
  *  extended sky objects; solid pickables keep their generous reach. */
 const STAR_SNAP_PX = 10;
 
+/** Auto ride-out pace: decades of altitude per second. Constant speed
+ *  per scale decade — ground to galaxy frame spans ~17 decades (~28 s),
+ *  a system view about half that. */
+const RIDE_OUT_DECADES_PER_SEC = 0.6;
+
 export type FocusTarget = 'star' | number;
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
@@ -284,6 +289,10 @@ export class UnifiedViewer {
   private rightShiftHeld = false;
   /** Wheel ride input, applied to the altitude during the next frame. */
   private pendingWheelFactor = 1;
+  /** Auto wheel ride: >0 while the slow pull-back to the galaxy runs. */
+  private rideOutRate = 0;
+  /** Fired when the automatic ride out starts, ends, or is cut short. */
+  onRideOutChange: ((active: boolean) => void) | null = null;
   private readonly onKeyChange = (e: KeyboardEvent): void => {
     if (e.code !== 'ShiftRight') return;
     this.rightShiftHeld = e.type === 'keydown';
@@ -431,6 +440,7 @@ export class UnifiedViewer {
       'wheel',
       (e) => {
         e.preventDefault();
+        this.stopRideOut();
         this.pendingWheelFactor *= 1.0016 ** e.deltaY;
       },
       { passive: false },
@@ -873,6 +883,7 @@ export class UnifiedViewer {
     // new focus and pending ride input clears.
     this.controls.target.set(0, 0, 0);
     this.pendingWheelFactor = 1;
+    this.stopRideOut();
     this.controls.update();
 
     // Descending pitches toward screen-up: the orbit view keeps north
@@ -933,6 +944,26 @@ export class UnifiedViewer {
       }
     }
     return false;
+  }
+
+  /** Begin the slow pull-back: a hands-free wheel ride from wherever
+   *  the camera stands — a planet's ground included — out to the
+   *  galaxy frame. Orbit drag still steers; the wheel, a travel, or a
+   *  second press takes the ride back. */
+  startRideOut(): void {
+    if (this.rideOutRate > 0) return;
+    this.rideOutRate = RIDE_OUT_DECADES_PER_SEC;
+    this.onRideOutChange?.(true);
+  }
+
+  stopRideOut(): void {
+    if (this.rideOutRate === 0) return;
+    this.rideOutRate = 0;
+    this.onRideOutChange?.(false);
+  }
+
+  get ridingOut(): boolean {
+    return this.rideOutRate > 0;
   }
 
   /** Find the pickable nearest the cursor and drive the tooltip. */
@@ -1768,6 +1799,18 @@ export class UnifiedViewer {
       // buttery down to the ground), or the panned anchor when free
       // flight has moved it — zoom goes where you look, not back home.
       const anchor = this.controls.target;
+      if (this.rideOutRate > 0) {
+        if (this.altitudeKm >= this.maxAltitudeKm() * 0.999) {
+          this.stopRideOut();
+        } else {
+          this.pendingWheelFactor *= 10 ** (this.rideOutRate * dtSeconds);
+          // From a standstill on the ground the first push must clear
+          // the walker's liftoff threshold whatever the frame rate.
+          if (walking && this.walker.phase === 'walking') {
+            this.pendingWheelFactor = Math.max(this.pendingWheelFactor, 1.03);
+          }
+        }
+      }
       if (walking) {
         if (this.pendingWheelFactor > 1.02 && this.walker.phase === 'walking') {
           this.walker.beginLiftoff(this.minAltitudeKm * 1000);

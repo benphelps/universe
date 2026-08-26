@@ -333,7 +333,8 @@ tr.here .swatch {
   accent-color: var(--accent);
 }
 
-#chart {
+#chart,
+#ride {
   position: fixed;
   right: 12px;
   bottom: 12px;
@@ -344,14 +345,20 @@ tr.here .swatch {
   letter-spacing: 0.12em;
 }
 
-#chart.active {
+#ride {
+  right: 84px;
+}
+
+#chart.active,
+#ride.active {
   border-color: var(--accent);
   color: var(--accent);
 }
 
 #sidebar button,
 #settings-corner button,
-#chart {
+#chart,
+#ride {
   background: none;
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -363,14 +370,16 @@ tr.here .swatch {
 }
 
 #settings-corner button,
-#chart {
+#chart,
+#ride {
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
 }
 
 #sidebar button:hover,
 #settings-corner button:hover,
-#chart:hover {
+#chart:hover,
+#ride:hover {
   border-color: var(--accent);
   color: var(--ink);
 }
@@ -378,6 +387,7 @@ tr.here .swatch {
 #sidebar button:focus-visible,
 #settings-corner button:focus-visible,
 #chart:focus-visible,
+#ride:focus-visible,
 #settings-menu input:focus-visible {
   outline: 1px solid var(--accent-hi);
   outline-offset: 1px;
