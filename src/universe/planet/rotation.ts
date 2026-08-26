@@ -8,9 +8,14 @@ import type { PlanetRotation } from './types';
 const DEG = Math.PI / 180;
 
 /**
- * Primordial spin, then tidal despinning: inside the lock radius planets
- * are synchronous (or captured into 3:2 when eccentric, Mercury-style).
- * Obliquities are broad, with occasional tipped Uranus-class outliers.
+ * Primordial spin, then tidal despinning. Giants inhale their spin from
+ * disk gas: fast, prograde, nearly upright, with rare resonance-walked
+ * poles (Saturn's 27°, Uranus on its side). Terrestrials remember their
+ * last giant impacts instead: isotropic obliquity, retrograde as often
+ * as not. Inside the lock radius the tide takes over — synchronous,
+ * Mercury's 3:2 when eccentric, or a Venus, where thermal tides in a
+ * thick atmosphere stall the despin short of lock and hold a slow,
+ * nearly upside-down spin whose day runs backwards against its year.
  */
 export function computeRotation(
   rng: Rng,
@@ -22,7 +27,11 @@ export function computeRotation(
   semiMajorAxisM: number,
 ): PlanetRotation {
   const orbitalHours = orbitalPeriod(mu, semiMajorAxisM) / 3600;
-  const giant = planetClass === 'gas-giant' || planetClass === 'ice-giant';
+  // Mini-Neptunes spin like their bigger siblings: the envelope's gas
+  // carried the disk's angular momentum in, and there is no surface
+  // for an impact- or thermal-tide-driven history to grip.
+  const giant =
+    planetClass === 'gas-giant' || planetClass === 'ice-giant' || planetClass === 'mini-neptune';
 
   if (aAu < tidalLockAu) {
     if (eccentricity > 0.15 && !giant && rng.bool(0.5)) {
@@ -33,16 +42,32 @@ export function computeRotation(
         spinOrbitResonance: '3:2',
       };
     }
+    // Only viable in the outer despin zone: closer in, the gravitational
+    // tide overwhelms any atmosphere's thermal tide and the lock is clean.
+    if (!giant && aAu > tidalLockAu * 0.75 && rng.bool(0.45)) {
+      return {
+        periodHours: orbitalHours * rng.range(0.7, 1.5),
+        obliquityRad: rng.range(174, 179.5) * DEG,
+        locked: false,
+        spinOrbitResonance: null,
+      };
+    }
     return { periodHours: orbitalHours, obliquityRad: 0, locked: true, spinOrbitResonance: null };
   }
 
-  const periodHours = giant
-    ? rng.range(8, 16)
-    : Math.min(logNormal(rng, Math.log(18), 0.5), orbitalHours / 3);
-  const tipped = rng.bool(0.08);
+  if (giant) {
+    const tipped = rng.bool(0.07);
+    return {
+      periodHours: rng.range(8, 16),
+      obliquityRad: tipped ? rng.range(25, 105) * DEG : Math.abs(rng.normal(0, 5)) * DEG,
+      locked: false,
+      spinOrbitResonance: null,
+    };
+  }
+
   return {
-    periodHours,
-    obliquityRad: tipped ? rng.range(60, 178) * DEG : Math.abs(rng.normal(0, 18)) * DEG,
+    periodHours: Math.min(logNormal(rng, Math.log(18), 0.5), orbitalHours / 3),
+    obliquityRad: Math.acos(rng.range(-1, 1)),
     locked: false,
     spinOrbitResonance: null,
   };

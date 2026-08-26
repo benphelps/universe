@@ -28,13 +28,18 @@ export interface StellarPhysical {
 
 export interface StarActivity {
   rotationPeriodDays: number;
+  /** Spin-axis lean off the system plane's normal; > π/2 spins retrograde. */
   axialTiltRad: number;
+  /** Direction the axis leans toward, around the plane normal. */
+  axialAzimuthRad: number;
   /** Equator-to-pole relative rotation-rate difference. */
   differentialRotation: number;
   /** Fraction of the photosphere covered by spots. */
   spotCoverage: number;
   /** Center latitude of the spot bands, radians. */
   spotLatitudeRad: number;
+  /** Condensate-cloud coverage on L/T-transition photospheres. */
+  cloudPatchiness: number;
   /** Mean flare events per day. */
   flareRatePerDay: number;
   /** Convective granule size relative to solar. */

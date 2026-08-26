@@ -78,7 +78,9 @@ export class PlanetInfoPanel {
           ? 'tidally locked'
           : rotation.spinOrbitResonance
             ? `3:2 resonance (${fmtDays(rotation.periodHours / 24)})`
-            : `${fmtDays(rotation.periodHours / 24)} · tilt ${fmt((rotation.obliquityRad * 180) / Math.PI, 2)}°`,
+            : `${fmtDays(rotation.periodHours / 24)} · tilt ${fmt((rotation.obliquityRad * 180) / Math.PI, 2)}°${
+              rotation.obliquityRad > Math.PI / 2 ? ' · retrograde' : ''
+            }`,
       ],
       ['Atmosphere', atmosphereLine(planet)],
       ['T', temperatureLine(planet)],
@@ -120,11 +122,12 @@ export class PlanetInfoPanel {
       onStep,
     });
 
-    const moons = planet.moons.filter((m) => m.semiMajorAxisPlanetRadii < 100);
+    const moons = planet.moons;
     const moonRows = moons
       .map((moon) => {
         const radiusKm = moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000);
         const notes = [
+          moon.retrograde ? 'retrograde capture' : '',
           TIDAL_LABEL[moon.tidalState],
           moon.physical.atmosphere.class !== 'none' ? 'atmosphere' : '',
           moon.resonanceWithInner ? `${moon.resonanceWithInner} resonance` : '',

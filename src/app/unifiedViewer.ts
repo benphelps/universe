@@ -1249,9 +1249,7 @@ export class UnifiedViewer {
     if (!this.system) return;
     const starRgb = this.system.star.linearRgb;
     this.moonGroup = new Group();
-    this.moons = planet.moons
-      .filter((moon) => moon.semiMajorAxisPlanetRadii < 100)
-      .map((moon) => {
+    this.moons = planet.moons.map((moon) => {
         const object = new PlanetObject(moon.physical, null);
         object.group.scale.setScalar(EARTH_RADIUS_KM);
         this.moonGroup!.add(object.group);

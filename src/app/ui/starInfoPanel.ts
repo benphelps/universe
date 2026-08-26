@@ -28,9 +28,19 @@ export class StarInfoPanel {
       ['T_eff', star.tEff > 0 ? `${fmt(star.tEff, 4)} K` : '—'],
       ['Age', fmtYears(star.ageGyr * 1e9)],
       ['[Fe/H]', `${fmt(star.feH, 2)} · ${star.population.replace('-', ' ')}`],
-      ['Rotation', fmtDays(star.activity.rotationPeriodDays)],
-      ['Spots', `${fmt(star.activity.spotCoverage * 100, 2)}% coverage`],
+      [
+        'Rotation',
+        `${fmtDays(star.activity.rotationPeriodDays)} · tilt ${fmt((star.activity.axialTiltRad * 180) / Math.PI, 2)}°${
+          star.activity.axialTiltRad > Math.PI / 2 ? ' · retrograde' : ''
+        }`,
+      ],
     ];
+    if (star.activity.spotCoverage >= 0.005) {
+      rows.push(['Spots', `${fmt(star.activity.spotCoverage * 100, 2)}% coverage`]);
+    }
+    if (star.activity.cloudPatchiness >= 0.05) {
+      rows.push(['Clouds', `${fmt(star.activity.cloudPatchiness * 100, 2)}% patchy`]);
+    }
     if (star.variability) {
       rows.push([
         'Variable',

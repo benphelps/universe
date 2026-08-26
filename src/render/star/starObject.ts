@@ -5,8 +5,10 @@ import {
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
+  Quaternion,
   ShaderMaterial,
   SphereGeometry,
+  Vector3,
   type DataTexture,
 } from 'three';
 import type { Star } from '../../universe/star/types';
@@ -44,7 +46,11 @@ export class StarObject {
     this.photosphere = createPhotosphereMaterial(star, lut);
     const sphere = new Mesh(new SphereGeometry(1, 96, 64), this.photosphere);
     sphere.scale.setScalar(star.radius);
-    sphere.rotation.z = star.activity.axialTiltRad;
+    // The spin axis: lean off the system plane's normal by the tilt,
+    // swung toward its azimuth. Tilts past 90° spin retrograde.
+    sphere.quaternion
+      .setFromAxisAngle(new Vector3(0, 1, 0), star.activity.axialAzimuthRad)
+      .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), star.activity.axialTiltRad));
     this.group.add(sphere);
 
     this.corona = createCoronaMaterial(star);
