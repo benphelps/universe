@@ -177,7 +177,7 @@ export class CometObject {
 
     // Ion tail: entrained by the outflowing wind within hours, so it
     // pins anti-solar; slow kinks ride down it as the wind gusts.
-    const ionLength = Math.min(1.2, 0.22 * activity);
+    const ionLength = Math.min(0.9, 0.22 * activity);
     const tDays = (tSeconds as number) / DAY_S;
     const ripple = new Vector3(antiSolar.z, 0.4, -antiSolar.x).normalize();
     this.writeRibbon(this.ion, (u, out) => {
@@ -197,12 +197,24 @@ export class CometObject {
     // along-track lag of push-slowed grit — same order as the push,
     // never the orbit-arc scale that would swing the tail anti-motion.
     const beta = 0.3;
-    const tailDays = 55 * (0.4 + 0.6 * Math.min(activity, 2));
+    // The one-β syndyne approximation anchors every grain to the
+    // current head, which holds only while the sun's bearing rotates
+    // modestly across the emission window — past that it fabricates
+    // hairpin arcs no photograph shows. Cap the window where the
+    // bearing has swept ~35°, from the orbit's own angular rate.
+    const hx = position.y * velocity.z - position.z * velocity.y;
+    const hy = position.z * velocity.x - position.x * velocity.z;
+    const hz = position.x * velocity.y - position.y * velocity.x;
+    const rM2 = position.x ** 2 + position.y ** 2 + position.z ** 2;
+    const angularRate = Math.hypot(hx, hy, hz) / Math.max(rM2, 1);
+    const tailS = Math.min(
+      55 * (0.4 + 0.6 * Math.min(activity, 2)) * DAY_S,
+      0.6 / Math.max(angularRate, 1e-9),
+    );
     const emitted = new Vector3();
     const vHat = new Vector3();
     this.writeRibbon(this.dust, (u, out) => {
-      const tauDays = u ** 1.5 * tailDays;
-      const tauS = tauDays * DAY_S;
+      const tauS = u ** 1.5 * tailS;
       const past = elementsToState(this.comet.elements, this.mu, seconds((tSeconds as number) - tauS));
       emitted.set(past.position.x, past.position.y, past.position.z);
       const rM = Math.max(emitted.length(), 1e7);
