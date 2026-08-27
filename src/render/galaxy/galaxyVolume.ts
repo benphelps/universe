@@ -98,33 +98,41 @@ float stellarDensity(vec3 p) {
   return thin + thick + halo;
 }
 
-// Differential rotation shears everything: rotate by an angle that
-// grows with log radius, and isotropic noise sampled there streaks
-// into trailing spiral filaments.
-vec3 swirl(vec3 p) {
-  float ang = 2.2 * log(max(length(p.xy), 0.8));
+// Differential rotation curves structure: rotate by an angle growing
+// with log radius. Gentle strengths only — hard shear combs noise
+// into stripes; k is per-octave so features never all align.
+vec3 swirl(vec3 p, float k) {
+  float ang = k * log(max(length(p.xy), 0.8));
   float c = cos(ang);
   float s = sin(ang);
   return vec3(c * p.x - s * p.y, s * p.x + c * p.y, p.z * 1.7);
 }
 
 // Clumped ISM overdensity beyond the per-cloud radius: patchiness at
-// the cloud-complex scale, sheared along rotation into the filament
-// webbing a face-on disk shows.
+// the cloud-complex scale, mildly sheared into trailing filaments.
 float cloudClump(vec3 p) {
-  vec3 q = swirl(p);
+  vec3 q = swirl(p, 1.1);
   float n = snoise(q / 0.38) + 0.55 * snoise(q / 0.14 + vec3(37.0, -11.0, 53.0))
-    + 0.4 * snoise(q / 0.06 + vec3(-19.0, 47.0, 23.0));
+    + 0.35 * snoise(swirl(p, 0.6) / 0.06 + vec3(-19.0, 47.0, 23.0));
   return 3.2 * pow(max(1.0e-5, n - 0.25), 1.5);
 }
 
-// Statistical grain of the arms' young population: unresolved cluster
-// clumping, sheared like everything else. Mean 1, so the interior
-// glow map (which integrates the smooth expectation) agrees.
+// Statistical grain of the arms' young population: a nested
+// star-forming hierarchy. Thresholded kpc-scale complexes carve true
+// dark breaks between bright stretches; mid-scale clumps cluster
+// inside them. Multiplicative, so structure nests instead of
+// striping; mean ~1, so the interior glow map's smooth expectation
+// agrees.
 float armGrain(vec3 p) {
-  vec3 q = swirl(p);
-  return clamp(1.0 + 1.1 * snoise(q / 0.45 + vec3(11.0, -29.0, 5.0))
-    + 0.55 * snoise(q / 0.16 + vec3(-7.0, 13.0, 41.0)), 0.15, 2.8);
+  float big = smoothstep(0.15, 0.95, 0.5 + 0.5 * snoise(swirl(p, 0.35) / 1.7 + vec3(11.0, -29.0, 5.0)));
+  float mid = 0.5 + 0.5 * snoise(swirl(p, 0.7) / 0.55 + vec3(-7.0, 13.0, 41.0));
+  return clamp((0.15 + 1.5 * big) * (0.45 + 1.1 * mid) * 1.1, 0.06, 3.4);
+}
+
+// Shot texture of the unresolved star field itself: fine isotropic
+// stipple over the whole disk, mean 1.
+float stipple(vec3 p) {
+  return 0.8 + 0.2 * snoise(p / 0.13 + vec3(29.0, 3.0, -17.0));
 }
 
 void main() {
@@ -184,7 +192,7 @@ void main() {
       // The arm overdensity shines young (ARM_YOUNG_LIGHT in
       // density.ts), textured by unresolved cluster grain.
       float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) *
-        (1.0 + 4.0 * arm.x * armGrain(p));
+        (1.0 + 4.0 * arm.x * armGrain(p)) * stipple(p);
       float thick = 0.0943516 * exp(-radius / 3.6) * exp(-abs(p.z) / 0.9);
       float halo = 0.0008 * pow(max(length(p), 0.5) / 8.0, -3.5);
       float dust = exp(-radius / 2.6) * exp(-abs(p.z) / 0.12) * (1.0 + 1.4 * arm.y);
