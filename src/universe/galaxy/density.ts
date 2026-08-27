@@ -33,6 +33,12 @@ const SPUR_PITCH_TAN = Math.tan((24 * Math.PI) / 180);
  *  plus cross-arm tails, with margin. */
 export const ARM_BOOST_MAX = 6.1;
 
+/** How much brighter the arm overdensity shines per star than the
+ *  field: the young population — the luminous massive stars — lives in
+ *  the arms it was born in. Multiplies arm EMISSION (band glow and
+ *  exterior volume), never star counts. */
+export const ARM_YOUNG_LIGHT = 4;
+
 function wrapPi(angle: number): number {
   const m = (angle + Math.PI) % (2 * Math.PI);
   return (m < 0 ? m + 2 * Math.PI : m) - Math.PI;
@@ -74,28 +80,32 @@ export function armProfile(
   let lane = 0;
   for (let arm = 0; arm < ARM_COUNT; arm++) {
     const ridge = u + arm * (Math.PI + 0.22) + armWobble(u, arm);
-    const d = Math.abs(wrapPi(azimuthRad - ridge)) * radiusPc;
-    const width = 600 * (1 + 0.25 * Math.sin(2.3 * u + 0.8 + 2.9 * arm));
+    const delta = wrapPi(azimuthRad - ridge) * radiusPc;
+    const d = Math.abs(delta);
+    // Broad arms with the spiral shock's asymmetry: a compressed
+    // leading edge where the dust lane rides, a fluffy trailing edge.
+    const width =
+      1150 * (1 + 0.25 * Math.sin(2.3 * u + 0.8 + 2.9 * arm)) * (delta < 0 ? 0.55 : 1.45);
     const seg =
       0.35 + 0.65 * (0.5 + 0.5 * Math.sin(1.9 * u + 5.1 + 2.45 * arm)) ** 1.3;
     const knot = Math.max(
       0,
-      Math.sin(9.0 * u + 1.0 + 3.7 * arm) * Math.sin(5.7 * u + 0.9 + 2.0 * arm),
+      Math.sin(7.0 * u + 1.0 + 3.7 * arm) * Math.sin(4.3 * u + 0.9 + 2.0 * arm),
     );
     const body = d / width;
-    const core = d / (0.5 * width);
+    const core = d / (0.45 * width);
     boost +=
       (arm === 0 ? 1 : 0.78) *
       seg *
       (2.6 * Math.exp(-body * body) + 2.6 * knot * knot * Math.exp(-core * core));
-    const laneD = Math.abs(wrapPi(azimuthRad - (ridge - 0.05))) * radiusPc;
-    lane += (0.4 + 0.6 * seg) * Math.exp(-((laneD / 300) ** 2));
+    const laneD = Math.abs(wrapPi(azimuthRad - (ridge - 0.09))) * radiusPc;
+    lane += (0.4 + 0.6 * seg) * Math.exp(-((laneD / 380) ** 2));
   }
   const v = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / SPUR_PITCH_TAN;
   for (let j = 0; j < 5; j++) {
     const d = Math.abs(wrapPi(azimuthRad - (v + (j * 2 * Math.PI) / 5 + 0.9))) * radiusPc;
     const gate = Math.max(0, Math.sin(2.6 * v + 2.4 * j + 0.6));
-    boost += 0.65 * gate * gate * Math.exp(-((d / 420) ** 2));
+    boost += 0.65 * gate * gate * Math.exp(-((d / 700) ** 2));
   }
   return { boost: boost * emerge, lane: lane * emerge };
 }

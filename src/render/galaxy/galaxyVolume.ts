@@ -63,20 +63,24 @@ vec2 armProfile(float radiusKpc, float azimuth) {
     float a = float(arm);
     float ridge = u + a * 3.36159265 +
       0.16 * sin(1.1 * u + 1.3 + 2.1 * a) + 0.07 * sin(2.6 * u + 4.2 + 1.7 * a);
-    float d = abs(wrapPi(azimuth - ridge)) * radiusKpc;
-    float width = 0.6 * (1.0 + 0.25 * sin(2.3 * u + 0.8 + 2.9 * a));
+    float delta = wrapPi(azimuth - ridge) * radiusKpc;
+    float d = abs(delta);
+    // Broad arms, shock-asymmetric: compressed leading edge, fluffy
+    // trailing edge.
+    float width = 1.15 * (1.0 + 0.25 * sin(2.3 * u + 0.8 + 2.9 * a)) *
+      (delta < 0.0 ? 0.55 : 1.45);
     float seg = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(1.9 * u + 5.1 + 2.45 * a), 1.3);
-    float knot = max(0.0, sin(9.0 * u + 1.0 + 3.7 * a) * sin(5.7 * u + 0.9 + 2.0 * a));
+    float knot = max(0.0, sin(7.0 * u + 1.0 + 3.7 * a) * sin(4.3 * u + 0.9 + 2.0 * a));
     float body = d / width;
-    float core = d / (0.5 * width);
+    float core = d / (0.45 * width);
     boost += (arm == 0 ? 1.0 : 0.78) * seg *
       (2.6 * exp(-body * body) + 2.6 * knot * knot * exp(-core * core));
-    float laneD = abs(wrapPi(azimuth - (ridge - 0.05))) * radiusKpc / 0.3;
+    float laneD = abs(wrapPi(azimuth - (ridge - 0.09))) * radiusKpc / 0.38;
     lane += (0.4 + 0.6 * seg) * exp(-laneD * laneD);
   }
   float v = log(max(radiusKpc, 3.0) / 3.0) / 0.4452287; // tan 24 deg pitch
   for (int j = 0; j < 5; j++) {
-    float d = abs(wrapPi(azimuth - (v + float(j) * 1.25663706 + 0.9))) * radiusKpc / 0.42;
+    float d = abs(wrapPi(azimuth - (v + float(j) * 1.25663706 + 0.9))) * radiusKpc / 0.7;
     float gate = max(0.0, sin(2.6 * v + 2.4 * float(j) + 0.6));
     boost += 0.65 * gate * gate * exp(-d * d);
   }
@@ -94,11 +98,33 @@ float stellarDensity(vec3 p) {
   return thin + thick + halo;
 }
 
+// Differential rotation shears everything: rotate by an angle that
+// grows with log radius, and isotropic noise sampled there streaks
+// into trailing spiral filaments.
+vec3 swirl(vec3 p) {
+  float ang = 2.2 * log(max(length(p.xy), 0.8));
+  float c = cos(ang);
+  float s = sin(ang);
+  return vec3(c * p.x - s * p.y, s * p.x + c * p.y, p.z * 1.7);
+}
+
 // Clumped ISM overdensity beyond the per-cloud radius: patchiness at
-// the cloud-complex scale, in the amplitude range cloudFieldAt spans.
+// the cloud-complex scale, sheared along rotation into the filament
+// webbing a face-on disk shows.
 float cloudClump(vec3 p) {
-  float n = snoise(p / 0.38) + 0.55 * snoise(p / 0.14 + vec3(37.0, -11.0, 53.0));
+  vec3 q = swirl(p);
+  float n = snoise(q / 0.38) + 0.55 * snoise(q / 0.14 + vec3(37.0, -11.0, 53.0))
+    + 0.4 * snoise(q / 0.06 + vec3(-19.0, 47.0, 23.0));
   return 3.2 * pow(max(1.0e-5, n - 0.25), 1.5);
+}
+
+// Statistical grain of the arms' young population: unresolved cluster
+// clumping, sheared like everything else. Mean 1, so the interior
+// glow map (which integrates the smooth expectation) agrees.
+float armGrain(vec3 p) {
+  vec3 q = swirl(p);
+  return clamp(1.0 + 1.1 * snoise(q / 0.45 + vec3(11.0, -29.0, 5.0))
+    + 0.55 * snoise(q / 0.16 + vec3(-7.0, 13.0, 41.0)), 0.15, 2.8);
 }
 
 void main() {
@@ -155,11 +181,14 @@ void main() {
       vec3 p = cam + dir * s;
       float radius = length(p.xy);
       vec2 arm = armProfile(radius, atan(p.y, p.x));
-      float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) * (1.0 + arm.x);
+      // The arm overdensity shines young (ARM_YOUNG_LIGHT in
+      // density.ts), textured by unresolved cluster grain.
+      float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) *
+        (1.0 + 4.0 * arm.x * armGrain(p));
       float thick = 0.0943516 * exp(-radius / 3.6) * exp(-abs(p.z) / 0.9);
       float halo = 0.0008 * pow(max(length(p), 0.5) / 8.0, -3.5);
       float dust = exp(-radius / 2.6) * exp(-abs(p.z) / 0.12) * (1.0 + 1.4 * arm.y);
-      float clump = s > 1.5 ? 0.45 + 1.6 * cloudClump(p) : 0.45;
+      float clump = s > 1.5 ? (0.45 + 1.6 * cloudClump(p)) * (1.0 + 0.5 * arm.y) : 0.45;
       tau += dust * clump * 45.0 * diskStep;
       light += (thin + thick + halo) * diskStep * exp(-tau);
     }

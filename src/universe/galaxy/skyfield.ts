@@ -18,6 +18,7 @@ import {
   type MolecularCloud,
 } from './clouds';
 import {
+  ARM_YOUNG_LIGHT,
   dustDensity,
   HOME_POSITION,
   sightlineDensities,
@@ -1284,8 +1285,12 @@ function buildGlow(
         const clump =
           s > RIFT_NEAR_PC ? 0.45 + 1.6 * expectedCloudField(sample.dust, sample.armBoost) : 0.45;
         opticalDepth += sample.dust * clump * dustKappa * stepPc;
+        // The arm overdensity shines young: its light is weighted by
+        // ARM_YOUNG_LIGHT beyond its star count.
+        const armExtra = sample.armBoost - 1;
+        const thinLit = (sample.thin / sample.armBoost) * (1 + ARM_YOUNG_LIGHT * armExtra);
         light +=
-          (sample.thin + sample.thick + sample.halo) *
+          (thinLit + sample.thick + sample.halo) *
           meanLuminosity *
           stepPc *
           Math.exp(-opticalDepth);
