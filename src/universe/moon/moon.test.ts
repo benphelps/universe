@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { EARTH_RADIUS } from '../../core/physics/constants';
+import { elementsToState } from '../../core/math/kepler';
+import { AU, EARTH_RADIUS } from '../../core/physics/constants';
+import { mu, seconds } from '../../core/physics/units';
 import { generateSystem } from '../system/generate';
 import { rocheLimitPlanetRadii, tidalHeatFluxWm2 } from './generate';
 
@@ -112,11 +114,16 @@ describe('satellite systems', () => {
     expect(gapChecked).toBe(true);
   });
 
-  it('comets: every system has one near perihelion, on bound near-parabolic orbits', () => {
+  it('comets: every system has one active at epoch, on bound near-parabolic orbits', () => {
+    const anyMu = mu(1.327e20);
     for (const system of systems.slice(0, 30)) {
       expect(system.comets.length).toBeGreaterThan(0);
       const first = system.comets[0];
-      expect(Math.abs(first.elements.meanAnomalyAtEpoch)).toBeLessThan(0.1);
+      // Inside its activity onset at epoch: the apparition is live, not
+      // merely "mean anomaly near zero" (years off on these periods).
+      const { position } = elementsToState(first.elements, anyMu, seconds(0));
+      const rAu = Math.hypot(position.x, position.y, position.z) / AU;
+      expect(rAu).toBeLessThan(first.activityOnsetAu);
       for (const comet of system.comets) {
         expect(comet.elements.eccentricity).toBeGreaterThan(0.8);
         expect(comet.elements.eccentricity).toBeLessThan(1);

@@ -2160,9 +2160,13 @@ export class UnifiedViewer {
       material.uniforms.uTimeYears.value = foldShaderTime(this.simTimeDays / 365.25);
     }
     const cometHead = new Vector3();
+    const radPerPixel =
+      (this.camera.fov * Math.PI) /
+      180 /
+      Math.max(this.pipeline.renderer.domElement.clientHeight, 1);
     for (let i = 0; i < this.cometObjects.length; i++) {
       const comet = this.cometObjects[i];
-      comet.update(tSeconds);
+      comet.update(tSeconds, this.camera.position, radPerPixel);
       if (comet.getHeadWorldPosition(cometHead)) {
         const elements = this.system.comets[i].elements;
         const perihelionAu = (elements.semiMajorAxis * (1 - elements.eccentricity)) / AU;
