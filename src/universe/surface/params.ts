@@ -1,7 +1,7 @@
 import { EARTH_RADIUS } from '../../core/physics/constants';
 import type { Characterization } from '../planet/types';
 
-export type TectonicStyle = 'active' | 'stagnant' | 'dead';
+export type TectonicStyle = 'active' | 'stagnant' | 'molten' | 'dead';
 
 type Rgb = [number, number, number];
 
@@ -55,20 +55,37 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
   const tectonics: TectonicStyle =
     interior.regime === 'active-tectonics'
       ? 'active'
-      : interior.regime === 'stagnant-lid' || interior.regime === 'magma'
-        ? 'stagnant'
-        : 'dead';
+      : interior.regime === 'magma'
+        ? 'molten'
+        : interior.regime === 'stagnant-lid'
+          ? 'stagnant'
+          : 'dead';
 
-  const craterRetention = tectonics === 'dead' ? 1 : tectonics === 'stagnant' ? 0.35 : 0.05;
+  // Molten surfaces resurface faster than impacts arrive — Io shows
+  // zero craters.
+  const craterRetention =
+    tectonics === 'dead'
+      ? 1
+      : tectonics === 'molten'
+        ? 0.02
+        : tectonics === 'stagnant'
+          ? 0.35
+          : 0.05;
 
   const radiusM = bulk.radiusEarth * EARTH_RADIUS;
+  // A lid floating on molten interior supports little topographic load:
+  // relief collapses to sheet-flow plains with modest volcanic swells
+  // (Io's plains run a few hundred meters; its rare tall blocks are
+  // exceptions, not the field).
+  const crustSupport = tectonics === 'molten' ? 0.16 : 1;
   return {
     seedHex,
     radiusM,
     // Crust strength sets relief against gravity, but never more than a
     // few percent of the body: beyond that it's shape, not terrain
     // (Moon 0.5% R, Mars 0.9% R, Vesta ~8% R at the small-body limit).
-    reliefM: Math.min(26000, radiusM * 0.08, Math.max(900, 5500 * gravityRatio ** 0.7)),
+    reliefM:
+      Math.min(26000, radiusM * 0.08, Math.max(900, 5500 * gravityRatio ** 0.7)) * crustSupport,
     oceanCoverage: climate.hydrosphere === 'oceans' ? climate.oceanCoverage : 0,
     tectonics,
     craterAmplitude: craterRetention * (1 - erosion * 0.85),

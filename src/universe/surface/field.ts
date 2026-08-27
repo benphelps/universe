@@ -128,10 +128,14 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   // flows, actively resurfacing airless crust) keep blocky fine
   // texture. Without this, low-erosion worlds run 50–5000% median
   // slopes at a 5 m step; the Moon's real figure is under 10%.
-  const freshness = Math.min(
-    1,
-    volcanism * 0.5 + (erosion < 0.2 && params.craterAmplitude < 0.15 ? 0.5 : 0),
-  );
+  // A molten surface is paved, not mantled: sheet flows flood and
+  // re-flood every wavelength up to whole flow fields, so relief is
+  // truncated at the sheet grade far beyond the gardening scale, and
+  // only the newest flows keep blocky meter texture.
+  const paved = tectonics === 'molten';
+  const freshness = paved
+    ? 0.25
+    : Math.min(1, volcanism * 0.5 + (erosion < 0.2 && params.craterAmplitude < 0.15 ? 0.5 : 0));
   const mantledSlope = 0.1 + 0.35 * freshness;
   // Gyr of impact gardening relaxes relief out to basin scales — the
   // Moon's megaregolith runs kilometers deep, and highland slopes at
@@ -141,7 +145,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   // not fresh repose.
   const gardening = params.craterAmplitude * (1 - freshness);
   const bedrockSlope = 0.6 - 0.32 * gardening;
-  const mantleWavelengthM = 200 + 20000 * gardening;
+  const mantleWavelengthM = paved ? 4500 : 200 + 20000 * gardening;
   // The cap is on delivered grade, so the ridge transform's gradient
   // gain (1+ridge) and the extra slope of a band's internal octaves
   // divide out of the allowed amplitude.
