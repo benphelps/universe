@@ -188,7 +188,7 @@ export class GalaxyVolume {
       },
       side: BackSide,
       blending: AdditiveBlending,
-      transparent: true,
+      transparent: false,
       depthWrite: false,
       depthTest: false,
     });

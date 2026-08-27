@@ -58,7 +58,10 @@ export function createStarPointsMaterial(kmPerPc: number): ShaderMaterial {
     fragmentShader: FRAGMENT,
     uniforms: { uKmPerPc: { value: kmPerPc }, uIntensity: { value: 1 } },
     blending: AdditiveBlending,
-    transparent: true,
+    // Opaque-pass background: drawn early by renderOrder, so bodies at
+    // any distance paint over these. Depth at stellar range quantizes
+    // to the far plane and cannot be trusted to occlude a planet.
+    transparent: false,
     depthWrite: false,
   });
 }
