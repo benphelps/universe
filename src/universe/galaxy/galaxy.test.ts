@@ -18,8 +18,10 @@ import {
   componentDensities,
   dustDensity,
   HOME_POSITION,
+  RIDGE_PHASE,
   stellarDensity,
   stellarDensityCeiling,
+  waveTilt,
 } from './density';
 import { sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
@@ -459,9 +461,10 @@ describe('gazetteer', () => {
     expect(galacticAddress({ xPc: 600, yPc: 300, zPc: 0 }).zone).toBe('core');
     expect(galacticAddress({ xPc: 14500, yPc: 2000, zPc: 0 }).zone).toBe('rim');
     expect(galacticAddress({ xPc: 8000, yPc: 0, zPc: 2000 }).zone).toBe('halo');
-    // A point on an arm ridge is in that arm.
+    // A point on an arm ridge is in that arm: the ridge is the
+    // density wave's crowding caustic.
     const radius = 8000;
-    const ridgeAzimuth = Math.log(radius / 3000) / Math.tan((12 * Math.PI) / 180);
+    const ridgeAzimuth = waveTilt(radius) + RIDGE_PHASE;
     const onArm = galacticAddress({
       xPc: radius * Math.cos(ridgeAzimuth),
       yPc: radius * Math.sin(ridgeAzimuth),

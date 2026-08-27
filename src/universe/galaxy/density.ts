@@ -24,13 +24,19 @@ const THIN_NORM = 0.09 / (Math.exp(-8000 / THIN_SCALE_LENGTH) * Math.exp(-20 / T
 const THICK_NORM =
   0.01 / (Math.exp(-8000 / THICK_SCALE_LENGTH) * Math.exp(-20 / THICK_SCALE_HEIGHT));
 
-const ARM_COUNT = 2;
 const ARM_PITCH_TAN = Math.tan((12 * Math.PI) / 180);
 const ARM_INNER_RADIUS = 3000;
-const SPUR_PITCH_TAN = Math.tan((24 * Math.PI) / 180);
-/** Rigorous ceiling on armBoost anywhere: a coincident arm-body peak
- *  and full star-forming knot (seg·(2.6 + 2.6)) plus a full spur,
- *  plus cross-arm tails, with margin. */
+/** How oval the most eccentric orbits get (axis ratio 1 − depth). */
+const WAVE_Q_DEPTH = 0.16;
+/** Where orbit ovalness peaks and where it dies back to circular. */
+const WAVE_CORE = 4200;
+const WAVE_DISK = 15000;
+/** Caustic clamp: the crowding Jacobian never divides past this. */
+const WAVE_J_MIN = 0.3;
+/** Co-wave phase of the crowding caustic (measured; see nearestArm). */
+export const RIDGE_PHASE = -0.45;
+/** Rigorous ceiling on armBoost anywhere: sampled max 5.05 over the
+ *  clamped crowding times full patchiness, held with margin. */
 export const ARM_BOOST_MAX = 6.1;
 
 /** How much brighter the arm overdensity shines per star than the
@@ -49,65 +55,99 @@ function smooth01(t: number): number {
   return c * c * (3 - 2 * c);
 }
 
-/** Azimuthal wobble of arm k's ridge at winding phase u: real arms are
- *  not perfect log spirals. Fixed sinusoid sums (not gradient noise) so
- *  the volume shader reproduces the exact same galaxy. */
-function armWobble(u: number, arm: number): number {
-  return (
-    0.16 * Math.sin(1.1 * u + 1.3 + 2.1 * arm) + 0.07 * Math.sin(2.6 * u + 4.2 + 1.7 * arm)
-  );
+/** Winding phase of the guiding radius: how far around the log spiral
+ *  an orbit of that size has turned. */
+export function waveWinding(guidingPc: number): number {
+  return Math.log(Math.max(guidingPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
+}
+
+/** Orientation of the oval orbit with guiding radius r₀: the log-spiral
+ *  winding plus gentle bends — real waves are not perfect spirals. */
+export function waveTilt(guidingPc: number): number {
+  const u = waveWinding(guidingPc);
+  return u + 0.14 * Math.sin(1.1 * u + 1.3) + 0.06 * Math.sin(2.6 * u + 4.2);
+}
+
+/** Axis ratio of the oval orbit: circular in the middle, most oval at
+ *  the core boundary, relaxing back to circular at the rim — the
+ *  density-wave eccentricity profile. */
+export function waveAxisRatio(guidingPc: number): number {
+  const bump =
+    smooth01(guidingPc / WAVE_CORE) *
+    (1 - smooth01((guidingPc - WAVE_CORE) / (WAVE_DISK - WAVE_CORE))) ** 0.8;
+  return 1 - WAVE_Q_DEPTH * bump;
+}
+
+/** World radius of orbit r₀ where it crosses the given azimuth. */
+export function waveRadius(guidingPc: number, azimuthRad: number): number {
+  const g = azimuthRad - waveTilt(guidingPc);
+  const q = waveAxisRatio(guidingPc);
+  const c = Math.cos(g);
+  const s = Math.sin(g);
+  return (guidingPc * q) / Math.sqrt(q * q * c * c + s * s);
+}
+
+/** The guiding radius of the orbit passing through (r, azimuth):
+ *  fixed-point inversion of waveRadius — a few iterations suffice
+ *  because the ovals are gentle. */
+export function waveGuidingRadius(radiusPc: number, azimuthRad: number): number {
+  let guiding = radiusPc;
+  for (let i = 0; i < 4; i++) {
+    const g = azimuthRad - waveTilt(guiding);
+    const q = waveAxisRatio(guiding);
+    const c = Math.cos(g);
+    const s = Math.sin(g);
+    guiding = (radiusPc * Math.sqrt(q * q * c * c + s * s)) / q;
+  }
+  return guiding;
+}
+
+/** Crowding of the orbit family at one point: how tightly the nested
+ *  ovals pack there (inverse Jacobian of the family map, clamped at
+ *  the caustic). 1 where orbits keep their spacing; larger where the
+ *  density wave piles them up. */
+function waveCrowding(radiusPc: number, azimuthRad: number): number {
+  const guiding = waveGuidingRadius(radiusPc, azimuthRad);
+  const h = 40;
+  const jacobian =
+    (waveRadius(guiding + h, azimuthRad) - waveRadius(guiding - h, azimuthRad)) / (2 * h);
+  return 1 / Math.max(jacobian, WAVE_J_MIN);
 }
 
 /**
  * The spiral structure at one disk point: the stellar enhancement and
- * the dust-lane weight. Each arm's ridge wobbles off the log spiral in
- * sweeping bends (the second arm not quite π away — spirals are never
- * point-symmetric), its width breathes, and its amplitude runs in slow
- * bright segments studded with compact star-forming knots at half the
- * body's width — arm 0 stronger than arm 1. A family of five short
- * steeper-pitch spurs feathers the space between, and everything
- * emerges smoothly out of the bulge region. The dust lane hugs each
+ * the dust-lane weight, both emergent from density-wave orbit crowding
+ * (after Lin–Shu, construction after beltoforion's renderer): nested
+ * oval orbits, each tilted a little further with size, pile up along
+ * two caustics — the arms. Width variation, the soft emergence out of
+ * the round core, and the rim dissolve all follow from the orbit
+ * family; star-formation patchiness (slow segments, compact knots, an
+ * m=1 asymmetry) rides the wave as modulation in wave coordinates. The
+ * dust lane is the same family wound slightly further, so it hugs each
  * arm's inner edge. Mirrored line for line by the galaxy-volume shader.
  */
 export function armProfile(
   radiusPc: number,
   azimuthRad: number,
 ): { boost: number; lane: number } {
-  const emerge = smooth01((radiusPc - 2900) / 1700);
-  if (emerge <= 0) return { boost: 0, lane: 0 };
-  const u = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
-  let boost = 0;
-  let lane = 0;
-  for (let arm = 0; arm < ARM_COUNT; arm++) {
-    const ridge = u + arm * (Math.PI + 0.22) + armWobble(u, arm);
-    const delta = wrapPi(azimuthRad - ridge) * radiusPc;
-    const d = Math.abs(delta);
-    // Broad arms with the spiral shock's asymmetry: a compressed
-    // leading edge where the dust lane rides, a fluffy trailing edge.
-    const width =
-      1150 * (1 + 0.25 * Math.sin(2.3 * u + 0.8 + 2.9 * arm)) * (delta < 0 ? 0.55 : 1.45);
-    const seg =
-      0.35 + 0.65 * (0.5 + 0.5 * Math.sin(1.9 * u + 5.1 + 2.45 * arm)) ** 1.3;
-    const knot = Math.max(
-      0,
-      Math.sin(7.0 * u + 1.0 + 3.7 * arm) * Math.sin(4.3 * u + 0.9 + 2.0 * arm),
-    );
-    const body = d / width;
-    const core = d / (0.45 * width);
-    boost +=
-      (arm === 0 ? 1 : 0.78) *
-      seg *
-      (2.6 * Math.exp(-body * body) + 2.6 * knot * knot * Math.exp(-core * core));
-    const laneD = Math.abs(wrapPi(azimuthRad - (ridge - 0.09))) * radiusPc;
-    lane += (0.4 + 0.6 * seg) * Math.exp(-((laneD / 380) ** 2));
-  }
-  const v = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / SPUR_PITCH_TAN;
-  for (let j = 0; j < 5; j++) {
-    const d = Math.abs(wrapPi(azimuthRad - (v + (j * 2 * Math.PI) / 5 + 0.9))) * radiusPc;
-    const gate = Math.max(0, Math.sin(2.6 * v + 2.4 * j + 0.6));
-    boost += 0.65 * gate * gate * Math.exp(-((d / 700) ** 2));
-  }
-  return { boost: boost * emerge, lane: lane * emerge };
+  if (radiusPc < 500) return { boost: 0, lane: 0 };
+  const guiding = waveGuidingRadius(radiusPc, azimuthRad);
+  const wave = Math.max(0, waveCrowding(radiusPc, azimuthRad) - 1);
+  const u = waveWinding(guiding);
+  const phase = azimuthRad - waveTilt(guiding);
+  const seg =
+    0.45 + 0.55 * (0.5 + 0.5 * Math.sin(1.9 * u + 5.1 + 1.7 * Math.cos(phase))) ** 1.2;
+  const knot = Math.max(
+    0,
+    Math.sin(7.0 * u + 1.0 + 2.0 * Math.cos(phase)) * Math.sin(4.3 * u + 0.9),
+  );
+  const asym = 1 + 0.28 * Math.cos(phase + 0.8);
+  const boost = 0.98 * wave * seg * asym * (1 + 0.8 * knot * knot);
+  // The dust family runs 0.07 rad ahead in winding: its caustic sits
+  // on the arms' inner edge.
+  const laneWave = Math.max(0, waveCrowding(radiusPc, azimuthRad + 0.07) - 1);
+  const lane = Math.min(1.6, 0.5 * laneWave) * (0.4 + 0.6 * seg);
+  return { boost, lane };
 }
 
 /** Spiral-arm density enhancement factor (1 between arms, up to
@@ -117,17 +157,16 @@ export function armBoost(radiusPc: number, azimuthRad: number): number {
 }
 
 /** Which spiral arm a locale is closest to, and how far off its
- *  (wobbled) ridge — the same centerline the density rides. */
+ *  ridge — the crowding caustic of the wave the density rides. */
 export function nearestArm(
   radiusPc: number,
   azimuthRad: number,
 ): { index: number; distancePc: number } {
-  const u = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
+  const ridgeBase = waveTilt(radiusPc) + RIDGE_PHASE;
   let index = 0;
   let nearest = Infinity;
-  for (let arm = 0; arm < ARM_COUNT; arm++) {
-    const ridge = u + arm * (Math.PI + 0.22) + armWobble(u, arm);
-    const distance = Math.abs(wrapPi(azimuthRad - ridge)) * radiusPc;
+  for (let arm = 0; arm < 2; arm++) {
+    const distance = Math.abs(wrapPi(azimuthRad - (ridgeBase + arm * Math.PI))) * radiusPc;
     if (distance < nearest) {
       nearest = distance;
       index = arm;

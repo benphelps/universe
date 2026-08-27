@@ -48,43 +48,66 @@ float wrapPi(float angle) {
   return mod(angle + 3.14159265, 6.28318531) - 3.14159265;
 }
 
-// The spiral structure at one disk point, mirroring density.ts line for
-// line: x = stellar arm boost, y = inner-edge dust-lane weight. Wobbled
-// asymmetric ridges, breathing widths, segmented amplitudes studded
-// with compact star-forming knots, five gated spurs, smooth emergence
-// from the bulge.
+// Density-wave orbit family, mirroring density.ts line for line: the
+// arms are the crowding caustics of nested oval orbits, each tilted a
+// little further with size (Lin-Shu; construction after beltoforion's
+// renderer). x = stellar arm boost, y = inner-edge dust-lane weight.
+float waveWinding(float guidingKpc) {
+  return log(max(guidingKpc, 3.0) / 3.0) / 0.2125566; // tan 12 deg pitch
+}
+
+float waveTilt(float guidingKpc) {
+  float u = waveWinding(guidingKpc);
+  return u + 0.14 * sin(1.1 * u + 1.3) + 0.06 * sin(2.6 * u + 4.2);
+}
+
+float waveAxisRatio(float guidingKpc) {
+  float bump = smoothstep(0.0, 4.2, guidingKpc) *
+    pow(1.0 - smoothstep(4.2, 15.0, guidingKpc), 0.8);
+  return 1.0 - 0.16 * bump;
+}
+
+float waveRadius(float guidingKpc, float azimuth) {
+  float g = azimuth - waveTilt(guidingKpc);
+  float q = waveAxisRatio(guidingKpc);
+  float c = cos(g);
+  float s = sin(g);
+  return guidingKpc * q / sqrt(q * q * c * c + s * s);
+}
+
+float waveGuidingRadius(float radiusKpc, float azimuth) {
+  float guiding = radiusKpc;
+  for (int i = 0; i < 4; i++) {
+    float g = azimuth - waveTilt(guiding);
+    float q = waveAxisRatio(guiding);
+    float c = cos(g);
+    float s = sin(g);
+    guiding = radiusKpc * sqrt(q * q * c * c + s * s) / q;
+  }
+  return guiding;
+}
+
+float waveCrowding(float radiusKpc, float azimuth) {
+  float guiding = waveGuidingRadius(radiusKpc, azimuth);
+  float h = 0.04;
+  float jacobian = (waveRadius(guiding + h, azimuth) - waveRadius(guiding - h, azimuth)) /
+    (2.0 * h);
+  return 1.0 / max(jacobian, 0.3);
+}
+
 vec2 armProfile(float radiusKpc, float azimuth) {
-  float emerge = smoothstep(2.9, 4.6, radiusKpc);
-  if (emerge <= 0.0) return vec2(0.0);
-  float u = log(max(radiusKpc, 3.0) / 3.0) / 0.2125566; // tan 12 deg pitch
-  float boost = 0.0;
-  float lane = 0.0;
-  for (int arm = 0; arm < 2; arm++) {
-    float a = float(arm);
-    float ridge = u + a * 3.36159265 +
-      0.16 * sin(1.1 * u + 1.3 + 2.1 * a) + 0.07 * sin(2.6 * u + 4.2 + 1.7 * a);
-    float delta = wrapPi(azimuth - ridge) * radiusKpc;
-    float d = abs(delta);
-    // Broad arms, shock-asymmetric: compressed leading edge, fluffy
-    // trailing edge.
-    float width = 1.15 * (1.0 + 0.25 * sin(2.3 * u + 0.8 + 2.9 * a)) *
-      (delta < 0.0 ? 0.55 : 1.45);
-    float seg = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(1.9 * u + 5.1 + 2.45 * a), 1.3);
-    float knot = max(0.0, sin(7.0 * u + 1.0 + 3.7 * a) * sin(4.3 * u + 0.9 + 2.0 * a));
-    float body = d / width;
-    float core = d / (0.45 * width);
-    boost += (arm == 0 ? 1.0 : 0.78) * seg *
-      (2.6 * exp(-body * body) + 2.6 * knot * knot * exp(-core * core));
-    float laneD = abs(wrapPi(azimuth - (ridge - 0.09))) * radiusKpc / 0.38;
-    lane += (0.4 + 0.6 * seg) * exp(-laneD * laneD);
-  }
-  float v = log(max(radiusKpc, 3.0) / 3.0) / 0.4452287; // tan 24 deg pitch
-  for (int j = 0; j < 5; j++) {
-    float d = abs(wrapPi(azimuth - (v + float(j) * 1.25663706 + 0.9))) * radiusKpc / 0.7;
-    float gate = max(0.0, sin(2.6 * v + 2.4 * float(j) + 0.6));
-    boost += 0.65 * gate * gate * exp(-d * d);
-  }
-  return vec2(boost, lane) * emerge;
+  if (radiusKpc < 0.5) return vec2(0.0);
+  float guiding = waveGuidingRadius(radiusKpc, azimuth);
+  float wave = max(0.0, waveCrowding(radiusKpc, azimuth) - 1.0);
+  float u = waveWinding(guiding);
+  float phase = azimuth - waveTilt(guiding);
+  float seg = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(1.9 * u + 5.1 + 1.7 * cos(phase)), 1.2);
+  float knot = max(0.0, sin(7.0 * u + 1.0 + 2.0 * cos(phase)) * sin(4.3 * u + 0.9));
+  float asym = 1.0 + 0.28 * cos(phase + 0.8);
+  float boost = 0.98 * wave * seg * asym * (1.0 + 0.8 * knot * knot);
+  float laneWave = max(0.0, waveCrowding(radiusKpc, azimuth + 0.07) - 1.0);
+  float lane = min(1.6, 0.5 * laneWave) * (0.4 + 0.6 * seg);
+  return vec2(boost, lane);
 }
 
 float stellarDensity(vec3 p) {
@@ -115,24 +138,6 @@ float cloudClump(vec3 p) {
   float n = snoise(q / 0.38) + 0.55 * snoise(q / 0.14 + vec3(37.0, -11.0, 53.0))
     + 0.35 * snoise(swirl(p, 0.6) / 0.06 + vec3(-19.0, 47.0, 23.0));
   return 3.2 * pow(max(1.0e-5, n - 0.25), 1.5);
-}
-
-// Statistical grain of the arms' young population: a nested
-// star-forming hierarchy. Thresholded kpc-scale complexes carve true
-// dark breaks between bright stretches; mid-scale clumps cluster
-// inside them. Multiplicative, so structure nests instead of
-// striping; mean ~1, so the interior glow map's smooth expectation
-// agrees.
-float armGrain(vec3 p) {
-  float big = smoothstep(0.15, 0.95, 0.5 + 0.5 * snoise(swirl(p, 0.35) / 1.7 + vec3(11.0, -29.0, 5.0)));
-  float mid = 0.5 + 0.5 * snoise(swirl(p, 0.7) / 0.55 + vec3(-7.0, 13.0, 41.0));
-  return clamp((0.15 + 1.5 * big) * (0.45 + 1.1 * mid) * 1.1, 0.06, 3.4);
-}
-
-// Shot texture of the unresolved star field itself: fine isotropic
-// stipple over the whole disk, mean 1.
-float stipple(vec3 p) {
-  return 0.8 + 0.2 * snoise(p / 0.13 + vec3(29.0, 3.0, -17.0));
 }
 
 void main() {
@@ -189,10 +194,9 @@ void main() {
       vec3 p = cam + dir * s;
       float radius = length(p.xy);
       vec2 arm = armProfile(radius, atan(p.y, p.x));
-      // The arm overdensity shines young (ARM_YOUNG_LIGHT in
-      // density.ts), textured by unresolved cluster grain.
-      float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) *
-        (1.0 + 4.0 * arm.x * armGrain(p)) * stipple(p);
+      // Smooth count-level arms only: the particle layer carries the
+      // young light and every grain of texture.
+      float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) * (1.0 + arm.x);
       float thick = 0.0943516 * exp(-radius / 3.6) * exp(-abs(p.z) / 0.9);
       float halo = 0.0008 * pow(max(length(p), 0.5) / 8.0, -3.5);
       float dust = exp(-radius / 2.6) * exp(-abs(p.z) / 0.12) * (1.0 + 1.4 * arm.y);

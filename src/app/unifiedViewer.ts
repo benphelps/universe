@@ -69,6 +69,7 @@ import {
 } from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
+import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { SectorChart } from '../render/galaxy/sectorChart';
 import {
@@ -300,6 +301,7 @@ export class UnifiedViewer {
    *  the sky integrates; crossfades in as the sky sphere's parallax
    *  breaks down with distance from the system. */
   private galaxyVolume: GalaxyVolume | null = null;
+  private galaxyParticles: GalaxyParticles | null = null;
   private galaxyFade = 0;
   private sectorChart: SectorChart | null = null;
   /** User toggle: sector borders, sky-region borders, and their names. */
@@ -619,9 +621,12 @@ export class UnifiedViewer {
     this.neighborPoints = createNeighborStars(hood, PC_KM);
     this.pcGroup.add(this.neighborPoints);
 
-    this.galaxyVolume = new GalaxyVolume(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
+    const galaxyOrientation = sceneFromGalaxy(seedFromHex(system.seedHex));
+    this.galaxyVolume = new GalaxyVolume(viewpoint, galaxyOrientation);
     this.galaxyVolume.meanLuminosity = MEAN_POPULATION_LUMINOSITY;
     this.scene.add(this.galaxyVolume.mesh);
+    this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
+    this.scene.add(this.galaxyParticles.group);
 
     getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
@@ -1735,6 +1740,11 @@ export class UnifiedViewer {
       this.galaxyVolume.dispose();
       this.galaxyVolume = null;
     }
+    if (this.galaxyParticles) {
+      this.scene.remove(this.galaxyParticles.group);
+      this.galaxyParticles.dispose();
+      this.galaxyParticles = null;
+    }
     if (this.sectorChart) {
       this.pcGroup.remove(this.sectorChart.group);
       this.sectorChart.dispose();
@@ -2061,6 +2071,11 @@ export class UnifiedViewer {
           Math.min(this.camera.far * 0.3, 3e15),
         );
       }
+      this.galaxyParticles?.update(
+        this.galaxyFade,
+        this.pipeline.renderer.domElement.clientHeight /
+          (2 * Math.tan((this.camera.fov * Math.PI) / 360)),
+      );
       this.chunkManager?.update(this.camera.position, groundKm);
       // The diagrammatic overlays appear at map heights — capped by the
       // system extent, since 25 radii of a giant star can lie beyond

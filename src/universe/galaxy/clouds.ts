@@ -252,7 +252,7 @@ export function cloudFieldAt(positionPc: GalacticPosition): number {
  * shot noise, not structure.
  */
 export function expectedCloudField(dust: number, armBoostValue: number): number {
-  return 0.0096 * (dust / DUST_HOME) * (0.4 + 0.6 * armBoostValue);
+  return 0.0092 * (dust / DUST_HOME) * (0.4 + 0.6 * armBoostValue);
 }
 
 /** The same summed cloud field with each cloud at its smooth mean:
