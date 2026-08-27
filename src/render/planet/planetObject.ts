@@ -9,6 +9,7 @@ import {
   type WebGLCubeRenderTarget,
   type WebGLRenderer,
 } from 'three';
+import { seedFromHex } from '../../core/rng/hash';
 import { deriveCirculation, type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import type { RingSystem } from '../../universe/rings/types';
@@ -50,6 +51,9 @@ export class PlanetObject {
   private bakedTA = 0;
   private bakedTB = 0;
   private baked = false;
+  private lastSimT = Number.NEGATIVE_INFINITY;
+  /** Seeded window stretch, so a system's giants roll on different frames. */
+  private readonly bakeStagger: number;
   private readonly bakeIntervalDays: number;
   private readonly deckSize: number;
 
@@ -64,6 +68,7 @@ export class PlanetObject {
       : null;
     this.baker = this.circulation ? new DeckBaker(physical, this.circulation) : null;
     this.deckSize = deckSize;
+    this.bakeStagger = 0.6 + 0.8 * (Number(seedFromHex(physical.seedHex) & 0xffn) / 255);
     // Rebake cadence: often enough that band drift between bakes stays
     // a fraction of a texel, and churn stays a gentle crossfade.
     if (this.circulation) {
@@ -188,7 +193,15 @@ export class PlanetObject {
       this.deckA = DeckBaker.createTarget(this.deckSize);
       this.deckB = DeckBaker.createTarget(this.deckSize);
     }
-    const interval = this.bakeIntervalDays;
+    // Fast-forward outruns the base cadence: the window stretches to a
+    // few frames of sim time, so the deck crossfades coarser instead
+    // of restarting every giant's bake every frame — sustained
+    // multi-megapixel rebakes stall the GPU into dropped frames.
+    const step = Number.isFinite(this.lastSimT)
+      ? Math.max(0, simTimeDays - this.lastSimT)
+      : 0;
+    this.lastSimT = simTimeDays;
+    const interval = Math.max(this.bakeIntervalDays, step * 4) * this.bakeStagger;
     if (!this.baked || simTimeDays < this.bakedTA - interval) {
       // First frame, or time ran backwards past the window: bake both.
       this.bakedTA = simTimeDays;

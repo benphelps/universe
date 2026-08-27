@@ -2296,7 +2296,16 @@ export class UnifiedViewer {
     // shapes the night and vanishes into daylight as it should. The
     // exponent is calibrated so a bright gibbous renders near a tenth
     // of a day exposure — the brightness a dark-adapted eye reports.
-    const nightness = 1 - Math.min(1, sunElevation / 0.03);
+    // Adaptation belongs to a ground observer: from altitude the day
+    // limb fills the view and the eye stays light-adapted, so the lift
+    // fades out well below orbit — otherwise the second light's
+    // brightness visibly tracks the camera around the body.
+    const grounded = Math.max(
+      0,
+      Math.min(1, (0.6 - this.altitudeKm / Math.max(this.radiusKm, 1)) / 0.4),
+    );
+    const nightness =
+      (1 - Math.min(1, sunElevation / 0.03)) * grounded * grounded * (3 - 2 * grounded);
     let surf2Dir = light2Dir;
     let surf2Color = light2Color;
     let bestLum = surf2Color
