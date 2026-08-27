@@ -101,7 +101,7 @@ import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
 import { MEAN_POPULATION_LUMINOSITY, type SkyField } from '../universe/galaxy/skyfield';
-import { getSkyField, skyPending } from './skyService';
+import { getSkyField, skyPending, skyProgress } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
 import { fmt } from './ui/format';
@@ -316,12 +316,24 @@ export class UnifiedViewer {
   /** What the background generators are working on right now: terrain
    *  tiles in flight, distant-world bakes queued, the focused world's
    *  climate survey, and sky fields still building. */
-  get generationStatus(): { surveying: boolean; terrain: number; worlds: number; skies: number } {
+  get generationStatus(): {
+    surveying: boolean;
+    terrain: number;
+    worlds: number;
+    skies: number;
+    skyProgress: number;
+    skyStage: string;
+    skyStageProgress: number;
+  } {
+    const sky = skyProgress();
     return {
       surveying: this.surveying,
       terrain: this.chunkManager?.outstanding ?? 0,
       worlds: bakeQueueDepth(),
       skies: skyPending(),
+      skyProgress: sky.fraction,
+      skyStage: sky.stage,
+      skyStageProgress: sky.stageFraction,
     };
   }
 

@@ -9,12 +9,38 @@ const cache = new Map<string, Promise<SkyField>>();
 let worker: Worker | null = null;
 const waiting = new Map<string, (sky: SkyField) => void>();
 
+export interface SkyBuildProgress {
+  fraction: number;
+  stage: string;
+  /** Progress within the stage; −1 when the stage has no measure. */
+  stageFraction: number;
+}
+
+const progress = new Map<string, SkyBuildProgress>();
+
 function ensureWorker(): Worker {
   if (worker) return worker;
   worker = new Worker(new URL('../workers/skyWorker.ts', import.meta.url), { type: 'module' });
-  worker.onmessage = (event: MessageEvent<{ seedHex: string; sky: SkyField }>) => {
-    waiting.get(event.data.seedHex)?.(event.data.sky);
+  worker.onmessage = (
+    event: MessageEvent<{
+      seedHex: string;
+      sky?: SkyField;
+      progress?: number;
+      stage?: string;
+      stageFraction?: number;
+    }>,
+  ) => {
+    if (event.data.progress !== undefined) {
+      progress.set(event.data.seedHex, {
+        fraction: event.data.progress,
+        stage: event.data.stage ?? '',
+        stageFraction: event.data.stageFraction ?? -1,
+      });
+      return;
+    }
+    waiting.get(event.data.seedHex)?.(event.data.sky!);
     waiting.delete(event.data.seedHex);
+    progress.delete(event.data.seedHex);
   };
   return worker;
 }
@@ -22,6 +48,15 @@ function ensureWorker(): Worker {
 /** Sky builds still in the worker — the arrival star field's lag. */
 export function skyPending(): number {
   return waiting.size;
+}
+
+/** Rough progress of the running sky build. The worker is serial, so
+ *  the oldest pending request is the one actually building; later
+ *  requests are queued behind it and report when their turn comes. */
+export function skyProgress(): SkyBuildProgress {
+  const running = waiting.keys().next();
+  if (running.done) return { fraction: 1, stage: '', stageFraction: -1 };
+  return progress.get(running.value) ?? { fraction: 0, stage: '', stageFraction: -1 };
 }
 
 export function getSkyField(seedHex: string, viewpoint: GalacticPosition): Promise<SkyField> {

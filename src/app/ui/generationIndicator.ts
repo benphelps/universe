@@ -3,6 +3,11 @@ export interface GenerationStatus {
   terrain: number;
   worlds: number;
   skies: number;
+  /** Rough progress of the running sky build, 0..1. */
+  skyProgress: number;
+  /** The build step the sky worker is on, with its own progress. */
+  skyStage: string;
+  skyStageProgress: number;
 }
 
 /**
@@ -48,9 +53,9 @@ export class GenerationIndicator {
   private readonly worldsTrack = new BurstTrack();
 
   constructor(private readonly panel: HTMLElement) {
-    for (const key of ['survey', 'terrain', 'worlds', 'sky']) {
+    for (const key of ['survey', 'terrain', 'worlds', 'sky', 'skyStage']) {
       const element = document.createElement('div');
-      element.className = 'gen-row';
+      element.className = key === 'skyStage' ? 'gen-row gen-sub' : 'gen-row';
       element.hidden = true;
       const label = document.createElement('span');
       label.className = 'gen-label';
@@ -73,7 +78,16 @@ export class GenerationIndicator {
       this.terrainTrack.update(status.terrain),
     );
     this.setRow('worlds', `worlds · ${status.worlds}`, this.worldsTrack.update(status.worlds));
-    this.setRow('sky', 'sky field', status.skies > 0 ? -1 : null);
+    this.setRow('sky', 'sky field', status.skies > 0 ? status.skyProgress : null);
+    this.setRow(
+      'skyStage',
+      status.skyStage,
+      status.skies > 0 && status.skyStage !== ''
+        ? status.skyStageProgress < 0
+          ? -1
+          : status.skyStageProgress
+        : null,
+    );
   }
 
   private setRow(key: string, text: string, state: RowState): void {

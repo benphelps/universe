@@ -178,7 +178,31 @@ interface StarAccum {
   seeds: bigint[];
 }
 
-export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField {
+/** What a mass stratum's sweep should call itself on a progress bar. */
+function rowStageName(row: { massHi: number }): string {
+  if (row.massHi <= 0.6) return 'red dwarfs';
+  if (row.massHi <= 2.2) return 'sunlike stars';
+  if (row.massHi <= 7) return 'hot stars';
+  return 'giants & rarities';
+}
+
+/** Measured share of the star sweep each catalog row costs; equal
+ *  split when the row count changes. Rough by design. */
+const ROW_PROGRESS_WEIGHTS = [0.31, 0.12, 0.32, 0.01, 0.23, 0.01];
+
+export type SkyProgress = (
+  fraction: number,
+  stage: string,
+  /** Progress within the stage; −1 when the stage has no measure. */
+  stageFraction: number,
+) => void;
+
+export function buildSkyField(
+  viewpoint: GalacticPosition,
+  seed = 0n,
+  /** Rough build progress — phase weights are approximate. */
+  onProgress?: SkyProgress,
+): SkyField {
   const lut = buildTemperatureLut(96);
   const makeAccum = (): StarAccum => ({
     dirs: [],
@@ -218,7 +242,16 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
   // star, beyond it every star of each survey row bright enough to see —
   // a mass ceiling culls hopeless candidates before their seed is built.
   const nearSq = NEAR_RADIUS_PC * NEAR_RADIUS_PC;
+  const rowWeights =
+    CATALOG_ROWS.length === ROW_PROGRESS_WEIGHTS.length
+      ? ROW_PROGRESS_WEIGHTS
+      : CATALOG_ROWS.map(() => 1 / CATALOG_ROWS.length);
+  let rowsBehind = 0;
+  let rowIndex = 0;
   for (const row of CATALOG_ROWS) {
+    const weight = rowWeights[rowIndex++];
+    const stage = rowStageName(row);
+    onProgress?.(0.84 * rowsBehind, stage, 0);
     const skySq = row.skyRadiusPc * row.skyRadiusPc;
     sweepRowStars(
       row,
@@ -250,13 +283,19 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
           physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
         pushTo(far, dx, dy, dz, luminosity, physical.tEff, starSeed);
       },
+      (slabFraction) =>
+        onProgress?.(0.84 * (rowsBehind + weight * slabFraction), stage, slabFraction),
     );
+    rowsBehind += weight;
   }
   const nearStarCount = near.brightness.length;
 
   const localDensity = stellarDensity(viewpoint);
+  onProgress?.(0.84, 'nebulae', -1);
   const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
+  onProgress?.(0.86, 'dark clouds', -1);
   const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA);
+  onProgress?.(0.88, 'charting', -1);
 
   const join = (a: number[], b: number[]): Float32Array => {
     const out = new Float32Array(a.length + b.length);
@@ -270,6 +309,21 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
   for (let i = 0; i < far.seeds.length; i++) starSeeds[nearStarCount + i] = far.seeds[i];
   const starDirs = join(near.dirs, far.dirs);
   const starBrightness = join(near.brightness, far.brightness);
+
+  const charts = {
+    ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
+    ...buildConstellations(
+      nebulae,
+      darkClouds,
+      sceneFromGalaxy(seed),
+      starDirs,
+      starBrightness,
+      starSeeds,
+    ),
+  };
+  const glow = buildGlow(viewpoint, spriteSeeds, (fraction) =>
+    onProgress?.(0.89 + 0.11 * fraction, 'milky way glow', fraction),
+  );
 
   return {
     starCount,
@@ -285,16 +339,8 @@ export function buildSkyField(viewpoint: GalacticPosition, seed = 0n): SkyField 
     darkClouds,
     darkAtlas,
     sceneFromGalaxy: sceneFromGalaxy(seed),
-    ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
-    ...buildConstellations(
-      nebulae,
-      darkClouds,
-      sceneFromGalaxy(seed),
-      starDirs,
-      starBrightness,
-      starSeeds,
-    ),
-    ...buildGlow(viewpoint, spriteSeeds),
+    ...charts,
+    ...glow,
   };
 }
 
@@ -1245,6 +1291,7 @@ function buildCloudTransmission(
 function buildGlow(
   viewpoint: GalacticPosition,
   spriteSeeds: Set<bigint>,
+  onProgress?: (fraction: number) => void,
 ): {
   glowWidth: number;
   glowHeight: number;
@@ -1260,6 +1307,7 @@ function buildGlow(
   const dustKappa = DUST_KAPPA;
 
   for (let row = 0; row < height; row++) {
+    if ((row & 15) === 0) onProgress?.(row / height);
     const latitude = ((row + 0.5) / height - 0.5) * Math.PI;
     for (let column = 0; column < width; column++) {
       const longitude = ((column + 0.5) / width) * 2 * Math.PI;

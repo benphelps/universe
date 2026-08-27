@@ -9,11 +9,27 @@ export interface SkyRequest {
   viewpoint?: GalacticPosition;
 }
 
-/** Builds a system's sky off the frame loop; arrays return as transferables. */
+/** Builds a system's sky off the frame loop; arrays return as transferables.
+ *  Progress posts ride ahead of the result, throttled by advance. */
 self.onmessage = (event: MessageEvent<SkyRequest>) => {
   const { seedHex, viewpoint } = event.data;
   const seed = seedFromHex(seedHex);
-  const sky = buildSkyField(viewpoint ?? viewpointForSeed(seed), seed);
+  let lastFraction = 0;
+  let lastStage = '';
+  let lastStageFraction = 0;
+  const sky = buildSkyField(viewpoint ?? viewpointForSeed(seed), seed, (fraction, stage, stageFraction) => {
+    if (
+      stage === lastStage &&
+      fraction - lastFraction < 0.01 &&
+      Math.abs(stageFraction - lastStageFraction) < 0.04
+    ) {
+      return;
+    }
+    lastFraction = fraction;
+    lastStage = stage;
+    lastStageFraction = stageFraction;
+    (self as unknown as Worker).postMessage({ seedHex, progress: fraction, stage, stageFraction });
+  });
   (self as unknown as Worker).postMessage({ seedHex, sky }, [
     sky.starDirs.buffer,
     sky.starColors.buffer,

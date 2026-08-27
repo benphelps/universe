@@ -154,6 +154,8 @@ export function sweepRowStars(
   center: GalacticPosition,
   radiusPc: number,
   visit: StarVisitor,
+  /** Fraction of the sweep's slabs finished — build progress. */
+  onProgress?: (fraction: number) => void,
 ): void {
   const { cellPc } = row;
   const massSpan = row.massBitsHi - row.massBitsLo;
@@ -175,6 +177,7 @@ export function sweepRowStars(
     Math.max(lo, Math.min(v, lo + cellPc)) - v;
 
   for (let ix = min[0]; ix <= max[0]; ix++) {
+    onProgress?.((ix - min[0]) / (max[0] - min[0] + 1));
     for (let iy = min[1]; iy <= max[1]; iy++) {
       for (let iz = min[2]; iz <= max[2]; iz++) {
         // Cheapest rejection first: cell entirely outside the ball.

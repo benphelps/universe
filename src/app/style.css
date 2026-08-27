@@ -407,6 +407,26 @@ tr.here .swatch {
   display: none;
 }
 
+/* A stage line under its parent row: the step the worker is on. */
+#gen-panel .gen-row.gen-sub {
+  border-top: none;
+  padding-top: 0;
+  margin-top: -3px;
+}
+
+#gen-panel .gen-row.gen-sub .gen-label {
+  padding-left: 14px;
+  color: var(--dim);
+  text-transform: none;
+  letter-spacing: 0.04em;
+  font: 10.5px/1.4 var(--mono);
+}
+
+#gen-panel .gen-row.gen-sub .gen-fill {
+  background: var(--accent-hi);
+  opacity: 0.55;
+}
+
 #gen-panel .gen-label {
   font: 600 10px/1.4 var(--display);
   text-transform: uppercase;
