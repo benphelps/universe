@@ -16,6 +16,7 @@ import {
   RGBAFormat,
   ShaderMaterial,
   SphereGeometry,
+  Vector2,
   Vector4,
 } from 'three';
 import { rotateToScene } from '../../universe/galaxy/orientation';
@@ -114,6 +115,7 @@ varying vec3 vDir;
 
 uniform mat3 uSceneToGalaxy;
 uniform sampler2D uGlow;
+uniform vec2 uGlowSize;
 uniform sampler2D uRift;
 uniform sampler2D uDarkAtlas;
 uniform vec4 uDarkA[${MAX_DARK}]; // dir.xyz, tangent half-extent
@@ -121,6 +123,38 @@ uniform vec4 uDarkB[${MAX_DARK}]; // right.xyz, tile index
 uniform vec4 uDarkC[${MAX_DARK}]; // up.xyz, unused
 uniform int uDarkCount;
 uniform float uIntensity;
+
+// B-spline weights for one axis of the bicubic fetch.
+vec4 cubicWeights(float t) {
+  vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - t;
+  vec4 s = n * n * n;
+  float x = s.x;
+  float y = s.y - 4.0 * s.x;
+  float z = s.z - 4.0 * s.y + 6.0 * s.x;
+  return vec4(x, y, z, 6.0 - x - y - z) / 6.0;
+}
+
+// Bicubic B-spline via four bilinear taps: the glow map's gradients
+// are C1-smooth on screen, so a texel-wide dust lane fades instead of
+// creasing — the low-resolution look was bilinear's kinks, not the
+// data.
+vec4 textureBicubic(sampler2D tex, vec2 uv, vec2 texSize) {
+  vec2 st = uv * texSize - 0.5;
+  vec2 f = fract(st);
+  st -= f;
+  vec4 wx = cubicWeights(f.x);
+  vec4 wy = cubicWeights(f.y);
+  vec4 c = st.xxyy + vec2(-0.5, 1.5).xyxy;
+  vec4 s = vec4(wx.xz + wx.yw, wy.xz + wy.yw);
+  vec4 offset = (c + vec4(wx.yw, wy.yw) / s) / texSize.xxyy;
+  vec4 sample0 = texture2D(tex, offset.xz);
+  vec4 sample1 = texture2D(tex, offset.yz);
+  vec4 sample2 = texture2D(tex, offset.xw);
+  vec4 sample3 = texture2D(tex, offset.yw);
+  float sx = s.x / (s.x + s.y);
+  float sy = s.z / (s.z + s.w);
+  return mix(mix(sample3, sample2, sx), mix(sample1, sample0, sx), sy);
+}
 
 void main() {
   vec3 dir = normalize(vDir);
@@ -137,7 +171,7 @@ void main() {
   // Smooth starlight base, shadowed by the small-cloud map and by each
   // prominent cloud's own ray-marched transmission sprite — projected
   // exactly like the nebula sprites.
-  float transmission = texture2D(uRift, uv).r;
+  float transmission = textureBicubic(uRift, uv, vec2(${RIFT_WIDTH}.0, ${RIFT_HEIGHT}.0)).r;
   for (int i = 0; i < ${MAX_DARK}; i++) {
     if (i >= uDarkCount) break;
     vec4 a = uDarkA[i];
@@ -152,7 +186,7 @@ void main() {
     vec2 tuv = (tileOrigin + vec2(u, v)) / vec2(${DARK_ATLAS_COLS}.0, ${DARK_ATLAS_ROWS}.0);
     transmission *= texture2D(uDarkAtlas, tuv).r;
   }
-  gl_FragColor = vec4(texture2D(uGlow, uv).rgb * transmission * uIntensity, 1.0);
+  gl_FragColor = vec4(textureBicubic(uGlow, uv, uGlowSize).rgb * transmission * uIntensity, 1.0);
 }
 `;
 
@@ -272,6 +306,7 @@ export class StarfieldBackdrop {
           ),
         },
         uGlow: { value: texture },
+        uGlowSize: { value: new Vector2(sky.glowWidth, sky.glowHeight) },
         uRift: { value: riftTexture },
         uDarkAtlas: { value: darkTexture },
         uDarkA: { value: darkA },

@@ -11,10 +11,12 @@ import {
   seedForIdentity,
 } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
+import { cloudFieldSmoothAt, expectedCloudField } from './clouds';
 import {
   armBoost,
   ARM_BOOST_MAX,
   componentDensities,
+  dustDensity,
   HOME_POSITION,
   stellarDensity,
   stellarDensityCeiling,
@@ -162,6 +164,24 @@ describe('catalog', () => {
       };
       expect(stellarDensity(probe)).toBeLessThanOrEqual(ceiling * (1 + 1e-9));
     }
+  });
+
+  it('the expected cloud field matches the population it stands in for', () => {
+    // The glow integrand replaces per-cloud sums beyond its step scale
+    // with expectedCloudField; this pins its Monte Carlo constant to
+    // the real population so the stand-in cannot rot.
+    let fieldSum = 0;
+    let expectedSum = 0;
+    for (let i = 0; i < 6000; i++) {
+      const radius = 3000 + (i % 200) * 50;
+      const azimuth = i * 2.399963229728653;
+      const zPc = ((i * 61) % 400) - 200;
+      const p = { xPc: radius * Math.cos(azimuth), yPc: radius * Math.sin(azimuth), zPc };
+      fieldSum += cloudFieldSmoothAt(p);
+      expectedSum += expectedCloudField(dustDensity(p), armBoost(radius, azimuth));
+    }
+    expect(expectedSum / fieldSum).toBeGreaterThan(0.75);
+    expect(expectedSum / fieldSum).toBeLessThan(1.35);
   });
 
   it('a materialized catalog star mirrors its traveled-to system', () => {

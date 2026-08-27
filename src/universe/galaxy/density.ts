@@ -132,28 +132,46 @@ export interface ComponentDensities {
   halo: number;
 }
 
-/** Per-component stellar densities, stars per pc³. */
-export function componentDensities(position: GalacticPosition): ComponentDensities {
+export interface SightlineDensities extends ComponentDensities {
+  dust: number;
+  armBoost: number;
+}
+
+/**
+ * One sightline sample of the smooth model: every component from a
+ * single arm-profile evaluation. This is the hot path of the sky and
+ * volume integrations, and the single source the piecewise accessors
+ * below read — so the fused and separate views can never drift.
+ */
+export function sightlineDensities(position: GalacticPosition): SightlineDensities {
   const radius = Math.hypot(position.xPc, position.yPc);
   const azimuth = Math.atan2(position.yPc, position.xPc);
   const absZ = Math.abs(position.zPc);
+  const { boost, lane } = armProfile(radius, azimuth);
 
   const thin =
     THIN_NORM *
     Math.exp(-radius / THIN_SCALE_LENGTH) *
     Math.exp(-absZ / THIN_SCALE_HEIGHT) *
-    armBoost(radius, azimuth);
+    (1 + boost);
   const thick =
     THICK_NORM * Math.exp(-radius / THICK_SCALE_LENGTH) * Math.exp(-absZ / THICK_SCALE_HEIGHT);
   const sphericalR = Math.max(Math.hypot(radius, absZ), 500);
   const halo = 0.0008 * (sphericalR / 8000) ** -3.5;
+  const dust = Math.exp(-radius / 2600) * Math.exp(-absZ / 120) * (1 + 1.4 * lane);
 
+  return { thin, thick, halo, dust, armBoost: 1 + boost };
+}
+
+/** Per-component stellar densities, stars per pc³. */
+export function componentDensities(position: GalacticPosition): ComponentDensities {
+  const { thin, thick, halo } = sightlineDensities(position);
   return { thin, thick, halo };
 }
 
 /** Total stellar density, stars per pc³. */
 export function stellarDensity(position: GalacticPosition): number {
-  const { thin, thick, halo } = componentDensities(position);
+  const { thin, thick, halo } = sightlineDensities(position);
   return thin + thick + halo;
 }
 
@@ -182,7 +200,5 @@ export function stellarDensityCeiling(minCorner: GalacticPosition, sizePc: numbe
 /** Dust density for extinction: a thin midplane layer with narrow
  *  lanes hugging the spiral arms' inner edges. */
 export function dustDensity(position: GalacticPosition): number {
-  const radius = Math.hypot(position.xPc, position.yPc);
-  const lane = armProfile(radius, Math.atan2(position.yPc, position.xPc)).lane;
-  return Math.exp(-radius / 2600) * Math.exp(-Math.abs(position.zPc) / 120) * (1 + 1.4 * lane);
+  return sightlineDensities(position).dust;
 }

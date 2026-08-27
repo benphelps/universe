@@ -163,15 +163,13 @@ export function cloudLocalDensity(
   ryPc: number,
   rzPc: number,
 ): number {
+  const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
+  if (envelope === 0) return 0;
   const stretchAxis = Number(cloud.seed >> 4n) % 3;
   const stretch = cloudStretch(cloud);
   const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
   const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
   const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
-  const dSq = ax * ax + ay * ay + az * az;
-  const reach = cloud.radiusPc * 1.6;
-  if (dSq > reach * reach) return 0;
-  const envelope = Math.exp((-1.8 * dSq) / (cloud.radiusPc * cloud.radiusPc));
   const offset = Number(cloud.seed & 0xffn);
   const x = ax / cloud.radiusPc + offset;
   const y = ay / cloud.radiusPc;
@@ -182,6 +180,41 @@ export function cloudLocalDensity(
     0.3 * shapeNoise(x * 3.7, y * 3.7, z * 3.7) +
     0.16 * shapeNoise(x * 8.1, y * 8.1, z * 8.1);
   const carved = envelope * (Math.max(0, turbulence) + 0.12) - 0.18;
+  if (carved <= 0) return 0;
+  return cloud.amplitude * 1.35 * carved ** 1.4;
+}
+
+/** The stretched gaussian envelope shared by the turbulent and smooth
+ *  evaluations; 0 beyond the cloud's reach. */
+function cloudEnvelope(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  const stretchAxis = Number(cloud.seed >> 4n) % 3;
+  const stretch = cloudStretch(cloud);
+  const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
+  const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
+  const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
+  const dSq = ax * ax + ay * ay + az * az;
+  const reach = cloud.radiusPc * 1.6;
+  if (dSq > reach * reach) return 0;
+  return Math.exp((-1.8 * dSq) / (cloud.radiusPc * cloud.radiusPc));
+}
+
+/** A cloud's density with the turbulence at its statistical mean:
+ *  the same object, resolved without sub-cloud texture — for
+ *  consumers whose sample spacing can't see that texture anyway. */
+export function cloudSmoothDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
+  if (envelope === 0) return 0;
+  const carved = envelope * 0.67 - 0.18;
   if (carved <= 0) return 0;
   return cloud.amplitude * 1.35 * carved ** 1.4;
 }
@@ -200,6 +233,40 @@ export function cloudFieldAt(positionPc: GalacticPosition): number {
   let sum = 0;
   for (const cloud of clouds) {
     sum += cloudLocalDensity(
+      cloud,
+      positionPc.xPc - cloud.positionPc.xPc,
+      positionPc.yPc - cloud.positionPc.yPc,
+      positionPc.zPc - cloud.positionPc.zPc,
+    );
+  }
+  return sum;
+}
+
+/**
+ * Expected clumped-cloud overdensity at a point, from the population's
+ * own statistics: cloud counts scale with the dust disk and the arms
+ * (cloudsInCell above), so the mean field is that same factor times a
+ * Monte Carlo constant calibrated against cloudFieldSmoothAt (pinned
+ * by a galaxy test). For sightlines whose steps outpace individual
+ * clouds, this is the honest integrand — per-cloud sampling there is
+ * shot noise, not structure.
+ */
+export function expectedCloudField(dust: number, armBoostValue: number): number {
+  return 0.0096 * (dust / DUST_HOME) * (0.4 + 0.6 * armBoostValue);
+}
+
+/** The same summed cloud field with each cloud at its smooth mean:
+ *  what a distant sightline integrates when the turbulence is
+ *  sub-texel — same population, a fraction of the cost. */
+export function cloudFieldSmoothAt(positionPc: GalacticPosition): number {
+  const clouds = neighborhoodClouds(
+    Math.floor(positionPc.xPc / CELL_PC),
+    Math.floor(positionPc.yPc / CELL_PC),
+    Math.floor(positionPc.zPc / CELL_PC),
+  );
+  let sum = 0;
+  for (const cloud of clouds) {
+    sum += cloudSmoothDensity(
       cloud,
       positionPc.xPc - cloud.positionPc.xPc,
       positionPc.yPc - cloud.positionPc.yPc,

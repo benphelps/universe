@@ -11,13 +11,18 @@ import { evolve } from '../star/evolution';
 import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, sweepRowStars } from './catalog';
 import {
-  cloudFieldAt,
   cloudLocalDensity,
   cloudReachPc,
   cloudsNear,
+  expectedCloudField,
   type MolecularCloud,
 } from './clouds';
-import { dustDensity, stellarDensity, type GalacticPosition } from './density';
+import {
+  dustDensity,
+  sightlineDensities,
+  stellarDensity,
+  type GalacticPosition,
+} from './density';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
@@ -1239,8 +1244,8 @@ function buildGlow(
   glowData: Float32Array;
   riftData: Float32Array;
 } {
-  const width = 192;
-  const height = 96;
+  const width = 256;
+  const height = 128;
   const data = new Float32Array(width * height * 4);
   const startPc = 80;
   const endPc = 25000;
@@ -1266,12 +1271,18 @@ function buildGlow(
         };
         // Diffuse dust here; nearby clouds are carried by the sharp
         // per-cloud transmission map instead, so this base map stays
-        // smooth at its texel scale. Distant clumping is sub-texel and
-        // folds back in statistically.
-        const clump = s > RIFT_NEAR_PC ? 0.45 + 1.6 * cloudFieldAt(position) : 0.45;
-        opticalDepth += dustDensity(position) * clump * dustKappa * stepPc;
+        // smooth at its texel scale. Distant clouds are sub-texel and
+        // sub-step: they enter at their expected field — sampling
+        // individual clouds out there is shot noise, not structure.
+        const sample = sightlineDensities(position);
+        const clump =
+          s > RIFT_NEAR_PC ? 0.45 + 1.6 * expectedCloudField(sample.dust, sample.armBoost) : 0.45;
+        opticalDepth += sample.dust * clump * dustKappa * stepPc;
         light +=
-          stellarDensity(position) * meanLuminosity * stepPc * Math.exp(-opticalDepth);
+          (sample.thin + sample.thick + sample.halo) *
+          meanLuminosity *
+          stepPc *
+          Math.exp(-opticalDepth);
       }
 
       // Dust reddens as well as dims; warm population base color.
