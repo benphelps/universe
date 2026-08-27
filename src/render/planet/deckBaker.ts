@@ -48,15 +48,17 @@ void main() {
 }
 `;
 
-// GL cubemap face bases (spec table), with the t axis flipped for the
-// framebuffer's bottom-left origin.
+// GL cubemap face bases, straight from the spec's (sc, tc) axes: the
+// framebuffer's row 0 IS the face's t=0 row, so no flip belongs here —
+// a flipped face mirrors its pattern and tears dotted seams at every
+// border it shares.
 const FACES: Array<{ forward: Vector3; right: Vector3; up: Vector3 }> = [
-  { forward: new Vector3(1, 0, 0), right: new Vector3(0, 0, -1), up: new Vector3(0, 1, 0) },
-  { forward: new Vector3(-1, 0, 0), right: new Vector3(0, 0, 1), up: new Vector3(0, 1, 0) },
-  { forward: new Vector3(0, 1, 0), right: new Vector3(1, 0, 0), up: new Vector3(0, 0, -1) },
-  { forward: new Vector3(0, -1, 0), right: new Vector3(1, 0, 0), up: new Vector3(0, 0, 1) },
-  { forward: new Vector3(0, 0, 1), right: new Vector3(1, 0, 0), up: new Vector3(0, 1, 0) },
-  { forward: new Vector3(0, 0, -1), right: new Vector3(-1, 0, 0), up: new Vector3(0, 1, 0) },
+  { forward: new Vector3(1, 0, 0), right: new Vector3(0, 0, -1), up: new Vector3(0, -1, 0) },
+  { forward: new Vector3(-1, 0, 0), right: new Vector3(0, 0, 1), up: new Vector3(0, -1, 0) },
+  { forward: new Vector3(0, 1, 0), right: new Vector3(1, 0, 0), up: new Vector3(0, 0, 1) },
+  { forward: new Vector3(0, -1, 0), right: new Vector3(1, 0, 0), up: new Vector3(0, 0, -1) },
+  { forward: new Vector3(0, 0, 1), right: new Vector3(1, 0, 0), up: new Vector3(0, -1, 0) },
+  { forward: new Vector3(0, 0, -1), right: new Vector3(-1, 0, 0), up: new Vector3(0, -1, 0) },
 ];
 
 /**

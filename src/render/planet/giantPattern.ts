@@ -67,13 +67,15 @@ vec3 fadedBandColor(int i) {
  *  crisp front; weak boundaries smear wide. */
 vec3 bandColorAt(float l, int band) {
   vec3 c = fadedBandColor(band);
+  // The crisp end stays a few bake-texels wide, or a strong front
+  // aliases into a dashed scratch.
   if (band + 1 < uBandCount) {
-    float feather = mix(0.045, 0.008, uBands[band + 1].w);
+    float feather = mix(0.045, 0.016, uBands[band + 1].w);
     float t = smoothstep(feather, 0.0, uBands[band + 1].x - l);
     c = mix(c, fadedBandColor(band + 1), 0.5 * t);
   }
   if (band > 0) {
-    float feather = mix(0.045, 0.008, uBands[band].w);
+    float feather = mix(0.045, 0.016, uBands[band].w);
     float t = smoothstep(feather, 0.0, l - uBands[band].x);
     c = mix(c, fadedBandColor(band - 1), 0.5 * t);
   }
@@ -149,8 +151,10 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
     cloudH += uContrast * (0.2 * deck + 0.055 * fine + 0.03 * micro);
 
     if (uFineBands > 0.5) {
+      // Fine banding belongs to the jets too: it fades into the caps
+      // instead of ringing the pole like a record groove.
       float phase = 1.2 * snoise(vec3(q.x, q.z, wlat * 2.0) + uSeedOffset);
-      surface *= 1.0 + 0.12 * uContrast * sin(wlat * uFineBands * 2.2 + phase);
+      surface *= 1.0 + 0.12 * uContrast * zonality * sin(wlat * uFineBands * 2.2 + phase);
     }
 
     // Storms: the catalog's live population, feathered into the deck —
@@ -172,19 +176,29 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
       float rr = (dLat * dLat) / (sz * sz * 0.42) + (dLon * dLon) / (sz * sz * elong * elong);
       if (rr > 5.0) continue;
       float reach = smoothstep(5.0, 3.0, rr);
-      float swirl = snoise(vec3(dLon, dLat, 0.4) * (5.0 / sz) + uSeedOffset.zxy
-        + vec3(churnT * 0.5, 0.0, 0.0));
+      // Swirl sampled in the storm's own stretched frame, so a
+      // planet-circling eruption stays turbulent instead of collapsing
+      // into a per-texel scratch.
+      float swirl = snoise(vec3(dLon / max(elong * 0.5, 1.0), dLat, 0.4) * (5.0 / sz)
+        + uSeedOffset.zxy + vec3(churnT * 0.5, 0.0, 0.0));
       float core = exp(-rr * 1.2);
-      float rim = exp(-pow((sqrt(rr) - 1.0) * 3.2, 2.0));
-      float sang = atan(dLat, dLon);
-      float rn = sqrt(rr);
-      float lanes = sin(rn * 6.5 - sang * 2.0 * sign(s.x + 1e-6) + swirl * 2.2 - churnT * 1.4);
       float fade = (s.z < 0.0 ? 1.0 - smooth01((s.w - 0.7) / 0.3) : 1.0) * reach;
-      vec3 stormDeck = stormColor * (0.92 + 0.1 * swirl + 0.08 * lanes * core);
-      surface = mix(surface, stormDeck, clamp(core * 1.25, 0.0, 1.0) * fade);
-      surface = mix(surface, stormColor * 1.13, rim * 0.45 * fade);
-      cloudH += core * fade * (s.z < 0.0 ? 0.5 : mix(0.55, 0.22, s.w));
-      cloudH += 0.04 * lanes * core * fade;
+      if (s.z < 0.0) {
+        // Eruption: a bright churning band segment — no oval outline.
+        vec3 stormDeck = stormColor * (0.9 + 0.16 * swirl);
+        surface = mix(surface, stormDeck, clamp(core * 1.15, 0.0, 1.0) * fade);
+        cloudH += core * fade * 0.5;
+      } else {
+        float rim = exp(-pow((sqrt(rr) - 1.0) * 3.2, 2.0));
+        float sang = atan(dLat, dLon);
+        float rn = sqrt(rr);
+        float lanes = sin(rn * 6.5 - sang * 2.0 * sign(s.x + 1e-6) + swirl * 2.2 - churnT * 1.4);
+        vec3 stormDeck = stormColor * (0.92 + 0.1 * swirl + 0.08 * lanes * core);
+        surface = mix(surface, stormDeck, clamp(core * 1.25, 0.0, 1.0) * fade);
+        surface = mix(surface, stormColor * 1.13, rim * 0.45 * fade);
+        cloudH += core * fade * mix(0.55, 0.22, s.w);
+        cloudH += 0.04 * lanes * core * fade;
+      }
     }
 
     // The polar regime: streaked cap, standing-wave lane, cyclones.
@@ -200,7 +214,7 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
       // gently, saturating well before the pole (a solid-body eye),
       // structure only: sheared small eddies re-form, so the finer
       // octaves stay nearly isotropic.
-      float windRad = hemi * (2.2 * smooth01((abs(lat) - capEdge + 0.25) / 1.1)
+      float windRad = hemi * (1.5 * smooth01((abs(lat) - capEdge + 0.3) / 1.4)
         + uTimeDays * uPolar.w * 2.0);
       vec3 ps = rotateY(p, windRad);
       vec3 psB = rotateY(p, windRad + 0.09 * hemi);
