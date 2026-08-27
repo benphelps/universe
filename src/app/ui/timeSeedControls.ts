@@ -4,23 +4,35 @@ export interface TimeSeedCallbacks {
   onRandom: () => void;
 }
 
-/** Slowest slider stop — the default pace until the surveyor speeds up. */
-export const SLOWEST_TIME_EXP = -3;
+/** The default pace until the surveyor speeds up: one minute a second. */
+export const DEFAULT_TIME_SCALE = 1 / 1440;
 
-/** Slider bounds, log10 of days-per-second: real time up to ~27 yr/s. */
-const MIN_EXP = Math.log10(1 / 86400);
-const MAX_EXP = 4;
-
-/** The labeled stops along the slider's log scale. */
-const STOPS: Array<{ label: string; daysPerSecond: number }> = [
-  { label: 'rt', daysPerSecond: 1 / 86400 },
-  { label: '1m', daysPerSecond: 1 / 1440 },
-  { label: '1h', daysPerSecond: 1 / 24 },
-  { label: '1d', daysPerSecond: 1 },
-  { label: '1mo', daysPerSecond: 30.44 },
-  { label: '1yr', daysPerSecond: 365.25 },
-  { label: '10y', daysPerSecond: 3652.5 },
+/** The slider's detents, log-spaced from real time to a decade a
+ *  second; the labeled ones carry the scale. */
+const DETENTS: Array<{ daysPerSecond: number; label?: string }> = [
+  { daysPerSecond: 1 / 86400, label: 'rt' },
+  { daysPerSecond: 10 / 86400 },
+  { daysPerSecond: 30 / 86400 },
+  { daysPerSecond: 1 / 1440, label: '1m' },
+  { daysPerSecond: 5 / 1440 },
+  { daysPerSecond: 15 / 1440 },
+  { daysPerSecond: 1 / 24, label: '1h' },
+  { daysPerSecond: 3 / 24 },
+  { daysPerSecond: 6 / 24 },
+  { daysPerSecond: 0.5 },
+  { daysPerSecond: 1, label: '1d' },
+  { daysPerSecond: 3 },
+  { daysPerSecond: 7 },
+  { daysPerSecond: 30.44, label: '1mo' },
+  { daysPerSecond: 91.3 },
+  { daysPerSecond: 365.25, label: '1yr' },
+  { daysPerSecond: 1095.75 },
+  { daysPerSecond: 3652.5, label: '10y' },
 ];
+
+const DETENT_EXPS = DETENTS.map(({ daysPerSecond }) => Math.log10(daysPerSecond));
+const MIN_EXP = DETENT_EXPS[0];
+const MAX_EXP = DETENT_EXPS[DETENT_EXPS.length - 1];
 
 const PAUSE = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg>`;
 const PLAY = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M5 3.1v9.8L13 8z" fill="currentColor"/></svg>`;
@@ -32,9 +44,9 @@ function formatRate(daysPerSecond: number): string {
     v < 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v));
   const secondsPerSecond = daysPerSecond * 86400;
   if (secondsPerSecond < 1.6) return 'real time';
-  if (secondsPerSecond < 90) return `${trim(secondsPerSecond)} s/s`;
+  if (secondsPerSecond < 55) return `${trim(secondsPerSecond)} s/s`;
   const minutes = secondsPerSecond / 60;
-  if (minutes < 90) return `${trim(minutes)} min/s`;
+  if (minutes < 55) return `${trim(minutes)} min/s`;
   const hours = minutes / 60;
   if (hours < 23) return `${trim(hours)} hr/s`;
   if (daysPerSecond < 26) return `${trim(daysPerSecond)} d/s`;
@@ -54,7 +66,7 @@ export class TimeSeedControls {
   private readonly range: HTMLInputElement;
   private readonly seedText: HTMLElement;
   private seedHex = '';
-  private rate = 10 ** SLOWEST_TIME_EXP;
+  private rate = DEFAULT_TIME_SCALE;
   private paused = false;
   private copyTimer = 0;
 
@@ -62,17 +74,18 @@ export class TimeSeedControls {
     element: HTMLElement,
     private readonly callbacks: TimeSeedCallbacks,
   ) {
-    const ticks = STOPS.map(({ label, daysPerSecond }) => {
+    const ticks = DETENTS.map(({ label, daysPerSecond }) => {
       const at = ((Math.log10(daysPerSecond) - MIN_EXP) / (MAX_EXP - MIN_EXP)) * 100;
-      return `<span style="left:${at.toFixed(1)}%">${label}</span>`;
+      const mark = `<i style="left:${at.toFixed(1)}%"></i>`;
+      return label ? `${mark}<span style="left:${at.toFixed(1)}%">${label}</span>` : mark;
     }).join('');
     element.innerHTML = `
       <button id="time-pause" title="pause time" aria-label="pause time">${PAUSE}</button>
       <div id="time-slider">
         <span id="time-rate"></span>
         <div class="track-wrap">
-          <input id="time-range" type="range" min="${MIN_EXP}" max="${MAX_EXP}" step="0.01"
-            value="${SLOWEST_TIME_EXP}" aria-label="time scale" />
+          <input id="time-range" type="range" min="${MIN_EXP}" max="${MAX_EXP}" step="0.001"
+            value="${Math.log10(DEFAULT_TIME_SCALE)}" aria-label="time scale" />
           <div class="ticks">${ticks}</div>
         </div>
       </div>
@@ -87,7 +100,15 @@ export class TimeSeedControls {
 
     this.pauseButton.addEventListener('click', () => this.setPaused(!this.paused));
     this.range.addEventListener('input', () => {
-      this.rate = 10 ** Number(this.range.value);
+      // Snap the drag to the nearest detent: the useful rates are a
+      // ladder, not a continuum.
+      const raw = Number(this.range.value);
+      let nearest = DETENT_EXPS[0];
+      for (const exp of DETENT_EXPS) {
+        if (Math.abs(exp - raw) < Math.abs(nearest - raw)) nearest = exp;
+      }
+      this.range.value = String(nearest);
+      this.rate = 10 ** nearest;
       if (this.paused) this.setPaused(false);
       else this.apply();
     });

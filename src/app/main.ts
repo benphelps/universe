@@ -8,7 +8,7 @@ import { GenerationIndicator } from './ui/generationIndicator';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SettingsMenu } from './ui/settingsMenu';
-import { TimeSeedControls, SLOWEST_TIME_EXP } from './ui/timeSeedControls';
+import { TimeSeedControls, DEFAULT_TIME_SCALE } from './ui/timeSeedControls';
 import { Sidebar, type ViewMode } from './ui/sidebar';
 import { StarInfoPanel } from './ui/starInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
@@ -27,7 +27,7 @@ let viewer: UnifiedViewer | null = null;
 let system: StarSystem | null = null;
 let currentLocaleKey = '';
 let exposure = 1;
-let timeScale = 10 ** SLOWEST_TIME_EXP;
+let timeScale = DEFAULT_TIME_SCALE;
 
 function randomSeedHex(): string {
   const words = new Uint32Array(2);
