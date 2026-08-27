@@ -27,6 +27,10 @@ export interface GalaxyParticleSet {
 }
 
 const GALAXY_RADIUS = 16000;
+/** The sampler's outer bound: far enough that the exponential profile
+ *  itself has faded to nothing — the disk ends by getting sparse, not
+ *  by being cut. */
+const FAR_FIELD = 26000;
 const STAR_COUNT = 85000;
 const DUST_COUNT = 22000;
 const FILAMENT_CHAINS = 650;
@@ -35,13 +39,23 @@ const H2_COUNT = 520;
 /** Radial light profile the star sampler draws from: a de Vaucouleurs
  *  bulge blended into the thin disk's exponential. */
 function radialIntensity(radiusPc: number): number {
-  return Math.exp(-radiusPc / 2600) + 5.0 * Math.exp(-1.35 * (radiusPc / 90) ** 0.25);
+  return (
+    (Math.exp(-radiusPc / 2600) + 5.0 * Math.exp(-1.35 * (radiusPc / 90) ** 0.25)) *
+    outerTaper(radiusPc)
+  );
+}
+
+/** Beyond the break radius the disk's populations decline on the thin
+ *  disk's own scale length — the Type-II outer profile real disks
+ *  show. 1 inside the break. */
+function outerTaper(radiusPc: number): number {
+  return radiusPc < 11000 ? 1 : Math.exp(-(radiusPc - 11000) / 2600);
 }
 
 /** Numeric inverse CDF of the radial profile (Simpson + resample). */
 function buildRadialCdf(): (unit: number) => number {
   const steps = 1024;
-  const h = GALAXY_RADIUS / steps;
+  const h = FAR_FIELD / steps;
   const cumulative = new Float64Array(steps + 1);
   for (let i = 1; i <= steps; i++) {
     const a = radialIntensity((i - 1) * h);
@@ -148,10 +162,19 @@ export function getGalaxyParticles(): GalaxyParticleSet {
     if (i % 2 === 0) {
       guiding = cdf(rng.float());
     } else {
-      const x = (2 * rng.float() - 1) * GALAXY_RADIUS;
-      const y = (2 * rng.float() - 1) * GALAXY_RADIUS;
-      guiding = Math.hypot(x, y);
-      if (guiding > GALAXY_RADIUS) continue;
+      // The spread-out half fills the disk evenly, then thins along
+      // the outer taper — the rim dissolves instead of cutting.
+      guiding = FAR_FIELD;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const x = (2 * rng.float() - 1) * FAR_FIELD;
+        const y = (2 * rng.float() - 1) * FAR_FIELD;
+        const candidate = Math.hypot(x, y);
+        if (candidate <= FAR_FIELD && rng.float() < outerTaper(candidate)) {
+          guiding = candidate;
+          break;
+        }
+      }
+      if (guiding >= FAR_FIELD) continue;
     }
     const t = rng.float() * 2 * Math.PI;
     const { x, y } = placeOnOrbit(guiding, t);
@@ -164,10 +187,11 @@ export function getGalaxyParticles(): GalaxyParticleSet {
   // Filament chains: clumped strings of smaller dust along one orbit —
   // the streaming debris differential rotation makes of any cloud.
   for (let chain = 0; chain < FILAMENT_CHAINS; chain++) {
-    const x0 = (2 * rng.float() - 1) * GALAXY_RADIUS;
-    const y0 = (2 * rng.float() - 1) * GALAXY_RADIUS;
+    const x0 = (2 * rng.float() - 1) * FAR_FIELD;
+    const y0 = (2 * rng.float() - 1) * FAR_FIELD;
     let guiding = Math.hypot(x0, y0);
-    if (guiding > GALAXY_RADIUS || guiding < 600) continue;
+    if (guiding > FAR_FIELD || guiding < 600) continue;
+    if (rng.float() > outerTaper(guiding)) continue;
     const t0 = rng.float() * 2 * Math.PI;
     const chainMag = 0.09 + 0.05 * rng.float();
     const members = Math.floor(6 + 54 * rng.float());
@@ -188,6 +212,7 @@ export function getGalaxyParticles(): GalaxyParticleSet {
     const y0 = (2 * rng.float() - 1) * GALAXY_RADIUS;
     const guiding = Math.hypot(x0, y0);
     if (guiding > GALAXY_RADIUS || guiding < 2500) continue;
+    if (rng.float() > outerTaper(guiding)) continue;
     const t = rng.float() * 2 * Math.PI;
     const inner = placeOnOrbit(guiding, t);
     const outer = placeOnOrbit(guiding + 800, t);
