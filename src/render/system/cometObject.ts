@@ -106,6 +106,7 @@ export class CometObject {
   private readonly dust: Ribbon;
   private readonly mu: Mu;
   private readonly cameraLocal = new Vector3();
+  private minWidthRad = 0;
 
   constructor(
     private readonly comet: Comet,
@@ -163,6 +164,7 @@ export class CometObject {
     this.group.updateWorldMatrix(true, false);
     this.cameraLocal.copy(cameraWorld);
     this.group.worldToLocal(this.cameraLocal);
+    this.minWidthRad = radPerPixel;
 
     // Physical coma, held near the great-comet scale; the marker
     // clamp in the shader carries it at system zoom.
@@ -187,28 +189,28 @@ export class CometObject {
       return [0.3 * fade, 0.45 * fade, 0.95 * fade];
     });
 
-    // Dust tail: each sample is grit emitted τ days back at the orbit's
-    // then-position, pushed sunward-out by β·g ever since (β ≈ 0.3,
-    // sub-micron grains). Older grit left when the sun bore from a
-    // different angle — the curve is the orbit's own history.
+    // Dust tail: each sample is grit emitted τ days back, pushed
+    // sunward-out by β·g ever since (β ≈ 0.3, sub-micron grains) —
+    // the push is the leading term, so the whole tail stays broadly
+    // anti-solar like the ion tail. The curve comes from the sun
+    // bearing rotating across emission times, plus the second-order
+    // along-track lag of push-slowed grit — same order as the push,
+    // never the orbit-arc scale that would swing the tail anti-motion.
     const beta = 0.3;
     const tailDays = 55 * (0.4 + 0.6 * Math.min(activity, 2));
     const emitted = new Vector3();
+    const vHat = new Vector3();
     this.writeRibbon(this.dust, (u, out) => {
       const tauDays = u ** 1.5 * tailDays;
       const tauS = tauDays * DAY_S;
       const past = elementsToState(this.comet.elements, this.mu, seconds((tSeconds as number) - tauS));
       emitted.set(past.position.x, past.position.y, past.position.z);
       const rM = Math.max(emitted.length(), 1e7);
-      const pushM = (beta * ((this.mu as number) / (rM * rM)) * tauS * tauS) / 2;
-      out.copy(posAu);
-      const drift = emitted.normalize().multiplyScalar(pushM / AU);
-      // The grit trails the head along where the orbit was, plus the
-      // integrated radiation push from where the sun stood then.
-      const lag = new Vector3(past.position.x / AU, past.position.y / AU, past.position.z / AU)
-        .sub(posAu)
-        .multiplyScalar(0.35);
-      out.add(drift).add(lag);
+      const pushAu = (beta * ((this.mu as number) / (rM * rM)) * tauS * tauS) / 2 / AU;
+      vHat.set(past.velocity.x, past.velocity.y, past.velocity.z).normalize();
+      out.copy(posAu)
+        .addScaledVector(emitted.normalize(), pushAu)
+        .addScaledVector(vHat, -pushAu * 0.6);
     }, (u) => comaAu * (1 + 14 * u ** 1.3), (u) => {
       const fade = (1 - u) ** 1.7 * Math.min(1, activity * 0.7) * (0.35 + 0.65 * this.comet.dustiness);
       return [0.95 * fade, 0.86 * fade, 0.7 * fade];
@@ -235,8 +237,18 @@ export class CometObject {
       if (tangent.lengthSq() < 1e-18) tangent.set(1, 0, 0);
       toCamera.copy(this.cameraLocal).sub(spine);
       side.crossVectors(tangent, toCamera).normalize();
-      const half = widthAt(u) / 2;
-      const [r, g, b] = tintAt(u);
+      // A tail thinner than a few pixels vanishes at system zoom: the
+      // width floors at ~3 px and the squeezed light concentrates into
+      // it, so the streak stays findable from anywhere without
+      // brightening the resolved close-up at all.
+      const physicalW = widthAt(u);
+      const floorW = 3 * this.minWidthRad * toCamera.length();
+      const half = Math.max(physicalW, floorW) / 2;
+      const gain = Math.min(3, Math.sqrt(Math.max(1, floorW / Math.max(physicalW, 1e-12))));
+      let [r, g, b] = tintAt(u);
+      r *= gain;
+      g *= gain;
+      b *= gain;
       ribbon.positions.setXYZ(
         i * 2,
         spine.x - side.x * half,
