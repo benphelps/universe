@@ -106,10 +106,12 @@ export class TerrainChunkManager {
     }
   }
 
-  /** Tile builds currently in flight across the worker pool. */
-  get pendingCount(): number {
-    return this.pending.size;
+  /** Tiles the current view still wants built (in flight included). */
+  get outstanding(): number {
+    return this.wantedCount;
   }
+
+  private wantedCount = 0;
 
   /** Terrain height under the camera, km above the datum: LOD distances
    *  measure to the local ground sphere, not the datum — on a world
@@ -147,6 +149,7 @@ export class TerrainChunkManager {
     for (let face = 0; face < 6; face++) {
       this.visit(face, 0, 0, 0, cameraKm, cameraDir, horizonAngle);
     }
+    this.wantedCount = this.wanted.length;
 
     // Scatter shows by proximity, not by which LOD tile is drawn: its
     // host tile is often replaced by finer children exactly when the

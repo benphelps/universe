@@ -317,7 +317,7 @@ export class UnifiedViewer {
   get generationStatus(): { surveying: boolean; terrain: number; worlds: number; skies: number } {
     return {
       surveying: this.surveying,
-      terrain: this.chunkManager?.pendingCount ?? 0,
+      terrain: this.chunkManager?.outstanding ?? 0,
       worlds: bakeQueueDepth(),
       skies: skyPending(),
     };

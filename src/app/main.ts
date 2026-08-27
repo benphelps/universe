@@ -259,7 +259,7 @@ new DecalToggles(document.getElementById('decals')!, (key, visible) => {
   else if (key === 'zones') viewer.zonesVisible = visible;
   else viewer.markersVisible = visible;
 });
-const generation = new GenerationIndicator(document.body);
+const generation = new GenerationIndicator(sidebar.generation);
 setInterval(() => {
   if (viewer) generation.update(viewer.generationStatus);
 }, 250);

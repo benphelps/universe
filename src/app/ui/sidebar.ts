@@ -25,6 +25,8 @@ const VIEW_SCALE: Record<ViewMode, string> = {
 export class Sidebar {
   readonly focus: HTMLElement;
   readonly level: HTMLElement;
+  /** The generation readout under the framing scales. */
+  readonly generation: HTMLElement;
   private readonly addressEl: HTMLElement;
   private readonly viewButtons = new Map<ViewMode, HTMLButtonElement>();
 
@@ -33,6 +35,7 @@ export class Sidebar {
       <header id="address"></header>
       <section id="focus"></section>
       <section id="level"></section>
+      <footer id="gen-panel"></footer>
       <nav id="level-nav">
         ${VIEWS.map(
           (v) => `<button id="view-${v}"><span class="name">${v}</span><span class="unit">${VIEW_SCALE[v]}</span></button>`,
@@ -42,6 +45,7 @@ export class Sidebar {
     this.addressEl = element.querySelector<HTMLElement>('#address')!;
     this.focus = element.querySelector<HTMLElement>('#focus')!;
     this.level = element.querySelector<HTMLElement>('#level')!;
+    this.generation = element.querySelector<HTMLElement>('#gen-panel')!;
 
     for (const view of VIEWS) {
       const button = element.querySelector<HTMLButtonElement>(`#view-${view}`)!;

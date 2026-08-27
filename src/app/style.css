@@ -386,39 +386,69 @@ tr.here .swatch {
   color: var(--accent);
 }
 
-/* The generation lamp: on while background workers are producing. */
-#genstate {
-  position: fixed;
-  right: 12px;
-  bottom: 50px;
-  z-index: 6;
-  display: flex;
+/* The generation readout: one row per background producer, under the
+ * framing scales. Rows fold away when their queue drains. */
+#gen-panel {
+  flex: none;
+  padding: 0 14px;
+}
+
+#gen-panel .gen-row {
+  display: grid;
+  grid-template-columns: 1fr 150px;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
+  padding: 7px 0 6px;
+  border-top: 1px solid var(--line);
+}
+
+#gen-panel .gen-row[hidden] {
+  display: none;
+}
+
+#gen-panel .gen-label {
+  font: 600 10px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
   color: var(--faint);
-  font: 11px/1.4 var(--mono);
-  opacity: 0;
-  transition: opacity 0.4s;
-  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-#genstate.busy {
-  opacity: 1;
+#gen-panel .gen-bar {
+  height: 3px;
+  background: var(--panel-raised);
+  border-radius: 2px;
+  overflow: hidden;
 }
 
-#genstate svg {
-  animation: genstate-turn 1.4s linear infinite;
+#gen-panel .gen-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.25s;
 }
 
-@keyframes genstate-turn {
+#gen-panel .gen-fill.sweep {
+  width: 30%;
+  animation: gen-sweep 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes gen-sweep {
+  from {
+    margin-left: 0;
+  }
   to {
-    transform: rotate(360deg);
+    margin-left: 70%;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #genstate svg {
+  #gen-panel .gen-fill.sweep {
     animation: none;
+    width: 100%;
+    opacity: 0.45;
   }
 }
 
