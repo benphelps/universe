@@ -3,7 +3,7 @@ import type { GalacticPosition } from '../universe/galaxy/density';
 import { galacticAddress } from '../universe/galaxy/regions';
 import { generateSystem } from '../universe/system/generate';
 import type { StarSystem } from '../universe/system/types';
-import { ChartToggle } from './ui/chartToggle';
+import { DecalToggles } from './ui/decalToggles';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SettingsMenu, SLOWEST_TIME_EXP } from './ui/settingsMenu';
@@ -245,8 +245,12 @@ const settings = new SettingsMenu(document.getElementById('settings-corner')!, {
     if (viewer) viewer.exposure = value;
   },
 });
-new ChartToggle(document.getElementById('chart')!, (visible) => {
-  if (viewer) viewer.chartVisible = visible;
+new DecalToggles(document.getElementById('decals')!, (key, visible) => {
+  if (!viewer) return;
+  if (key === 'chart') viewer.chartVisible = visible;
+  else if (key === 'orbits') viewer.orbitsVisible = visible;
+  else if (key === 'zones') viewer.zonesVisible = visible;
+  else viewer.markersVisible = visible;
 });
 
 // The ride-out chip: press to start the slow pull-back to the galaxy

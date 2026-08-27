@@ -247,6 +247,10 @@ export class UnifiedViewer {
   private readonly auGroup = new Group();
   private readonly stellarOrbits = new Group();
   private readonly overlay = new Group();
+  /** Zone rings and belt annuli: same map altitudes, own toggle. */
+  private readonly zoneOverlay = new Group();
+  /** Orbit traces of a focused planet's moons, inside moonGroup. */
+  private moonOrbits: Group | null = null;
   /** Neighborhood stars (1 unit = 1 pc, already scene-frame) inside it. */
   private readonly pcGroup = new Group();
   private neighborPoints: Points | null = null;
@@ -299,6 +303,12 @@ export class UnifiedViewer {
   private sectorChart: SectorChart | null = null;
   /** User toggle: sector borders, sky-region borders, and their names. */
   chartVisible = true;
+  /** User toggle: planet, moon, and stellar orbit lines. */
+  orbitsVisible = true;
+  /** User toggle: habitable-zone rings and belt annuli. */
+  zonesVisible = true;
+  /** User toggle: the marker spheres carrying subpixel bodies. */
+  markersVisible = true;
 
   /** Free flight: right-shift + drag pans the camera through space. */
   private rightShiftHeld = false;
@@ -399,7 +409,7 @@ export class UnifiedViewer {
     this.controls.target.set(0, 0, 0);
 
     // Model-frame content lies flat in the world's ground plane.
-    for (const group of [this.auGroup, this.overlay, this.stellarOrbits]) {
+    for (const group of [this.auGroup, this.overlay, this.zoneOverlay, this.stellarOrbits]) {
       group.rotation.x = -Math.PI / 2;
       group.scale.setScalar(AU_KM);
       this.heliocentric.add(group);
@@ -718,9 +728,9 @@ export class UnifiedViewer {
       }
     }
 
-    this.overlay.add(createZoneRings(zones));
+    this.zoneOverlay.add(createZoneRings(zones));
     for (const belt of belts) {
-      this.overlay.add(createBeltAnnulus(belt.innerAu, belt.outerAu));
+      this.zoneOverlay.add(createBeltAnnulus(belt.innerAu, belt.outerAu));
     }
     for (const planet of planets) {
       this.overlay.add(
@@ -742,7 +752,11 @@ export class UnifiedViewer {
     for (const comet of this.cometObjects) comet.dispose();
     this.cometObjects = [];
     this.beltMaterials = [];
-    for (const child of [...this.auGroup.children, ...this.overlay.children]) {
+    for (const child of [
+      ...this.auGroup.children,
+      ...this.overlay.children,
+      ...this.zoneOverlay.children,
+    ]) {
       child.parent?.remove(child);
       child.traverse((obj) => {
         if (obj instanceof Mesh || obj instanceof Line || obj instanceof Points) {
@@ -1563,13 +1577,15 @@ export class UnifiedViewer {
       this.parentObject.group.scale.setScalar(EARTH_RADIUS_KM);
       this.moonGroup.add(this.parentObject.group);
     }
+    this.moonOrbits = new Group();
+    this.moonGroup.add(this.moonOrbits);
     this.moons = planet.moons.map((moon) => {
         const object = new PlanetObject(moon.physical, null);
         object.group.scale.setScalar(EARTH_RADIUS_KM);
         this.moonGroup!.add(object.group);
 
         const points = orbitPath(moon.elements, 128).map((p) => toWorld(p).divideScalar(1000));
-        this.moonGroup!.add(
+        this.moonOrbits!.add(
           new Line(
             new BufferGeometry().setFromPoints(points),
             new LineBasicMaterial({ color: 0x6a7a94, transparent: true, opacity: 0.22 }),
@@ -1635,6 +1651,7 @@ export class UnifiedViewer {
         }
       });
       this.moonGroup = null;
+      this.moonOrbits = null;
       this.moons = [];
     }
     this.focusPlanet = null;
@@ -1678,7 +1695,11 @@ export class UnifiedViewer {
       this.farPoints = null;
     }
     this.neighbors = [];
-    for (const child of [...this.auGroup.children, ...this.overlay.children]) {
+    for (const child of [
+      ...this.auGroup.children,
+      ...this.overlay.children,
+      ...this.zoneOverlay.children,
+    ]) {
       child.parent?.remove(child);
       child.traverse((obj) => {
         if (obj instanceof Mesh || obj instanceof Points || obj instanceof Line) {
@@ -2028,12 +2049,15 @@ export class UnifiedViewer {
         );
       }
       this.chunkManager?.update(this.camera.position, groundKm);
-      // The diagrammatic orbit overlay appears at map heights — capped
-      // by the system extent, since 25 radii of a giant star can lie
-      // beyond its own planets and the map would never surface.
-      this.overlay.visible =
-        this.altitudeKm > Math.min(this.radiusKm * 25, this.extentKm * 0.5);
+      // The diagrammatic overlays appear at map heights — capped by the
+      // system extent, since 25 radii of a giant star can lie beyond
+      // its own planets and the map would never surface — each family
+      // behind its own user toggle.
+      const mapHeight = this.altitudeKm > Math.min(this.radiusKm * 25, this.extentKm * 0.5);
+      this.overlay.visible = mapHeight && this.orbitsVisible;
       this.stellarOrbits.visible = this.overlay.visible;
+      this.zoneOverlay.visible = mapHeight && this.zonesVisible;
+      if (this.moonOrbits) this.moonOrbits.visible = this.orbitsVisible;
     }
 
     this.pipeline.render();
@@ -2124,6 +2148,7 @@ export class UnifiedViewer {
     const hostPos = starPositions[hostIndex] ?? new Vector3();
     this.auGroup.position.copy(hostPos);
     this.overlay.position.copy(hostPos);
+    this.zoneOverlay.position.copy(hostPos);
     this.starDistanceKm = Math.max(hostWorld.length(), this.radiusKm * 4);
     const sunDir =
       hostWorld.lengthSq() > 1 ? hostWorld.clone().normalize() : new Vector3(0, 0, 1);
@@ -2153,7 +2178,7 @@ export class UnifiedViewer {
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
       const bodyRadiusKm = node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
-      if (bodyRadiusKm / cameraDistance < 0.004) {
+      if (this.markersVisible && bodyRadiusKm / cameraDistance < 0.004) {
         node.marker.visible = true;
         node.marker.position.copy(positionKm);
         node.marker.scale.setScalar(cameraDistance * 0.0035);
@@ -2271,7 +2296,7 @@ export class UnifiedViewer {
 
       const cameraDistance = this.camera.position.distanceTo(moonWorld);
       const moonRadiusKm = moon.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
-      marker.visible = moonRadiusKm / cameraDistance < 0.004;
+      marker.visible = this.markersVisible && moonRadiusKm / cameraDistance < 0.004;
       marker.scale.setScalar((cameraDistance * 0.0045) / EARTH_RADIUS_KM);
       this.occluders.push({ x: moonWorld.x, y: moonWorld.y, z: moonWorld.z, rKm: moonRadiusKm });
       moonCasters.push({ position: moonWorld.clone(), radius: moonRadiusKm });
