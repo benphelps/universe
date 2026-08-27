@@ -1,5 +1,5 @@
 import { deriveSeed, mix64 } from '../../core/rng/hash';
-import { UNIVERSE_SEED } from './sectors';
+import { galaxySeed } from './galaxySeed';
 
 /**
  * A system's orbital plane bears no relation to the galactic disk, so
@@ -11,7 +11,7 @@ import { UNIVERSE_SEED } from './sectors';
  */
 export function sceneFromGalaxy(seed: bigint): Float32Array {
   const unit = (channel: number): number =>
-    Number(mix64(seed ^ deriveSeed(UNIVERSE_SEED, 'orientation', channel)) & 0xfffffn) / 0xfffff;
+    Number(mix64(seed ^ deriveSeed(galaxySeed(), 'orientation', channel)) & 0xfffffn) / 0xfffff;
 
   // Uniform random rotation via the subgroup-algorithm quaternion.
   const u1 = unit(0);

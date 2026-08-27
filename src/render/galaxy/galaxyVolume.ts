@@ -7,8 +7,14 @@ import {
   SphereGeometry,
   Vector3,
 } from 'three';
-import type { GalacticPosition } from '../../universe/galaxy/density';
+import { waveParams, type GalacticPosition, type WaveParams } from '../../universe/galaxy/density';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+
+/** GLSL float literal (a bare integer would type as int). */
+const f = (value: number): string => {
+  const text = value.toPrecision(9);
+  return text.includes('.') || text.includes('e') ? text : `${text}.0`;
+};
 
 const VERTEX = /* glsl */ `
 // The dome is a unit sphere centered on the camera and never rotated,
@@ -31,7 +37,7 @@ void main() {
  * The clump noise is the statistical limit of the molecular-cloud
  * population, the same convention the belt point cloud uses.
  */
-const FRAGMENT = /* glsl */ `
+const buildFragment = (w: WaveParams): string => /* glsl */ `
 varying vec3 vRay;
 uniform vec3 uCamGalKpc;
 uniform mat3 uWorldToGalaxy;
@@ -53,18 +59,19 @@ float wrapPi(float angle) {
 // little further with size (Lin-Shu; construction after beltoforion's
 // renderer). x = stellar arm boost, y = inner-edge dust-lane weight.
 float waveWinding(float guidingKpc) {
-  return log(max(guidingKpc, 3.0) / 3.0) / 0.2125566; // tan 12 deg pitch
+  return log(max(guidingKpc, 3.0) / 3.0) / ${f(w.pitchTan)};
 }
 
 float waveTilt(float guidingKpc) {
   float u = waveWinding(guidingKpc);
-  return u + 0.14 * sin(1.1 * u + 1.3) + 0.06 * sin(2.6 * u + 4.2);
+  return u + ${f(w.wobble1Amp)} * sin(${f(w.wobble1Freq)} * u + ${f(w.wobble1Phase)})
+    + ${f(w.wobble2Amp)} * sin(${f(w.wobble2Freq)} * u + ${f(w.wobble2Phase)});
 }
 
 float waveAxisRatio(float guidingKpc) {
   float bump = smoothstep(0.0, 4.2, guidingKpc) *
     pow(1.0 - smoothstep(4.2, 15.0, guidingKpc), 0.8);
-  return 1.0 - 0.16 * bump;
+  return 1.0 - ${f(w.qDepth)} * bump;
 }
 
 float waveRadius(float guidingKpc, float azimuth) {
@@ -257,7 +264,7 @@ export class GalaxyVolume {
     );
     this.material = new ShaderMaterial({
       vertexShader: VERTEX,
-      fragmentShader: FRAGMENT,
+      fragmentShader: buildFragment(waveParams()),
       uniforms: {
         uCamGalKpc: { value: new Vector3() },
         uWorldToGalaxy: { value: new Matrix3() },

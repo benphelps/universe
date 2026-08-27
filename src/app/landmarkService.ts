@@ -1,3 +1,5 @@
+import { seedToHex } from '../core/rng/hash';
+import { galaxySeed } from '../universe/galaxy/galaxySeed';
 import type { GalacticLandmark } from '../universe/galaxy/regions';
 
 /**
@@ -19,7 +21,7 @@ export function getGalacticLandmarks(): Promise<GalacticLandmark[]> {
       worker.terminate();
       resolve(event.data);
     };
-    worker.postMessage(0);
+    worker.postMessage({ galaxy: seedToHex(galaxySeed()) });
   });
   return promise;
 }

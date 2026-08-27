@@ -1,4 +1,5 @@
-import { seedFromHex } from '../core/rng/hash';
+import { seedFromHex, seedToHex } from '../core/rng/hash';
+import { PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy/galaxySeed';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { viewpointForSeed } from '../universe/galaxy/sectors';
 import { CATALOG_ROWS } from '../universe/galaxy/catalog';
@@ -17,6 +18,8 @@ export interface SkyRequest {
   seedHex: string;
   /** The system's true locale (catalog travel); absent for bare seeds. */
   viewpoint?: GalacticPosition;
+  /** The session's galaxy; absent means the prime galaxy. */
+  galaxy?: string;
 }
 
 /**
@@ -45,6 +48,7 @@ function sweepRowParallel(
   workers: Worker[],
   row: (typeof CATALOG_ROWS)[number],
   viewpoint: GalacticPosition,
+  galaxy: string,
   onChunk: (done: number, total: number) => void,
 ): Promise<SweepSlab[]> {
   const span = rowSlabSpan(row, viewpoint);
@@ -64,7 +68,7 @@ function sweepRowParallel(
     const dispatch = (worker: Worker): void => {
       if (next >= chunkCount) return;
       const taskId = next++;
-      const task: SweepTask = { taskId, row, viewpoint, ...bounds[taskId] };
+      const task: SweepTask = { taskId, row, viewpoint, galaxy, ...bounds[taskId] };
       worker.onmessage = (event: MessageEvent<SweepResult>) => {
         slabs[event.data.taskId] = event.data.slab;
         done++;
@@ -78,7 +82,12 @@ function sweepRowParallel(
   });
 }
 
-async function runBuild(seedHex: string, viewpoint: GalacticPosition, seed: bigint): Promise<void> {
+async function runBuild(
+  seedHex: string,
+  viewpoint: GalacticPosition,
+  seed: bigint,
+  galaxy: string,
+): Promise<void> {
   let lastFraction = 0;
   let lastStage = '';
   let lastStageFraction = 0;
@@ -110,7 +119,7 @@ async function runBuild(seedHex: string, viewpoint: GalacticPosition, seed: bigi
     const stage = rowStageName(row);
     report(0.84 * rowsBehind, stage, 0);
     if (usePool) {
-      const rowSlabs = await sweepRowParallel(pool!, row, viewpoint, (done, total) =>
+      const rowSlabs = await sweepRowParallel(pool!, row, viewpoint, galaxy, (done, total) =>
         report(0.84 * (rowsBehind + (weights[i] * done) / total), stage, done / total),
       );
       slabs.push(...rowSlabs);
@@ -144,7 +153,11 @@ async function runBuild(seedHex: string, viewpoint: GalacticPosition, seed: bigi
 }
 
 self.onmessage = (event: MessageEvent<SkyRequest>) => {
-  const { seedHex, viewpoint } = event.data;
+  const { seedHex, viewpoint, galaxy } = event.data;
   const seed = seedFromHex(seedHex);
-  queue = queue.then(() => runBuild(seedHex, viewpoint ?? viewpointForSeed(seed), seed));
+  if (galaxy) setGalaxySeed(seedFromHex(galaxy));
+  const galaxyHex = galaxy ?? seedToHex(PRIME_GALAXY_SEED);
+  queue = queue.then(() =>
+    runBuild(seedHex, viewpoint ?? viewpointForSeed(seed), seed, galaxyHex),
+  );
 };

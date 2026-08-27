@@ -4,7 +4,7 @@ import { Rng } from '../../core/rng/rng';
 import { createSimplex3 } from '../../core/noise/simplex3';
 import { cloudsInCell, type MolecularCloud } from './clouds';
 import { nearestArm, stellarDensity, type GalacticPosition } from './density';
-import { UNIVERSE_SEED } from './sectors';
+import { galaxySeed } from './galaxySeed';
 
 /**
  * The galactic gazetteer: names for the structure the model already
@@ -24,8 +24,14 @@ import { UNIVERSE_SEED } from './sectors';
 /** Anchor-search cell span (4 cloud cells; provinces are its scale). */
 export const SECTOR_SITE_SPAN_PC = 1000;
 
-const warpNoise = createSimplex3(deriveSeed(UNIVERSE_SEED, 'sector-warp'));
-const SITE_SALT = deriveSeed(UNIVERSE_SEED, 'sector-site');
+let warpNoiseFn: ReturnType<typeof createSimplex3> | null = null;
+function warpNoise(x: number, y: number, z: number): number {
+  return (warpNoiseFn ??= createSimplex3(deriveSeed(galaxySeed(), 'sector-warp')))(x, y, z);
+}
+let siteSalt: bigint | null = null;
+function siteSaltOf(): bigint {
+  return (siteSalt ??= deriveSeed(galaxySeed(), 'sector-site'));
+}
 
 const ONSETS = [
   'k', 'v', 't', 's', 'th', 'r', 'm', 'n', 'd', 'l', 'z', 'b',
@@ -46,7 +52,12 @@ export function generatedName(seed: bigint): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-const ARM_NAMES = [0, 1].map((arm) => generatedName(deriveSeed(UNIVERSE_SEED, 'arm-name', arm)));
+let armNames: string[] | null = null;
+function armNamesOf(): string[] {
+  return (armNames ??= [0, 1].map((arm) =>
+    generatedName(deriveSeed(galaxySeed(), 'arm-name', arm)),
+  ));
+}
 
 interface SectorSite {
   xPc: number;
@@ -84,7 +95,7 @@ function sitesFor(ix: number, iy: number, iz: number): SectorSite[] {
   const cached = siteCache.get(key);
   if (cached) return cached;
   const cellSeed = mix64(
-    SITE_SALT ^
+    siteSaltOf() ^
       ((BigInt(ix & 0x3ffff) << 30n) | (BigInt(iy & 0x3ffff) << 12n) | BigInt(iz & 0xfff)),
   );
   const rng = new Rng(cellSeed);
@@ -261,7 +272,7 @@ export function galacticAddress(positionPc: GalacticPosition): GalacticAddress {
   const heightPc = positionPc.zPc;
   const azimuth = Math.atan2(positionPc.yPc, positionPc.xPc);
   const arm = nearestArm(radiusPc, azimuth);
-  const armName = ARM_NAMES[arm.index];
+  const armName = armNamesOf()[arm.index];
 
   const zone: GalacticAddress['zone'] =
     Math.abs(heightPc) > 1200
@@ -283,7 +294,7 @@ export function galacticAddress(positionPc: GalacticPosition): GalacticAddress {
           ? 'the outer rim'
           : zone === 'arm'
             ? `the ${armName} Arm`
-            : `the gap between the ${ARM_NAMES[0]} and ${ARM_NAMES[1]} Arms`;
+            : `the gap between the ${armNamesOf()[0]} and ${armNamesOf()[1]} Arms`;
 
   const sector = sectorName(positionPc);
   return {

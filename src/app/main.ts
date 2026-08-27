@@ -1,4 +1,5 @@
 import { seedFromHex, seedToHex } from '../core/rng/hash';
+import { galaxySeed, PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy/galaxySeed';
 import { getGalacticLandmarks, landmarksNow } from './landmarkService';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galacticAddress } from '../universe/galaxy/regions';
@@ -218,6 +219,11 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   sidebar.view = viewMode;
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
+  if (galaxySeed() !== PRIME_GALAXY_SEED) {
+    url.searchParams.set('galaxy', seedToHex(galaxySeed()));
+  } else {
+    url.searchParams.delete('galaxy');
+  }
   url.searchParams.set('view', viewMode);
   if (localePc) {
     url.searchParams.set('at', localeParam(localePc));
@@ -287,6 +293,9 @@ const planetPanel = new PlanetInfoPanel(sidebar);
 const galaxyPanel = new GalaxyInfoPanel(sidebar);
 
 const params = new URLSearchParams(location.search);
+// The galaxy must be chosen before anything derives from it.
+const galaxyParam = params.get('galaxy');
+if (galaxyParam) setGalaxySeed(seedFromHex(galaxyParam));
 const viewParam = params.get('view');
 viewMode =
   viewParam === 'system' || viewParam === 'planet' || viewParam === 'galaxy'

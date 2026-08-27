@@ -16,11 +16,12 @@ import {
   armBoost,
   ARM_BOOST_MAX,
   componentDensities,
+  smoothComponentDensities,
   stellarDensity,
   stellarDensityCeiling,
   type GalacticPosition,
 } from './density';
-import { UNIVERSE_SEED } from './sectors';
+import { galaxySeed } from './galaxySeed';
 
 /**
  * The star catalog: the galaxy's stellar population as a Poisson field
@@ -62,10 +63,13 @@ const MAX_POPULATION_AGE_GYR = 13.2;
  * locales: the mix is thin-heaviest at the inner edge of the inhabited
  * belt, in the midplane, on an arm ridge.
  */
+// Built on the smooth (wave-free) profile, which every galaxy shares:
+// dividing the arm factor out and multiplying the universal ceiling
+// back in is exactly the same number, and it never commits the module
+// to a galaxy at import time.
 const W_THIN_MAX = (() => {
-  const inner = { xPc: 5200, yPc: 0, zPc: 0 };
-  const parts = componentDensities(inner);
-  const thinMax = (parts.thin / armBoost(5200, 0)) * ARM_BOOST_MAX;
+  const parts = smoothComponentDensities({ xPc: 5200, yPc: 0, zPc: 0 });
+  const thinMax = parts.thin * ARM_BOOST_MAX;
   return thinMax / (thinMax + parts.thick + parts.halo);
 })();
 
@@ -119,7 +123,7 @@ function makeRows(): CatalogRow[] {
     }
   }
   rows.forEach((row, i) => {
-    row.salt = deriveSeed(UNIVERSE_SEED, 'catalog', i);
+    void i;
   });
   return rows;
 }
@@ -127,7 +131,18 @@ function makeRows(): CatalogRow[] {
 export const CATALOG_ROWS: CatalogRow[] = makeRows();
 
 /** Deterministic seed for one cell of one row. */
+// Row salts derive from the session's galaxy on first use.
+let saltsFilled = false;
+function ensureRowSalts(): void {
+  if (saltsFilled) return;
+  saltsFilled = true;
+  CATALOG_ROWS.forEach((row, i) => {
+    row.salt = deriveSeed(galaxySeed(), 'catalog', i);
+  });
+}
+
 function cellSeed(row: CatalogRow, ix: number, iy: number, iz: number): bigint {
+  ensureRowSalts();
   return mix64(
     row.salt ^
       ((BigInt(ix & 0xfffff) << 42n) | (BigInt(iy & 0xfffff) << 22n) | BigInt(iz & 0x3fffff)),

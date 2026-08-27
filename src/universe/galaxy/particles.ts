@@ -2,6 +2,7 @@ import { buildTemperatureLut, temperatureToLutCoord } from '../../core/color/bla
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { armProfile, waveAxisRatio, waveTilt } from './density';
+import { galaxyRoot } from './galaxySeed';
 
 /**
  * The galaxy as a population of drawable particles — stars, dust
@@ -93,7 +94,7 @@ let cached: GalaxyParticleSet | null = null;
 
 export function getGalaxyParticles(): GalaxyParticleSet {
   if (cached) return cached;
-  const rng = new Rng(deriveSeed(0x47414c58n, 'galaxy-particles'));
+  const rng = new Rng(deriveSeed(galaxyRoot(0x47414c58n), 'galaxy-particles'));
   const cdf = buildRadialCdf();
   const lut = buildTemperatureLut(96);
 

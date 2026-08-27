@@ -19,9 +19,9 @@ import {
   componentDensities,
   dustDensity,
   HOME_POSITION,
-  RIDGE_PHASE,
   stellarDensity,
   stellarDensityCeiling,
+  waveParams,
   waveTilt,
 } from './density';
 import { sceneFromGalaxy } from './orientation';
@@ -490,7 +490,7 @@ describe('gazetteer', () => {
     // A point on an arm ridge is in that arm: the ridge is the
     // density wave's crowding caustic.
     const radius = 8000;
-    const ridgeAzimuth = waveTilt(radius) + RIDGE_PHASE;
+    const ridgeAzimuth = waveTilt(radius) + waveParams().ridgePhase;
     const onArm = galacticAddress({
       xPc: radius * Math.cos(ridgeAzimuth),
       yPc: radius * Math.sin(ridgeAzimuth),

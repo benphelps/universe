@@ -1,5 +1,5 @@
 import { deriveSeed, mix64, unmix64 } from '../../core/rng/hash';
-import { UNIVERSE_SEED } from '../galaxy/sectors';
+import { galaxySeed } from '../galaxy/galaxySeed';
 import { initialMassFromUnit, massUnitForMass } from './imf';
 
 /**
@@ -18,15 +18,18 @@ export const ENTROPY_BITS = 16;
 export const MASS_BIT_SPAN = 2 ** MASS_BITS;
 export const AGE_BIT_SPAN = 2 ** AGE_BITS;
 
-const IDENTITY_SALT = deriveSeed(UNIVERSE_SEED, 'identity');
+let identitySalt: bigint | null = null;
+function identitySaltOf(): bigint {
+  return (identitySalt ??= deriveSeed(galaxySeed(), 'identity'));
+}
 const AGE_MASK = BigInt(AGE_BIT_SPAN - 1);
 
 export function massBitsOf(seed: bigint): number {
-  return Number(mix64(seed ^ IDENTITY_SALT) >> 40n);
+  return Number(mix64(seed ^ identitySaltOf()) >> 40n);
 }
 
 export function ageBitsOf(seed: bigint): number {
-  return Number((mix64(seed ^ IDENTITY_SALT) >> 16n) & AGE_MASK);
+  return Number((mix64(seed ^ identitySaltOf()) >> 16n) & AGE_MASK);
 }
 
 /** Unit value in (0, 1) from a bit field (half-step keeps ends open). */
@@ -48,7 +51,7 @@ export function ageUnitOf(seed: bigint): number {
 export function seedForIdentity(massBits: number, ageBits: number, entropy: number): bigint {
   const target =
     (BigInt(massBits) << 40n) | (BigInt(ageBits) << 16n) | BigInt(entropy & 0xffff);
-  return unmix64(target) ^ IDENTITY_SALT;
+  return unmix64(target) ^ identitySaltOf();
 }
 
 /** Smallest mass-bit value whose decoded mass is at least this mass. */

@@ -3,6 +3,7 @@ import { poisson } from '../../core/rng/distributions';
 import { deriveSeed, mix64 } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { armBoost, dustDensity, type GalacticPosition } from './density';
+import { galaxyRoot } from './galaxySeed';
 
 /**
  * Giant molecular clouds as first-class objects of the galaxy model:
@@ -21,13 +22,27 @@ export interface MolecularCloud {
 }
 
 const CELL_PC = 250;
-const CLOUD_ROOT = deriveSeed(0x474d43n, 'clouds');
-/** Local calibration: dust density at the solar circle midplane. */
-const DUST_HOME = dustDensity({ xPc: 8000, yPc: 0, zPc: 0 });
 
-const shapeNoise = createSimplex3(deriveSeed(CLOUD_ROOT, 'shape'));
+// Galaxy-dependent roots, derived on first use (after the session's
+// galaxy seed settles).
+let cloudRoot: bigint | null = null;
+function rootOf(): bigint {
+  return (cloudRoot ??= deriveSeed(galaxyRoot(0x474d43n), 'clouds'));
+}
+let dustHome = 0;
+/** Local calibration: dust density at the solar circle midplane. */
+function dustHomeOf(): number {
+  return (dustHome ||= dustDensity({ xPc: 8000, yPc: 0, zPc: 0 }));
+}
+let shapeNoiseFn: ReturnType<typeof createSimplex3> | null = null;
+function shapeNoise(x: number, y: number, z: number): number {
+  return (shapeNoiseFn ??= createSimplex3(deriveSeed(rootOf(), 'shape')))(x, y, z);
+}
 /** Kpc-scale complexes: clouds cluster along arm spurs, not uniformly. */
-const complexNoise = createSimplex3(deriveSeed(CLOUD_ROOT, 'complexes'));
+let complexNoiseFn: ReturnType<typeof createSimplex3> | null = null;
+function complexNoise(x: number, y: number, z: number): number {
+  return (complexNoiseFn ??= createSimplex3(deriveSeed(rootOf(), 'complexes')))(x, y, z);
+}
 
 const cellCache = new Map<number, MolecularCloud[]>();
 const neighborhoodCache = new Map<number, MolecularCloud[]>();
@@ -44,7 +59,7 @@ export function cloudsInCell(ix: number, iy: number, iz: number): MolecularCloud
   if (cached) return cached;
 
   const seed = mix64(
-    CLOUD_ROOT ^
+    rootOf() ^
       ((BigInt(ix & 0xfffff) << 42n) | (BigInt(iy & 0xfffff) << 22n) | BigInt(iz & 0x3fffff)),
   );
   const rng = new Rng(seed);
@@ -57,7 +72,7 @@ export function cloudsInCell(ix: number, iy: number, iz: number): MolecularCloud
   const azimuth = Math.atan2(center.yPc, center.xPc);
   // Clouds trace the dust disk, concentrated onto the arms.
   const expected =
-    3.0 * (dustDensity(center) / DUST_HOME) * (0.4 + 0.6 * armBoost(radius, azimuth));
+    3.0 * (dustDensity(center) / dustHomeOf()) * (0.4 + 0.6 * armBoost(radius, azimuth));
   const count = poisson(rng, Math.min(expected, 20));
 
   const clouds: MolecularCloud[] = [];
@@ -252,7 +267,7 @@ export function cloudFieldAt(positionPc: GalacticPosition): number {
  * shot noise, not structure.
  */
 export function expectedCloudField(dust: number, armBoostValue: number): number {
-  return 0.0092 * (dust / DUST_HOME) * (0.4 + 0.6 * armBoostValue);
+  return 0.0092 * (dust / dustHomeOf()) * (0.4 + 0.6 * armBoostValue);
 }
 
 /** The same summed cloud field with each cloud at its smooth mean:

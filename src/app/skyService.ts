@@ -1,4 +1,6 @@
+import { seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
+import { galaxySeed } from '../universe/galaxy/galaxySeed';
 import type { SkyField } from '../universe/galaxy/skyfield';
 
 /**
@@ -65,7 +67,7 @@ export function getSkyField(seedHex: string, viewpoint: GalacticPosition): Promi
   if (cached) return cached;
   const promise = new Promise<SkyField>((resolve) => {
     waiting.set(seedHex, resolve);
-    ensureWorker().postMessage({ seedHex, viewpoint });
+    ensureWorker().postMessage({ seedHex, viewpoint, galaxy: seedToHex(galaxySeed()) });
   });
   cache.set(key, promise);
   if (cache.size > 4) {

@@ -28,6 +28,7 @@ import {
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
+import { galaxyRoot } from './galaxySeed';
 import { sectorNameForSeed, sectorSeedAt } from './regions';
 
 /**
@@ -670,7 +671,7 @@ function buildGroups(
   });
 
   // Dispersed open clusters: ~1.8e-7 per pc³ in the young disk.
-  const rng = new Rng(deriveSeed(0x534b59n, 'groups'));
+  const rng = new Rng(deriveSeed(galaxyRoot(0x534b59n), 'groups'));
   for (let i = 0; i < 130; i++) {
     const azimuth = rng.range(0, 2 * Math.PI);
     const planar = 600 * Math.sqrt(rng.float());
@@ -1181,7 +1182,10 @@ function buildConstellations(
  * brightness 50× between locales. One fixed, well-sampled constant —
  * how bright the galaxy is cannot depend on who is looking at it.
  */
-export const MEAN_POPULATION_LUMINOSITY = (() => {
+let meanLumMemo = 0;
+
+export function meanPopulationLuminosity(): number {
+  if (meanLumMemo > 0) return meanLumMemo;
   const ages: number[] = [];
   const strata = 96;
   for (let i = 0; i < strata; i++) {
@@ -1201,8 +1205,9 @@ export const MEAN_POPULATION_LUMINOSITY = (() => {
     lumSum += (weight * lum) / ages.length;
     weightSum += weight;
   }
-  return lumSum / Math.max(weightSum, 1e-9);
-})();
+  meanLumMemo = lumSum / Math.max(weightSum, 1e-9);
+  return meanLumMemo;
+}
 
 /** Clouds inside this radius shadow the sky individually. */
 const RIFT_NEAR_PC = 1500;
@@ -1392,7 +1397,7 @@ function buildGlow(
   const data = new Float32Array(width * height * 4);
   const startPc = 80;
   const endPc = 25000;
-  const meanLuminosity = MEAN_POPULATION_LUMINOSITY;
+  const meanLuminosity = meanPopulationLuminosity();
   const dustKappa = DUST_KAPPA;
 
   for (let row = 0; row < height; row++) {

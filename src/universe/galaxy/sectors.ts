@@ -1,12 +1,8 @@
 import { deriveSeed, mix64 } from '../../core/rng/hash';
+import { galaxySeed } from './galaxySeed';
 import type { GalacticPosition } from './density';
 
-/** The single shared universe every seed lives in. */
-export const UNIVERSE_SEED = 0x53494d5f554e4956n;
-
-const VIEWPOINT_SALTS = [0, 1, 2].map((channel) =>
-  deriveSeed(UNIVERSE_SEED, 'viewpoint', channel),
-);
+let viewpointSalts: bigint[] | null = null;
 
 /**
  * Deterministic locale for an arbitrary star seed: anywhere in the
@@ -16,8 +12,10 @@ const VIEWPOINT_SALTS = [0, 1, 2].map((channel) =>
  * where the system actually sits.
  */
 export function viewpointForSeed(seed: bigint): GalacticPosition {
+  viewpointSalts ??= [0, 1, 2].map((channel) => deriveSeed(galaxySeed(), 'viewpoint', channel));
+  const salts = viewpointSalts;
   const unit = (channel: number): number =>
-    Number(mix64(seed ^ VIEWPOINT_SALTS[channel]) & 0xfffffn) / 0xfffff;
+    Number(mix64(seed ^ salts[channel]) & 0xfffffn) / 0xfffff;
   const radius = 5200 + 6800 * unit(0);
   const azimuth = unit(1) * 2 * Math.PI;
   const settled = unit(2) * 2 - 1;
