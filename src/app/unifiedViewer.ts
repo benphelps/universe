@@ -43,6 +43,7 @@ import { applyOccluders } from '../render/planet/shadows';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
 import { applySecondSun } from '../render/lighting/secondSun';
+import { foldShaderTime } from '../render/shaderTime';
 import {
   reflectedFluxRatio,
   shineTint,
@@ -2152,7 +2153,7 @@ export class UnifiedViewer {
     }
 
     for (const material of this.beltMaterials) {
-      material.uniforms.uTimeYears.value = this.simTimeDays / 365.25;
+      material.uniforms.uTimeYears.value = foldShaderTime(this.simTimeDays / 365.25);
     }
     const cometHead = new Vector3();
     for (let i = 0; i < this.cometObjects.length; i++) {
@@ -2343,7 +2344,7 @@ export class UnifiedViewer {
       const material = this.cloudShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      material.uniforms.uTimeDays.value = this.simTimeDays;
+      material.uniforms.uTimeDays.value = foldShaderTime(this.simTimeDays);
       applySecondSun(material, surf2Dir, surf2Color);
     }
     if (this.ringMesh) {

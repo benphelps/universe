@@ -19,6 +19,7 @@ import {
 } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { foldShaderTime } from '../shaderTime';
 import { createPatternUniforms, HEIGHT_SCALE, PATTERN_GLSL } from './giantPattern';
 
 const BAKE_VERTEX = /* glsl */ `
@@ -115,7 +116,7 @@ export class DeckBaker {
     lightDirObj: Vector3,
   ): void {
     const uniforms = this.material.uniforms;
-    uniforms.uTimeDays.value = timeDays;
+    uniforms.uTimeDays.value = foldShaderTime(timeDays);
     (uniforms.uLightDirObj.value as Vector3).copy(lightDirObj);
     const storms = activeStorms(this.circulation, timeDays);
     const slots = uniforms.uStorms.value as Vector4[];

@@ -13,6 +13,7 @@ import { deriveCirculation, type Circulation } from '../../universe/planet/circu
 import type { Characterization } from '../../universe/planet/types';
 import type { RingSystem } from '../../universe/rings/types';
 import { applySecondSun } from '../lighting/secondSun';
+import { foldShaderTime } from '../shaderTime';
 import { createAtmosphereShell } from './atmosphereShell';
 import { DeckBaker } from './deckBaker';
 import { createGiantMaterial } from './giantMaterial';
@@ -127,7 +128,7 @@ export class PlanetObject {
       const uniforms = material.uniforms;
       uniforms.uLightDir.value = [lightDirWorld.x, lightDirWorld.y, lightDirWorld.z];
       if (uniforms.uLightColor) uniforms.uLightColor.value.setRGB(...lightColor);
-      if (uniforms.uTimeDays) uniforms.uTimeDays.value = simTimeDays;
+      if (uniforms.uTimeDays) uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
       applySecondSun(material, light2Dir, light2Color);
     }
     if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld, renderer);

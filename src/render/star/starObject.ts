@@ -13,6 +13,7 @@ import {
 } from 'three';
 import type { Star } from '../../universe/star/types';
 import { luminosityMultiplierAt } from '../../universe/star/variability';
+import { foldShaderTime } from '../shaderTime';
 import { CORONA_SIZE_FACTOR, createCoronaMaterial } from './coronaMaterial';
 import { createPhotosphereMaterial } from './photosphereMaterial';
 
@@ -72,7 +73,7 @@ export class StarObject {
     const detail = t * t * (3 - 2 * t);
 
     if (this.photosphere) {
-      this.photosphere.uniforms.uTimeDays.value = simTimeDays;
+      this.photosphere.uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
       this.photosphere.uniforms.uDetailFade.value = detail;
       this.photosphere.uniforms.uLuminosityMultiplier.value = luminosityMultiplierAt(
         this.star,
@@ -80,7 +81,7 @@ export class StarObject {
       );
     }
     if (this.corona) {
-      this.corona.uniforms.uTimeDays.value = simTimeDays;
+      this.corona.uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
       this.corona.uniforms.uIntensity.value = 0.35 * detail;
     }
     if (this.coronaMesh) {
