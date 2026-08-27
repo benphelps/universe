@@ -17,6 +17,8 @@ export interface SurfaceParams {
   /** Peak-to-trough continental relief, meters. */
   reliefM: number;
   oceanCoverage: number;
+  /** Exposed-melt fraction on molten worlds: the magma seas' coverage. */
+  magmaCoverage: number;
   tectonics: TectonicStyle;
   /** 0 = crater-free, 1 = saturated airless highlands. */
   craterAmplitude: number;
@@ -87,6 +89,7 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
     reliefM:
       Math.min(26000, radiusM * 0.08, Math.max(900, 5500 * gravityRatio ** 0.7)) * crustSupport,
     oceanCoverage: climate.hydrosphere === 'oceans' ? climate.oceanCoverage : 0,
+    magmaCoverage: climate.hydrosphere === 'magma' ? climate.oceanCoverage : 0,
     tectonics,
     craterAmplitude: craterRetention * (1 - erosion * 0.85),
     erosion,

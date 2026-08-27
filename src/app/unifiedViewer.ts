@@ -40,6 +40,7 @@ import { createAtmosphereShell } from '../render/planet/atmosphereShell';
 import { PlanetObject } from '../render/planet/planetObject';
 import { createRingMesh } from '../render/planet/ringMaterial';
 import { applyOccluders } from '../render/planet/shadows';
+import { planetSeedOffset } from '../render/planet/solidPlanetMaterial';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { StarObject } from '../render/star/starObject';
 import { applySecondSun } from '../render/lighting/secondSun';
@@ -60,7 +61,7 @@ import { createOrbitLine } from '../render/system/orbitLine';
 import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
 import { SPLIT_RATIO, TerrainChunkManager } from '../render/terrain/chunkManager';
 import { createCloudShell } from '../render/terrain/cloudShell';
-import { createOceanMaterial } from '../render/terrain/oceanSphere';
+import { createMagmaMaterial, createOceanMaterial } from '../render/terrain/oceanSphere';
 import {
   createRockGeometry,
   createScatterMaterial,
@@ -826,7 +827,10 @@ export class UnifiedViewer {
    *  the streamed surface, its air and clouds, and the depth globe. */
   private applySolidBodyFocus(physical: Characterization, rings: RingSystem | null): void {
     this.field = createSurfaceField(physical.seedHex, physical);
-    this.oceanMaterial = createOceanMaterial(physical.appearance.oceanColor);
+    this.oceanMaterial =
+      this.field.params.magmaCoverage > 0
+        ? createMagmaMaterial(physical.appearance.oceanColor, planetSeedOffset(physical.seedHex))
+        : createOceanMaterial(physical.appearance.oceanColor);
     this.chunkManager = new TerrainChunkManager(
       this.scene,
       this.terrainMaterial,
@@ -2362,6 +2366,9 @@ export class UnifiedViewer {
       applySecondSun(material, surf2Dir, surf2Color);
       material.uniforms.uFogColor.value.copy(fog);
       material.uniforms.uFogDensity.value = density;
+      if (material.uniforms.uTimeDays) {
+        material.uniforms.uTimeDays.value = foldShaderTime(this.simTimeDays);
+      }
     }
 
     if (this.skyDome) {

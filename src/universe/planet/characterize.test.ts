@@ -61,6 +61,29 @@ describe('planet fixtures around a Sun-like star', () => {
     expect(venus.appearance.cloudCoverage).toBe(1);
   });
 
+  it('a close-in eccentric rocky world melts into bounded magma seas', () => {
+    const lava = characterizePlanet(
+      13n,
+      'rocky',
+      0.9,
+      {
+        semiMajorAxis: 0.035 * AU,
+        eccentricity: 0.05,
+        inclination: 0,
+        longitudeOfAscendingNode: 0,
+        argumentOfPeriapsis: 0,
+        meanAnomalyAtEpoch: 0,
+        epoch: 0,
+      },
+      SUN_CONTEXT,
+    );
+    expect(lava.interior.regime).toBe('magma');
+    expect(lava.climate.hydrosphere).toBe('magma');
+    expect(lava.climate.oceanCoverage).toBeGreaterThanOrEqual(0.05);
+    expect(lava.climate.oceanCoverage).toBeLessThanOrEqual(0.95);
+    expect(lava.appearance.lavaGlow).toBe(1);
+  });
+
   it('a Mars analog is a cold thin-atmosphere world', () => {
     const mars = fixture(13n, 'rocky', 0.107, 1.52);
     expect(['thin-co2', 'none']).toContain(mars.atmosphere.class);

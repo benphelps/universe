@@ -80,8 +80,11 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
   // Structured erosion regimes: rain carves dendritic valleys, ice
   // grinds wide smooth troughs, wind builds dune fields on dry worlds.
   const wetness = Math.min(1, params.oceanCoverage * 2.5 + (params.biosphere ? 0.4 : 0));
+  // Nothing rains on a molten world, whatever its atmosphere carries.
   const fluvialStrength =
-    erosion > 0.2 && !params.globalIce ? erosion * (0.35 + 0.65 * wetness) : 0;
+    erosion > 0.2 && !params.globalIce && params.magmaCoverage === 0
+      ? erosion * (0.35 + 0.65 * wetness)
+      : 0;
   const coldestK =
     params.surfaceMeanK - params.poleDeltaK - (params.lapseKPerKm * reliefM * 0.6) / 1000;
   const glacialStrength =
@@ -413,7 +416,12 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     return h;
   };
 
-  const seaLevelM = solveSeaLevel(heightAt, params.oceanCoverage);
+  // Magma seas flood through the same machinery as water: one solved
+  // level, one liquid surface, one shoreline treatment.
+  const seaLevelM = solveSeaLevel(
+    heightAt,
+    Math.max(params.oceanCoverage, params.magmaCoverage),
+  );
   solvedSeaLevelM = seaLevelM;
   let climate: ClimateField | null = null;
   if (fluvialStrength > 0.02) {
@@ -475,6 +483,7 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     Math.min(1, params.palette.landB[1] * 1.2 + 0.06),
     Math.min(1, params.palette.landB[2] * 1.1 + 0.04),
   ];
+  const chilled: Rgb = [0.05, 0.042, 0.036];
   // Height-keyed color rules blend over windows wider than the detail
   // bands' LOD-dependent height swing, or coastlines flicker between levels.
   const shoreWindowM = Math.max(150, reliefM * 0.06);
@@ -488,12 +497,15 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       params.poleDeltaK * Math.sin(latitude) ** 2 -
       (params.lapseKPerKm * Math.max(heightM, 0)) / 1000;
 
-    // Smooth land↔seabed transition centered on sea level.
+    // Smooth land↔seabed transition centered on sea level. Under magma
+    // seas the "bed" is chilled basalt — the melt above renders itself.
+    const molten = params.magmaCoverage > 0;
     const submersion =
-      params.oceanCoverage > 0
+      params.oceanCoverage > 0 || molten
         ? smooth01((seaLevelM - heightM) / shoreWindowM + 0.5)
         : 0;
     if (submersion >= 1) {
+      if (molten) return chilled;
       const depth = Math.min(1, Math.max(0, seaLevelM - heightM) / 600);
       return mixRgb(sand, palette.seabed, depth ** 0.6);
     }
@@ -572,7 +584,8 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
     }
     if (submersion > 0) {
       const depth = Math.min(1, Math.max(0, seaLevelM - heightM) / 600);
-      ground = mixRgb(ground, mixRgb(sand, palette.seabed, depth ** 0.6), submersion);
+      const bed = molten ? chilled : mixRgb(sand, palette.seabed, depth ** 0.6);
+      ground = mixRgb(ground, bed, submersion);
     }
     return ground;
   };

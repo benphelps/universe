@@ -66,7 +66,9 @@ export function computeAppearance(
   return {
     landColorA,
     landColorB,
-    oceanColor: [0.02, 0.09, 0.18],
+    // Molten worlds' "seas" are melt under a chilling crust — their
+    // reflectance is basalt-dark; the light they show is their own.
+    oceanColor: interior.regime === 'magma' ? [0.05, 0.04, 0.038] : [0.02, 0.09, 0.18],
     iceColor: [0.82, 0.86, 0.9],
     cloudCoverage: cloudCoverage(rng, atmosphere, climate),
     cloudColor: cloudColor(atmosphere),

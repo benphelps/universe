@@ -82,6 +82,12 @@ export function computeClimate(
     }
     if (interior.regime === 'magma') {
       hydrosphere = 'magma';
+      // Exposed-melt fraction: the crust closes over as the flux falls
+      // toward the magma threshold (2 W/m²), and irradiation past the
+      // silicate solidus melts it open again from above.
+      const fluxMelt = 0.15 + 0.45 * Math.log10(interior.heatFluxWm2 / 2);
+      const irradiationMelt = (surfaceMeanK - 1300) / 400;
+      oceanCoverage = Math.min(0.95, Math.max(0.05, fluxMelt, irradiationMelt));
       break;
     }
 

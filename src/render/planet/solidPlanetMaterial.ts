@@ -63,9 +63,11 @@ void main() {
 
   float tint = fbm(p * 6.0 + uSeedOffset.yzx) * 0.5 + 0.5;
   vec3 land = mix(uLandA, uLandB, tint);
-  // Shorelines dry toward sand-lightened tones.
+  // Shorelines dry toward sand-lightened tones — water shores only;
+  // basalt banks stay dark.
   land = mix(land, land * 1.3 + vec3(0.06, 0.05, 0.03),
-    (1.0 - smoothstep(oceanLevel, oceanLevel + 0.25, terrain)) * step(0.01, uOceanCoverage));
+    (1.0 - smoothstep(oceanLevel, oceanLevel + 0.25, terrain)) * step(0.01, uOceanCoverage)
+      * (1.0 - uLavaGlow));
 
   vec3 surface = mix(land, uOcean, oceanMask);
 
@@ -96,11 +98,15 @@ void main() {
   vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2)
     + uLightColor * specular * diffuse;
 
-  // Magma worlds glow through the night side along crack networks.
+  // Molten worlds: the magma seas radiate their own light, day and
+  // night — chilled plates crossed by an incandescent crack lattice,
+  // pooling open where the melt runs hot. Same seas the surface view
+  // floods: the ocean mask is the exposed-melt coverage.
   if (uLavaGlow > 0.0) {
-    float cracks = pow(1.0 - abs(snoise(p * 9.0 + uSeedOffset)), 6.0);
-    float night = 1.0 - smoothstep(-0.1, 0.15, ndotl);
-    color += vec3(1.0, 0.22, 0.04) * cracks * (0.4 + 0.6 * night) * uLavaGlow * 1.6;
+    float lattice = pow(1.0 - abs(snoise(p * 12.0 + uSeedOffset)), 5.0);
+    float activity = 0.5 + 0.5 * fbm(p * 3.0 + uSeedOffset.zxy);
+    vec3 melt = vec3(1.0, 0.3, 0.05) * (0.12 + 1.3 * lattice + 0.5 * activity);
+    color += melt * oceanMask * uLavaGlow * (1.0 - cloudMask * 0.85);
   }
 
   gl_FragColor = vec4(color, 1.0);
@@ -129,7 +135,12 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       uOcean: { value: appearance.oceanColor },
       uIce: { value: appearance.iceColor },
       uCloudColor: { value: appearance.cloudColor },
-      uOceanCoverage: { value: climate.hydrosphere === 'oceans' ? climate.oceanCoverage : 0 },
+      uOceanCoverage: {
+        value:
+          climate.hydrosphere === 'oceans' || climate.hydrosphere === 'magma'
+            ? climate.oceanCoverage
+            : 0,
+      },
       uIceLat: {
         value: climate.hydrosphere === 'ice-sheet' ? 0 : climate.iceCapLatitudeRad,
       },
