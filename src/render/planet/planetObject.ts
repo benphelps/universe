@@ -1,15 +1,20 @@
-import { Group, Mesh, Quaternion, ShaderMaterial, SphereGeometry, Vector3, Vector4 } from 'three';
 import {
-  activeStorms,
-  bandFade01,
-  deriveCirculation,
-  MAX_ACTIVE_STORMS,
-  type Circulation,
-} from '../../universe/planet/circulation';
+  Group,
+  Mesh,
+  Quaternion,
+  ShaderMaterial,
+  SphereGeometry,
+  Vector3,
+  Vector4,
+  type WebGLCubeRenderTarget,
+  type WebGLRenderer,
+} from 'three';
+import { deriveCirculation, type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import type { RingSystem } from '../../universe/rings/types';
 import { applySecondSun } from '../lighting/secondSun';
 import { createAtmosphereShell } from './atmosphereShell';
+import { DeckBaker } from './deckBaker';
 import { createGiantMaterial } from './giantMaterial';
 import { createRingMesh } from './ringMaterial';
 import { applyOccluders, type ShadowCaster } from './shadows';
@@ -32,15 +37,41 @@ export class PlanetObject {
   private readonly spinRadPerDay: number;
   /** The derived atmosphere driving a giant's deck; null for solids. */
   private readonly circulation: Circulation | null;
+  private readonly baker: DeckBaker | null;
+  private deckA: WebGLCubeRenderTarget | null = null;
+  private deckB: WebGLCubeRenderTarget | null = null;
+  private bakedTA = 0;
+  private bakedTB = 0;
+  private baked = false;
+  private readonly bakeIntervalDays: number;
+  private readonly deckSize: number;
 
   constructor(
     readonly physical: Characterization,
     rings: RingSystem | null = null,
     orbitalPeriodDays?: number,
+    deckSize = 256,
   ) {
     this.circulation = physical.appearance.banding
       ? deriveCirculation(physical, orbitalPeriodDays)
       : null;
+    this.baker = this.circulation ? new DeckBaker(physical, this.circulation) : null;
+    this.deckSize = deckSize;
+    // Rebake cadence: often enough that band drift between bakes stays
+    // a fraction of a texel, and churn stays a gentle crossfade.
+    if (this.circulation) {
+      let maxDrift = 0.01;
+      for (const band of this.circulation.bands) {
+        maxDrift = Math.max(maxDrift, Math.abs(band.driftRadPerDay));
+      }
+      this.bakeIntervalDays = Math.min(
+        Math.max(0.006 / maxDrift, 0.02),
+        Math.max(0.3 / this.circulation.churnPerDay, 0.02),
+        10,
+      );
+    } else {
+      this.bakeIntervalDays = 1;
+    }
     const material = this.circulation
       ? createGiantMaterial(physical, this.circulation)
       : createSolidPlanetMaterial(physical);
@@ -81,13 +112,15 @@ export class PlanetObject {
     this.spinRadPerDay = (2 * Math.PI * 24) / physical.rotation.periodHours;
   }
 
-  /** Advance spin and update the star-light directions (world space, toward each star). */
+  /** Advance spin and update the star-light directions (world space, toward each star).
+   *  Pass the renderer so a giant can (re)bake its deck cubemaps. */
   update(
     simTimeDays: number,
     lightDirWorld: Vector3,
     lightColor: [number, number, number],
     light2Dir: Vector3 | null = null,
     light2Color: readonly [number, number, number] | null = null,
+    renderer?: WebGLRenderer,
   ): void {
     this.body.rotation.y = simTimeDays * this.spinRadPerDay;
     for (const material of this.materials) {
@@ -97,7 +130,7 @@ export class PlanetObject {
       if (uniforms.uTimeDays) uniforms.uTimeDays.value = simTimeDays;
       applySecondSun(material, light2Dir, light2Color);
     }
-    if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld);
+    if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld, renderer);
     // Ring shadows follow the tilted equatorial plane.
     const ringNormal = new Vector3(0, 1, 0).applyQuaternion(this.group.quaternion);
     for (const material of this.materials) {
@@ -105,42 +138,62 @@ export class PlanetObject {
     }
   }
 
-  /** The live weather: the storm catalog's population at this sim time,
-   *  and the star direction in the deck's own (spinning) frame for the
-   *  locked regime's hotspot and crescent. */
-  private updateAtmosphere(simTimeDays: number, lightDirWorld: Vector3): void {
+  /** The deck: keep two bakes bracketing the sim time and crossfade
+   *  between them — weather in motion at any time scale, with the
+   *  pattern cost paid only when a bake rolls over. */
+  private updateAtmosphere(
+    simTimeDays: number,
+    lightDirWorld: Vector3,
+    renderer?: WebGLRenderer,
+  ): void {
     const circulation = this.circulation!;
     const uniforms = this.materials[0].uniforms;
 
-    const storms = activeStorms(circulation, simTimeDays);
-    const slots = uniforms.uStorms.value as Vector4[];
-    for (let i = 0; i < MAX_ACTIVE_STORMS; i++) {
-      const storm = storms[i];
-      if (storm) {
-        // Eruptions ride a negative size: the shader reads the flag.
-        const size = storm.kind === 'eruption' ? -storm.sizeRad : storm.sizeRad;
-        slots[i].set(storm.latRad, storm.lonRad, size, storm.age01);
-      }
-    }
-    uniforms.uStormCount.value = storms.length;
-
-    const fades = uniforms.uBandFade.value as number[];
-    for (let i = 0; i < fades.length; i++) {
-      const band = circulation.bands[i];
-      fades[i] = band ? bandFade01(band, simTimeDays) : 0;
-    }
-
     const toObject = this.body.getWorldQuaternion(new Quaternion()).invert();
     const lightObj = lightDirWorld.clone().applyQuaternion(toObject).normalize();
-    (uniforms.uLightDirObj.value as Vector3).copy(lightObj);
     // Superrotation carries the hot point prograde of the substellar.
     const hotspot = lightObj
       .clone()
-      .applyQuaternion(
-        new Quaternion().setFromAxisAngle(UP, circulation.hotspotOffsetRad),
-      )
+      .applyQuaternion(new Quaternion().setFromAxisAngle(UP, circulation.hotspotOffsetRad))
       .normalize();
     (uniforms.uHotspotDirObj.value as Vector3).copy(hotspot);
+
+    if (!renderer || !this.baker) return;
+    if (!this.deckA || !this.deckB) {
+      this.deckA = DeckBaker.createTarget(this.deckSize);
+      this.deckB = DeckBaker.createTarget(this.deckSize);
+    }
+    const interval = this.bakeIntervalDays;
+    if (!this.baked || simTimeDays < this.bakedTA - interval) {
+      // First frame, or time ran backwards past the window: bake both.
+      this.bakedTA = simTimeDays;
+      this.bakedTB = simTimeDays + interval;
+      this.baker.bake(renderer, this.deckA, this.bakedTA, lightObj);
+      this.baker.bake(renderer, this.deckB, this.bakedTB, lightObj);
+      this.baked = true;
+    } else if (simTimeDays >= this.bakedTB) {
+      if (simTimeDays >= this.bakedTB + interval) {
+        // Time leapt past the window: restart around the present.
+        this.bakedTA = simTimeDays;
+        this.bakedTB = simTimeDays + interval;
+        this.baker.bake(renderer, this.deckA, this.bakedTA, lightObj);
+        this.baker.bake(renderer, this.deckB, this.bakedTB, lightObj);
+      } else {
+        // Roll: the future bake becomes the present, bake a new future.
+        const swap = this.deckA;
+        this.deckA = this.deckB;
+        this.deckB = swap;
+        this.bakedTA = this.bakedTB;
+        this.bakedTB = this.bakedTA + interval;
+        this.baker.bake(renderer, this.deckB, this.bakedTB, lightObj);
+      }
+    }
+    uniforms.uDeckA.value = this.deckA.texture;
+    uniforms.uDeckB.value = this.deckB.texture;
+    uniforms.uDeckMix.value = Math.min(
+      1,
+      Math.max(0, (simTimeDays - this.bakedTA) / (this.bakedTB - this.bakedTA)),
+    );
   }
 
   /** Bodies that eclipse this one (world positions and radii in scene units). */
@@ -151,6 +204,9 @@ export class PlanetObject {
   }
 
   dispose(): void {
+    this.baker?.dispose();
+    this.deckA?.dispose();
+    this.deckB?.dispose();
     this.group.traverse((obj) => {
       if (obj instanceof Mesh) {
         obj.geometry.dispose();

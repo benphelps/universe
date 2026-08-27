@@ -793,10 +793,12 @@ export class UnifiedViewer {
       } else {
         // Gas envelope: the banded shader sphere carries the body, its
         // atmosphere limb, and its rings (all inside PlanetObject).
+        // The focused envelope bakes its deck at full resolution.
         this.bodyObject = new PlanetObject(
           planet.physical,
           planet.rings,
           orbitDays(planetMu(this.system, planet), planet),
+          1024,
         );
         this.bodyObject.group.scale.setScalar(EARTH_RADIUS_KM);
         this.scene.add(this.bodyObject.group);
@@ -1532,10 +1534,12 @@ export class UnifiedViewer {
     if (this.focusMoon) {
       // The parent planet hangs in the focused moon's sky, rings and
       // all, positioned each frame at its true planet-centric offset.
+      // The parent fills a moon's sky: full-resolution deck.
       this.parentObject = new PlanetObject(
         planet.physical,
         planet.rings,
         orbitDays(planetMu(this.system!, planet), planet),
+        1024,
       );
       this.parentObject.group.scale.setScalar(EARTH_RADIUS_KM);
       this.moonGroup.add(this.parentObject.group);
@@ -2125,7 +2129,7 @@ export class UnifiedViewer {
       const worldPos = toFocusWorld(positionKm);
       const lightDir = hostWorld.clone().sub(worldPos).normalize();
       const node2Color = this.otherSunAt(worldPos, hostIndex, node2Dir);
-      node.object.update(this.simTimeDays, lightDir, lightColor, node2Dir, node2Color);
+      node.object.update(this.simTimeDays, lightDir, lightColor, node2Dir, node2Color, this.pipeline.renderer);
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
       const bodyRadiusKm = node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
@@ -2170,7 +2174,7 @@ export class UnifiedViewer {
     }
     this.updateBeltRegion(tSeconds, focusPos, hostPos);
 
-    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
+    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color, this.pipeline.renderer);
 
     // Moons on their true orbits; the focus planet eclipses them. Their
     // group carries the ground frame's diurnal sweep — equatorial
@@ -2206,7 +2210,7 @@ export class UnifiedViewer {
       : [{ position: new Vector3(0, 0, 0), radius: this.radiusKm }];
     const shineBodies: ShineBody[] = [];
     if (this.parentObject && this.focusPlanet) {
-      this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
+      this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color, this.pipeline.renderer);
       shineBodies.push({
         positionKm: groupShift.clone(),
         radiusKm: parentRadiusKm,
