@@ -1,5 +1,7 @@
 import { Color, ShaderMaterial } from 'three';
 import { secondSunUniforms } from '../lighting/secondSun';
+import { CELLULAR_GLSL } from '../glsl/cellularNoise';
+import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 
 const VERTEX = /* glsl */ `
@@ -100,35 +102,15 @@ uniform vec3 uSeedOffset;
 uniform float uTimeDays;
 
 ${SIMPLEX_NOISE_GLSL}
+${CELLULAR_GLSL}
+${MAGMA_PATTERN_GLSL}
 
 void main() {
   vec3 normal = normalize(vNormal);
   float diffuse = max(dot(normal, uLightDir), 0.0);
   vec3 viewDir = normalize(-vViewPos) * mat3(viewMatrix);
 
-  // A lava lake wears a thin chilled crust of drifting dark plates;
-  // the melt shows through the crack lattice between them and pools
-  // open where the lake runs hot. World-frame kilometers, so the
-  // pattern holds still while the camera moves.
-  vec3 q = vWorldPos * 0.25 + uSeedOffset;
-  float drift = uTimeDays * 0.15;
-  float lattice = 1.0 - abs(snoise(q + vec3(0.0, 0.0, drift)));
-  lattice = max(lattice, 0.85 * (1.0 - abs(snoise(q * 3.1 - uSeedOffset.yzx
-    + vec3(drift * 1.7, 0.0, 0.0)))));
-  // Below the crack wavelength the lattice hands off to its mean:
-  // orbit sees calm glow, not per-pixel speckle.
-  float texelKm = length(fwidth(vWorldPos));
-  float detailGate = 1.0 - smoothstep(0.6, 2.8, texelKm);
-  float crack = mix(0.16, pow(lattice, 7.0), detailGate);
-  // Open melt pools cluster along active provinces, the way paterae
-  // do — a uniform sprinkle reads as noise from orbit.
-  float cluster = 0.5 + 0.5 * snoise(vWorldPos * 0.0025 + uSeedOffset.yxz);
-  float activity = 0.5 + 0.5 * snoise(vWorldPos * 0.012 + uSeedOffset.zxy
-    + vec3(0.0, drift * 0.2, 0.0));
-  float open = smoothstep(0.82, 0.98, activity * (0.45 + 0.75 * cluster));
-
-  vec3 melt = vec3(1.0, 0.3, 0.05);
-  vec3 glow = melt * (0.04 + 1.4 * crack + 1.1 * open) * (0.55 + 0.45 * activity);
+  vec3 glow = magmaGlow(vWorldPos, uSeedOffset, uTimeDays, length(fwidth(vWorldPos)));
 
   // The crust still reflects the star; molten glass keeps a sheen.
   float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0);

@@ -53,7 +53,11 @@ interface DetailBand {
  * Sea level is solved so the flooded fraction matches the climate's
  * ocean coverage.
  */
-export function createSurfaceField(seedHex: string, physical: Characterization): SurfaceField {
+export function createSurfaceField(
+  seedHex: string,
+  physical: Characterization,
+  options?: { rivers?: boolean },
+): SurfaceField {
   const params = deriveSurfaceParams(seedHex, physical);
   const seed = seedFromHex(seedHex);
 
@@ -445,15 +449,20 @@ export function createSurfaceField(seedHex: string, physical: Characterization):
       params.rotationPeriodHours,
       carvingWetness,
     );
-    drainage = buildDrainage(
-      grid,
-      cellHeights,
-      oceanMask,
-      climate.precipMmYr,
-      params.radiusM,
-      seaLevelM,
-      channelDropM,
-    );
+    // Orbital-scale consumers skip the network build: at their sample
+    // spacing every river is sub-texel, but the climate still places
+    // the deserts.
+    if (options?.rivers !== false) {
+      drainage = buildDrainage(
+        grid,
+        cellHeights,
+        oceanMask,
+        climate.precipMmYr,
+        params.radiusM,
+        seaLevelM,
+        channelDropM,
+      );
+    }
   }
 
   // Standing and flowing water: the sea, lake basins at their fill

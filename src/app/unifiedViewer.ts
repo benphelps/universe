@@ -2246,7 +2246,8 @@ export class UnifiedViewer {
       const state = elementsToState(moon.elements, mu, tSeconds);
       object.group.position.copy(toWorld(state.position)).divideScalar(1000);
       moonWorld.copy(object.group.position).applyAxisAngle(yAxis, spin).add(groupShift);
-      object.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color);
+      object.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color,
+        this.pipeline.renderer);
       object.setOccluders(casters, angularRadius);
 
       const cameraDistance = this.camera.position.distanceTo(moonWorld);

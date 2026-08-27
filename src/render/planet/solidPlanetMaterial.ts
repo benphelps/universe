@@ -3,6 +3,8 @@ import { secondSunUniforms } from '../lighting/secondSun';
 import { seedFromHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import type { Characterization } from '../../universe/planet/types';
+import { CELLULAR_GLSL } from '../glsl/cellularNoise';
+import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 
@@ -32,16 +34,18 @@ uniform vec3 uLight2Color;
 uniform vec3 uSeedOffset;
 uniform vec3 uLandA;
 uniform vec3 uLandB;
-uniform vec3 uOcean;
-uniform vec3 uIce;
 uniform vec3 uCloudColor;
-uniform float uOceanCoverage;
-uniform float uIceLat;
 uniform float uCloudCoverage;
 uniform float uLavaGlow;
+uniform float uRadiusKm;
 uniform float uTimeDays;
+#ifdef HAS_SURFACE
+uniform samplerCube uSurfaceCube;
+#endif
 
 ${SIMPLEX_NOISE_GLSL}
+${CELLULAR_GLSL}
+${MAGMA_PATTERN_GLSL}
 ${SHADOW_GLSL}
 
 vec3 rotateY(vec3 p, float a) {
@@ -52,29 +56,21 @@ vec3 rotateY(vec3 p, float a) {
 
 void main() {
   vec3 p = normalize(vObjPos);
-  float latitude = asin(clamp(p.y, -1.0, 1.0));
 
-  // Continents: low-frequency shape plus detail, ocean below the level
-  // implied by the water coverage.
-  float terrain = fbm(p * 2.3 + uSeedOffset) + 0.35 * fbm(p * 5.5 + uSeedOffset);
-  float oceanLevel = (uOceanCoverage - 0.5) * 1.5;
-  float oceanMask = uOceanCoverage <= 0.0 ? 0.0
-    : 1.0 - smoothstep(oceanLevel - 0.04, oceanLevel + 0.04, terrain);
-
-  float tint = fbm(p * 6.0 + uSeedOffset.yzx) * 0.5 + 0.5;
-  vec3 land = mix(uLandA, uLandB, tint);
-  // Shorelines dry toward sand-lightened tones — water shores only;
-  // basalt banks stay dark.
-  land = mix(land, land * 1.3 + vec3(0.06, 0.05, 0.03),
-    (1.0 - smoothstep(oceanLevel, oceanLevel + 0.25, terrain)) * step(0.01, uOceanCoverage)
-      * (1.0 - uLavaGlow));
-
-  vec3 surface = mix(land, uOcean, oceanMask);
-
-  // Ice caps with a noisy edge; frozen worlds have uIceLat = 0.
-  float edgeNoise = 0.06 * fbm(p * 8.0 + uSeedOffset.zxy);
-  float iceMask = smoothstep(uIceLat - 0.05, uIceLat + 0.1, abs(latitude) + edgeNoise);
-  surface = mix(surface, uIce, iceMask);
+  // The surface is the baked cube — the same field the streamed
+  // terrain walks on, so orbit and ground agree on every coastline,
+  // desert, and ice cap. Until the bake lands, a flat mineral blend.
+  vec3 surface;
+  float liquid;
+#ifdef HAS_SURFACE
+  vec4 baked = textureCube(uSurfaceCube, p);
+  surface = baked.rgb * baked.rgb;
+  liquid = baked.a;
+#else
+  float tint = fbm(p * 2.3 + uSeedOffset) * 0.5 + 0.5;
+  surface = mix(uLandA, uLandB, tint);
+  liquid = 0.0;
+#endif
 
   // Cloud deck drifts relative to the surface.
   vec3 cloudP = rotateY(p, uTimeDays * 0.35);
@@ -91,22 +87,22 @@ void main() {
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   vec3 halfDir = normalize(uLightDir + viewDir);
+  float gloss = uLavaGlow > 0.0 ? 0.2 : 0.5;
   float specular = pow(max(dot(normal, halfDir), 0.0), 90.0)
-    * oceanMask * (1.0 - iceMask) * (1.0 - cloudMask) * 0.5;
+    * liquid * (1.0 - cloudMask) * gloss;
 
   float diffuse2 = max(dot(normal, uLight2Dir), 0.0) * shadowFactor(vWorldPos, uLight2Dir);
   vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2)
     + uLightColor * specular * diffuse;
 
   // Molten worlds: the magma seas radiate their own light, day and
-  // night — chilled plates crossed by an incandescent crack lattice,
-  // pooling open where the melt runs hot. Same seas the surface view
-  // floods: the ocean mask is the exposed-melt coverage.
-  if (uLavaGlow > 0.0) {
-    float lattice = pow(1.0 - abs(snoise(p * 12.0 + uSeedOffset)), 5.0);
-    float activity = 0.5 + 0.5 * fbm(p * 3.0 + uSeedOffset.zxy);
-    vec3 melt = vec3(1.0, 0.3, 0.05) * (0.12 + 1.3 * lattice + 0.5 * activity);
-    color += melt * oceanMask * uLavaGlow * (1.0 - cloudMask * 0.85);
+  // night — evaluated in the planet's kilometer frame with the same
+  // pattern the walk-up lava tiles use, so the plates and paterae sit
+  // in the same places at every distance.
+  if (uLavaGlow > 0.0 && liquid > 0.0) {
+    vec3 wKm = p * uRadiusKm;
+    vec3 glow = magmaGlow(wKm, uSeedOffset, uTimeDays, length(fwidth(wKm)));
+    color += glow * liquid * uLavaGlow * (1.0 - cloudMask * 0.85);
   }
 
   gl_FragColor = vec4(color, 1.0);
@@ -120,7 +116,7 @@ export function planetSeedOffset(seedHex: string): [number, number, number] {
 }
 
 export function createSolidPlanetMaterial(physical: Characterization): ShaderMaterial {
-  const { appearance, climate } = physical;
+  const { appearance, bulk } = physical;
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -132,20 +128,11 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
       uLandA: { value: appearance.landColorA },
       uLandB: { value: appearance.landColorB },
-      uOcean: { value: appearance.oceanColor },
-      uIce: { value: appearance.iceColor },
       uCloudColor: { value: appearance.cloudColor },
-      uOceanCoverage: {
-        value:
-          climate.hydrosphere === 'oceans' || climate.hydrosphere === 'magma'
-            ? climate.oceanCoverage
-            : 0,
-      },
-      uIceLat: {
-        value: climate.hydrosphere === 'ice-sheet' ? 0 : climate.iceCapLatitudeRad,
-      },
       uCloudCoverage: { value: appearance.cloudCoverage },
       uLavaGlow: { value: appearance.lavaGlow },
+      uRadiusKm: { value: bulk.radiusEarth * 6371 },
+      uSurfaceCube: { value: null },
       uTimeDays: { value: 0 },
     },
   });

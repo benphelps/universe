@@ -20,6 +20,8 @@ import { createGiantMaterial } from './giantMaterial';
 import { createRingMesh } from './ringMaterial';
 import { applyOccluders, type ShadowCaster } from './shadows';
 import { createSolidPlanetMaterial } from './solidPlanetMaterial';
+import { requestSurfaceBake } from './surfaceBakeQueue';
+import { uploadSurfaceCube } from './surfaceCube';
 
 const UP = new Vector3(0, 1, 0);
 
@@ -41,6 +43,10 @@ export class PlanetObject {
   private readonly baker: DeckBaker | null;
   private deckA: WebGLCubeRenderTarget | null = null;
   private deckB: WebGLCubeRenderTarget | null = null;
+  /** A solid body's baked appearance, pending upload then resident. */
+  private surfaceFaces: Uint8Array[] | null = null;
+  private surfaceSize = 0;
+  private surfaceCube: WebGLCubeRenderTarget | null = null;
   private bakedTA = 0;
   private bakedTB = 0;
   private baked = false;
@@ -77,6 +83,16 @@ export class PlanetObject {
       ? createGiantMaterial(physical, this.circulation)
       : createSolidPlanetMaterial(physical);
     this.materials.push(material);
+    if (!this.circulation) {
+      // The distant appearance comes from the body's real surface
+      // field, baked in the background; the flat mineral placeholder
+      // holds only until it lands. Prominent bodies (the deckSize the
+      // viewer grants focused and parent objects) jump the queue.
+      requestSurfaceBake(physical.seedHex, physical, 128, deckSize > 256).then((bake) => {
+        this.surfaceFaces = bake.faces;
+        this.surfaceSize = bake.size;
+      });
+    }
 
     this.radiusUnits = physical.bulk.radiusEarth;
     this.body = new Mesh(new SphereGeometry(1, 96, 64), material);
@@ -124,6 +140,14 @@ export class PlanetObject {
     renderer?: WebGLRenderer,
   ): void {
     this.body.rotation.y = simTimeDays * this.spinRadPerDay;
+    if (this.surfaceFaces && renderer) {
+      this.surfaceCube = uploadSurfaceCube(renderer, this.surfaceFaces, this.surfaceSize);
+      const material = this.materials[0];
+      material.uniforms.uSurfaceCube.value = this.surfaceCube.texture;
+      material.defines = { ...material.defines, HAS_SURFACE: '' };
+      material.needsUpdate = true;
+      this.surfaceFaces = null;
+    }
     for (const material of this.materials) {
       const uniforms = material.uniforms;
       uniforms.uLightDir.value = [lightDirWorld.x, lightDirWorld.y, lightDirWorld.z];
@@ -208,6 +232,8 @@ export class PlanetObject {
     this.baker?.dispose();
     this.deckA?.dispose();
     this.deckB?.dispose();
+    this.surfaceCube?.dispose();
+    this.surfaceFaces = null;
     this.group.traverse((obj) => {
       if (obj instanceof Mesh) {
         obj.geometry.dispose();
