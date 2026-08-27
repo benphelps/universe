@@ -417,9 +417,6 @@ tr.here .swatch {
 #gen-panel .gen-row.gen-sub .gen-label {
   padding-left: 14px;
   color: var(--dim);
-  text-transform: none;
-  letter-spacing: 0.04em;
-  font: 10.5px/1.4 var(--mono);
 }
 
 #gen-panel .gen-row.gen-sub .gen-fill {

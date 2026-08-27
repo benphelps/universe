@@ -9,7 +9,7 @@ import { powerLaw } from '../../core/rng/distributions';
 import { initialMassFromUnit, KROUPA_SEGMENTS } from '../star/imf';
 import { evolve } from '../star/evolution';
 import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
-import { CATALOG_ROWS, luminosityCeiling, sweepRowStars } from './catalog';
+import { CATALOG_ROWS, luminosityCeiling, sweepRowStars, type CatalogRow } from './catalog';
 import {
   cloudLocalDensity,
   cloudReachPc,
@@ -179,8 +179,8 @@ interface StarAccum {
 }
 
 /** What a mass stratum's sweep should call itself on a progress bar. */
-function rowStageName(row: { massHi: number }): string {
-  if (row.massHi <= 0.6) return 'red dwarfs';
+export function rowStageName(row: { massHi: number }): string {
+  if (row.massHi <= 1.1) return 'dwarf stars';
   if (row.massHi <= 2.2) return 'sunlike stars';
   if (row.massHi <= 7) return 'hot stars';
   return 'giants & rarities';
@@ -203,91 +203,180 @@ export function buildSkyField(
   /** Rough build progress — phase weights are approximate. */
   onProgress?: SkyProgress,
 ): SkyField {
-  const lut = buildTemperatureLut(96);
-  const makeAccum = (): StarAccum => ({
-    dirs: [],
-    colors: [],
-    brightness: [],
-    distances: [],
-    teffs: [],
-    seeds: [],
-  });
-  const near = makeAccum();
-  const far = makeAccum();
-
-  const pushTo = (
-    acc: StarAccum,
-    dx: number,
-    dy: number,
-    dz: number,
-    luminosity: number,
-    tEff: number,
-    starSeed: bigint,
-  ): void => {
-    const distanceSq = dx * dx + dy * dy + dz * dz;
-    if (distanceSq < 1e-6) return;
-    const distance = Math.sqrt(distanceSq);
-    const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(tEff) * 95)) * 4;
-    acc.dirs.push(dx / distance, dy / distance, dz / distance);
-    acc.colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
-    acc.brightness.push(luminosity / distanceSq);
-    acc.distances.push(distance);
-    acc.teffs.push(tEff);
-    acc.seeds.push(starSeed);
-  };
-  const push: PushStar = (dx, dy, dz, luminosity, tEff) =>
-    pushTo(far, dx, dy, dz, luminosity, tEff, 0n);
-
-  // The resolved sky is the catalog itself: within the near radius every
-  // star, beyond it every star of each survey row bright enough to see —
-  // a mass ceiling culls hopeless candidates before their seed is built.
-  const nearSq = NEAR_RADIUS_PC * NEAR_RADIUS_PC;
-  const rowWeights =
-    CATALOG_ROWS.length === ROW_PROGRESS_WEIGHTS.length
-      ? ROW_PROGRESS_WEIGHTS
-      : CATALOG_ROWS.map(() => 1 / CATALOG_ROWS.length);
+  const rowWeights = catalogRowWeights();
   let rowsBehind = 0;
   let rowIndex = 0;
+  const slabs: SweepSlab[] = [];
   for (const row of CATALOG_ROWS) {
     const weight = rowWeights[rowIndex++];
     const stage = rowStageName(row);
     onProgress?.(0.84 * rowsBehind, stage, 0);
-    const skySq = row.skyRadiusPc * row.skyRadiusPc;
-    sweepRowStars(
-      row,
-      viewpoint,
-      Math.max(NEAR_RADIUS_PC, row.skyRadiusPc),
-      (x, y, z, massBits, ageBits, entropy) => {
-        const dx = x - viewpoint.xPc;
-        const dy = y - viewpoint.yPc;
-        const dz = z - viewpoint.zPc;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < 2.5e-5) return;
-        if (d2 <= nearSq) {
-          const starSeed = seedForIdentity(massBits, ageBits, entropy);
-          const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
-          if (physical.luminosity <= 0) return;
-          // Unresolved binaries glint with the pair's combined light.
-          const luminosity =
-            physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
-          pushTo(near, dx, dy, dz, luminosity, physical.tEff, starSeed);
-          return;
-        }
-        if (d2 > skySq) return;
-        const mass = initialMassFromUnit(unitFromBits(massBits, MASS_BIT_SPAN));
-        if (luminosityCeiling(mass) / d2 < MIN_FAR_IRRADIANCE) return;
-        const starSeed = seedForIdentity(massBits, ageBits, entropy);
-        const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
-        if (physical.luminosity / d2 < MIN_FAR_IRRADIANCE) return;
-        const luminosity =
-          physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
-        pushTo(far, dx, dy, dz, luminosity, physical.tEff, starSeed);
-      },
-      (slabFraction) =>
+    const span = rowSlabSpan(row, viewpoint);
+    slabs.push(
+      sweepRowSlab(row, viewpoint, span.lo, span.hi, (slabFraction) =>
         onProgress?.(0.84 * (rowsBehind + weight * slabFraction), stage, slabFraction),
+      ),
     );
     rowsBehind += weight;
   }
+  return assembleSkyField(viewpoint, seed, slabs, onProgress);
+}
+
+/** Per-row share of the star sweep, for progress weighting. */
+export function catalogRowWeights(): number[] {
+  return CATALOG_ROWS.length === ROW_PROGRESS_WEIGHTS.length
+    ? ROW_PROGRESS_WEIGHTS
+    : CATALOG_ROWS.map(() => 1 / CATALOG_ROWS.length);
+}
+
+/** A sweep result as transferable arrays: the unit of parallelism. */
+export interface PackedStars {
+  dirs: Float32Array;
+  colors: Float32Array;
+  brightness: Float32Array;
+  distances: Float32Array;
+  teffs: Float32Array;
+  seeds: BigUint64Array;
+}
+
+export interface SweepSlab {
+  near: PackedStars;
+  far: PackedStars;
+}
+
+/** The ix-slab span a row's sweep covers — how a coordinator splits
+ *  the work. Mirrors sweepRowStars' own grid math. */
+export function rowSlabSpan(
+  row: CatalogRow,
+  viewpoint: GalacticPosition,
+): { lo: number; hi: number } {
+  const radius = Math.max(NEAR_RADIUS_PC, row.skyRadiusPc);
+  return {
+    lo: Math.floor((viewpoint.xPc - radius) / row.cellPc),
+    hi: Math.floor((viewpoint.xPc + radius) / row.cellPc),
+  };
+}
+
+/**
+ * Sweep one catalog row over a range of ix slabs into packed star
+ * arrays. Cells seed their own generators, so any partition of the
+ * span, concatenated in slab order, is byte-identical to the serial
+ * sweep — parallelism cannot change the sky.
+ */
+export function sweepRowSlab(
+  row: CatalogRow,
+  viewpoint: GalacticPosition,
+  ixLo: number,
+  ixHi: number,
+  onProgress?: (fraction: number) => void,
+): SweepSlab {
+  const lut = buildTemperatureLut(96);
+  const near = makeAccum();
+  const far = makeAccum();
+  const nearSq = NEAR_RADIUS_PC * NEAR_RADIUS_PC;
+  const skySq = row.skyRadiusPc * row.skyRadiusPc;
+  sweepRowStars(
+    row,
+    viewpoint,
+    Math.max(NEAR_RADIUS_PC, row.skyRadiusPc),
+    (x, y, z, massBits, ageBits, entropy) => {
+      const dx = x - viewpoint.xPc;
+      const dy = y - viewpoint.yPc;
+      const dz = z - viewpoint.zPc;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < 2.5e-5) return;
+      if (d2 <= nearSq) {
+        const starSeed = seedForIdentity(massBits, ageBits, entropy);
+        const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
+        if (physical.luminosity <= 0) return;
+        // Unresolved binaries glint with the pair's combined light.
+        const luminosity =
+          physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
+        pushTo(near, lut, dx, dy, dz, luminosity, physical.tEff, starSeed);
+        return;
+      }
+      if (d2 > skySq) return;
+      const mass = initialMassFromUnit(unitFromBits(massBits, MASS_BIT_SPAN));
+      if (luminosityCeiling(mass) / d2 < MIN_FAR_IRRADIANCE) return;
+      const starSeed = seedForIdentity(massBits, ageBits, entropy);
+      const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
+      if (physical.luminosity / d2 < MIN_FAR_IRRADIANCE) return;
+      const luminosity =
+        physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
+      pushTo(far, lut, dx, dy, dz, luminosity, physical.tEff, starSeed);
+    },
+    onProgress,
+    { ixLo, ixHi },
+  );
+  return { near: packAccum(near), far: packAccum(far) };
+}
+
+function makeAccum(): StarAccum {
+  return { dirs: [], colors: [], brightness: [], distances: [], teffs: [], seeds: [] };
+}
+
+function pushTo(
+  acc: StarAccum,
+  lut: Float32Array,
+  dx: number,
+  dy: number,
+  dz: number,
+  luminosity: number,
+  tEff: number,
+  starSeed: bigint,
+): void {
+  const distanceSq = dx * dx + dy * dy + dz * dz;
+  if (distanceSq < 1e-6) return;
+  const distance = Math.sqrt(distanceSq);
+  const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(tEff) * 95)) * 4;
+  acc.dirs.push(dx / distance, dy / distance, dz / distance);
+  acc.colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
+  acc.brightness.push(luminosity / distanceSq);
+  acc.distances.push(distance);
+  acc.teffs.push(tEff);
+  acc.seeds.push(starSeed);
+}
+
+function packAccum(acc: StarAccum): PackedStars {
+  return {
+    dirs: new Float32Array(acc.dirs),
+    colors: new Float32Array(acc.colors),
+    brightness: new Float32Array(acc.brightness),
+    distances: new Float32Array(acc.distances),
+    teffs: new Float32Array(acc.teffs),
+    seeds: BigUint64Array.from(acc.seeds),
+  };
+}
+
+function appendPacked(acc: StarAccum, packed: PackedStars): void {
+  for (let i = 0; i < packed.dirs.length; i++) acc.dirs.push(packed.dirs[i]);
+  for (let i = 0; i < packed.colors.length; i++) acc.colors.push(packed.colors[i]);
+  for (let i = 0; i < packed.brightness.length; i++) {
+    acc.brightness.push(packed.brightness[i]);
+    acc.distances.push(packed.distances[i]);
+    acc.teffs.push(packed.teffs[i]);
+    acc.seeds.push(packed.seeds[i]);
+  }
+}
+
+/**
+ * Everything after the star sweep: group stars and nebulae, dark
+ * clouds, charts, and the glow — assembled onto the merged sweep
+ * slabs (which must arrive in row-then-slab order).
+ */
+export function assembleSkyField(
+  viewpoint: GalacticPosition,
+  seed = 0n,
+  slabs: SweepSlab[] = [],
+  onProgress?: SkyProgress,
+): SkyField {
+  const lut = buildTemperatureLut(96);
+  const near = makeAccum();
+  const far = makeAccum();
+  for (const slab of slabs) appendPacked(near, slab.near);
+  for (const slab of slabs) appendPacked(far, slab.far);
+  const push: PushStar = (dx, dy, dz, luminosity, tEff) =>
+    pushTo(far, lut, dx, dy, dz, luminosity, tEff, 0n);
   const nearStarCount = near.brightness.length;
 
   const localDensity = stellarDensity(viewpoint);

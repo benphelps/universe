@@ -156,6 +156,8 @@ export function sweepRowStars(
   visit: StarVisitor,
   /** Fraction of the sweep's slabs finished — build progress. */
   onProgress?: (fraction: number) => void,
+  /** Restrict the sweep to an ix-slab range (parallel partitioning). */
+  slab?: { ixLo: number; ixHi: number },
 ): void {
   const { cellPc } = row;
   const massSpan = row.massBitsHi - row.massBitsLo;
@@ -176,8 +178,10 @@ export function sweepRowStars(
   const clampDelta = (v: number, lo: number): number =>
     Math.max(lo, Math.min(v, lo + cellPc)) - v;
 
-  for (let ix = min[0]; ix <= max[0]; ix++) {
-    onProgress?.((ix - min[0]) / (max[0] - min[0] + 1));
+  const ixLo = slab ? Math.max(slab.ixLo, min[0]) : min[0];
+  const ixHi = slab ? Math.min(slab.ixHi, max[0]) : max[0];
+  for (let ix = ixLo; ix <= ixHi; ix++) {
+    onProgress?.((ix - ixLo) / (ixHi - ixLo + 1));
     for (let iy = min[1]; iy <= max[1]; iy++) {
       for (let iz = min[2]; iz <= max[2]; iz++) {
         // Cheapest rejection first: cell entirely outside the ball.

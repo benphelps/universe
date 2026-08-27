@@ -11,6 +11,7 @@ import {
   seedForIdentity,
 } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
+import { rowSlabSpan, sweepRowSlab } from './skyfield';
 import { cloudFieldSmoothAt, expectedCloudField } from './clouds';
 import {
   armBoost,
@@ -184,6 +185,31 @@ describe('catalog', () => {
     }
     expect(expectedSum / fieldSum).toBeGreaterThan(0.75);
     expect(expectedSum / fieldSum).toBeLessThan(1.35);
+  });
+
+  it('a partitioned sweep is byte-identical to the serial sweep', () => {
+    // The sky coordinator splits rows into ix slabs across workers;
+    // per-cell seeding must make any partition equal to the whole.
+    const row = CATALOG_ROWS[3];
+    const span = rowSlabSpan(row, HOME_POSITION);
+    const whole = sweepRowSlab(row, HOME_POSITION, span.lo, span.hi);
+    const cutA = Math.floor(span.lo + (span.hi - span.lo) / 3);
+    const cutB = Math.floor(span.lo + (2 * (span.hi - span.lo)) / 3);
+    const parts = [
+      sweepRowSlab(row, HOME_POSITION, span.lo, cutA),
+      sweepRowSlab(row, HOME_POSITION, cutA + 1, cutB),
+      sweepRowSlab(row, HOME_POSITION, cutB + 1, span.hi),
+    ];
+    for (const field of ['near', 'far'] as const) {
+      const mergedDirs: number[] = [];
+      const mergedSeeds: bigint[] = [];
+      for (const part of parts) {
+        mergedDirs.push(...part[field].dirs);
+        mergedSeeds.push(...part[field].seeds);
+      }
+      expect(Float32Array.from(mergedDirs)).toEqual(whole[field].dirs);
+      expect(BigUint64Array.from(mergedSeeds)).toEqual(whole[field].seeds);
+    }
   });
 
   it('a materialized catalog star mirrors its traveled-to system', () => {
