@@ -1,4 +1,4 @@
-import { deriveSeed, mix64 } from '../../core/rng/hash';
+import { deriveSeed, mix64, seedToHex } from '../../core/rng/hash';
 import { poisson } from '../../core/rng/distributions';
 import { Rng } from '../../core/rng/rng';
 import { createSimplex3 } from '../../core/noise/simplex3';
@@ -55,6 +55,8 @@ interface SectorSite {
   seed: bigint;
   /** Territorial reach: prominent complexes claim broader regions. */
   weight: number;
+  /** Anchor cloud radius; 0 marks a jittered frontier filler. */
+  radiusPc: number;
 }
 
 /** Landmark prominence: the cloud's excess dust mass, roughly. */
@@ -120,6 +122,7 @@ function sitesFor(ix: number, iy: number, iz: number): SectorSite[] {
       zPc: cloud.positionPc.zPc,
       seed: cloud.seed,
       weight: Math.min(2.2, Math.max(0.6, (cloudScore(cloud) / SCORE_REF) ** (1 / 3))),
+      radiusPc: cloud.radiusPc,
     });
   }
   for (let k = sites.length; k < count; k++) {
@@ -129,6 +132,7 @@ function sitesFor(ix: number, iy: number, iz: number): SectorSite[] {
       zPc: (iz + rng.float()) * SECTOR_SITE_SPAN_PC,
       seed: deriveSeed(cellSeed, 'site', k),
       weight: 0.8,
+      radiusPc: 0,
     });
   }
   siteCache.set(key, sites);
@@ -176,6 +180,55 @@ export function sectorSeedAt(positionPc: GalacticPosition): bigint {
     }
   }
   return best;
+}
+
+/**
+ * The galaxy's celestial landmarks: every province's anchor complex —
+ * the prominent molecular clouds the gazetteer already names sectors
+ * after — as travel destinations. Each carries a gateway system seeded
+ * from its cloud, so arriving puts the complex overhead in that sky.
+ * Deterministic and universal; expensive to enumerate (a full-disk
+ * span sweep), so callers should hold the result or run it off-thread.
+ */
+export interface GalacticLandmark {
+  name: string;
+  positionPc: GalacticPosition;
+  /** Territorial prominence (the anchor's site weight). */
+  weight: number;
+  /** Anchor cloud radius, pc. */
+  radiusPc: number;
+  /** Sector this landmark anchors (same name by construction). */
+  sector: string;
+  /** Gateway system inside the complex. */
+  seedHex: string;
+}
+
+export function galacticLandmarks(): GalacticLandmark[] {
+  const landmarks: GalacticLandmark[] = [];
+  const spanRadius = Math.ceil(16000 / SECTOR_SITE_SPAN_PC);
+  for (let ix = -spanRadius; ix < spanRadius; ix++) {
+    for (let iy = -spanRadius; iy < spanRadius; iy++) {
+      const centerX = (ix + 0.5) * SECTOR_SITE_SPAN_PC;
+      const centerY = (iy + 0.5) * SECTOR_SITE_SPAN_PC;
+      if (Math.hypot(centerX, centerY) > 16500) continue;
+      for (let iz = -1; iz <= 0; iz++) {
+        for (const site of sitesFor(ix, iy, iz)) {
+          if (site.radiusPc <= 0) continue;
+          const name = sectorNameForSeed(site.seed);
+          landmarks.push({
+            name,
+            positionPc: { xPc: site.xPc, yPc: site.yPc, zPc: site.zPc },
+            weight: site.weight,
+            radiusPc: site.radiusPc,
+            sector: name,
+            seedHex: seedToHex(deriveSeed(site.seed, 'gateway')),
+          });
+        }
+      }
+    }
+  }
+  landmarks.sort((a, b) => b.weight - a.weight);
+  return landmarks.slice(0, 240);
 }
 
 /** Proper name of the territory a site seed identifies. */

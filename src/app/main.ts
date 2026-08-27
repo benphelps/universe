@@ -1,4 +1,5 @@
 import { seedFromHex, seedToHex } from '../core/rng/hash';
+import { getGalacticLandmarks, landmarksNow } from './landmarkService';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galacticAddress } from '../universe/galaxy/regions';
 import { generateSystem } from '../universe/system/generate';
@@ -165,8 +166,13 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     systemPanel.render(system, companionIndex, (index) => selectPlanet(index, companionIndex));
   } else if (viewMode === 'galaxy') {
     viewer.setFocus('star', 'galaxy');
-    galaxyPanel.render(system.star, address, viewer.neighbors, (neighbor) =>
-      load(neighbor.seedHex, neighbor.positionPc),
+    galaxyPanel.render(
+      system.star,
+      address,
+      viewer.neighbors,
+      system.localePc,
+      landmarksNow(),
+      (destination) => load(destination.seedHex, destination.positionPc),
     );
   } else {
     // The body stepper walks the host's planets — for the primary, the
@@ -290,5 +296,11 @@ planetIndex = Number(params.get('planet') ?? 0) || 0;
 moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
 companionIndex = Number(params.get('companion') ?? 0) || 0;
 load(params.get('seed') ?? randomSeedHex(), parseLocale(params.get('at')));
+
+// Chart the landmark catalog in the background; refresh the galaxy
+// tab once it lands.
+void getGalacticLandmarks().then(() => {
+  if (viewMode === 'galaxy') load(seedHex);
+});
 
 showWelcome();

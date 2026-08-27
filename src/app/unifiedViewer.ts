@@ -70,6 +70,7 @@ import {
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
+import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { SectorChart } from '../render/galaxy/sectorChart';
 import {
@@ -101,6 +102,7 @@ import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
 import { MEAN_POPULATION_LUMINOSITY, type SkyField } from '../universe/galaxy/skyfield';
+import { getGalacticLandmarks } from './landmarkService';
 import { getSkyField, skyPending, skyProgress } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
@@ -302,6 +304,10 @@ export class UnifiedViewer {
    *  breaks down with distance from the system. */
   private galaxyVolume: GalaxyVolume | null = null;
   private galaxyParticles: GalaxyParticles | null = null;
+  /** The named complexes as travel targets, in scene-frame pc. */
+  private landmarkList: import('../universe/galaxy/regions').GalacticLandmark[] | null = null;
+  private landmarkScene: Float32Array | null = null;
+  private landmarkMarkers: Points | null = null;
   private galaxyFade = 0;
   private sectorChart: SectorChart | null = null;
   /** User toggle: sector borders, sky-region borders, and their names. */
@@ -639,6 +645,28 @@ export class UnifiedViewer {
     this.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
     this.pcGroup.add(this.galaxyParticles.group);
+    // The landmark catalog is universal; orient it into this system's
+    // sky frame when it lands (once per session, off-thread).
+    getGalacticLandmarks().then((landmarks) => {
+      if (this.disposed || this.system !== system) return;
+      const scenePc = new Float32Array(landmarks.length * 3);
+      for (let i = 0; i < landmarks.length; i++) {
+        const p = landmarks[i].positionPc;
+        const [x, y, z] = rotateToScene(
+          galaxyOrientation,
+          p.xPc - viewpoint.xPc,
+          p.yPc - viewpoint.yPc,
+          p.zPc - viewpoint.zPc,
+        );
+        scenePc[i * 3] = x;
+        scenePc[i * 3 + 1] = y;
+        scenePc[i * 3 + 2] = z;
+      }
+      this.landmarkList = landmarks;
+      this.landmarkScene = scenePc;
+      this.landmarkMarkers = createLandmarkMarkers(landmarks, scenePc);
+      this.pcGroup.add(this.landmarkMarkers);
+    });
 
     getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
@@ -1757,6 +1785,14 @@ export class UnifiedViewer {
       this.galaxyParticles.dispose();
       this.galaxyParticles = null;
     }
+    if (this.landmarkMarkers) {
+      this.pcGroup.remove(this.landmarkMarkers);
+      this.landmarkMarkers.geometry.dispose();
+      (this.landmarkMarkers.material as ShaderMaterial).dispose();
+      this.landmarkMarkers = null;
+    }
+    this.landmarkList = null;
+    this.landmarkScene = null;
     if (this.sectorChart) {
       this.pcGroup.remove(this.sectorChart.group);
       this.sectorChart.dispose();
@@ -2111,6 +2147,42 @@ export class UnifiedViewer {
     const solid = this.field !== null;
     const tSeconds = seconds(this.simTimeDays * DAY);
     const yAxis = new Vector3(0, 1, 0);
+
+    // At map altitudes the landmark complexes become chart targets:
+    // hover names them, a click travels to their gateway system.
+    if (this.landmarkMarkers) {
+      this.landmarkMarkers.visible = this.markersVisible && this.galaxyFade > 0.3;
+    }
+    if (this.landmarkList && this.landmarkScene && this.galaxyFade > 0.3) {
+      this.pcGroup.updateWorldMatrix(true, false);
+      const toWorldM = this.pcGroup.matrixWorld;
+      const world = new Vector3();
+      for (let i = 0; i < this.landmarkList.length; i++) {
+        const landmark = this.landmarkList[i];
+        world
+          .set(
+            this.landmarkScene[i * 3],
+            this.landmarkScene[i * 3 + 1],
+            this.landmarkScene[i * 3 + 2],
+          )
+          .applyMatrix4(toWorldM);
+        const distanceKpc =
+          Math.hypot(
+            landmark.positionPc.xPc - this.viewpointPc.xPc,
+            landmark.positionPc.yPc - this.viewpointPc.yPc,
+            landmark.positionPc.zPc - this.viewpointPc.zPc,
+          ) / 1000;
+        this.pickables.push({
+          x: world.x,
+          y: world.y,
+          z: world.z,
+          name: `${landmark.name} Complex`,
+          info: `molecular complex · anchor of the ${landmark.sector} Sector · ${fmt(distanceKpc)} kpc`,
+          action: 'click to travel',
+          target: { kind: 'neighbor', seedHex: landmark.seedHex, positionPc: landmark.positionPc },
+        });
+      }
+    }
 
     // Ground-fixed frame: the heliocentric world (stars, planets, belts,
     // sky) sweeps around a spinning solid focus; envelopes spin their
