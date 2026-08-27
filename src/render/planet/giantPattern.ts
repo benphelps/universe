@@ -98,6 +98,30 @@ float bandDriftAt(float l, int band) {
   return d;
 }
 
+/** Multi-scale eddy displacement, sampled in one advection phase. */
+float stirField(float lat, float advLon, vec3 seed, float churnT) {
+  vec3 e = vec3(cos(lat) * cos(advLon), sin(lat), cos(lat) * sin(advLon));
+  float w1 = snoise(vec3(e.x, e.y * 2.2, e.z) * 1.7 + seed + vec3(0.0, 0.0, churnT * 0.3));
+  float w2 = snoise(vec3(e.x, e.y * 3.4, e.z) * 4.4 - seed.yzx + vec3(0.0, churnT * 0.6, 0.0));
+  float w3 = snoise(vec3(e.x, e.y * 5.0, e.z) * 11.0 + seed.zxy + vec3(churnT * 0.9, 0.0, 0.0));
+  return 0.06 * w1 + 0.03 * w2 + 0.013 * w3;
+}
+
+/** Streak-smeared deck (x) and fine (y) octaves in one advection phase:
+ *  four taps down the local streamline, so streaks lengthen with the
+ *  jet instead of scaling into parallel threads. */
+vec2 streakDeck(float wlat, float lonAdv, float streakHalf, vec3 seed, float churnT) {
+  float deck = 0.0;
+  float fine = 0.0;
+  for (int j = 0; j < 4; j++) {
+    float lo = lonAdv + (float(j) - 1.5) * streakHalf * 0.667;
+    vec3 qq = vec3(cos(wlat) * cos(lo), sin(wlat), cos(wlat) * sin(lo));
+    deck += fbm(vec3(qq.x, qq.y * 2.0, qq.z) * 3.0 + seed + vec3(0.0, 0.0, churnT));
+    fine += fbm(vec3(qq.x, qq.y * 2.5, qq.z) * 9.0 + seed.yzx + vec3(0.0, churnT * 1.6, 0.0));
+  }
+  return vec2(deck, fine) * 0.25;
+}
+
 /** The whole deck: linear color and cloud-top height for a direction. */
 void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
   float lat = asin(clamp(p.y, -1.0, 1.0));
@@ -123,50 +147,65 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
       edgeFactor += uBands[i].w * exp(-pow((lat - uBands[i].x) / 0.09, 2.0));
     }
     edgeFactor = min(edgeFactor, 1.0);
+
+    // Turbulence regenerates what the jets shear: advection runs on two
+    // staggered bounded ages, each phase reseeded while weightless, so
+    // a parcel drags at most half a cycle of differential shear before
+    // fresh eddies replace it — otherwise the frozen noise grid shears
+    // forever and tears into stitched arcs. Both ages advance at true
+    // drift speed, so motion stays coherent through the crossfade; the
+    // cycle divides the shader-time fold evenly, so weights stay
+    // continuous across it.
+    const float REGEN = 32.0;
+    float fA = fract(uTimeDays / REGEN);
+    float wA = 1.0 - abs(2.0 * fA - 1.0);
+    float wB = 1.0 - wA;
+    float ageA = (fA - 0.5) * REGEN;
+    float ageB = (fract(fA + 0.5) - 0.5) * REGEN;
+    vec3 seedA = uSeedOffset + vec3(7.31, 3.17, 5.71) * floor(uTimeDays / REGEN);
+    vec3 seedB = uSeedOffset + vec3(3.71, 8.13, 2.97) * (floor(uTimeDays / REGEN + 0.5) + 31.0);
+    // Independent phases average toward gray; renormalize so contrast
+    // holds steady through the blend.
+    float wNorm = inversesqrt(wA * wA + wB * wB);
+
     int band0 = bandAt(lat);
     float drift0 = bandDriftAt(lat, band0);
-    float advLon0 = lon + uTimeDays * drift0;
-    vec3 e = vec3(cos(lat) * cos(advLon0), sin(lat), cos(lat) * sin(advLon0));
     float amp = (0.35 + 0.65 * edgeFactor) * (0.35 + 0.65 * uContrast)
       * mix(0.3, 1.0, zonality);
-    float w1 = snoise(vec3(e.x, e.y * 2.2, e.z) * 1.7 + uSeedOffset + vec3(0.0, 0.0, churnT * 0.3));
-    float w2 = snoise(vec3(e.x, e.y * 3.4, e.z) * 4.4 - uSeedOffset.yzx + vec3(0.0, churnT * 0.6, 0.0));
-    float w3 = snoise(vec3(e.x, e.y * 5.0, e.z) * 11.0 + uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
-    float warp = amp * (0.06 * w1 + 0.03 * w2 + 0.013 * w3);
+    float warp = amp * wNorm * (wA * stirField(lat, lon + ageA * drift0, seedA, churnT)
+      + wB * stirField(lat, lon + ageB * drift0, seedB, churnT));
     float wlat = clamp(lat + warp, -1.55, 1.55);
     int band = bandAt(wlat);
     vec3 bandColor = bandColorAt(wlat, band);
     cloudH = dot(bandColor, vec3(0.35, 0.45, 0.2));
 
     // Dragged gas, not stretched pixels: the texture is smeared along
-    // the local streamline — four taps down the flow — so streaks
-    // lengthen with the jet, curve where the stir bends the bands, and
-    // vary in width, instead of parallel scaled-noise threads. The
-    // smear fades with the jets into the isotropic caps.
+    // the local streamline, so streaks lengthen with the jet, curve
+    // where the stir bends the bands, and vary in width, instead of
+    // parallel scaled-noise threads. The smear fades with the jets into
+    // the isotropic caps.
     float driftHere = bandDriftAt(wlat, band);
     float streakHalf = zonality * (0.015 + 0.5 * abs(driftHere) + 0.06 * edgeFactor);
-    float lonAdv = lon + uTimeDays * driftHere;
-    float deck = 0.0;
-    float fine = 0.0;
-    for (int j = 0; j < 4; j++) {
-      float lo = lonAdv + (float(j) - 1.5) * streakHalf * 0.667;
-      vec3 qq = vec3(cos(wlat) * cos(lo), sin(wlat), cos(wlat) * sin(lo));
-      deck += fbm(vec3(qq.x, qq.y * 2.0, qq.z) * 3.0 + uSeedOffset + vec3(0.0, 0.0, churnT));
-      fine += fbm(vec3(qq.x, qq.y * 2.5, qq.z) * 9.0 + uSeedOffset.yzx
-        + vec3(0.0, churnT * 1.6, 0.0));
-    }
-    deck *= 0.25;
-    fine *= 0.25;
-    vec3 q = vec3(cos(wlat) * cos(lonAdv), sin(wlat), cos(wlat) * sin(lonAdv));
-    float micro = fbm(vec3(q.x, q.y * 2.0, q.z) * 24.0 + uSeedOffset.zxy
-      + vec3(churnT * 1.8, 0.0, 0.0));
+    float lonA = lon + ageA * driftHere;
+    float lonB = lon + ageB * driftHere;
+    vec2 df = wNorm * (wA * streakDeck(wlat, lonA, streakHalf, seedA, churnT)
+      + wB * streakDeck(wlat, lonB, streakHalf, seedB, churnT));
+    float deck = df.x;
+    float fine = df.y;
+    vec3 qA = vec3(cos(wlat) * cos(lonA), sin(wlat), cos(wlat) * sin(lonA));
+    vec3 qB = vec3(cos(wlat) * cos(lonB), sin(wlat), cos(wlat) * sin(lonB));
+    float micro = wNorm * (wA * fbm(vec3(qA.x, qA.y * 2.0, qA.z) * 24.0 + seedA.zxy
+        + vec3(churnT * 1.8, 0.0, 0.0))
+      + wB * fbm(vec3(qB.x, qB.y * 2.0, qB.z) * 24.0 + seedB.zxy
+        + vec3(churnT * 1.8, 0.0, 0.0)));
     surface = bandColor * (1.0 + uContrast * (0.55 * deck + 0.32 * fine + 0.14 * micro));
     cloudH += uContrast * (0.22 * deck + 0.06 * fine + 0.03 * micro);
 
     if (uFineBands > 0.5) {
       // Fine banding belongs to the jets too: it fades into the caps
       // instead of ringing the pole like a record groove.
-      float phase = 1.2 * snoise(vec3(q.x, q.z, wlat * 2.0) + uSeedOffset);
+      float phase = 1.2 * wNorm * (wA * snoise(vec3(qA.x, qA.z, wlat * 2.0) + seedA)
+        + wB * snoise(vec3(qB.x, qB.z, wlat * 2.0) + seedB));
       surface *= 1.0 + 0.12 * uContrast * zonality * sin(wlat * uFineBands * 2.2 + phase);
     }
 
