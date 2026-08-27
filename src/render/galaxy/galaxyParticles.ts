@@ -110,12 +110,13 @@ export class GalaxyParticles {
       0, 0, 0, 1,
     );
     const quat = new Quaternion().setFromRotationMatrix(rotation);
+    // Lives inside the viewer's pc-scaled sky group, so the ground
+    // frame's spin carries it exactly like the rest of the sky:
+    // transform stays in pc units.
     const originScene = new Vector3(-viewpointPc.xPc, -viewpointPc.yPc, -viewpointPc.zPc)
-      .applyQuaternion(quat)
-      .multiplyScalar(pcKm);
+      .applyQuaternion(quat);
     this.group.quaternion.copy(quat);
     this.group.position.copy(originScene);
-    this.group.scale.setScalar(pcKm);
     this.group.visible = false;
   }
 

@@ -626,7 +626,7 @@ export class UnifiedViewer {
     this.galaxyVolume.meanLuminosity = MEAN_POPULATION_LUMINOSITY;
     this.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
-    this.scene.add(this.galaxyParticles.group);
+    this.pcGroup.add(this.galaxyParticles.group);
 
     getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
@@ -1741,7 +1741,7 @@ export class UnifiedViewer {
       this.galaxyVolume = null;
     }
     if (this.galaxyParticles) {
-      this.scene.remove(this.galaxyParticles.group);
+      this.pcGroup.remove(this.galaxyParticles.group);
       this.galaxyParticles.dispose();
       this.galaxyParticles = null;
     }
