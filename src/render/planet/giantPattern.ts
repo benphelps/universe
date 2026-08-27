@@ -138,17 +138,30 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
     vec3 bandColor = bandColorAt(wlat, band);
     cloudH = dot(bandColor, vec3(0.35, 0.45, 0.2));
 
-    // The deck texture, advected with the local jet.
-    float lonAdv = lon + uTimeDays * bandDriftAt(wlat, band);
+    // Dragged gas, not stretched pixels: the texture is smeared along
+    // the local streamline — four taps down the flow — so streaks
+    // lengthen with the jet, curve where the stir bends the bands, and
+    // vary in width, instead of parallel scaled-noise threads. The
+    // smear fades with the jets into the isotropic caps.
+    float driftHere = bandDriftAt(wlat, band);
+    float streakHalf = zonality * (0.015 + 0.5 * abs(driftHere) + 0.06 * edgeFactor);
+    float lonAdv = lon + uTimeDays * driftHere;
+    float deck = 0.0;
+    float fine = 0.0;
+    for (int j = 0; j < 4; j++) {
+      float lo = lonAdv + (float(j) - 1.5) * streakHalf * 0.667;
+      vec3 qq = vec3(cos(wlat) * cos(lo), sin(wlat), cos(wlat) * sin(lo));
+      deck += fbm(vec3(qq.x, qq.y * 2.0, qq.z) * 3.0 + uSeedOffset + vec3(0.0, 0.0, churnT));
+      fine += fbm(vec3(qq.x, qq.y * 2.5, qq.z) * 9.0 + uSeedOffset.yzx
+        + vec3(0.0, churnT * 1.6, 0.0));
+    }
+    deck *= 0.25;
+    fine *= 0.25;
     vec3 q = vec3(cos(wlat) * cos(lonAdv), sin(wlat), cos(wlat) * sin(lonAdv));
-    float deck = fbm(vec3(q.x, q.y * mix(1.0, 4.0, zonality), q.z) * 3.0 + uSeedOffset
-      + vec3(0.0, 0.0, churnT));
-    float fine = fbm(vec3(q.x, q.y * mix(1.0, 7.0, zonality), q.z) * 9.0 + uSeedOffset.yzx
-      + vec3(0.0, churnT * 1.6, 0.0));
-    float micro = fbm(vec3(q.x, q.y * mix(1.0, 5.0, zonality), q.z) * 24.0 + uSeedOffset.zxy
+    float micro = fbm(vec3(q.x, q.y * 2.0, q.z) * 24.0 + uSeedOffset.zxy
       + vec3(churnT * 1.8, 0.0, 0.0));
-    surface = bandColor * (1.0 + uContrast * (0.5 * deck + 0.28 * fine + 0.14 * micro));
-    cloudH += uContrast * (0.2 * deck + 0.055 * fine + 0.03 * micro);
+    surface = bandColor * (1.0 + uContrast * (0.55 * deck + 0.32 * fine + 0.14 * micro));
+    cloudH += uContrast * (0.22 * deck + 0.06 * fine + 0.03 * micro);
 
     if (uFineBands > 0.5) {
       // Fine banding belongs to the jets too: it fades into the caps
