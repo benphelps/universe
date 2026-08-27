@@ -100,7 +100,8 @@ import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
-import { getSkyField } from './skyService';
+import { getSkyField, skyPending } from './skyService';
+import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
@@ -309,6 +310,18 @@ export class UnifiedViewer {
   zonesVisible = true;
   /** User toggle: the marker spheres carrying subpixel bodies. */
   markersVisible = true;
+
+  /** What the background generators are working on right now: terrain
+   *  tiles in flight, distant-world bakes queued, the focused world's
+   *  climate survey, and sky fields still building. */
+  get generationStatus(): { surveying: boolean; terrain: number; worlds: number; skies: number } {
+    return {
+      surveying: this.surveying,
+      terrain: this.chunkManager?.pendingCount ?? 0,
+      worlds: bakeQueueDepth(),
+      skies: skyPending(),
+    };
+  }
 
   /** Free flight: right-shift + drag pans the camera through space. */
   private rightShiftHeld = false;

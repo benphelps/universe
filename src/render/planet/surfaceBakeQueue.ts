@@ -19,6 +19,11 @@ let active: BakeJob | null = null;
 const cache = new Map<string, SurfaceBakeResponse>();
 const CACHE_LIMIT = 24;
 
+/** Worlds still waiting on (or holding) the baker. */
+export function bakeQueueDepth(): number {
+  return jobs.length + (active ? 1 : 0);
+}
+
 function pump(): void {
   if (busy || jobs.length === 0 || !worker) return;
   busy = true;

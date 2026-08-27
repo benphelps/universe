@@ -19,6 +19,11 @@ function ensureWorker(): Worker {
   return worker;
 }
 
+/** Sky builds still in the worker — the arrival star field's lag. */
+export function skyPending(): number {
+  return waiting.size;
+}
+
 export function getSkyField(seedHex: string, viewpoint: GalacticPosition): Promise<SkyField> {
   const key = `${seedHex}:${viewpoint.xPc.toFixed(4)},${viewpoint.yPc.toFixed(4)},${viewpoint.zPc.toFixed(4)}`;
   const cached = cache.get(key);

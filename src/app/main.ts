@@ -4,6 +4,7 @@ import { galacticAddress } from '../universe/galaxy/regions';
 import { generateSystem } from '../universe/system/generate';
 import type { StarSystem } from '../universe/system/types';
 import { DecalToggles } from './ui/decalToggles';
+import { GenerationIndicator } from './ui/generationIndicator';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
 import { SettingsMenu, SLOWEST_TIME_EXP } from './ui/settingsMenu';
@@ -252,6 +253,10 @@ new DecalToggles(document.getElementById('decals')!, (key, visible) => {
   else if (key === 'zones') viewer.zonesVisible = visible;
   else viewer.markersVisible = visible;
 });
+const generation = new GenerationIndicator(document.body);
+setInterval(() => {
+  if (viewer) generation.update(viewer.generationStatus);
+}, 250);
 
 // The ride-out chip: press to start the slow pull-back to the galaxy
 // frame, press again (or roll the wheel, or travel) to take it back.

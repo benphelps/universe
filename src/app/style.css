@@ -386,6 +386,42 @@ tr.here .swatch {
   color: var(--accent);
 }
 
+/* The generation lamp: on while background workers are producing. */
+#genstate {
+  position: fixed;
+  right: 12px;
+  bottom: 50px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--faint);
+  font: 11px/1.4 var(--mono);
+  opacity: 0;
+  transition: opacity 0.4s;
+  pointer-events: none;
+}
+
+#genstate.busy {
+  opacity: 1;
+}
+
+#genstate svg {
+  animation: genstate-turn 1.4s linear infinite;
+}
+
+@keyframes genstate-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #genstate svg {
+    animation: none;
+  }
+}
+
 #settings-corner button,
 #decals button,
 #ride {
