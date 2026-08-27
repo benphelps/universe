@@ -1,10 +1,10 @@
 import {
   BufferAttribute,
   BufferGeometry,
-  Camera,
   HalfFloatType,
   LinearMipmapLinearFilter,
   Mesh,
+  OrthographicCamera,
   ShaderMaterial,
   Vector3,
   Vector4,
@@ -70,7 +70,10 @@ const FACES: Array<{ forward: Vector3; right: Vector3; up: Vector3 }> = [
 export class DeckBaker {
   private readonly material: ShaderMaterial;
   private readonly mesh: Mesh;
-  private readonly camera = new Camera();
+  // The bake shader writes clip coordinates directly; the camera only
+  // exists so the renderer's projection bookkeeping (reversed-Z) has a
+  // real projection to update.
+  private readonly camera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly circulation: Circulation;
 
   constructor(physical: Characterization, circulation: Circulation) {
