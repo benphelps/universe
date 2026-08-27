@@ -6,7 +6,8 @@ export interface SidebarCallbacks {
   onView: (view: ViewMode) => void;
 }
 
-const VIEWS: ViewMode[] = ['star', 'system', 'planet', 'galaxy'];
+// Descending scale: kpc, AU, R☉, R⊕.
+const VIEWS: ViewMode[] = ['galaxy', 'system', 'star', 'planet'];
 
 /** The characteristic scale each level frames. */
 const VIEW_SCALE: Record<ViewMode, string> = {

@@ -160,7 +160,9 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   viewer.setHost(companionIndex);
   if (viewMode === 'star') {
     viewer.setFocus('star', 'star');
-    starPanel.render(hostStar, system.star, companionIndex, selectStar);
+    starPanel.render(hostStar, system.star, companionIndex, selectStar, viewer.neighbors, (neighbor) =>
+      load(neighbor.seedHex, neighbor.positionPc),
+    );
   } else if (viewMode === 'system') {
     viewer.setFocus('star', 'system');
     systemPanel.render(system, companionIndex, (index) => selectPlanet(index, companionIndex));

@@ -1,7 +1,14 @@
+import { seedFromHex } from '../../core/rng/hash';
+import { NEIGHBOR_RADIUS_PC, type Neighbor } from '../../universe/galaxy/neighborhood';
+import { generateStar } from '../../universe/star/generate';
+import { shortDesignation } from '../../universe/star/naming';
 import type { Star } from '../../universe/star/types';
 import { fmt, fmtDays, fmtYears } from './format';
 import { cssColor, renderPlate } from './markup';
 import type { Sidebar } from './sidebar';
+
+/** The travel table stays readable: nearest systems only, of thousands. */
+const TRAVEL_ROWS = 80;
 
 const STAGE_LABEL: Record<Star['stage'], string> = {
   'brown-dwarf': 'brown dwarf',
@@ -18,7 +25,8 @@ const STAGE_LABEL: Record<Star['stage'], string> = {
 
 /**
  * Star level: the focused star's physics up top; below, the system's
- * stars — primary first, then companions — each row a click away.
+ * own stars pinned first — primary, then companions, each row a click
+ * away — and under them the stellar neighborhood as a travel table.
  */
 export class StarInfoPanel {
   constructor(private readonly sidebar: Sidebar) {}
@@ -28,6 +36,8 @@ export class StarInfoPanel {
     primary: Star,
     focusedIndex: number,
     onSelect: (index: number) => void,
+    neighbors: Neighbor[] = [],
+    onTravel?: (neighbor: Neighbor) => void,
   ): void {
     const rows: Array<[string, string]> = [
       ['Mass', `${fmt(star.mass)} M☉${massLossNote(star)}`],
@@ -85,17 +95,53 @@ export class StarInfoPanel {
       ...primary.companions.map(({ star: companion, orbit }, i) => starRow(companion, i + 1, orbit)),
     ].join('');
 
-    this.sidebar.level.innerHTML =
-      primary.companions.length > 0
-        ? `<h2>System stars · ${primary.companions.length + 1}</h2>
-           <table class="list">
-             <tr><th></th><th class="n">M☉</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th></tr>
-             ${starRows}
-           </table>`
-        : '<h2>System stars · 1</h2><div class="empty">a single star — no companions</div>';
+    const shown = neighbors.slice(0, TRAVEL_ROWS);
+    const travelRows = shown.map((neighbor, i) => {
+      // Each neighbor's star at its true position — the same locale the
+      // sky point used and travel will carry.
+      const neighborStar = generateStar(seedFromHex(neighbor.seedHex), {
+        withCompanions: false,
+        localePc: neighbor.positionPc,
+      });
+      return `<tr class="pick travel" data-travel="${i}">
+        <td><span class="swatch" style="background:${cssColor(neighborStar.linearRgb)}"></span> ${neighborStar.spectralType}</td>
+        <td>${shortDesignation(neighborStar.designation)}</td>
+        <td class="n">${fmt(neighbor.distancePc, 3)}</td>
+      </tr>`;
+    });
+
+    this.sidebar.level.innerHTML = `
+      ${
+        primary.companions.length > 0
+          ? `<h2>System stars · ${primary.companions.length + 1}</h2>
+             <table class="list">
+               <tr><th></th><th class="n">M☉</th><th class="n">AU</th><th class="n">period</th><th class="n">e</th></tr>
+               ${starRows}
+             </table>`
+          : '<h2>System stars · 1</h2><div class="empty">a single star — no companions</div>'
+      }
+      ${
+        neighbors.length > 0
+          ? `<h2>Travel to · within ${NEIGHBOR_RADIUS_PC} pc</h2>
+             <table class="list">
+               <tr><th>type</th><th>system</th><th class="n">pc</th></tr>
+               ${travelRows.join('')}
+             </table>
+             ${
+               neighbors.length > shown.length
+                 ? `<div class="empty">nearest ${shown.length} of ${neighbors.length} — glints in the sky travel too</div>`
+                 : ''
+             }`
+          : ''
+      }
+    `;
 
     for (const row of this.sidebar.level.querySelectorAll<HTMLElement>('tr.pick')) {
-      row.addEventListener('click', () => onSelect(Number(row.dataset.index)));
+      row.addEventListener('click', () => {
+        const travel = row.dataset.travel;
+        if (travel !== undefined) onTravel?.(neighbors[Number(travel)]);
+        else onSelect(Number(row.dataset.index));
+      });
     }
   }
 }
