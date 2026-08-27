@@ -11,6 +11,7 @@ import {
   Vector3,
 } from 'three';
 import { chunkAngularSize, faceUvToDir } from '../../universe/surface/cubeSphere';
+import type { GridSurvey } from '../../universe/surface/field';
 import { SCATTER_STRIDE } from '../../universe/surface/scatter';
 import type { TerrainInit, TerrainRequest, TerrainResponse } from '../../workers/protocol';
 import { createRockGeometry, createShrubGeometry } from './scatterObjects';
@@ -87,6 +88,9 @@ export class TerrainChunkManager {
     radiusKm: number,
     /** Per-species tree geometries for scatter kinds ≥ 2; owned here. */
     private readonly treeGeometries: BufferGeometry[] = [],
+    /** Receives the first worker's grid survey once its field is built —
+     *  the main thread's deferGrid field attaches it. */
+    private readonly onSurvey: ((survey: GridSurvey) => void) | null = null,
   ) {
     this.radiusKm = radiusKm;
     const workerCount = Math.min(5, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
@@ -95,9 +99,16 @@ export class TerrainChunkManager {
         type: 'module',
       });
       worker.onmessage = (event: MessageEvent<TerrainResponse>) => this.receive(event.data);
-      worker.postMessage(init);
+      worker.postMessage(
+        i === 0 && this.onSurvey && init.type === 'init' ? { ...init, survey: true } : init,
+      );
       this.workers.push(worker);
     }
+  }
+
+  /** Tile builds currently in flight across the worker pool. */
+  get pendingCount(): number {
+    return this.pending.size;
   }
 
   /** Terrain height under the camera, km above the datum: LOD distances
@@ -279,6 +290,10 @@ export class TerrainChunkManager {
   }
 
   private receive(response: TerrainResponse): void {
+    if (response.type === 'survey') {
+      this.onSurvey?.(response.survey);
+      return;
+    }
     const key = this.pending.get(response.id);
     this.pending.delete(response.id);
     if (!key) return;

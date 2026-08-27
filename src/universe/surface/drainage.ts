@@ -59,6 +59,12 @@ export interface DrainageGraph {
   /** Depression fill level, m — above heightsM inside lakes. */
   spillM: Float32Array;
   ocean: Uint8Array;
+  /** Graded channel-floor elevation per cell, m. */
+  bedM: Float32Array;
+  /** Water-surface elevation riding the bed per cell, m. */
+  stageM: Float32Array;
+  /** Lake fill level per cell, m — −Infinity outside lake basins. */
+  lakeM: Float32Array;
   /** Discharge above which a cell carries a carving river. */
   riverMinM3s: number;
   /** The standing-water surface over dir's cell: lake fill level inside
@@ -178,6 +184,44 @@ export function buildDrainage(
     if (stage > heightsM[cell] + 1) lakeM[cell] = stage;
   }
 
+  return wrapDrainage({
+    grid,
+    radiusM,
+    seaLevelM,
+    heightsM,
+    flowTo,
+    dischargeM3s,
+    spillM,
+    ocean,
+    bedM,
+    stageM,
+    lakeM,
+    riverMinM3s,
+  });
+}
+
+/** The finished per-cell arrays of a drainage graph — everything but
+ *  the query closures, so a worker can transfer them to the main
+ *  thread and wrapDrainage rebuilds the identical graph for free. */
+export type DrainageArrays = Omit<DrainageGraph, 'lakeLevelAt' | 'nearestRiver'>;
+
+/** A drainage graph from its finished arrays: the closure half of
+ *  buildDrainage — no flooding, routing, or grading, just the queries. */
+export function wrapDrainage(arrays: DrainageArrays): DrainageGraph {
+  const {
+    grid,
+    seaLevelM,
+    flowTo,
+    dischargeM3s,
+    spillM,
+    ocean,
+    bedM,
+    stageM,
+    lakeM,
+    riverMinM3s,
+  } = arrays;
+  const { centers } = grid;
+
   const lakeLevelAt = (at: Vec3): number => lakeM[grid.cellOfDir(at)];
 
   // Zero-allocation nearest-segment query over the 3×3 neighborhood's
@@ -230,19 +274,7 @@ export function buildDrainage(
     return result;
   };
 
-  return {
-    grid,
-    radiusM,
-    seaLevelM,
-    heightsM,
-    flowTo,
-    dischargeM3s,
-    spillM,
-    ocean,
-    riverMinM3s,
-    lakeLevelAt,
-    nearestRiver,
-  };
+  return { ...arrays, lakeLevelAt, nearestRiver };
 }
 
 function countOnes(mask: Uint8Array): number {

@@ -4,10 +4,15 @@ import { createSimplex3 } from '../../core/noise/simplex3';
 import { createWorley3 } from '../../core/noise/worley3';
 import { deriveSeed, seedFromHex } from '../../core/rng/hash';
 import type { Characterization } from '../planet/types';
-import { buildClimate, type ClimateField } from './climate';
+import { buildClimate, wrapClimate, type ClimateField } from './climate';
 import { createCraterField } from './craters';
-import { createCubeGrid } from './cubeGrid';
-import { buildDrainage, sampleCellHeights, type DrainageGraph } from './drainage';
+import { createCubeGrid, type CubeGrid } from './cubeGrid';
+import {
+  buildDrainage,
+  sampleCellHeights,
+  wrapDrainage,
+  type DrainageGraph,
+} from './drainage';
 import { deriveSurfaceParams, type SurfaceParams } from './params';
 
 type Rgb = [number, number, number];
@@ -34,6 +39,57 @@ export interface SurfaceField {
   drainage?: DrainageGraph | null;
   /** The climate field feeding it, on the same grid. */
   climate?: ClimateField | null;
+  /** Present on deferGrid fields: attaches a worker-computed survey,
+   *  wiring climate and drainage in without the grid sampling that
+   *  would stall the calling thread. */
+  finishGrid?: (survey: GridSurvey) => void;
+}
+
+/**
+ * The grid products of a fully-built field as plain transferable
+ * arrays: what a terrain worker already computed during its own field
+ * build, shipped to the main thread so the same world never pays for
+ * its climate and rivers twice.
+ */
+export interface GridSurvey {
+  cellHeightsM: Float32Array;
+  oceanMask: Uint8Array;
+  tempK: Float32Array;
+  precipMmYr: Float32Array;
+  flowTo: Int32Array;
+  dischargeM3s: Float32Array;
+  spillM: Float32Array;
+  bedM: Float32Array;
+  stageM: Float32Array;
+  lakeM: Float32Array;
+  riverMinM3s: number;
+}
+
+/** Copies a built field's grid products for transfer; null when the
+ *  world has no fluvial grid (nothing to survey). */
+export function surveyOf(field: SurfaceField): GridSurvey | null {
+  const { climate, drainage } = field;
+  if (!climate || !drainage) return null;
+  return {
+    cellHeightsM: drainage.heightsM.slice(),
+    oceanMask: drainage.ocean.slice(),
+    tempK: climate.tempK.slice(),
+    precipMmYr: climate.precipMmYr.slice(),
+    flowTo: drainage.flowTo.slice(),
+    dischargeM3s: drainage.dischargeM3s.slice(),
+    spillM: drainage.spillM.slice(),
+    bedM: drainage.bedM.slice(),
+    stageM: drainage.stageM.slice(),
+    lakeM: drainage.lakeM.slice(),
+    riverMinM3s: drainage.riverMinM3s,
+  };
+}
+
+// Every world shares the one grid geometry — cells depend only on the
+// resolution, and rebuilding the neighbor tables per field is waste.
+let sharedGrid: CubeGrid | null = null;
+function surfaceGrid(): CubeGrid {
+  return (sharedGrid ??= createCubeGrid(128));
 }
 
 interface DetailBand {
@@ -56,7 +112,12 @@ interface DetailBand {
 export function createSurfaceField(
   seedHex: string,
   physical: Characterization,
-  options?: { rivers?: boolean },
+  options?: {
+    rivers?: boolean;
+    /** Skip the grid sampling and return immediately: climate and
+     *  drainage attach later via finishGrid from a worker's survey. */
+    deferGrid?: boolean;
+  },
 ): SurfaceField {
   const params = deriveSurfaceParams(seedHex, physical);
   const seed = seedFromHex(seedHex);
@@ -428,40 +489,68 @@ export function createSurfaceField(
   );
   solvedSeaLevelM = seaLevelM;
   let climate: ClimateField | null = null;
+  let finishGrid: ((survey: GridSurvey) => void) | undefined;
   if (fluvialStrength > 0.02) {
-    // Arid eroded worlds carve with their paleo-discharge: the erosion
-    // parameter encodes the wet history that shaped them, even where
-    // today's mean rainfall rounds to nothing.
-    const carvingWetness = Math.max(wetness, 0.45 * fluvialStrength);
-    const grid = createCubeGrid(128);
-    const cellHeights = sampleCellHeights(grid, heightAt);
-    const oceanMask = new Uint8Array(grid.cellCount);
-    for (let cell = 0; cell < grid.cellCount; cell++) {
-      if (cellHeights[cell] < seaLevelM) oceanMask[cell] = 1;
-    }
-    climate = buildClimate(
-      grid,
-      cellHeights,
-      oceanMask,
-      params.surfaceMeanK,
-      params.poleDeltaK,
-      params.lapseKPerKm,
-      params.rotationPeriodHours,
-      carvingWetness,
-    );
-    // Orbital-scale consumers skip the network build: at their sample
-    // spacing every river is sub-texel, but the climate still places
-    // the deserts.
-    if (options?.rivers !== false) {
-      drainage = buildDrainage(
+    if (options?.deferGrid) {
+      // The grid products arrive precomputed (a terrain worker builds
+      // the same field and ships its arrays): wrapping closures around
+      // them costs nothing, so focus arrival never stalls on the
+      // 100k-sample grid.
+      finishGrid = (survey) => {
+        const grid = surfaceGrid();
+        climate = field.climate = wrapClimate(grid, survey.tempK, survey.precipMmYr);
+        if (options.rivers !== false) {
+          drainage = field.drainage = wrapDrainage({
+            grid,
+            radiusM: params.radiusM,
+            seaLevelM,
+            heightsM: survey.cellHeightsM,
+            ocean: survey.oceanMask,
+            flowTo: survey.flowTo,
+            dischargeM3s: survey.dischargeM3s,
+            spillM: survey.spillM,
+            bedM: survey.bedM,
+            stageM: survey.stageM,
+            lakeM: survey.lakeM,
+            riverMinM3s: survey.riverMinM3s,
+          });
+        }
+      };
+    } else {
+      // Arid eroded worlds carve with their paleo-discharge: the erosion
+      // parameter encodes the wet history that shaped them, even where
+      // today's mean rainfall rounds to nothing.
+      const carvingWetness = Math.max(wetness, 0.45 * fluvialStrength);
+      const grid = surfaceGrid();
+      const cellHeights = sampleCellHeights(grid, heightAt);
+      const oceanMask = new Uint8Array(grid.cellCount);
+      for (let cell = 0; cell < grid.cellCount; cell++) {
+        if (cellHeights[cell] < seaLevelM) oceanMask[cell] = 1;
+      }
+      climate = buildClimate(
         grid,
         cellHeights,
         oceanMask,
-        climate.precipMmYr,
-        params.radiusM,
-        seaLevelM,
-        channelDropM,
+        params.surfaceMeanK,
+        params.poleDeltaK,
+        params.lapseKPerKm,
+        params.rotationPeriodHours,
+        carvingWetness,
       );
+      // Orbital-scale consumers skip the network build: at their sample
+      // spacing every river is sub-texel, but the climate still places
+      // the deserts.
+      if (options?.rivers !== false) {
+        drainage = buildDrainage(
+          grid,
+          cellHeights,
+          oceanMask,
+          climate.precipMmYr,
+          params.radiusM,
+          seaLevelM,
+          channelDropM,
+        );
+      }
     }
   }
 
@@ -599,7 +688,17 @@ export function createSurfaceField(
     return ground;
   };
 
-  return { params, heightAt, colorAt, seaLevelM, waterLevelAt, drainage, climate };
+  const field: SurfaceField = {
+    params,
+    heightAt,
+    colorAt,
+    seaLevelM,
+    waterLevelAt,
+    drainage,
+    climate,
+    finishGrid,
+  };
+  return field;
 }
 
 /** Height whose flooded fraction matches coverage, via a golden-spiral sample. */

@@ -7,7 +7,7 @@ import { G, SOLAR_MASS, AU } from '../../core/physics/constants';
 import type { PlanetClass } from '../system/types';
 import { buildChunkMesh } from './chunkMesh';
 import { faceUvToDir } from './cubeSphere';
-import { createSurfaceField } from './field';
+import { createSurfaceField, surveyOf } from './field';
 import { deriveTreeSpecies, TREE_SPECIES_COUNT } from './flora';
 import { SCATTER_STRIDE, scatterForChunk } from './scatter';
 
@@ -19,7 +19,13 @@ const CONTEXT: CharacterizeContext = {
   zones: computeZones(SUN.luminosity, SUN.tEff, SUN.ageGyr, 1),
 };
 
-function world(seed: bigint, planetClass: PlanetClass, massEarth: number, aAu: number) {
+function world(
+  seed: bigint,
+  planetClass: PlanetClass,
+  massEarth: number,
+  aAu: number,
+  options?: Parameters<typeof createSurfaceField>[2],
+) {
   const physical = characterizePlanet(
     seed,
     planetClass,
@@ -35,7 +41,7 @@ function world(seed: bigint, planetClass: PlanetClass, massEarth: number, aAu: n
     },
     CONTEXT,
   );
-  return createSurfaceField(seed.toString(16).padStart(16, '0'), physical);
+  return createSurfaceField(seed.toString(16).padStart(16, '0'), physical, options);
 }
 
 function sampleDirs(n: number) {
@@ -58,6 +64,21 @@ describe('surface field', () => {
     const again = world(11n, 'rocky', 1, 1);
     for (const dir of sampleDirs(50)) {
       expect(again.heightAt(dir)).toBe(earthLike.heightAt(dir));
+    }
+  });
+
+  it('a deferred grid attaching a survey matches the full build exactly', () => {
+    const deferred = world(11n, 'rocky', 1, 1, { deferGrid: true });
+    expect(deferred.climate).toBeNull();
+    expect(deferred.drainage).toBeNull();
+    const survey = surveyOf(earthLike);
+    expect(survey).not.toBeNull();
+    deferred.finishGrid!(survey!);
+    expect(deferred.climate).not.toBeNull();
+    expect(deferred.drainage).not.toBeNull();
+    for (const dir of sampleDirs(40)) {
+      expect(deferred.heightAt(dir)).toBe(earthLike.heightAt(dir));
+      expect(deferred.waterLevelAt(dir)).toBe(earthLike.waterLevelAt(dir));
     }
   });
 

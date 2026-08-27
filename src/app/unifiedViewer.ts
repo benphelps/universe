@@ -341,6 +341,9 @@ export class UnifiedViewer {
   private moonGroup: Group | null = null;
   private moons: MoonEntry[] = [];
   private field: SurfaceField | null = null;
+  /** True while the focused world's climate/river survey is still in a
+   *  worker — the field stands, its rivers attach when it lands. */
+  private surveying = false;
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
   private focusMoon: Moon | null = null;
@@ -826,7 +829,12 @@ export class UnifiedViewer {
   /** Focus-specific content for any solid terrain body — planet or moon:
    *  the streamed surface, its air and clouds, and the depth globe. */
   private applySolidBodyFocus(physical: Characterization, rings: RingSystem | null): void {
-    this.field = createSurfaceField(physical.seedHex, physical);
+    // Deferred grid: the ~100k-sample climate/river survey would freeze
+    // the UI for over a second — a terrain worker builds the identical
+    // field anyway and ships the products back to attach here.
+    const field = createSurfaceField(physical.seedHex, physical, { deferGrid: true });
+    this.field = field;
+    this.surveying = field.finishGrid !== undefined;
     this.oceanMaterial =
       this.field.params.magmaCoverage > 0
         ? createMagmaMaterial(physical.appearance.oceanColor, planetSeedOffset(physical.seedHex))
@@ -841,6 +849,12 @@ export class UnifiedViewer {
       this.field.params.biosphere
         ? deriveTreeSpecies(this.field.params).map(createTreeGeometry)
         : [],
+      (survey) => {
+        if (this.field === field) {
+          field.finishGrid?.(survey);
+          this.surveying = false;
+        }
+      },
     );
     if (physical.atmosphere.class !== 'none') {
       this.skyDome = createSkyDome(physical.atmosphere.scatteringColor);
@@ -1586,6 +1600,7 @@ export class UnifiedViewer {
     this.oceanMaterial?.dispose();
     this.oceanMaterial = null;
     this.field = null;
+    this.surveying = false;
     for (const mesh of [
       this.atmosphereShell,
       this.cloudShell,

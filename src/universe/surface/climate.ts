@@ -145,6 +145,18 @@ export function buildClimate(
     precipMmYr[cell] = (rained[cell] / reference) * 900 * wetness;
   }
 
+  return wrapClimate(grid, tempK, precipMmYr);
+}
+
+/** A climate field from its finished per-cell arrays — the closure half
+ *  of buildClimate, so precomputed arrays (a worker's survey) rebuild
+ *  the identical field without the moisture solve. */
+export function wrapClimate(
+  grid: CubeGrid,
+  tempK: Float32Array,
+  precipMmYr: Float32Array,
+): ClimateField {
+  const { centers } = grid;
   const precipAt = (dir: { x: number; y: number; z: number }): number => {
     const home = grid.cellOfDir(dir);
     const around = grid.neighborsOf(home);

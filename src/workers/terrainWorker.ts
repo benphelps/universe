@@ -1,6 +1,6 @@
 import { createAsteroidField } from '../universe/surface/asteroidField';
 import { buildChunkMesh } from '../universe/surface/chunkMesh';
-import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
+import { createSurfaceField, surveyOf, type SurfaceField } from '../universe/surface/field';
 import { scatterForChunk } from '../universe/surface/scatter';
 import type { TerrainRequest, TerrainResponse } from './protocol';
 
@@ -14,6 +14,20 @@ self.onmessage = (event: MessageEvent<TerrainRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
     field = createSurfaceField(message.seedHex, message.physical);
+    if (message.survey) {
+      // This worker just paid for the grid products the main thread
+      // deferred: ship copies so its field attaches them for free.
+      const survey = surveyOf(field);
+      if (survey) {
+        const response: TerrainResponse = { type: 'survey', survey };
+        (self as unknown as Worker).postMessage(
+          response,
+          Object.values(survey)
+            .filter((value): value is Float32Array => ArrayBuffer.isView(value))
+            .map((array) => array.buffer),
+        );
+      }
+    }
     return;
   }
   if (message.type === 'init-asteroid') {
@@ -31,6 +45,7 @@ self.onmessage = (event: MessageEvent<TerrainRequest>) => {
     mesh.centerKm,
   );
   const response: TerrainResponse = {
+    type: 'chunk',
     id: message.id,
     centerKm: mesh.centerKm,
     positions: mesh.positions,
