@@ -3,7 +3,6 @@ import { secondSunUniforms } from '../lighting/secondSun';
 import { seedFromHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import type { Characterization } from '../../universe/planet/types';
-import { CELLULAR_GLSL } from '../glsl/cellularNoise';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
@@ -44,7 +43,6 @@ uniform samplerCube uSurfaceCube;
 #endif
 
 ${SIMPLEX_NOISE_GLSL}
-${CELLULAR_GLSL}
 ${MAGMA_PATTERN_GLSL}
 ${SHADOW_GLSL}
 
@@ -79,6 +77,18 @@ void main() {
   float cloudMask = smoothstep(cloudThreshold - 0.12, cloudThreshold + 0.12, cloudField);
   surface = mix(surface, uCloudColor, cloudMask * 0.95);
 
+  // Molten worlds: the magma seas radiate their own light, day and
+  // night — evaluated in the planet's kilometer frame with the same
+  // pattern the walk-up lava tiles use, so the same melt streams sit
+  // in the same places at every distance.
+  vec3 lavaGlowC = vec3(0.0);
+  float lavaHot = 0.0;
+  if (uLavaGlow > 0.0 && liquid > 0.0) {
+    vec3 wKm = p * uRadiusKm;
+    lavaGlowC = magmaGlow(wKm, uSeedOffset, uTimeDays, length(fwidth(wKm)));
+    lavaHot = smoothstep(0.2, 0.9, dot(lavaGlowC, vec3(0.3, 0.59, 0.11)));
+  }
+
   // Lighting: star-lit day side with eclipse/ring shadows.
   vec3 normal = normalize(vWorldNormal);
   float ndotl = dot(normal, uLightDir);
@@ -87,7 +97,8 @@ void main() {
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   vec3 halfDir = normalize(uLightDir + viewDir);
-  float gloss = uLavaGlow > 0.0 ? 0.2 : 0.5;
+  // Chilled crust is matte; only the hot open melt keeps a sheen.
+  float gloss = uLavaGlow > 0.0 ? 0.2 * (0.2 + 0.8 * lavaHot) : 0.5;
   float specular = pow(max(dot(normal, halfDir), 0.0), 90.0)
     * liquid * (1.0 - cloudMask) * gloss;
 
@@ -95,15 +106,7 @@ void main() {
   vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2)
     + uLightColor * specular * diffuse;
 
-  // Molten worlds: the magma seas radiate their own light, day and
-  // night — evaluated in the planet's kilometer frame with the same
-  // pattern the walk-up lava tiles use, so the plates and paterae sit
-  // in the same places at every distance.
-  if (uLavaGlow > 0.0 && liquid > 0.0) {
-    vec3 wKm = p * uRadiusKm;
-    vec3 glow = magmaGlow(wKm, uSeedOffset, uTimeDays, length(fwidth(wKm)));
-    color += glow * liquid * uLavaGlow * (1.0 - cloudMask * 0.85);
-  }
+  color += lavaGlowC * liquid * uLavaGlow * (1.0 - cloudMask * 0.85);
 
   gl_FragColor = vec4(color, 1.0);
 }

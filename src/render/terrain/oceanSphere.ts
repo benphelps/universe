@@ -1,6 +1,5 @@
 import { Color, ShaderMaterial } from 'three';
 import { secondSunUniforms } from '../lighting/secondSun';
-import { CELLULAR_GLSL } from '../glsl/cellularNoise';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 
@@ -102,7 +101,6 @@ uniform vec3 uSeedOffset;
 uniform float uTimeDays;
 
 ${SIMPLEX_NOISE_GLSL}
-${CELLULAR_GLSL}
 ${MAGMA_PATTERN_GLSL}
 
 void main() {
@@ -111,14 +109,27 @@ void main() {
   vec3 viewDir = normalize(-vViewPos) * mat3(viewMatrix);
 
   vec3 glow = magmaGlow(vWorldPos, uSeedOffset, uTimeDays, length(fwidth(vWorldPos)));
+  float lum = dot(glow, vec3(0.3, 0.59, 0.11));
 
-  // The crust still reflects the star; molten glass keeps a sheen.
-  float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0);
+  // The sheen belongs to the melt: open lava is glassy-fluid, chilled
+  // crust is matte rubble, and the surface is anything but smooth —
+  // the flow pattern itself bumps the specular normal, so the glint
+  // breaks along the filaments instead of pooling into a polished blob.
+  vec3 sx = dFdx(vWorldPos);
+  vec3 sy = dFdy(vWorldPos);
+  vec3 tx = normalize(sx - normal * dot(sx, normal) + vec3(1e-6));
+  vec3 ty = normalize(sy - normal * dot(sy, normal) + vec3(1e-6));
+  float gx = clamp(dFdx(lum) / max(length(sx), 1e-5) * 2.0, -0.5, 0.5);
+  float gy = clamp(dFdy(lum) / max(length(sy), 1e-5) * 2.0, -0.5, 0.5);
+  vec3 bumped = normalize(normal - gx * tx - gy * ty);
+
+  float hot = smoothstep(0.2, 0.9, lum);
+  float fresnel = pow(1.0 - max(dot(bumped, viewDir), 0.0), 4.0);
   vec3 halfDir = normalize(uLightDir + viewDir);
-  float specular = pow(max(dot(normal, halfDir), 0.0), 120.0);
+  float specular = pow(max(dot(bumped, halfDir), 0.0), 90.0) * (0.25 + 0.75 * hot);
   float diffuse2 = max(dot(normal, uLight2Dir), 0.0);
   vec3 color = uColor * (uLightColor * (diffuse + 0.02) + uLight2Color * diffuse2)
-    + uLightColor * (fresnel * 0.12 + specular * 0.35) * diffuse
+    + uLightColor * (fresnel * 0.05 + specular * 0.18) * diffuse
     + glow;
 
   float fog = 1.0 - exp(-length(vViewPos) * uFogDensity);
