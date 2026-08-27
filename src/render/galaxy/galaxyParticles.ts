@@ -26,7 +26,7 @@ varying float vType;
 void main() {
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   float dist = max(length(mvPosition.xyz), 1.0);
-  gl_PointSize = clamp(uPointScale * aSizePc / dist, 1.0, 220.0);
+  gl_PointSize = clamp(uPointScale * aSizePc / dist, 1.0, 160.0);
   vColor = aColor * uOpacity;
   vType = aType;
   gl_Position = projectionMatrix * mvPosition;
@@ -72,8 +72,10 @@ export class GalaxyParticles {
   readonly group = new Group();
   private readonly material: ShaderMaterial;
   private readonly points: Points;
+  private readonly pcKm: number;
 
   constructor(viewpointPc: GalacticPosition, sceneFromGalaxy: Float32Array, pcKm: number) {
+    this.pcKm = pcKm;
     const set = getGalaxyParticles();
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(set.positionsPc, 3));
@@ -123,7 +125,8 @@ export class GalaxyParticles {
     this.group.visible = opacity > 0.002;
     if (!this.group.visible) return;
     this.material.uniforms.uOpacity.value = opacity;
-    this.material.uniforms.uPointScale.value = pixelsPerRadian;
+    // Sizes are authored in pc; positions ride a km-scaled group.
+    this.material.uniforms.uPointScale.value = pixelsPerRadian * this.pcKm;
   }
 
   dispose(): void {
