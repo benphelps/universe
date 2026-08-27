@@ -33,15 +33,15 @@ export function createZoneRings(zones: SystemZones): Group {
     new MeshBasicMaterial({
       color: 0x2f9e5f,
       transparent: true,
-      opacity: 0.09,
+      opacity: 0.14,
       side: DoubleSide,
       depthWrite: false,
     }),
   );
   group.add(hz);
 
-  group.add(circle(zones.frostLineAu, 0x7fc4e8, 0.35));
-  group.add(circle(zones.tidalLockAu, 0xcc7766, 0.3));
+  group.add(circle(zones.frostLineAu, 0x9fd8f4, 0.55));
+  group.add(circle(zones.tidalLockAu, 0xe09484, 0.5));
   return group;
 }
 
@@ -55,7 +55,7 @@ export function createBeltAnnulus(innerAu: number, outerAu: number): Mesh {
     new MeshBasicMaterial({
       color: 0x8a94a4,
       transparent: true,
-      opacity: 0.05,
+      opacity: 0.09,
       side: DoubleSide,
       depthWrite: false,
     }),

@@ -581,7 +581,7 @@ export class UnifiedViewer {
       // Every companion shines, and its stellar orbit is charted like a
       // planet's — visible whenever the orbit map is.
       addStar(companion.star);
-      this.stellarOrbits.add(createOrbitLine(companion.elements, 0x8888aa, 0.3));
+      this.stellarOrbits.add(createOrbitLine(companion.elements, 0xa0a0cc, 0.55));
     }
 
     // Photometric glints carry the stars once their discs fall subpixel
@@ -747,7 +747,7 @@ export class UnifiedViewer {
     }
     for (const planet of planets) {
       this.overlay.add(
-        createOrbitLine(planet.elements, planet.inHabitableZone ? 0x4fbf7f : 0x6a7484, 0.45),
+        createOrbitLine(planet.elements, planet.inHabitableZone ? 0x5fdf97 : 0x8a97ab, 0.75),
       );
     }
   }
@@ -1601,7 +1601,7 @@ export class UnifiedViewer {
         this.moonOrbits!.add(
           new Line(
             new BufferGeometry().setFromPoints(points),
-            new LineBasicMaterial({ color: 0x6a7a94, transparent: true, opacity: 0.22 }),
+            new LineBasicMaterial({ color: 0x8b9cb8, transparent: true, opacity: 0.45 }),
           ),
         );
 
