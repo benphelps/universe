@@ -132,6 +132,12 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
         viewer.focusBeltAsteroid(target.asteroid);
         planetPanel.renderAsteroid(system, target.asteroid, 'belt member');
       } else if (target.kind === 'neighbor') {
+        // Travel arrives at the destination star, not at whatever the
+        // previous system had focused; the galaxy map keeps its own
+        // framing so neighbor-hopping stays on the map.
+        if (viewMode !== 'galaxy') viewMode = 'star';
+        planetIndex = 0;
+        moonIndex = -1;
         load(target.seedHex, target.positionPc);
       }
     };
