@@ -336,6 +336,7 @@ tr.here .swatch {
 #sidebar button,
 #settings-corner button,
 #decals button,
+#timeseed button,
 #ride {
   background: none;
   border: 1px solid var(--line);
@@ -454,9 +455,142 @@ tr.here .swatch {
 
 #settings-corner button,
 #decals button,
+#timeseed button,
 #ride {
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
+}
+
+/* ---- the clock-and-seed strip ---- */
+
+#timeseed {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+#timeseed button:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+#time-pause,
+#seed-dice {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+#time-pause.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#time-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 12px 0 10px;
+  background: rgba(10, 14, 20, 0.8);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+#time-rate {
+  width: 62px;
+  flex: none;
+  font: 11px/1.2 var(--mono);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+#time-rate.paused {
+  color: var(--faint);
+}
+
+#time-slider .track-wrap {
+  width: 200px;
+  padding-top: 7px;
+}
+
+#time-range {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  height: 10px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+#time-range::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(170, 210, 255, 0.22);
+  border-radius: 1px;
+}
+
+#time-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 9px;
+  height: 9px;
+  margin-top: -3.5px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+#time-range:hover::-webkit-slider-thumb {
+  background: var(--accent-hi);
+}
+
+#time-range::-moz-range-track {
+  height: 2px;
+  background: rgba(170, 210, 255, 0.22);
+  border-radius: 1px;
+}
+
+#time-range::-moz-range-thumb {
+  width: 9px;
+  height: 9px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+#time-slider .ticks {
+  position: relative;
+  height: 10px;
+  font: 8px/1 var(--mono);
+  color: var(--faint);
+}
+
+#time-slider .ticks span {
+  position: absolute;
+  top: 1px;
+  transform: translateX(-50%);
+  letter-spacing: 0.04em;
+}
+
+#seed-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+#seed-chip #seed-text.copied {
+  color: var(--accent);
 }
 
 #sidebar button:hover,

@@ -7,7 +7,8 @@ import { DecalToggles } from './ui/decalToggles';
 import { GenerationIndicator } from './ui/generationIndicator';
 import { GalaxyInfoPanel } from './ui/galaxyInfoPanel';
 import { PlanetInfoPanel } from './ui/planetInfoPanel';
-import { SettingsMenu, SLOWEST_TIME_EXP } from './ui/settingsMenu';
+import { SettingsMenu } from './ui/settingsMenu';
+import { TimeSeedControls, SLOWEST_TIME_EXP } from './ui/timeSeedControls';
 import { Sidebar, type ViewMode } from './ui/sidebar';
 import { StarInfoPanel } from './ui/starInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
@@ -205,7 +206,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   viewer.timeScaleDaysPerSecond = timeScale;
   viewer.exposure = exposure;
 
-  settings.seed = seedHex;
+  timeSeed.seed = seedHex;
   sidebar.view = viewMode;
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
@@ -240,17 +241,18 @@ const sidebar = new Sidebar(document.getElementById('sidebar')!, {
     load(seedHex);
   },
 });
-const settings = new SettingsMenu(document.getElementById('settings-corner')!, {
-  onSeed: load,
-  onRandom: () => load(randomSeedHex()),
-  onTimeScale: (daysPerSecond) => {
-    timeScale = daysPerSecond;
-    if (viewer) viewer.timeScaleDaysPerSecond = daysPerSecond;
-  },
+new SettingsMenu(document.getElementById('settings-corner')!, {
   onExposure: (value) => {
     exposure = value;
     if (viewer) viewer.exposure = value;
   },
+});
+const timeSeed = new TimeSeedControls(document.getElementById('timeseed')!, {
+  onTimeScale: (daysPerSecond) => {
+    timeScale = daysPerSecond;
+    if (viewer) viewer.timeScaleDaysPerSecond = daysPerSecond;
+  },
+  onRandom: () => load(randomSeedHex()),
 });
 new DecalToggles(document.getElementById('decals')!, (key, visible) => {
   if (!viewer) return;
