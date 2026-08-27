@@ -177,8 +177,8 @@ void main() {
 
   float reddening = exp(-tau * 0.25);
   // light is density * kpc: fold mean luminosity and the glow map's
-  // 2.3e-4 photometric scale (times 1000 pc/kpc) into one constant.
-  float raw = light * uMeanLum * 0.23;
+  // 9.2e-5 photometric scale (times 1000 pc/kpc) into one constant.
+  float raw = light * uMeanLum * 0.092;
   float scale = raw / (1.0 + 0.2 * raw);
   vec3 color = vec3(
     scale,
@@ -213,7 +213,7 @@ export class GalaxyVolume {
       uniforms: {
         uCamGalKpc: { value: new Vector3() },
         uWorldToGalaxy: { value: new Matrix3() },
-        uMeanLum: { value: 0.74 },
+        uMeanLum: { value: 1.76 },
         uOpacity: { value: 0 },
       },
       side: BackSide,

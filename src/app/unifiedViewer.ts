@@ -99,7 +99,7 @@ import { createSurfaceField, type SurfaceField } from '../universe/surface/field
 import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
-import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
+import { MEAN_POPULATION_LUMINOSITY, type SkyField } from '../universe/galaxy/skyfield';
 import { getSkyField, skyPending } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
@@ -620,7 +620,7 @@ export class UnifiedViewer {
     this.pcGroup.add(this.neighborPoints);
 
     this.galaxyVolume = new GalaxyVolume(viewpoint, sceneFromGalaxy(seedFromHex(system.seedHex)));
-    this.galaxyVolume.meanLuminosity = meanPopulationLuminosity(viewpoint);
+    this.galaxyVolume.meanLuminosity = MEAN_POPULATION_LUMINOSITY;
     this.scene.add(this.galaxyVolume.mesh);
 
     getSkyField(system.seedHex, viewpoint).then((sky) => {

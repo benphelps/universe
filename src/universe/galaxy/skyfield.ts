@@ -19,6 +19,7 @@ import {
 } from './clouds';
 import {
   dustDensity,
+  HOME_POSITION,
   sightlineDensities,
   stellarDensity,
   type GalacticPosition,
@@ -1035,16 +1036,21 @@ function buildConstellations(
 }
 
 /**
- * Mean stellar luminosity of the local population, derived from the IMF
- * and the population mix rather than assumed. The bright tail — rare
- * massive stars and giants — carries most of the light, so this is a
- * stratified quadrature over a log-mass grid (IMF-weighted) crossed
- * with ages drawn from the population mix, not Monte Carlo.
+ * Mean stellar luminosity per star of the reference field population,
+ * derived from the IMF and the home population mix rather than assumed:
+ * stratified quadrature over a log-mass grid crossed with a stratified
+ * sweep of the population's age CDF. The bright tail — rare massive
+ * stars and giants — carries most of the light, so sparse age sampling
+ * is lethal here: a 12-draw local estimate once swung the galaxy's
+ * brightness 50× between locales. One fixed, well-sampled constant —
+ * how bright the galaxy is cannot depend on who is looking at it.
  */
-export function meanPopulationLuminosity(viewpoint: GalacticPosition): number {
-  const rng = new Rng(deriveSeed(0x534b59n, 'mean-luminosity'));
+export const MEAN_POPULATION_LUMINOSITY = (() => {
   const ages: number[] = [];
-  for (let i = 0; i < 12; i++) ages.push(populationFromUnit(rng.float(), viewpoint).ageGyr);
+  const strata = 96;
+  for (let i = 0; i < strata; i++) {
+    ages.push(populationFromUnit((i + 0.5) / strata, HOME_POSITION).ageGyr);
+  }
 
   const bins = 48;
   let weightSum = 0;
@@ -1060,7 +1066,7 @@ export function meanPopulationLuminosity(viewpoint: GalacticPosition): number {
     weightSum += weight;
   }
   return lumSum / Math.max(weightSum, 1e-9);
-}
+})();
 
 /** Clouds inside this radius shadow the sky individually. */
 const RIFT_NEAR_PC = 1500;
@@ -1249,7 +1255,7 @@ function buildGlow(
   const data = new Float32Array(width * height * 4);
   const startPc = 80;
   const endPc = 25000;
-  const meanLuminosity = meanPopulationLuminosity(viewpoint);
+  const meanLuminosity = MEAN_POPULATION_LUMINOSITY;
   const dustKappa = DUST_KAPPA;
 
   for (let row = 0; row < height; row++) {
@@ -1288,7 +1294,9 @@ function buildGlow(
       // Dust reddens as well as dims; warm population base color.
       const reddening = Math.exp(-opticalDepth * 0.25);
       const index = (row * width + column) * 4;
-      const raw = light * 2.3e-4;
+      // Display calibration: sized so the honest population mean
+      // lands the band at the brightness the sky was tuned around.
+      const raw = light * 9.2e-5;
       // Gentle knee only: structure survives, nothing hard-saturates.
       const scale = raw / (1 + 0.2 * raw);
       data[index] = scale * 1.0;
