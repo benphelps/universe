@@ -15,7 +15,11 @@ export class RenderPipeline {
   private readonly bloom: UnrealBloomPass;
 
   constructor(container: HTMLElement, scene: Scene, camera: Camera) {
-    this.renderer = new WebGLRenderer({ antialias: true });
+    // Reversed-Z: quasi-logarithmic depth precision, so a planet at
+    // half a million km and the star behind it stop quantizing to the
+    // same far-plane depth and z-fighting in shards. Needs
+    // EXT_clip_control; three falls back (with a warning) without it.
+    this.renderer = new WebGLRenderer({ antialias: true, reversedDepthBuffer: true });
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
     container.appendChild(this.renderer.domElement);
