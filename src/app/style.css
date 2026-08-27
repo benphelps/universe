@@ -720,7 +720,7 @@ tr.here .swatch {
 #walk-hint {
   position: absolute;
   left: 50%;
-  bottom: 18px;
+  top: 14px;
   transform: translateX(-50%);
   z-index: 6;
   pointer-events: none;
