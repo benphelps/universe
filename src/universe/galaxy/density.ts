@@ -27,28 +27,97 @@ const THICK_NORM =
 const ARM_COUNT = 2;
 const ARM_PITCH_TAN = Math.tan((12 * Math.PI) / 180);
 const ARM_INNER_RADIUS = 3000;
+const SPUR_PITCH_TAN = Math.tan((24 * Math.PI) / 180);
+/** Rigorous ceiling on armBoost anywhere: a coincident arm-body peak
+ *  and full star-forming knot (seg·(2.6 + 2.6)) plus a full spur,
+ *  plus cross-arm tails, with margin. */
+export const ARM_BOOST_MAX = 6.1;
 
-/** Spiral-arm density enhancement factor (1 between arms, up to ~2.2 on-arm). */
-export function armBoost(radiusPc: number, azimuthRad: number): number {
-  if (radiusPc < ARM_INNER_RADIUS) return 1;
-  return 1 + 1.2 * Math.exp(-((nearestArm(radiusPc, azimuthRad).distancePc / 700) ** 2));
+function wrapPi(angle: number): number {
+  const m = (angle + Math.PI) % (2 * Math.PI);
+  return (m < 0 ? m + 2 * Math.PI : m) - Math.PI;
 }
 
-/** Which spiral arm a locale is closest to, and how far off its ridge. */
+function smooth01(t: number): number {
+  const c = Math.max(0, Math.min(1, t));
+  return c * c * (3 - 2 * c);
+}
+
+/** Azimuthal wobble of arm k's ridge at winding phase u: real arms are
+ *  not perfect log spirals. Fixed sinusoid sums (not gradient noise) so
+ *  the volume shader reproduces the exact same galaxy. */
+function armWobble(u: number, arm: number): number {
+  return (
+    0.16 * Math.sin(1.1 * u + 1.3 + 2.1 * arm) + 0.07 * Math.sin(2.6 * u + 4.2 + 1.7 * arm)
+  );
+}
+
+/**
+ * The spiral structure at one disk point: the stellar enhancement and
+ * the dust-lane weight. Each arm's ridge wobbles off the log spiral in
+ * sweeping bends (the second arm not quite π away — spirals are never
+ * point-symmetric), its width breathes, and its amplitude runs in slow
+ * bright segments studded with compact star-forming knots at half the
+ * body's width — arm 0 stronger than arm 1. A family of five short
+ * steeper-pitch spurs feathers the space between, and everything
+ * emerges smoothly out of the bulge region. The dust lane hugs each
+ * arm's inner edge. Mirrored line for line by the galaxy-volume shader.
+ */
+export function armProfile(
+  radiusPc: number,
+  azimuthRad: number,
+): { boost: number; lane: number } {
+  const emerge = smooth01((radiusPc - 2900) / 1700);
+  if (emerge <= 0) return { boost: 0, lane: 0 };
+  const u = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
+  let boost = 0;
+  let lane = 0;
+  for (let arm = 0; arm < ARM_COUNT; arm++) {
+    const ridge = u + arm * (Math.PI + 0.22) + armWobble(u, arm);
+    const d = Math.abs(wrapPi(azimuthRad - ridge)) * radiusPc;
+    const width = 600 * (1 + 0.25 * Math.sin(2.3 * u + 0.8 + 2.9 * arm));
+    const seg =
+      0.35 + 0.65 * (0.5 + 0.5 * Math.sin(1.9 * u + 5.1 + 2.45 * arm)) ** 1.3;
+    const knot = Math.max(
+      0,
+      Math.sin(9.0 * u + 1.0 + 3.7 * arm) * Math.sin(5.7 * u + 0.9 + 2.0 * arm),
+    );
+    const body = d / width;
+    const core = d / (0.5 * width);
+    boost +=
+      (arm === 0 ? 1 : 0.78) *
+      seg *
+      (2.6 * Math.exp(-body * body) + 2.6 * knot * knot * Math.exp(-core * core));
+    const laneD = Math.abs(wrapPi(azimuthRad - (ridge - 0.05))) * radiusPc;
+    lane += (0.4 + 0.6 * seg) * Math.exp(-((laneD / 300) ** 2));
+  }
+  const v = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / SPUR_PITCH_TAN;
+  for (let j = 0; j < 5; j++) {
+    const d = Math.abs(wrapPi(azimuthRad - (v + (j * 2 * Math.PI) / 5 + 0.9))) * radiusPc;
+    const gate = Math.max(0, Math.sin(2.6 * v + 2.4 * j + 0.6));
+    boost += 0.65 * gate * gate * Math.exp(-((d / 420) ** 2));
+  }
+  return { boost: boost * emerge, lane: lane * emerge };
+}
+
+/** Spiral-arm density enhancement factor (1 between arms, up to
+ *  ~ARM_BOOST_MAX in a star-forming bead). */
+export function armBoost(radiusPc: number, azimuthRad: number): number {
+  return 1 + armProfile(radiusPc, azimuthRad).boost;
+}
+
+/** Which spiral arm a locale is closest to, and how far off its
+ *  (wobbled) ridge — the same centerline the density rides. */
 export function nearestArm(
   radiusPc: number,
   azimuthRad: number,
 ): { index: number; distancePc: number } {
-  const armPhase = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
+  const u = Math.log(Math.max(radiusPc, ARM_INNER_RADIUS) / ARM_INNER_RADIUS) / ARM_PITCH_TAN;
   let index = 0;
   let nearest = Infinity;
   for (let arm = 0; arm < ARM_COUNT; arm++) {
-    const armAzimuth = armPhase + (arm * 2 * Math.PI) / ARM_COUNT;
-    let delta = (azimuthRad - armAzimuth) % (2 * Math.PI);
-    if (delta > Math.PI) delta -= 2 * Math.PI;
-    if (delta < -Math.PI) delta += 2 * Math.PI;
-    // Arc distance from the arm ridge.
-    const distance = Math.abs(delta) * radiusPc;
+    const ridge = u + arm * (Math.PI + 0.22) + armWobble(u, arm);
+    const distance = Math.abs(wrapPi(azimuthRad - ridge)) * radiusPc;
     if (distance < nearest) {
       nearest = distance;
       index = arm;
@@ -100,15 +169,20 @@ export function stellarDensityCeiling(minCorner: GalacticPosition, sizePc: numbe
   const radius = Math.hypot(nearest(minCorner.xPc), nearest(minCorner.yPc));
   const absZ = Math.abs(nearest(minCorner.zPc));
   const thin =
-    THIN_NORM * Math.exp(-radius / THIN_SCALE_LENGTH) * Math.exp(-absZ / THIN_SCALE_HEIGHT) * 2.2;
+    THIN_NORM *
+    Math.exp(-radius / THIN_SCALE_LENGTH) *
+    Math.exp(-absZ / THIN_SCALE_HEIGHT) *
+    ARM_BOOST_MAX;
   const thick =
     THICK_NORM * Math.exp(-radius / THICK_SCALE_LENGTH) * Math.exp(-absZ / THICK_SCALE_HEIGHT);
   const sphericalR = Math.max(Math.hypot(radius, absZ), 500);
   return thin + thick + 0.0008 * (sphericalR / 8000) ** -3.5;
 }
 
-/** Dust density for extinction, concentrated in a thin midplane layer. */
+/** Dust density for extinction: a thin midplane layer with narrow
+ *  lanes hugging the spiral arms' inner edges. */
 export function dustDensity(position: GalacticPosition): number {
   const radius = Math.hypot(position.xPc, position.yPc);
-  return Math.exp(-radius / 2600) * Math.exp(-Math.abs(position.zPc) / 120);
+  const lane = armProfile(radius, Math.atan2(position.yPc, position.xPc)).lane;
+  return Math.exp(-radius / 2600) * Math.exp(-Math.abs(position.zPc) / 120) * (1 + 1.4 * lane);
 }

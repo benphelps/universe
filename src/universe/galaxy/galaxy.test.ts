@@ -13,6 +13,7 @@ import {
 import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
 import {
   armBoost,
+  ARM_BOOST_MAX,
   componentDensities,
   HOME_POSITION,
   stellarDensity,
@@ -188,12 +189,12 @@ describe('catalog', () => {
     // thin-disk share of the population mix stays under the cap's bound
     // everywhere a traveled-to system can sit.
     const inner = componentDensities({ xPc: 5200, yPc: 0, zPc: 0 });
-    const innerThin = (inner.thin / armBoost(5200, 0)) * 2.2;
+    const innerThin = (inner.thin / armBoost(5200, 0)) * ARM_BOOST_MAX;
     const bound = (innerThin / (innerThin + inner.thick + inner.halo)) * 1.03;
     for (let r = 400; r <= 16000; r += 400) {
       for (const zPc of [0, 150, 500, 1500, 2500]) {
         const parts = componentDensities({ xPc: r, yPc: 0, zPc });
-        const thinMax = (parts.thin / armBoost(r, 0)) * 2.2;
+        const thinMax = (parts.thin / armBoost(r, 0)) * ARM_BOOST_MAX;
         const wThin = thinMax / (thinMax + parts.thick + parts.halo);
         expect(wThin).toBeLessThan(bound);
       }

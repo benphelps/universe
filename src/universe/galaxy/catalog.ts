@@ -14,6 +14,7 @@ import { initialMassFromUnit } from '../star/imf';
 import { thinUnitForAge } from './population';
 import {
   armBoost,
+  ARM_BOOST_MAX,
   componentDensities,
   stellarDensity,
   stellarDensityCeiling,
@@ -64,7 +65,7 @@ const MAX_POPULATION_AGE_GYR = 13.2;
 const W_THIN_MAX = (() => {
   const inner = { xPc: 5200, yPc: 0, zPc: 0 };
   const parts = componentDensities(inner);
-  const thinMax = (parts.thin / armBoost(5200, 0)) * 2.2;
+  const thinMax = (parts.thin / armBoost(5200, 0)) * ARM_BOOST_MAX;
   return thinMax / (thinMax + parts.thick + parts.halo);
 })();
 

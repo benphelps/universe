@@ -44,33 +44,54 @@ ${SIMPLEX_NOISE_GLSL}
 // even mediump float range. Densities are per pc^3 (scale-free ratios);
 // path lengths fold their pc conversion into the accumulation constants.
 
-float armBoost(float radiusKpc, float azimuth) {
-  if (radiusKpc < 3.0) return 1.0;
-  float armPhase = log(radiusKpc / 3.0) / 0.2125566; // tan 12 deg pitch
-  float nearest = 1.0e6;
+float wrapPi(float angle) {
+  return mod(angle + 3.14159265, 6.28318531) - 3.14159265;
+}
+
+// The spiral structure at one disk point, mirroring density.ts line for
+// line: x = stellar arm boost, y = inner-edge dust-lane weight. Wobbled
+// asymmetric ridges, breathing widths, segmented amplitudes studded
+// with compact star-forming knots, five gated spurs, smooth emergence
+// from the bulge.
+vec2 armProfile(float radiusKpc, float azimuth) {
+  float emerge = smoothstep(2.9, 4.6, radiusKpc);
+  if (emerge <= 0.0) return vec2(0.0);
+  float u = log(max(radiusKpc, 3.0) / 3.0) / 0.2125566; // tan 12 deg pitch
+  float boost = 0.0;
+  float lane = 0.0;
   for (int arm = 0; arm < 2; arm++) {
-    float armAzimuth = armPhase + float(arm) * 3.14159265;
-    float delta = mod(azimuth - armAzimuth, 6.28318531);
-    if (delta > 3.14159265) delta -= 6.28318531;
-    nearest = min(nearest, abs(delta) * radiusKpc);
+    float a = float(arm);
+    float ridge = u + a * 3.36159265 +
+      0.16 * sin(1.1 * u + 1.3 + 2.1 * a) + 0.07 * sin(2.6 * u + 4.2 + 1.7 * a);
+    float d = abs(wrapPi(azimuth - ridge)) * radiusKpc;
+    float width = 0.6 * (1.0 + 0.25 * sin(2.3 * u + 0.8 + 2.9 * a));
+    float seg = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(1.9 * u + 5.1 + 2.45 * a), 1.3);
+    float knot = max(0.0, sin(9.0 * u + 1.0 + 3.7 * a) * sin(5.7 * u + 0.9 + 2.0 * a));
+    float body = d / width;
+    float core = d / (0.5 * width);
+    boost += (arm == 0 ? 1.0 : 0.78) * seg *
+      (2.6 * exp(-body * body) + 2.6 * knot * knot * exp(-core * core));
+    float laneD = abs(wrapPi(azimuth - (ridge - 0.05))) * radiusKpc / 0.3;
+    lane += (0.4 + 0.6 * seg) * exp(-laneD * laneD);
   }
-  float g = nearest / 0.7;
-  return 1.0 + 1.2 * exp(-g * g);
+  float v = log(max(radiusKpc, 3.0) / 3.0) / 0.4452287; // tan 24 deg pitch
+  for (int j = 0; j < 5; j++) {
+    float d = abs(wrapPi(azimuth - (v + float(j) * 1.25663706 + 0.9))) * radiusKpc / 0.42;
+    float gate = max(0.0, sin(2.6 * v + 2.4 * float(j) + 0.6));
+    boost += 0.65 * gate * gate * exp(-d * d);
+  }
+  return vec2(boost, lane) * emerge;
 }
 
 float stellarDensity(vec3 p) {
   float radius = length(p.xy);
   float absZ = abs(p.z);
   float thin = 2.08687 * exp(-radius / 2.6) * exp(-absZ / 0.3) *
-    armBoost(radius, atan(p.y, p.x));
+    (1.0 + armProfile(radius, atan(p.y, p.x)).x);
   float thick = 0.0943516 * exp(-radius / 3.6) * exp(-absZ / 0.9);
   float sphericalR = max(length(p), 0.5);
   float halo = 0.0008 * pow(sphericalR / 8.0, -3.5);
   return thin + thick + halo;
-}
-
-float dustDensity(vec3 p) {
-  return exp(-length(p.xy) / 2.6) * exp(-abs(p.z) / 0.12);
 }
 
 // Clumped ISM overdensity beyond the per-cloud radius: patchiness at
@@ -123,15 +144,24 @@ void main() {
   }
 
   // The disk crossing: emission with running dust extinction. Dust
-  // opacity is 0.045 per pc of unit density: 45 per kpc.
+  // opacity is 0.045 per pc of unit density: 45 per kpc. One arm
+  // profile per step feeds the thin disk and the inner-edge dust
+  // lane; clump patchiness stays arm-neutral so arms shine over
+  // their own dust the way face-on spirals do.
   float diskStep = (slab1 - slab0) / 112.0;
   if (diskStep > 0.0005) {
     for (int i = 0; i < 112; i++) {
       float s = slab0 + (float(i) + 0.5) * diskStep;
       vec3 p = cam + dir * s;
+      float radius = length(p.xy);
+      vec2 arm = armProfile(radius, atan(p.y, p.x));
+      float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) * (1.0 + arm.x);
+      float thick = 0.0943516 * exp(-radius / 3.6) * exp(-abs(p.z) / 0.9);
+      float halo = 0.0008 * pow(max(length(p), 0.5) / 8.0, -3.5);
+      float dust = exp(-radius / 2.6) * exp(-abs(p.z) / 0.12) * (1.0 + 1.4 * arm.y);
       float clump = s > 1.5 ? 0.45 + 1.6 * cloudClump(p) : 0.45;
-      tau += dustDensity(p) * clump * 45.0 * diskStep;
-      light += stellarDensity(p) * diskStep * exp(-tau);
+      tau += dust * clump * 45.0 * diskStep;
+      light += (thin + thick + halo) * diskStep * exp(-tau);
     }
   }
 
