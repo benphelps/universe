@@ -58,7 +58,7 @@ export class DecalToggles {
       button.title = title;
       button.setAttribute('aria-label', title);
       button.setAttribute('aria-pressed', 'true');
-      button.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">${icon}</svg>`;
+      button.innerHTML = `<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">${icon}</svg>`;
       button.addEventListener('click', () => {
         const visible = !button.classList.contains('active');
         button.classList.toggle('active', visible);

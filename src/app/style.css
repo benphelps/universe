@@ -275,8 +275,8 @@ tr.here .swatch {
 #settings-toggle {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   padding: 0;
 }
 
@@ -360,8 +360,8 @@ tr.here .swatch {
 #decals button {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 38px;
+  height: 38px;
   padding: 0;
 }
 
@@ -371,14 +371,14 @@ tr.here .swatch {
 
 #ride {
   position: fixed;
-  right: 166px;
+  right: 196px;
   bottom: 12px;
   z-index: 6;
-  font: 600 11px/1.4 var(--display);
+  font: 600 12px/1.4 var(--display);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  height: 30px;
-  padding: 2px 12px;
+  height: 38px;
+  padding: 2px 14px;
 }
 
 #decals button.active,
@@ -482,8 +482,8 @@ tr.here .swatch {
 #seed-dice {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 38px;
+  height: 38px;
   padding: 0;
 }
 
@@ -495,9 +495,9 @@ tr.here .swatch {
 #time-slider {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 30px;
-  padding: 0 12px 0 10px;
+  gap: 8px;
+  height: 38px;
+  padding: 0 18px 0 14px;
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
   border: 1px solid var(--line);
@@ -505,9 +505,9 @@ tr.here .swatch {
 }
 
 #time-rate {
-  width: 62px;
+  width: 74px;
   flex: none;
-  font: 11px/1.2 var(--mono);
+  font: 12px/1.2 var(--mono);
   color: var(--accent);
   white-space: nowrap;
 }
@@ -517,8 +517,8 @@ tr.here .swatch {
 }
 
 #time-slider .track-wrap {
-  width: 200px;
-  padding-top: 7px;
+  width: 300px;
+  margin: 0 12px;
 }
 
 #time-range {
@@ -526,7 +526,7 @@ tr.here .swatch {
   -webkit-appearance: none;
   display: block;
   width: 100%;
-  height: 10px;
+  height: 12px;
   margin: 0;
   background: transparent;
   cursor: pointer;
@@ -540,9 +540,9 @@ tr.here .swatch {
 
 #time-range::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 9px;
-  height: 9px;
-  margin-top: -3.5px;
+  width: 11px;
+  height: 11px;
+  margin-top: -4.5px;
   border: none;
   border-radius: 50%;
   background: var(--accent);
@@ -559,8 +559,8 @@ tr.here .swatch {
 }
 
 #time-range::-moz-range-thumb {
-  width: 9px;
-  height: 9px;
+  width: 11px;
+  height: 11px;
   border: none;
   border-radius: 50%;
   background: var(--accent);
@@ -568,22 +568,23 @@ tr.here .swatch {
 
 #time-slider .ticks {
   position: relative;
-  height: 12px;
-  font: 8px/1 var(--mono);
+  height: 13px;
+  font: 10px/1 var(--mono);
   color: var(--faint);
+  pointer-events: none;
 }
 
 #time-slider .ticks i {
   position: absolute;
-  top: -1px;
+  top: -9px;
   width: 1px;
-  height: 3px;
+  height: 6px;
   background: rgba(170, 210, 255, 0.28);
 }
 
 #time-slider .ticks span {
   position: absolute;
-  top: 4px;
+  top: 3px;
   transform: translateX(-50%);
   letter-spacing: 0.04em;
 }
@@ -591,10 +592,10 @@ tr.here .swatch {
 #seed-chip {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 30px;
-  padding: 0 10px;
-  font-size: 11px;
+  gap: 8px;
+  height: 38px;
+  padding: 0 13px;
+  font-size: 12px;
 }
 
 #seed-chip #seed-text.copied {
