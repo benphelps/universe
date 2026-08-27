@@ -734,6 +734,29 @@ tr.here .swatch {
   z-index: 4;
 }
 
+#recenter {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: 6px 16px;
+  font: 600 12px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  background: rgba(10, 14, 20, 0.8);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+}
+
+#recenter:hover {
+  color: var(--accent-hi);
+  border-color: var(--accent-hi);
+}
+
 #walk-hint {
   position: absolute;
   left: 50%;

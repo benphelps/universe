@@ -345,6 +345,8 @@ export class UnifiedViewer {
 
   /** Free flight: right-shift + drag pans the camera through space. */
   private rightShiftHeld = false;
+  /** Plain right-drag pan in progress (space altitudes only). */
+  private panHeld = false;
   /** Wheel ride input, applied to the altitude during the next frame. */
   private pendingWheelFactor = 1;
   /** Auto wheel ride: >0 while the slow pull-back to the galaxy runs. */
@@ -357,8 +359,19 @@ export class UnifiedViewer {
   };
   private readonly onWindowBlur = (): void => {
     this.rightShiftHeld = false;
+    this.panHeld = false;
     this.controls.enabled = true;
   };
+
+  /** Above the horizon-gaze regime, right-drag grabs space instead of
+   *  turning the head. */
+  private inPanRegime(): boolean {
+    return (
+      !this.flight.active &&
+      this.freeFlightAvailable() &&
+      this.altitudeKm > 0.12 * this.radiusKm
+    );
+  }
 
   /**
    * Free flight belongs to the space views. On the ground — a solid
@@ -373,6 +386,7 @@ export class UnifiedViewer {
   private readonly flight = new FlightCamera();
   private walkHint: HTMLDivElement | null = null;
   private walkHintText = '';
+  private recenter: HTMLButtonElement | null = null;
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
@@ -452,11 +466,19 @@ export class UnifiedViewer {
     this.scene.add(this.heliocentric);
 
     // Right-drag turns the head at low altitude (left-drag moves over
-    // the surface via OrbitControls).
+    // the surface via OrbitControls); at space altitudes the same drag
+    // pans instead — see below.
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       if ((e.buttons & 2) === 0 || this.rightShiftHeld || this.flight.active) return;
+      if (this.inPanRegime()) return;
       this.headingRad -= e.movementX * 0.004;
       this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.003));
+    });
+    this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (e.button === 2 && this.inPanRegime()) this.panHeld = true;
+    });
+    window.addEventListener('pointerup', (e) => {
+      if (e.button === 2) this.panHeld = false;
     });
 
     // On foot the mouse is the head: click takes pointer lock, motion
@@ -476,12 +498,15 @@ export class UnifiedViewer {
       this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - e.movementY * 0.0022));
     });
 
-    // Free flight in every view: right-shift + drag grabs space itself —
-    // a screen-plane pan scaled by altitude, so the same gesture slides
-    // meters over a ridge and parsecs across the neighborhood. Looking
-    // down it sweeps the horizontal plane; toward the horizon, vertical.
+    // Free flight in every view: right-drag (or right-shift + drag)
+    // grabs space itself — a screen-plane pan scaled by altitude, so
+    // the same gesture slides meters over a ridge and parsecs across
+    // the neighborhood. Looking down it sweeps the horizontal plane;
+    // toward the horizon, vertical.
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
-      if (!this.rightShiftHeld || e.buttons === 0 || !this.freeFlightAvailable()) return;
+      const rightDragPan = (e.buttons & 2) !== 0 && this.panHeld;
+      const shiftPan = this.rightShiftHeld && e.buttons !== 0;
+      if ((!rightDragPan && !shiftPan) || !this.freeFlightAvailable()) return;
       const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
       const worldPerPixel =
         (2 *
@@ -538,6 +563,15 @@ export class UnifiedViewer {
     this.walkHint.id = 'walk-hint';
     this.walkHint.style.display = 'none';
     container.appendChild(this.walkHint);
+    // Panning moves the orbit anchor off the focus; this brings it home.
+    this.recenter = document.createElement('button');
+    this.recenter.id = 'recenter';
+    this.recenter.textContent = 'return to focus';
+    this.recenter.style.display = 'none';
+    this.recenter.addEventListener('click', () => {
+      this.controls.target.set(0, 0, 0);
+    });
+    container.appendChild(this.recenter);
     const lineSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     lineSvg.id = 'pick-line';
     lineSvg.setAttribute('width', '100%');
@@ -1899,6 +1933,12 @@ export class UnifiedViewer {
   }
 
   /** One quiet line of guidance for the ground regime. */
+  private updateRecenter(): void {
+    if (!this.recenter) return;
+    const panned = !this.flight.active && this.controls.target.lengthSq() >= 1;
+    this.recenter.style.display = panned ? '' : 'none';
+  }
+
   private updateWalkHint(): void {
     if (!this.walkHint) return;
     let text = '';
@@ -1935,7 +1975,8 @@ export class UnifiedViewer {
       // ground flight, the flight camera owns the position outright.
       const flying = this.flight.active;
       const freeFlight = this.freeFlightAvailable();
-      this.controls.enabled = !flying && !(this.rightShiftHeld && freeFlight);
+      this.controls.enabled =
+        !flying && !((this.rightShiftHeld || this.panHeld) && freeFlight);
       if (!flying) {
         if (!freeFlight && this.controls.target.lengthSq() > 0) {
           this.controls.target.set(0, 0, 0);
@@ -2098,6 +2139,7 @@ export class UnifiedViewer {
       this.updateWorld(up);
       this.updateHover();
       this.updateWalkHint();
+      this.updateRecenter();
 
       if (this.backdrop) {
         this.backdrop.group.position.copy(this.camera.position);
