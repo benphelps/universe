@@ -34,9 +34,12 @@ void main() {
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   gl_PointSize = size;
   gl_Position = projectionMatrix * mvPosition;
-  // Sky points sit far beyond the camera's far plane at low altitude;
-  // clamp depth just inside the range so they draw regardless of it.
-  gl_Position.z = min(gl_Position.z, gl_Position.w * 0.999999);
+  // Sky points sit far beyond the camera's far plane at low altitude,
+  // and the far plane cuts on view depth — a camera-rotation-dependent
+  // filter that has no business editing the sky. Under the reversed-Z
+  // pipeline the far plane lives at z = 0 (near at z = w): pin depth
+  // just inside both, so every star draws at its honest direction.
+  gl_Position.z = clamp(gl_Position.z, 1e-7 * gl_Position.w, gl_Position.w);
 }
 `;
 
