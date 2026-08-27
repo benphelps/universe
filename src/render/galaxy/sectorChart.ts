@@ -46,7 +46,7 @@ function createLineMaterial(color: [number, number, number]): ShaderMaterial {
       uColor: { value: new Vector3(...color) },
       uOpacity: { value: 0 },
     },
-    transparent: false,
+    transparent: true,
     depthWrite: false,
   });
 }

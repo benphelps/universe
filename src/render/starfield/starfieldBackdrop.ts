@@ -200,7 +200,7 @@ export class StarfieldBackdrop {
       fragmentShader: POINTS_FRAGMENT,
       uniforms: { uIntensity: { value: 1 } },
       blending: AdditiveBlending,
-      transparent: false,
+      transparent: true,
       depthWrite: false,
     });
     this.materials.push(pointsMaterial);
@@ -281,7 +281,7 @@ export class StarfieldBackdrop {
         uIntensity: { value: 1 },
       },
       blending: AdditiveBlending,
-      transparent: false,
+      transparent: true,
       depthWrite: false,
       side: BackSide,
     });
@@ -329,7 +329,7 @@ export class StarfieldBackdrop {
           uIntensity: { value: 1 },
         },
         blending: AdditiveBlending,
-        transparent: false,
+        transparent: true,
         depthWrite: false,
         side: BackSide,
       });
