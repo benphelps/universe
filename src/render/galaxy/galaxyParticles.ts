@@ -31,8 +31,9 @@ void main() {
   vType = aType;
   gl_Position = projectionMatrix * mvPosition;
   // Reversed-Z: the far plane sits at z = 0 — pin the whole galaxy
-  // just inside it, like the sky stars, so no view-depth clipping.
-  gl_Position.z = clamp(gl_Position.z, 1e-7 * gl_Position.w, gl_Position.w);
+  // just inside it, like the sky stars (see neighborStars on the
+  // floor: it must duck under every real body's depth).
+  gl_Position.z = clamp(gl_Position.z, 1e-24 * gl_Position.w, gl_Position.w);
 }
 `;
 

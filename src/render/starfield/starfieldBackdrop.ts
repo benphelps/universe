@@ -229,12 +229,17 @@ export class StarfieldBackdrop {
       new BufferAttribute(sky.starBrightness.subarray(skipStars), 1),
     );
 
+    // The whole backdrop draws in the opaque queue (transparent: false)
+    // at negative renderOrder: sky first, every body painted over it.
+    // Depth alone cannot order it — the sphere hugs the camera, nearer
+    // than most bodies — but the depth-only occlusion globe (-5) still
+    // runs earlier, so the horizon eclipses stars per-fragment.
     const pointsMaterial = new ShaderMaterial({
       vertexShader: POINTS_VERTEX,
       fragmentShader: POINTS_FRAGMENT,
       uniforms: { uIntensity: { value: 1 } },
       blending: AdditiveBlending,
-      transparent: true,
+      transparent: false,
       depthWrite: false,
     });
     this.materials.push(pointsMaterial);
@@ -316,7 +321,7 @@ export class StarfieldBackdrop {
         uIntensity: { value: 1 },
       },
       blending: AdditiveBlending,
-      transparent: true,
+      transparent: false,
       depthWrite: false,
       side: BackSide,
     });
@@ -364,7 +369,7 @@ export class StarfieldBackdrop {
           uIntensity: { value: 1 },
         },
         blending: AdditiveBlending,
-        transparent: true,
+        transparent: false,
         depthWrite: false,
         side: BackSide,
       });

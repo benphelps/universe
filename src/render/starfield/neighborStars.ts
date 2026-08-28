@@ -39,7 +39,11 @@ void main() {
   // filter that has no business editing the sky. Under the reversed-Z
   // pipeline the far plane lives at z = 0 (near at z = w): pin depth
   // just inside both, so every star draws at its honest direction.
-  gl_Position.z = clamp(gl_Position.z, 1e-7 * gl_Position.w, gl_Position.w);
+  // The floor must undercut every real body's depth (~near/distance —
+  // from a surface, near is metres and a parent planet reaches ~1e-11)
+  // or the sky wins the reversed GEQUAL test and shines through it;
+  // 1e-24 is beyond any body yet still beats the far-plane clear at 0.
+  gl_Position.z = clamp(gl_Position.z, 1e-24 * gl_Position.w, gl_Position.w);
 }
 `;
 

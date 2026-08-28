@@ -14,8 +14,9 @@ void main() {
   vSize = aSize;
   gl_PointSize = aSize;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  // Reversed-Z far plane sits at z = 0: pin inside, like the sky.
-  gl_Position.z = clamp(gl_Position.z, 1e-7 * gl_Position.w, gl_Position.w);
+  // Reversed-Z far plane sits at z = 0: pin inside, like the sky
+  // (see neighborStars on the floor value).
+  gl_Position.z = clamp(gl_Position.z, 1e-24 * gl_Position.w, gl_Position.w);
 }
 `;
 
