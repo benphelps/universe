@@ -13,10 +13,12 @@ import {
   PerspectiveCamera,
   Points,
   Quaternion,
+  Ray,
   Scene,
   Sphere,
   ShaderMaterial,
   SphereGeometry,
+  Vector2,
   Vector3,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -393,9 +395,16 @@ export class UnifiedViewer {
     const button = this.dragModeButton;
     if (!button) return;
     const panning = this.touchDragMode === 'pan';
-    const looking = panning && !this.inPanRegime();
+    const surface = this.inSurfaceRegime();
+    // Down at the surface the alternative to panning is the head, not
+    // an orbit there is nothing to orbit around.
+    const looking = !panning && surface;
     button.classList.toggle('active', panning);
-    const label = !panning ? 'drag orbits — switch to pan' : looking ? 'drag looks around — switch to orbit' : 'drag pans — switch to orbit';
+    const label = panning
+      ? `drag pans — switch to ${surface ? 'look' : 'orbit'}`
+      : looking
+        ? 'drag looks around — switch to pan'
+        : 'drag orbits — switch to pan';
     button.title = label;
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-pressed', String(panning));
@@ -426,6 +435,10 @@ export class UnifiedViewer {
       !this.flight.active &&
       !this.multiTouched &&
       !fingerPanning &&
+      // Down at the surface the left button is the head and the right
+      // one is the ground; the orbit has nothing left to steer, and
+      // steering anyway was what inverted the drag down there.
+      !this.inSurfaceRegime() &&
       !((this.rightShiftHeld || this.panHeld) && this.freeFlightAvailable());
   }
 
@@ -434,10 +447,11 @@ export class UnifiedViewer {
     const [a, b] = [...this.touches.values()];
     if (!a || !b) return;
     this.pinchSpan = Math.hypot(a.x - b.x, a.y - b.y);
-    // A gesture supersedes whatever a tap had named.
+    // A pinch supersedes whatever a tap had named or a drag had hold of.
     this.armedKey = '';
     this.cursor = null;
     this.tapPending = null;
+    this.grabbed = null;
   }
 
   /**
@@ -480,6 +494,75 @@ export class UnifiedViewer {
     } else {
       this.armedKey = this.hoveredKey;
     }
+  }
+
+  /**
+   * Where the horizon gaze has the camera: the body fills the view and
+   * the orbit means nothing, so the drag takes hold of the ground and
+   * the head instead. The same threshold the gaze blends over, so the
+   * controls change hands exactly when the view does.
+   */
+  private inSurfaceRegime(): boolean {
+    return !this.flight.active && this.altitudeKm < 0.12 * this.radiusKm;
+  }
+
+  /**
+   * Where a screen point's ray meets the focused body, as a unit
+   * direction from its centre. Past the limb the ray misses entirely,
+   * so the closest approach stands in and the grab stays continuous
+   * out into the sky.
+   */
+  private surfaceDirectionAt(clientX: number, clientY: number, radiusKm: number): Vector3 {
+    // Unprojection reads the world matrix, which is otherwise a render
+    // behind — and a drag can turn the camera several times between
+    // two frames.
+    this.camera.updateMatrixWorld();
+    const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+    const ndc = new Vector2(
+      ((clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1,
+      -((clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1,
+    );
+    const origin = this.camera.position.clone();
+    const direction = new Vector3(ndc.x, ndc.y, 0.5)
+      .unproject(this.camera)
+      .sub(origin)
+      .normalize();
+    const ray = new Ray(origin, direction);
+    const hit = new Vector3();
+    if (!ray.intersectSphere(new Sphere(new Vector3(), radiusKm), hit)) {
+      ray.closestPointToPoint(new Vector3(), hit);
+    }
+    return hit.lengthSq() > 0 ? hit.normalize() : origin.normalize();
+  }
+
+  /** Take hold of whatever the cursor is over, if the body is near
+   *  enough to grab. */
+  private beginGrab(clientX: number, clientY: number): boolean {
+    if (!this.inSurfaceRegime()) return false;
+    const radiusKm = Math.max(this.camera.position.length() - this.altitudeKm, 1e-6);
+    this.grabbed = {
+      radiusKm,
+      direction: this.surfaceDirectionAt(clientX, clientY, radiusKm),
+    };
+    return true;
+  }
+
+  /**
+   * Carry the ground with the cursor: the surface point the drag took
+   * hold of stays under the cursor, so the body turns exactly as far
+   * as the hand moves it and no further. Solved against that grabbed
+   * point every move rather than accumulated from deltas, so it can
+   * neither drift nor run away at its own speed.
+   */
+  private dragSurface(clientX: number, clientY: number): void {
+    const grab = this.grabbed;
+    if (!grab) return;
+    const under = this.surfaceDirectionAt(clientX, clientY, grab.radiusKm);
+    const turn = new Quaternion().setFromUnitVectors(under, grab.direction);
+    // The camera turns bodily about the body's centre, orientation with
+    // it, so the solve holds for several moves inside one frame.
+    this.camera.position.applyQuaternion(turn);
+    this.camera.quaternion.premultiply(turn);
   }
 
   /** Above the horizon-gaze regime, right-drag grabs space instead of
@@ -572,7 +655,10 @@ export class UnifiedViewer {
   /** A single finger is down and dragging: the orbit yields to it. */
   private oneFingerDown = false;
   private dragModeButton: HTMLButtonElement | null = null;
-  /** Whether the switch is currently drawn as the horizon gaze. */
+  /** The surface point a drag has hold of: a unit direction from the
+   *  body's centre, and the sphere radius it was taken on. */
+  private grabbed: { direction: Vector3; radiusKm: number } | null = null;
+  /** The regime the switch was last drawn for. */
   private dragModeLooking = false;
   /** A second finger joined this gesture: it is no longer a tap. */
   private multiTouched = false;
@@ -611,20 +697,32 @@ export class UnifiedViewer {
     this.heliocentric.add(this.pcGroup);
     this.scene.add(this.heliocentric);
 
-    // Right-drag turns the head at low altitude (left-drag moves over
-    // the surface via OrbitControls); at space altitudes the same drag
-    // pans instead — see below.
+    // Down where the body fills the view the orbit means nothing, so
+    // the buttons take the jobs they hold everywhere else: left turns
+    // the head, right grabs the ground. Higher up the left button goes
+    // back to the orbit and the right one keeps panning.
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
-      if ((e.buttons & 2) === 0 || this.rightShiftHeld || this.flight.active) return;
-      if (this.inPanRegime()) return;
+      if ((e.buttons & 1) === 0 || this.rightShiftHeld || this.flight.active) return;
+      if (!this.inSurfaceRegime()) return;
+      // Both axes grab, like the ground drag beside it: the sky follows
+      // the hand. Mixing a grab across with a head-turn down the way
+      // this once did is what read as an inverted axis.
       this.headingRad -= e.movementX * 0.004;
-      this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.003));
+      this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad + e.movementY * 0.003));
     });
+    // The right button is a camera control at every altitude, so the
+    // scene owns the menu it would otherwise raise. OrbitControls
+    // suppresses this too, but only while it is enabled — and it is
+    // not, in the regimes where the right button matters most.
+    this.pipeline.renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
     this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
-      if (e.button === 2 && this.inPanRegime()) this.panHeld = true;
+      if (e.button !== 2) return;
+      if (this.beginGrab(e.clientX, e.clientY) || this.inPanRegime()) this.panHeld = true;
     });
     window.addEventListener('pointerup', (e) => {
-      if (e.button === 2) this.panHeld = false;
+      if (e.button !== 2) return;
+      this.panHeld = false;
+      this.grabbed = null;
     });
 
     // On foot the mouse is the head: click takes pointer lock, motion
@@ -652,7 +750,12 @@ export class UnifiedViewer {
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       const rightDragPan = (e.buttons & 2) !== 0 && this.panHeld;
       const shiftPan = this.rightShiftHeld && e.buttons !== 0;
-      if ((!rightDragPan && !shiftPan) || !this.freeFlightAvailable()) return;
+      if (!rightDragPan && !shiftPan) return;
+      if (this.grabbed) {
+        this.dragSurface(e.clientX, e.clientY);
+        return;
+      }
+      if (!this.freeFlightAvailable()) return;
       this.panBy(e.movementX, e.movementY);
     });
     // Fingers: one drags (OrbitControls orbits, or the gaze turns on
@@ -663,6 +766,9 @@ export class UnifiedViewer {
       this.touchMode = true;
       this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       this.oneFingerDown = this.touches.size === 1;
+      if (this.oneFingerDown && this.touchDragMode === 'pan') {
+        this.beginGrab(e.clientX, e.clientY);
+      }
       if (this.touches.size >= 2) {
         this.multiTouched = true;
         this.beginTwoFinger();
@@ -690,19 +796,20 @@ export class UnifiedViewer {
         this.headingRad += dx * 0.0032;
         this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - dy * 0.0032));
       } else if (this.touchDragMode === 'pan') {
-        // The two things a right-drag does, chosen the same way.
-        if (this.inPanRegime()) {
-          this.panBy(dx, dy);
-        } else {
-          this.headingRad -= dx * 0.004;
-          this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - dy * 0.003));
-        }
+        // Whichever pan applies here — the ground itself, or the scene.
+        if (this.grabbed) this.dragSurface(e.clientX, e.clientY);
+        else if (this.inPanRegime()) this.panBy(dx, dy);
+      } else if (this.inSurfaceRegime()) {
+        // The orbit's finger, down where there is nothing to orbit.
+        this.headingRad -= dx * 0.004;
+        this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad + dy * 0.003));
       }
     });
     const endTouch = (e: PointerEvent): void => {
       if (e.pointerType !== 'touch') return;
       this.touches.delete(e.pointerId);
       if (this.touches.size < 2) this.panHeld = false;
+      this.grabbed = null;
       if (this.touches.size === 0) {
         this.multiTouched = false;
         this.oneFingerDown = false;
@@ -2182,10 +2289,9 @@ export class UnifiedViewer {
     }
     if (this.dragModeButton) {
       this.dragModeButton.style.display = this.touchMode && !this.flight.active ? '' : 'none';
-      // Crossing into the pan regime changes what the same drag does.
-      const looking = this.touchDragMode === 'pan' && !this.inPanRegime();
-      if (looking !== this.dragModeLooking) {
-        this.dragModeLooking = looking;
+      // Descending to the surface changes what both drags do.
+      if (this.inSurfaceRegime() !== this.dragModeLooking) {
+        this.dragModeLooking = this.inSurfaceRegime();
         this.paintDragMode();
       }
     }
