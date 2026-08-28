@@ -2565,7 +2565,13 @@ export class UnifiedViewer {
         // same plane, so nadir carries the heading up the screen and
         // there is no orientation the basis degenerates at.
         const restPitch = -(Math.PI / 2) * (1 - t);
-        const pitch = Math.max(-1.5, Math.min(1.5, restPitch + this.pitchRad));
+        // Straight down is where the orbit above is looking, so the
+        // total has to be able to reach it. The aim is bounded short of
+        // vertical on its own, at the input.
+        const pitch = Math.max(
+          -Math.PI / 2,
+          Math.min(Math.PI / 2, restPitch + this.pitchRad),
+        );
         const forward = heading
           .clone()
           .multiplyScalar(Math.cos(pitch))
@@ -2574,6 +2580,13 @@ export class UnifiedViewer {
           .clone()
           .multiplyScalar(Math.cos(pitch))
           .addScaledVector(heading, -Math.sin(pitch));
+        // Looking straight down, the heading is pure roll: it decides
+        // nothing about where the camera points, only what lies up the
+        // screen. The orbit above puts north up there, so the roll has
+        // to arrive from north rather than start at the heading — or
+        // entering the band spins the view by the whole heading, which
+        // for a quarter turn is the ground going sideways.
+        screenUp.applyAxisAngle(forward, -this.headingRad * (1 - t));
         const right = new Vector3().crossVectors(forward, screenUp);
         this.camera.quaternion.setFromRotationMatrix(
           new Matrix4().makeBasis(right, screenUp, forward.clone().negate()),
