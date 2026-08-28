@@ -113,3 +113,8 @@ export function toggleMark(mark: Bookmark): boolean {
 export function removeMark(key: string): void {
   store(savedMarks().filter((mark) => bookmarkKey(mark) !== key));
 }
+
+/** The note starts as the plate's subtitle; the owner can rewrite it. */
+export function setCaption(key: string, caption: string): void {
+  store(savedMarks().map((mark) => (bookmarkKey(mark) === key ? { ...mark, caption } : mark)));
+}

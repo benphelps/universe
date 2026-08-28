@@ -169,6 +169,25 @@ body {
   line-height: 1.35;
 }
 
+.mark-note.editable:hover {
+  color: var(--ink);
+  cursor: text;
+}
+
+.mark-note .note-hint {
+  color: var(--faint);
+}
+
+.mark-note .note-edit {
+  width: 100%;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink);
+  font: 11.5px/1.4 var(--mono);
+  padding: 1px 5px;
+}
+
 .badge.far {
   background: var(--accent-soft);
   color: var(--accent-hi);

@@ -5,6 +5,7 @@ import {
   bookmarkKey,
   removeMark,
   savedMarks,
+  setCaption,
   type Bookmark,
 } from '../bookmarks';
 import type { Sidebar } from './sidebar';
@@ -30,7 +31,11 @@ export class PoiPanel {
               ${mark.galaxy === here ? '' : '<span class="badge far">other galaxy</span>'}
               ${tag === 'mine' ? '<button class="unmark" title="remove this mark">×</button>' : ''}
             </div>
-            <div class="mark-note">${mark.caption}</div>
+            ${
+              tag === 'mine'
+                ? `<div class="mark-note editable" title="click to edit the note">${mark.caption || '<span class="note-hint">add a note</span>'}</div>`
+                : `<div class="mark-note">${mark.caption}</div>`
+            }
           </div>`,
         )
         .join('');
@@ -61,6 +66,44 @@ export class PoiPanel {
         this.render(onTravel, onMutate);
       });
     }
+    for (const note of this.sidebar.level.querySelectorAll<HTMLElement>('.mark-note.editable')) {
+      note.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const row = note.closest('.mark') as HTMLElement;
+        this.editNote(note, saved[Number(row.dataset.mine)], onTravel, onMutate);
+      });
+    }
+  }
+
+  /** Swap the note for an input in place: Enter or blur keeps, Escape doesn't. */
+  private editNote(
+    note: HTMLElement,
+    mark: Bookmark,
+    onTravel: (mark: Bookmark) => void,
+    onMutate: () => void,
+  ): void {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'note-edit';
+    input.maxLength = 160;
+    input.value = mark.caption;
+    note.replaceChildren(input);
+    input.focus();
+    input.select();
+    let settled = false;
+    const finish = (keep: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (keep) setCaption(bookmarkKey(mark), input.value.trim());
+      this.render(onTravel, onMutate);
+    };
+    input.addEventListener('click', (event) => event.stopPropagation());
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      if (event.key === 'Enter') finish(true);
+      else if (event.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
   }
 }
 
