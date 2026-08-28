@@ -15,7 +15,7 @@ import { Sidebar, type ViewMode } from './ui/sidebar';
 import { StarInfoPanel } from './ui/starInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
 import { UnifiedViewer } from './unifiedViewer';
-import { showWelcome } from './ui/welcome';
+import { GALAXY_KEY, showWelcome } from './ui/welcome';
 
 const viewElement = document.getElementById('view')!;
 
@@ -293,9 +293,26 @@ const planetPanel = new PlanetInfoPanel(sidebar);
 const galaxyPanel = new GalaxyInfoPanel(sidebar);
 
 const params = new URLSearchParams(location.search);
-// The galaxy must be chosen before anything derives from it.
+// The galaxy must be chosen before anything derives from it: an
+// explicit ?galaxy= wins and becomes the persisted choice; otherwise
+// the browser's remembered personal galaxy (welcome dialog) applies.
 const galaxyParam = params.get('galaxy');
-if (galaxyParam) setGalaxySeed(seedFromHex(galaxyParam));
+if (galaxyParam) {
+  setGalaxySeed(seedFromHex(galaxyParam));
+  try {
+    if (galaxySeed() === PRIME_GALAXY_SEED) localStorage.removeItem(GALAXY_KEY);
+    else localStorage.setItem(GALAXY_KEY, seedToHex(galaxySeed()));
+  } catch {
+    // Storage unavailable: the URL alone carries the choice.
+  }
+} else {
+  try {
+    const remembered = localStorage.getItem(GALAXY_KEY);
+    if (remembered) setGalaxySeed(seedFromHex(remembered));
+  } catch {
+    // Storage unavailable: prime galaxy.
+  }
+}
 const viewParam = params.get('view');
 viewMode =
   viewParam === 'system' || viewParam === 'planet' || viewParam === 'galaxy'

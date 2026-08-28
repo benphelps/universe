@@ -757,6 +757,38 @@ tr.here .swatch {
   border-color: var(--accent-hi);
 }
 
+#welcome-card .galaxy-choice {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  font: 13px/1.5 var(--mono);
+  cursor: pointer;
+}
+
+#welcome-card .galaxy-choice:hover {
+  border-color: var(--accent);
+}
+
+#welcome-card .galaxy-choice b {
+  display: block;
+  font: 600 13px/1.5 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+
+#welcome-card .galaxy-choice span {
+  color: var(--dim);
+  font-size: 12px;
+}
+
 #walk-hint {
   position: absolute;
   left: 50%;
@@ -866,7 +898,7 @@ tr.here .swatch {
   color: var(--faint);
 }
 
-#welcome-explore {
+#welcome-continue {
   display: block;
   width: 100%;
   padding: 9px 0;
@@ -880,7 +912,7 @@ tr.here .swatch {
   cursor: pointer;
 }
 
-#welcome-explore:hover {
+#welcome-continue:hover {
   background: rgba(70, 174, 198, 0.22);
   color: #b5ecf8;
 }
