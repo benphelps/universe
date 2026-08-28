@@ -1053,6 +1053,32 @@ tr.here .swatch {
   color: #b5ecf8;
 }
 
+/* Which drag one finger is doing — the switch a mouse doesn't need,
+   standing where the fly stick would, since the two never coincide. */
+#drag-mode {
+  position: absolute;
+  right: 24px;
+  bottom: 104px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(10, 14, 20, 0.8);
+  backdrop-filter: blur(6px);
+  color: var(--dim);
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+#drag-mode.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* Hold-to-fly: the ground regime's stick where there is no keyboard.
    Thumb-sized, and off to the side of what you are looking at. */
 #fly-stick {
@@ -1190,6 +1216,13 @@ tr.here .swatch {
     left: calc(8px + env(safe-area-inset-left));
     right: auto;
     bottom: calc(54px + env(safe-area-inset-bottom));
+  }
+
+  /* Clear of the decal row once the home indicator pushes it up. */
+  #drag-mode,
+  #fly-stick {
+    right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(104px + env(safe-area-inset-bottom));
   }
 
   #settings-corner {

@@ -384,12 +384,38 @@ export class UnifiedViewer {
     this.controls.target.add(delta);
   }
 
-  /** Latch the span and centroid a two-finger gesture measures from. */
+  /**
+   * The switch wears the drag it is doing: an orbit ring around a
+   * body, or the four ways space slides. Near the ground, where a
+   * right-drag turns the head instead of grabbing space, it says so.
+   */
+  private paintDragMode(): void {
+    const button = this.dragModeButton;
+    if (!button) return;
+    const panning = this.touchDragMode === 'pan';
+    const looking = panning && !this.inPanRegime();
+    button.classList.toggle('active', panning);
+    const label = !panning ? 'drag orbits — switch to pan' : looking ? 'drag looks around — switch to orbit' : 'drag pans — switch to orbit';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-pressed', String(panning));
+    button.innerHTML = `<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${
+      !panning
+        ? // An orbit ring carrying its body around a centre.
+          '<circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><ellipse cx="12" cy="12" rx="9.2" ry="4.4" transform="rotate(-28 12 12)"/><circle cx="19" cy="8.6" r="1.7" fill="currentColor" stroke="none"/>'
+        : looking
+          ? // An eye: the horizon gaze the same drag turns down here.
+            '<path d="M2.6 12S6.2 6.2 12 6.2 21.4 12 21.4 12 17.8 17.8 12 17.8 2.6 12 2.6 12z"/><circle cx="12" cy="12" r="2.5"/>'
+          : // The four ways space slides under a finger.
+            '<path d="M12 3.4v17.2M3.4 12h17.2M12 3.4 9.4 6M12 3.4 14.6 6M12 20.6 9.4 18M12 20.6 14.6 18M3.4 12 6 9.4M3.4 12 6 14.6M20.6 12 18 9.4M20.6 12 18 14.6"/>'
+    }</svg>`;
+  }
+
+  /** Latch the span a pinch measures from. */
   private beginTwoFinger(): void {
     const [a, b] = [...this.touches.values()];
     if (!a || !b) return;
     this.pinchSpan = Math.hypot(a.x - b.x, a.y - b.y);
-    this.pinchCentroid = [(a.x + b.x) / 2, (a.y + b.y) / 2];
     // A gesture supersedes whatever a tap had named.
     this.armedKey = '';
     this.cursor = null;
@@ -397,27 +423,21 @@ export class UnifiedViewer {
   }
 
   /**
-   * Two fingers carry both space gestures at once: the span between
-   * them rides the scales the wheel would, and their centroid grabs
-   * space the way a right-drag does.
+   * The pinch rides the scales and does nothing else. Fingers never
+   * hold their centre while they spread, so reading a pan out of it
+   * too would drag the camera sideways through every zoom — the drag
+   * mode owns panning instead.
    */
   private updateTwoFinger(): void {
     const [a, b] = [...this.touches.values()];
     if (!a || !b) return;
     const span = Math.hypot(a.x - b.x, a.y - b.y);
-    const cx = (a.x + b.x) / 2;
-    const cy = (a.y + b.y) / 2;
     if (this.pinchSpan > 0 && span > 0) {
       // Spreading the fingers descends, the way scrolling up does.
       this.stopRideOut();
       this.pendingWheelFactor *= this.pinchSpan / span;
     }
-    if (this.inPanRegime()) {
-      this.panHeld = true;
-      this.panBy(cx - this.pinchCentroid[0], cy - this.pinchCentroid[1]);
-    }
     this.pinchSpan = span;
-    this.pinchCentroid = [cx, cy];
   }
 
   /**
@@ -522,9 +542,20 @@ export class UnifiedViewer {
   private cursor: [number, number] | null = null;
   /** Live fingers by pointer id; the two-finger gestures read from here. */
   private readonly touches = new Map<number, { x: number; y: number }>();
-  /** Span and centroid of the last two-finger frame, for pinch and pan deltas. */
+  /** Span of the last two-finger frame, for the pinch delta. */
   private pinchSpan = 0;
-  private pinchCentroid: [number, number] = [0, 0];
+  /**
+   * What one finger does when it drags. A mouse has two buttons for
+   * this; a finger has a switch instead — 'pan' makes the drag behave
+   * as a right-drag does, grabbing space or turning the head by
+   * regime.
+   */
+  private touchDragMode: 'orbit' | 'pan' = 'orbit';
+  /** A single finger is down and dragging: the orbit yields to it. */
+  private oneFingerDown = false;
+  private dragModeButton: HTMLButtonElement | null = null;
+  /** Whether the switch is currently drawn as the horizon gaze. */
+  private dragModeLooking = false;
   /** A second finger joined this gesture: it is no longer a tap. */
   private multiTouched = false;
   /** True once the last input came from a finger: the tooltip arms
@@ -613,6 +644,7 @@ export class UnifiedViewer {
       if (e.pointerType !== 'touch') return;
       this.touchMode = true;
       this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      this.oneFingerDown = this.touches.size === 1;
       if (this.touches.size >= 2) {
         this.multiTouched = true;
         this.beginTwoFinger();
@@ -631,14 +663,26 @@ export class UnifiedViewer {
         // Pointer lock is a mouse idea; on foot the drag is the head.
         this.headingRad += dx * 0.0032;
         this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - dy * 0.0032));
+      } else if (this.touchDragMode === 'pan') {
+        // The two things a right-drag does, chosen the same way.
+        if (this.inPanRegime()) {
+          this.panBy(dx, dy);
+        } else {
+          this.headingRad -= dx * 0.004;
+          this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - dy * 0.003));
+        }
       }
     });
     const endTouch = (e: PointerEvent): void => {
       if (e.pointerType !== 'touch') return;
       this.touches.delete(e.pointerId);
       if (this.touches.size < 2) this.panHeld = false;
-      if (this.touches.size === 0) this.multiTouched = false;
-      else this.beginTwoFinger();
+      if (this.touches.size === 0) {
+        this.multiTouched = false;
+        this.oneFingerDown = false;
+      } else {
+        this.beginTwoFinger();
+      }
     };
     this.pipeline.renderer.domElement.addEventListener('pointerup', endTouch);
     this.pipeline.renderer.domElement.addEventListener('pointercancel', endTouch);
@@ -710,6 +754,18 @@ export class UnifiedViewer {
       this.flyStick.addEventListener(type, () => this.flight.release('KeyW'));
     }
     container.appendChild(this.flyStick);
+    // The switch a mouse doesn't need: which of the two drags one
+    // finger is doing. It stands where the fly stick would, since the
+    // two never apply at once.
+    this.dragModeButton = document.createElement('button');
+    this.dragModeButton.id = 'drag-mode';
+    this.dragModeButton.style.display = 'none';
+    this.dragModeButton.addEventListener('click', () => {
+      this.touchDragMode = this.touchDragMode === 'orbit' ? 'pan' : 'orbit';
+      this.paintDragMode();
+    });
+    this.paintDragMode();
+    container.appendChild(this.dragModeButton);
     const lineSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     lineSvg.id = 'pick-line';
     lineSvg.setAttribute('width', '100%');
@@ -2097,6 +2153,15 @@ export class UnifiedViewer {
     if (this.flyStick) {
       this.flyStick.style.display = this.flight.active && this.touchMode ? '' : 'none';
     }
+    if (this.dragModeButton) {
+      this.dragModeButton.style.display = this.touchMode && !this.flight.active ? '' : 'none';
+      // Crossing into the pan regime changes what the same drag does.
+      const looking = this.touchDragMode === 'pan' && !this.inPanRegime();
+      if (looking !== this.dragModeLooking) {
+        this.dragModeLooking = looking;
+        this.paintDragMode();
+      }
+    }
     let text = '';
     if (this.flight.active) {
       text = this.touchMode
@@ -2132,8 +2197,11 @@ export class UnifiedViewer {
       // ground flight, the flight camera owns the position outright.
       const flying = this.flight.active;
       const freeFlight = this.freeFlightAvailable();
+      // A finger set to pan is the whole gesture: the orbit cannot
+      // also have it, the way a mouse's two buttons can share.
+      const fingerPanning = this.oneFingerDown && this.touchDragMode === 'pan';
       this.controls.enabled =
-        !flying && !((this.rightShiftHeld || this.panHeld) && freeFlight);
+        !flying && !fingerPanning && !((this.rightShiftHeld || this.panHeld) && freeFlight);
       if (!flying) {
         if (!freeFlight && this.controls.target.lengthSq() > 0) {
           this.controls.target.set(0, 0, 0);

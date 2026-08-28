@@ -24,7 +24,7 @@ function randomGalaxyHex(): string {
 /** The same four moves, in whichever hand the visitor arrived with. */
 const CONTROLS_HINT =
   typeof matchMedia === 'function' && matchMedia('(hover: none)').matches
-    ? 'pinch to ride between scales · drag to orbit · two fingers to pan · tap any glint twice to travel'
+    ? 'pinch to ride between scales · drag to orbit or pan · tap any glint twice to travel'
     : 'scroll to ride between scales · drag to orbit · right-drag to pan · click any glint to travel';
 
 function remember(): void {
