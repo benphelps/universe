@@ -92,9 +92,12 @@ export class GalaxyParticles {
         uOpacity: { value: 0 },
       },
       blending: AdditiveBlending,
-      transparent: true,
+      // These are unresolved galactic background emitters. Their vertex
+      // shader already pins them to far depth, so keep depth testing on and
+      // draw them with the other early additive sky layers.
+      transparent: false,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
     });
     this.points = new Points(geometry, this.material);
     this.points.frustumCulled = false;

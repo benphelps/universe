@@ -13,9 +13,13 @@ import {
 } from 'three';
 import type { Star } from '../../universe/star/types';
 import { luminosityMultiplierAt } from '../../universe/star/variability';
-import { foldShaderTime } from '../shaderTime';
 import { CORONA_SIZE_FACTOR, createCoronaMaterial } from './coronaMaterial';
 import { createPhotosphereMaterial } from './photosphereMaterial';
+import {
+  stellarSurfaceModel,
+  stellarSurfaceStateAt,
+  type StellarSurfaceModel,
+} from './surfaceModel';
 
 /**
  * Renderable star: photosphere shader sphere plus a camera-facing corona
@@ -27,6 +31,8 @@ export class StarObject {
   private readonly photosphere: ShaderMaterial | null;
   private readonly corona: ShaderMaterial | null;
   private readonly coronaMesh: Mesh | null = null;
+  private readonly surfaceModel: StellarSurfaceModel | null;
+  private readonly coronaIntensity: number;
 
   constructor(star: Star, lut: DataTexture) {
     this.star = star;
@@ -41,9 +47,19 @@ export class StarObject {
       this.group.add(disc);
       this.photosphere = null;
       this.corona = null;
+      this.surfaceModel = null;
+      this.coronaIntensity = 0;
       return;
     }
 
+    this.surfaceModel = stellarSurfaceModel(star);
+    const magneticActivity = Math.min(1, star.activity.spotCoverage * 10);
+    this.coronaIntensity =
+      star.stage === 'white-dwarf' || star.stage === 'neutron-star'
+        ? 0.025
+        : star.stage === 'brown-dwarf'
+          ? 0.015
+          : 0.08 + 0.12 * magneticActivity;
     this.photosphere = createPhotosphereMaterial(star, lut);
     const sphere = new Mesh(new SphereGeometry(1, 96, 64), this.photosphere);
     sphere.scale.setScalar(star.radius);
@@ -71,18 +87,29 @@ export class StarObject {
     const angular = worldRadiusUnits / distance;
     const t = Math.max(0, Math.min(1, (angular - 0.004) / (0.05 - 0.004)));
     const detail = t * t * (3 - 2 * t);
+    const surfaceState = this.surfaceModel
+      ? stellarSurfaceStateAt(this.star, this.surfaceModel, simTimeDays)
+      : null;
 
-    if (this.photosphere) {
-      this.photosphere.uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
+    if (this.photosphere && surfaceState) {
+      this.photosphere.uniforms.uRotationPhase.value = surfaceState.rotationPhase;
+      this.photosphere.uniforms.uSpotRotationPhase.value = surfaceState.spotRotationPhase;
+      this.photosphere.uniforms.uSpotCurrentEpoch.value = surfaceState.spotCurrentEpoch;
+      this.photosphere.uniforms.uSpotPreviousEpoch.value = surfaceState.spotPreviousEpoch;
+      this.photosphere.uniforms.uSpotPhase.value = surfaceState.spotPhase;
+      this.photosphere.uniforms.uGranuleEpoch.value = surfaceState.granuleEpoch;
+      this.photosphere.uniforms.uGranulePhase.value = surfaceState.granulePhase;
       this.photosphere.uniforms.uDetailFade.value = detail;
       this.photosphere.uniforms.uLuminosityMultiplier.value = luminosityMultiplierAt(
         this.star,
         simTimeDays,
       );
     }
-    if (this.corona) {
-      this.corona.uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
-      this.corona.uniforms.uIntensity.value = 0.35 * detail;
+    if (this.corona && surfaceState) {
+      this.corona.uniforms.uRotationPhase.value = surfaceState.spotRotationPhase;
+      this.corona.uniforms.uEvolutionEpoch.value = surfaceState.spotPreviousEpoch;
+      this.corona.uniforms.uEvolutionPhase.value = surfaceState.spotPhase;
+      this.corona.uniforms.uIntensity.value = this.coronaIntensity * detail;
     }
     if (this.coronaMesh) {
       this.coronaMesh.visible = detail > 0.01;

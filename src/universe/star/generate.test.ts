@@ -49,6 +49,9 @@ describe('star fixtures', () => {
     expect(star.tEff).toBeGreaterThan(8000);
     expect(star.tEff).toBeLessThan(25000);
     expect(star.spectralType).toMatch(/^DA\d$/);
+    expect(star.activity.spotCoverage).toBe(0);
+    expect(star.activity.differentialRotation).toBe(0);
+    expect(star.activity.flareRatePerDay).toBe(0);
   });
 
   it('substellar mass is a brown dwarf with L/T/Y classing', () => {

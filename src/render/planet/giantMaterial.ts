@@ -38,6 +38,7 @@ uniform vec3 uSeedOffset;
 uniform float uTimeDays;
 uniform float uContrast;
 uniform float uChurnPerDay;
+uniform vec2 uPolarCaps;                // north/south cap boundary latitude
 uniform float uCloudReliefKm;
 uniform float uHazeAmount;
 uniform vec3 uHazeColor;
@@ -65,10 +66,16 @@ void main() {
   float footprint = length(fwidth(p));
   float microGate = 1.0 - smoothstep(0.00015, 0.0012, footprint);
   if (microGate > 0.01) {
+    float lat = asin(clamp(p.y, -1.0, 1.0));
+    float capEdge = p.y >= 0.0 ? uPolarCaps.x : uPolarCaps.y;
+    float zonalMicro = 1.0 - smoothstep(capEdge - 0.18, capEdge + 0.04, abs(lat));
     float micro = fbm(vec3(p.x, p.y * 2.5, p.z) * 30.0 + uSeedOffset
       + vec3(0.0, 0.0, uTimeDays * uChurnPerDay));
-    surface *= 1.0 + 0.15 * uContrast * micro * microGate;
-    cloudH += 0.05 * uContrast * micro * microGate;
+    // Small-scale albedo structure exists at every latitude. Only its
+    // vertical relief fades into the shallow polar deck; fading the color
+    // octave created a visibly low-resolution annulus around each cap.
+    surface *= 1.0 + 0.14 * uContrast * micro * microGate;
+    cloudH += mix(0.0, 0.05, zonalMicro) * uContrast * micro * microGate;
   }
 
   // Cloud tops are a relief surface: bump the shading normal with the
@@ -147,6 +154,9 @@ export function createGiantMaterial(
       uTimeDays: { value: 0 },
       uContrast: { value: circulation.contrast },
       uChurnPerDay: { value: circulation.churnPerDay },
+      uPolarCaps: {
+        value: [circulation.polar.north.capStartRad, circulation.polar.south.capStartRad],
+      },
       uCloudReliefKm: { value: physical.bulk.radiusEarth * 6371 * 0.008 },
       uHazeAmount: { value: 0.12 + 0.4 * (1 - circulation.contrast) },
       uHazeColor: { value: new Color(...circulation.stormFresh).multiplyScalar(1.04) },

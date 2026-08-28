@@ -87,6 +87,10 @@ void main() {
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = size;
   gl_Position = projectionMatrix * mvPosition;
+  // This sphere supplies direction only. Put unresolved starlight at the
+  // reversed-Z far floor so every real body occludes it by depth, even if
+  // a later material or render-queue change reorders the draw calls.
+  gl_Position.z = 1e-24 * gl_Position.w;
 }
 `;
 
@@ -107,6 +111,10 @@ varying vec3 vDir;
 void main() {
   vDir = normalize(position);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  // The dome is angular data, not a foreground shell. Pin it just inside
+  // the reversed-Z far plane so planets and terrain always win the depth
+  // test instead of relying solely on negative renderOrder.
+  gl_Position.z = 1e-24 * gl_Position.w;
 }
 `;
 
@@ -230,10 +238,8 @@ export class StarfieldBackdrop {
     );
 
     // The whole backdrop draws in the opaque queue (transparent: false)
-    // at negative renderOrder: sky first, every body painted over it.
-    // Depth alone cannot order it — the sphere hugs the camera, nearer
-    // than most bodies — but the depth-only occlusion globe (-5) still
-    // runs earlier, so the horizon eclipses stars per-fragment.
+    // at negative renderOrder and is also pinned to the far-depth floor.
+    // Render order makes the sky cheap; depth makes occlusion invariant.
     const pointsMaterial = new ShaderMaterial({
       vertexShader: POINTS_VERTEX,
       fragmentShader: POINTS_FRAGMENT,

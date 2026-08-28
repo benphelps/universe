@@ -24,12 +24,12 @@ varying vec3 vRel;
 
 uniform vec3 uColor;
 uniform vec3 uSeedOffset;
-uniform float uTimeDays;
 uniform float uDiscRadius;
 uniform float uIntensity;
 uniform float uAxialTilt;
-uniform float uRotationRadPerDay;
-uniform float uDifferentialRotation;
+uniform float uRotationPhase;
+uniform float uEvolutionEpoch;
+uniform float uEvolutionPhase;
 uniform float uSpotLatitude;
 uniform float uActivity;
 
@@ -47,6 +47,28 @@ vec3 rotateZ(vec3 p, float a) {
   return vec3(c * p.x - s * p.y, s * p.x + c * p.y, p.z);
 }
 
+float smooth01(float value) {
+  float x = clamp(value, 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
+
+vec3 epochOffset(float epoch) {
+  float e = mod(epoch, 4096.0);
+  return 9.0 * vec3(
+    sin(e * 1.6180339 + 0.7),
+    sin(e * 2.4142136 + 2.1),
+    sin(e * 3.1415927 + 4.3)
+  );
+}
+
+float evolvingNoise(vec3 p) {
+  return mix(
+    snoise(p + epochOffset(uEvolutionEpoch)),
+    snoise(p + epochOffset(uEvolutionEpoch + 1.0)),
+    smooth01(uEvolutionPhase)
+  );
+}
+
 void main() {
   // The billboard cuts through the star's center perpendicular to the view,
   // so its fragments sample a 3D star-anchored field with true parallax.
@@ -54,31 +76,46 @@ void main() {
   float r = length(rel);
   vec3 dir = rel / max(r, 1e-4);
 
-  // Into the star's frame: undo axial tilt, then co-rotate with the surface
-  // (same differential-rotation law as the photosphere shader).
+  // Into the star's frame: undo axial tilt, then co-rotate with the finite
+  // active-region field used by the photosphere.
   dir = rotateZ(dir, -uAxialTilt);
   float latitude = asin(clamp(dir.y, -1.0, 1.0));
-  float sinLat = dir.y;
-  float angle = uTimeDays * uRotationRadPerDay * (1.0 - uDifferentialRotation * sinLat * sinLat);
-  vec3 ds = rotateY(dir, angle);
+  float radialRatio = max(r / max(uDiscRadius, 1e-4), 1.0);
+  // Magnetic streamers expand and curve with altitude. Sampling the same
+  // angular value at every radius made the former corona an array of
+  // infinitely straight "hyperspace" rays.
+  // Bend reverses continuously across the equator. A hard sign(dir.y)
+  // made the sampled noise field jump at y=0, exposing a horizontal seam.
+  float hemisphereBend = sin(latitude);
+  float twist = log(radialRatio) * (0.18 + 0.34 * uActivity) * hemisphereBend;
+  vec3 ds = rotateY(dir, uRotationPhase + twist);
 
-  // Streamers: radial rays from a star-anchored field, evolving slowly.
-  float streak = fbm(ds * 2.6 + uSeedOffset + r * 0.7 + vec3(0.0, 0.0, uTimeDays * 0.03));
-  float structure = 0.55 + 0.45 * streak;
+  // Broad inner halo plus sparse, altitude-decohering streamers. Radial
+  // evolution and a second scale break the perfect spokes while retaining
+  // a magnetic connection to active longitudes.
+  float coarse = evolvingNoise(ds * 2.4 + uSeedOffset
+    + vec3(r * 1.7, -r * 0.9, r * 0.6));
+  float fine = evolvingNoise(ds * 5.6 - uSeedOffset.yzx
+    + vec3(-r * 3.1, r * 2.2, r * 1.1));
+  float streamer = smoothstep(0.34, 0.76, 0.68 * coarse + 0.32 * fine);
+  float structure = 0.82 + 0.18 * coarse;
 
   // Active stars concentrate loop-like structure over their spot bands;
   // the spot field itself ties streamers to active-region longitudes.
   float bandDistance = (abs(latitude) - uSpotLatitude) / 0.35;
   float band = exp(-bandDistance * bandDistance);
-  float spotField = fbm(ds * 4.0 + uSeedOffset.zxy) * 0.5 + 0.5;
-  float activeRegion = band * (0.4 + 1.6 * smoothstep(0.5, 0.8, spotField));
-  structure *= mix(1.0, 0.55 + activeRegion, uActivity);
+  float spotField = evolvingNoise(ds * 3.7 + uSeedOffset.zxy
+    + vec3(0.0, -r * 0.7, r * 1.3)) * 0.5 + 0.5;
+  float activeRegion = band * smoothstep(0.54, 0.78, spotField);
+  streamer *= mix(0.55, 0.55 + 1.25 * activeRegion, uActivity);
 
-  float falloff = pow(uDiscRadius / max(r, uDiscRadius), 3.2);
-  float glow = falloff * structure;
+  float innerFalloff = pow(uDiscRadius / max(r, uDiscRadius), 3.0);
+  float streamerFalloff = pow(uDiscRadius / max(r, uDiscRadius), 1.65);
+  float glow = innerFalloff * structure
+    + streamerFalloff * streamer * (0.08 + 0.28 * uActivity);
   // Fade inside the disc (occluded by the photosphere) and at the plane edge.
   glow *= smoothstep(uDiscRadius * 0.85, uDiscRadius * 1.02, r);
-  glow *= smoothstep(0.9, 0.5, r);
+  glow *= 1.0 - smoothstep(0.5, 0.9, r);
 
   gl_FragColor = vec4(uColor * glow * uIntensity, 1.0);
 }
@@ -93,12 +130,12 @@ export function createCoronaMaterial(star: Star): ShaderMaterial {
     uniforms: {
       uColor: { value: [r * 0.5 + 0.5, g * 0.5 + 0.5, b * 0.5 + 0.5] },
       uSeedOffset: { value: seedOffset(star) },
-      uTimeDays: { value: 0 },
       uDiscRadius: { value: 2 / CORONA_SIZE_FACTOR },
-      uIntensity: { value: 0.35 },
+      uIntensity: { value: 0.2 },
       uAxialTilt: { value: star.activity.axialTiltRad },
-      uRotationRadPerDay: { value: (2 * Math.PI) / star.activity.rotationPeriodDays },
-      uDifferentialRotation: { value: star.activity.differentialRotation },
+      uRotationPhase: { value: 0 },
+      uEvolutionEpoch: { value: 0 },
+      uEvolutionPhase: { value: 0 },
       uSpotLatitude: { value: star.activity.spotLatitudeRad },
       uActivity: { value: Math.min(1, star.activity.spotCoverage * 10) },
     },

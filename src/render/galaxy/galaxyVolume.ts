@@ -24,6 +24,9 @@ varying vec3 vRay;
 void main() {
   vRay = position;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  // Directional background only: the ray-marched galaxy is infinitely
+  // behind local geometry, even though its carrier dome follows the camera.
+  gl_Position.z = 1e-24 * gl_Position.w;
 }
 `;
 
@@ -273,9 +276,12 @@ export class GalaxyVolume {
       },
       side: BackSide,
       blending: AdditiveBlending,
-      transparent: true,
+      // Keep background light in the early queue and let real scene depth
+      // occlude it. A transparent, depth-disabled dome renders after opaque
+      // planets and visibly lays the galactic band over their discs.
+      transparent: false,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
     });
     this.mesh = new Mesh(new SphereGeometry(1, 24, 12), this.material);
     this.mesh.renderOrder = -8;

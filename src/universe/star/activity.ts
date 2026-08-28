@@ -12,15 +12,26 @@ import type { StarActivity, StellarPhysical } from './types';
  * the L/T transition.
  */
 export function computeActivity(rng: Rng, phys: StellarPhysical, ageGyr: number): StarActivity {
-  const convective = phys.mass < 1.3;
+  const evolvedConvective =
+    (phys.stage === 'giant' ||
+      phys.stage === 'horizontal-branch' ||
+      phys.stage === 'agb' ||
+      phys.stage === 'supergiant') &&
+    phys.tEff < 6500;
+  const compact =
+    phys.stage === 'white-dwarf' ||
+    phys.stage === 'neutron-star' ||
+    phys.stage === 'black-hole';
+  const convective = !compact && (phys.mass < 1.3 || evolvedConvective);
   const rotationPeriodDays = rotationPeriod(rng, phys, ageGyr, convective);
 
   // Rossby-style proxy: fast convective rotators are active — as far
   // as the atmosphere stays ionized enough to grip the field.
   const ionization = smoothstep(1400, 2400, phys.tEff);
-  const activityIndex =
-    ionization *
-    (convective ? Math.min(1, 3 / rotationPeriodDays) : Math.min(0.1, 0.3 / rotationPeriodDays));
+  const activityIndex = compact
+    ? 0
+    : ionization *
+      (convective ? Math.min(1, 3 / rotationPeriodDays) : Math.min(0.1, 0.3 / rotationPeriodDays));
 
   const surfaceGravityRel = phys.mass / phys.radius ** 2;
 
@@ -40,11 +51,17 @@ export function computeActivity(rng: Rng, phys: StellarPhysical, ageGyr: number)
     rotationPeriodDays,
     axialTiltRad,
     axialAzimuthRad: rng.range(0, 2 * Math.PI),
-    differentialRotation: convective ? rng.range(0.1, 0.3) : rng.range(0.02, 0.08),
-    spotCoverage: Math.min(0.4, 0.002 * ionization + 0.3 * activityIndex * activityIndex),
+    // Compact remnants can have fine atmospheric convection, but they do
+    // not inherit a solar envelope's latitude-sheared magnetic spot field.
+    differentialRotation: compact ? 0 : convective ? rng.range(0.1, 0.3) : rng.range(0.02, 0.08),
+    spotCoverage: compact
+      ? 0
+      : Math.min(0.4, 0.002 * ionization + 0.3 * activityIndex * activityIndex),
     spotLatitudeRad: rng.range(0.2, 0.6),
     cloudPatchiness,
-    flareRatePerDay: ionization * (phys.mass < 0.5 ? 0.3 + 2 * activityIndex : 0.05 * activityIndex),
+    flareRatePerDay: compact
+      ? 0
+      : ionization * (phys.mass < 0.5 ? 0.3 + 2 * activityIndex : 0.05 * activityIndex),
     // Granule size ∝ pressure scale height ∝ T/g.
     granuleRelativeScale: Math.max(0.2, (phys.tEff / 5772) / Math.max(surfaceGravityRel, 1e-8)),
     limbDarkeningU: clamp(0.4 + (0.5 * (7000 - phys.tEff)) / 4000, 0.2, 0.95),

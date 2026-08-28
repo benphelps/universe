@@ -46,16 +46,27 @@ export interface ActiveStorm {
   age01: number;
 }
 
-export interface PolarRegime {
+export interface PolarHemisphere {
   /** Cap boundary latitude, radians — the poleward-most strong jet. */
   capStartRad: number;
   /** Total polar cyclones: 1 = a single merged vortex (Saturn-style),
    *  more = a shielded polygon (Jupiter-style). */
   cycloneCount: number;
-  /** Standing polar-jet wavenumber (the hexagon analog), signed by the
-   *  hemisphere that carries it (+north/−south); 0 = none. Derived as
-   *  the stationary Rossby wavenumber of the cap jet. */
+  /** Colatitude of circumpolar cyclone centers, radians. */
+  ringRadiusRad: number;
+  /** Characteristic radius of one cyclone, radians. */
+  cycloneRadiusRad: number;
+  /** Dominant polar-jet meander wavenumber (the hexagon analog); 0 =
+   *  none. This is a Rossby-scale morphology proxy: the 1° reduced wind
+   *  profile does not resolve a stationary wave's phase-speed balance. */
   hexWave: number;
+  /** Slow drift of the whole polar pattern in the rotating frame. */
+  driftRadPerDay: number;
+}
+
+export interface PolarRegime {
+  north: PolarHemisphere;
+  south: PolarHemisphere;
   hoodColor: Rgb;
 }
 
@@ -111,8 +122,10 @@ export function deriveCirculation(
 
   const radiusM = bulk.radiusEarth * EARTH_RADIUS;
   const omega = (2 * Math.PI) / (Math.max(rotation.periodHours, 1) * 3600);
-  // Mixing-length convective velocity from the interior's heat flux:
-  // Jupiter's ~5 W/m² gives ~20 m/s; Uranus' ~0.04 barely stirs.
+  // A cube-root convective activity proxy calibrated to the giant-planet
+  // weather scale: Jupiter's ~5 W/m² gives ~20 m/s; Uranus' ~0.04 barely
+  // stirs. This is not a literal vertical velocity (that would also need
+  // density and a mixing length); it closes the reduced jet model.
   const convectiveMs = 12 * Math.max(interior.heatFluxWm2, 0.01) ** (1 / 3);
   // Cold quiet interiors wash the deck out; vigorous ones sharpen it.
   const contrast = Math.min(1, 0.15 + 0.85 * Math.min(1, convectiveMs / 18));
@@ -302,14 +315,16 @@ function invertWind(q: Float64Array, radiusM: number, omega: number): Float32Arr
 
 /**
  * The polar regime falls out of the spun-up jets. The cap snaps to the
- * poleward-most strong jet; whether that jet meanders into a standing
- * polygon (the hexagon analog) is its stationary Rossby wavenumber,
- * m = R·cosφ·√(β_eff/u), with β steepened by the jet's own curvature —
- * the classic estimate that yields six for Saturn's real numbers. And
+ * poleward-most strong jet; whether that jet meanders into a polygon
+ * (the hexagon analog) follows its characteristic Rossby wavenumber,
+ * with the resolved beta gradient steepened by unresolved core shear.
+ * This selects a morphology, not a claimed stationary wave solution. And
  * whether the pole holds a shielded polygon of cyclones or one merged
- * vortex depends on both spin and convective forcing: fast vigorous
- * planets keep Jupiter's crowd, fast quiet ones merge to Saturn's
- * single eye, slow cold ones to a lone vortex.
+ * vortex depends on both spin and convective forcing. Once that gate is
+ * open, the count is the number of Rhines-sized vortices that fit around
+ * the central cyclone. Each hemisphere is derived separately: Jupiter's
+ * observed eight-north/five-south asymmetry is normal vortex dynamics,
+ * not a symmetry the renderer should erase.
  */
 function derivePolarRegime(
   rng: Rng,
@@ -323,58 +338,98 @@ function derivePolarRegime(
   const dLat = Math.PI / (LAT_SAMPLES - 1);
   const lo = (55 * Math.PI) / 180;
   const hi = (80 * Math.PI) / 180;
-  // The strongest jet core in each hemisphere's cap-candidate belt.
-  let bestIndex = -1;
-  let bestHemi = 1;
-  for (let i = 1; i < LAT_SAMPLES - 1; i++) {
-    const lat = profileLatRad(i);
-    if (Math.abs(lat) < lo || Math.abs(lat) > hi) continue;
-    const extremum = (u[i] - u[i - 1]) * (u[i + 1] - u[i]) < 0;
-    if (!extremum) continue;
-    if (bestIndex < 0 || Math.abs(u[i]) > Math.abs(u[bestIndex])) {
-      bestIndex = i;
-      bestHemi = lat > 0 ? 1 : -1;
-    }
+  let sum = 0;
+  let weight = 0;
+  for (let i = 0; i < LAT_SAMPLES; i++) {
+    const w = Math.cos(profileLatRad(i));
+    sum += u[i] * u[i] * w;
+    weight += w;
   }
-
-  let capStartRad = (rng.range(62, 72) * Math.PI) / 180;
-  let hexWave = 0;
-  if (bestIndex >= 0) {
-    const lat = profileLatRad(bestIndex);
-    capStartRad = Math.abs(lat);
-    const jetMs = Math.abs(u[bestIndex]);
-    const dyM = radiusM * dLat;
-    const curvature = Math.abs(u[bestIndex + 1] - 2 * u[bestIndex] + u[bestIndex - 1]) / (dyM * dyM);
-    const beta = (2 * omega * Math.cos(lat)) / radiusM;
-    const wavenumber = Math.round(
-      radiusM * Math.cos(lat) * Math.sqrt((beta + curvature) / Math.max(jetMs, 5)),
-    );
-    // A standing wave needs an outlier jet — fast in absolute terms
-    // and standing far above the planet's typical winds (Saturn's
-    // hexagon jet outruns its neighbors several-fold). Ordinary cap
-    // jets just circle.
-    let sum = 0;
-    let weight = 0;
-    for (let i = 0; i < LAT_SAMPLES; i++) {
-      const w = Math.cos(profileLatRad(i));
-      sum += u[i] * u[i] * w;
-      weight += w;
-    }
-    const rmsMs = Math.sqrt(sum / weight);
-    if (jetMs > 35 && jetMs > 1.35 * rmsMs && wavenumber >= 3 && wavenumber <= 8) {
-      hexWave = wavenumber * bestHemi;
-    }
-  }
-
+  const rmsMs = Math.sqrt(sum / weight);
   const stability = spinFactor * Math.min(1, convectiveMs / 20);
-  const cycloneCount =
-    stability > 1.15
-      ? Math.max(4, Math.min(9, Math.round(2 + 4.5 * stability * rng.range(0.85, 1.15))))
-      : stability > 0.75
-        ? 1 + rng.int(2)
-        : 1;
 
-  return { capStartRad, cycloneCount, hexWave, hoodColor: hood };
+  const deriveHemisphere = (hemisphere: -1 | 1): PolarHemisphere => {
+    const hemiRng = rng.fork(hemisphere > 0 ? 'north' : 'south');
+    let bestIndex = -1;
+    for (let i = 1; i < LAT_SAMPLES - 1; i++) {
+      const lat = profileLatRad(i);
+      if (Math.sign(lat) !== hemisphere || Math.abs(lat) < lo || Math.abs(lat) > hi) continue;
+      const extremum = (u[i] - u[i - 1]) * (u[i + 1] - u[i]) < 0;
+      if (!extremum) continue;
+      if (bestIndex < 0 || Math.abs(u[i]) > Math.abs(u[bestIndex])) bestIndex = i;
+    }
+
+    let capStartRad = (hemiRng.range(62, 72) * Math.PI) / 180;
+    let hexWave = 0;
+    let patternWindMs = Math.max(12, convectiveMs * 2.5);
+    if (bestIndex >= 0) {
+      const lat = profileLatRad(bestIndex);
+      capStartRad = Math.abs(lat);
+      patternWindMs = Math.abs(u[bestIndex]);
+      const dyM = radiusM * dLat;
+      const curvature = (u[bestIndex + 1] - 2 * u[bestIndex] + u[bestIndex - 1]) / (dyM * dyM);
+      const beta = (2 * omega * Math.cos(lat)) / radiusM;
+      const jetMs = Math.abs(u[bestIndex]);
+      // One-degree samples broaden every core, so |u_yy| restores the
+      // sub-grid PV-gradient magnitude for a characteristic wavelength.
+      // The outlier gate keeps ordinary cap jets circular.
+      const restoringGradient = beta + Math.abs(curvature);
+      if (jetMs > 35 && jetMs > 1.35 * rmsMs) {
+        const wavenumber = Math.round(
+          radiusM * Math.cos(lat) * Math.sqrt(restoringGradient / jetMs),
+        );
+        if (wavenumber >= 3 && wavenumber <= 8) hexWave = wavenumber;
+      }
+    }
+
+    // The visible cyclone radius is a fraction of the local Rhines
+    // length at the ~84° circumpolar ring. It lands near 3,000 km for a
+    // Jupiter analogue, matching JIRAM rather than a screen-space knob.
+    const ringColatEstimate = 0.105;
+    const betaRing =
+      (2 * omega * Math.max(Math.sin(ringColatEstimate), 0.06)) / radiusM;
+    const cycloneRadiusRad = Math.min(
+      0.06,
+      Math.max(
+        0.026,
+        (0.45 * Math.sqrt(Math.max(convectiveMs, 1) / Math.max(betaRing, 1e-20))) /
+          radiusM *
+          hemiRng.range(0.88, 1.12),
+      ),
+    );
+    const ringRadiusRad = Math.min(
+      0.14,
+      Math.max(0.082, cycloneRadiusRad * hemiRng.range(2.15, 2.55)),
+    );
+    const packedCount = Math.round(
+      (Math.PI * ringRadiusRad) / cycloneRadiusRad * hemiRng.range(0.9, 1.08),
+    );
+    const cycloneCount =
+      stability > 1.15
+        ? Math.max(4, Math.min(9, packedCount))
+        : stability > 0.75
+          ? 1 + hemiRng.int(2)
+          : 1;
+    const angularWind =
+      (patternWindMs * 86400) /
+      (radiusM * Math.max(Math.sin(ringRadiusRad), 0.08));
+    const driftRadPerDay = Math.min(0.12, Math.max(0.015, angularWind * 0.12));
+
+    return {
+      capStartRad,
+      cycloneCount,
+      ringRadiusRad,
+      cycloneRadiusRad,
+      hexWave,
+      driftRadPerDay,
+    };
+  };
+
+  return {
+    north: deriveHemisphere(1),
+    south: deriveHemisphere(-1),
+    hoodColor: hood,
+  };
 }
 
 interface Palette {

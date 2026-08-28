@@ -24,7 +24,9 @@ uniform int uStormCount;
 uniform vec4 uStorms[${MAX_ACTIVE_STORMS}]; // lat, lon, size(<0 = eruption), age
 uniform vec3 uStormFresh;
 uniform vec3 uStormAged;
-uniform vec4 uPolar;                    // capStart, ringCyclones, hexWave(signed), hemiDrift
+uniform vec4 uPolarNorth;               // capStart, ringCyclones, hexWave, clusterDrift
+uniform vec4 uPolarSouth;
+uniform vec4 uPolarScale;               // north ring/radius, south ring/radius
 uniform vec3 uHoodColor;
 uniform float uContrast;
 uniform float uFineBands;
@@ -41,10 +43,31 @@ float smooth01(float x) {
   return t * t * (3.0 - 2.0 * t);
 }
 
-vec3 rotateY(vec3 p, float a) {
+vec2 rotate2(vec2 p, float a) {
   float c = cos(a);
   float s = sin(a);
-  return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+  return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+/** Map the regular tangent plane around either pole back onto the unit
+ *  sphere. Unlike longitude alone, this remains well behaved at the
+ *  pole and lets streamline taps converge without a pinched texture. */
+vec3 polarSphere(vec2 q, float hemi) {
+  float colat = length(q);
+  vec2 radial = q / max(colat, 1e-5);
+  float s = sin(colat);
+  return vec3(s * radial.x, hemi * cos(colat), s * radial.y);
+}
+
+/** Local cloud motion: mostly cyclonic, with weak radial convergence.
+ *  Smearing noise along this vector makes irregular spiral filaments,
+ *  not concentric rings or embossed noise cells. */
+vec2 polarStream(vec2 q, float hemi) {
+  float r = max(length(q), 1e-5);
+  vec2 radial = q / r;
+  vec2 tangent = hemi * vec2(-radial.y, radial.x);
+  vec2 flow = tangent - 0.2 * radial;
+  return flow / max(length(flow), 1e-5);
 }
 
 int bandAt(float lat) {
@@ -130,10 +153,12 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
 
   if (uRegime < 0.5) {
     float hemi = sign(p.y + 1e-6);
-    float capEdge = uPolar.x;
-    bool hexHere = uPolar.z * hemi > 0.5;
+    vec4 polar = hemi > 0.0 ? uPolarNorth : uPolarSouth;
+    vec2 polarScale = hemi > 0.0 ? uPolarScale.xy : uPolarScale.zw;
+    float capEdge = polar.x;
+    bool hexHere = polar.z > 0.5;
     if (hexHere) {
-      capEdge += 0.05 * cos(abs(uPolar.z) * lon * hemi + uTimeDays * uPolar.w);
+      capEdge += 0.05 * cos(polar.z * lon * hemi + uTimeDays * polar.w);
     }
     // Zonal anisotropy and stirring belong to the jets: both fade into
     // the caps, where the turbulence is isotropic (as Juno found).
@@ -177,7 +202,8 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
     float wlat = clamp(lat + warp, -1.55, 1.55);
     int band = bandAt(wlat);
     vec3 bandColor = bandColorAt(wlat, band);
-    cloudH = dot(bandColor, vec3(0.35, 0.45, 0.2));
+    float bandMeanH = dot(bandColor, vec3(0.35, 0.45, 0.2));
+    cloudH = bandMeanH;
 
     // Dragged gas, not stretched pixels: the texture is smeared along
     // the local streamline, so streaks lengthen with the jet, curve
@@ -209,8 +235,9 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
       surface *= 1.0 + 0.12 * uContrast * zonality * sin(wlat * uFineBands * 2.2 + phase);
     }
 
-    // Storms: the catalog's live population, feathered into the deck —
-    // no cutout edges, no separate grain.
+    // Storms: perturb the same cloud field as the surrounding jet. Their
+    // visible structure is primarily cloud opacity and composition; the
+    // cloud-top displacement is shallow enough not to emboss an oval.
     for (int i = 0; i < ${MAX_ACTIVE_STORMS}; i++) {
       if (i >= uStormCount) break;
       vec4 s = uStorms[i];
@@ -225,89 +252,201 @@ void deckAt(in vec3 p, out vec3 surface, out float cloudH) {
       }
       float dLat = lat - s.x;
       float dLon = wrapPi(lon - s.y) * cos(s.x);
-      float rr = (dLat * dLat) / (sz * sz * 0.42) + (dLon * dLon) / (sz * sz * elong * elong);
-      if (rr > 5.0) continue;
-      float reach = smoothstep(5.0, 3.0, rr);
-      // Swirl sampled in the storm's own stretched frame, so a
-      // planet-circling eruption stays turbulent instead of collapsing
-      // into a per-texel scratch.
-      float swirl = snoise(vec3(dLon / max(elong * 0.5, 1.0), dLat, 0.4) * (5.0 / sz)
-        + uSeedOffset.zxy + vec3(churnT * 0.5, 0.0, 0.0));
-      float core = exp(-rr * 1.2);
-      float fade = (s.z < 0.0 ? 1.0 - smooth01((s.w - 0.7) / 0.3) : 1.0) * reach;
+      vec2 local = vec2(dLon / max(sz * elong, 1e-4), dLat / max(sz * 0.66, 1e-4));
+      float localR = length(local);
+      if (localR > 2.7) continue;
+      int stormBand = bandAt(s.x);
+      float driftSign = sign(bandDriftAt(s.x, stormBand) + 1e-5);
+      float fade = s.z < 0.0 ? 1.0 - smooth01((s.w - 0.7) / 0.3) : 1.0;
       if (s.z < 0.0) {
-        // Eruption: a bright churning band segment — no oval outline.
-        vec3 stormDeck = stormColor * (0.9 + 0.16 * swirl);
-        surface = mix(surface, stormDeck, clamp(core * 1.15, 0.0, 1.0) * fade);
-        cloudH += core * fade * 0.5;
+        // Convective outbreak: a bright head feeds a widening turbulent
+        // wake that the jet stretches around the latitude band. It has no
+        // oval rim and only the fresh head carries appreciable relief.
+        float downstream = local.x * driftSign;
+        float plumeNoise = snoise(vec3(downstream * 3.3, local.y * 6.5, float(i) * 4.1)
+          + uSeedOffset.zxy + vec3(churnT * 0.45, 0.0, 0.0));
+        float plumeFine = snoise(vec3(downstream * 7.2, local.y * 13.0, float(i) * 7.7)
+          - uSeedOffset.yxz + vec3(0.0, churnT * 0.8, 0.0));
+        float head = exp(-pow((downstream + 0.72) / 0.34, 2.0)
+          - pow(local.y / 0.52, 2.0));
+        float wakeWidth = 0.34 + 0.22 * s.w + 0.06 * plumeNoise;
+        float trail = (1.0 - smoothstep(1.1, 2.45, abs(downstream)))
+          * exp(-pow(local.y / max(wakeWidth, 0.18), 2.0));
+        float plume = clamp(max(head, trail * (0.62 + 0.26 * plumeNoise + 0.12 * plumeFine)),
+          0.0, 1.0);
+        vec3 plumeColor = uStormFresh * (1.0 + 0.09 * plumeNoise + 0.04 * plumeFine);
+        surface = mix(surface, plumeColor, plume * fade * 0.72);
+        surface *= 1.0 + plume * fade * 0.08 * plumeFine;
+        cloudH += fade * (0.04 * head + 0.01 * trail * max(plumeNoise, 0.0));
       } else {
-        float rim = exp(-pow((sqrt(rr) - 1.0) * 3.2, 2.0));
-        float sang = atan(dLat, dLon);
-        float rn = sqrt(rr);
-        float lanes = sin(rn * 6.5 - sang * 2.0 * sign(s.x + 1e-6) + swirl * 2.2 - churnT * 1.4);
-        vec3 stormDeck = stormColor * (0.92 + 0.1 * swirl + 0.08 * lanes * core);
-        surface = mix(surface, stormDeck, clamp(core * 1.25, 0.0, 1.0) * fade);
-        surface = mix(surface, stormColor * 1.13, rim * 0.45 * fade);
-        cloudH += core * fade * mix(0.55, 0.22, s.w);
-        cloudH += 0.04 * lanes * core * fade;
+        // Anticyclone: an organic elliptical envelope, wrapped internal
+        // cloud lanes, a broken high-speed collar, and a downstream wake.
+        // Broad warps keep none of these features geometrically perfect.
+        float antiSense = -sign(s.x + 1e-6);
+        vec2 localFlow = polarStream(local, antiSense);
+        float broadWarp = snoise(vec3(local * 0.82, float(i) * 3.3)
+          + uSeedOffset.zxy + vec3(0.0, 0.0, churnT * 0.14));
+        float midWarp = snoise(vec3((local + localFlow * 0.25) * 1.9, float(i) * 5.1)
+          - uSeedOffset.yxz + vec3(churnT * 0.25, 0.0, 0.0));
+        float fine = snoise(vec3((local + localFlow * 0.12) * 4.2, float(i) * 7.9)
+          + uSeedOffset.xzy + vec3(0.0, churnT * 0.42, 0.0));
+        float organicR = localR * (1.0 + 0.11 * broadWarp + 0.045 * midWarp);
+        float envelope = 1.0 - smoothstep(1.25, 2.35, organicR);
+        float highCore = 1.0 - smoothstep(0.28, 1.08, organicR + 0.04 * broadWarp);
+        float theta = atan(local.y, local.x);
+        float spiralPhase = -2.0 * sign(s.x + 1e-6) * theta
+          + 5.8 * log(organicR + 0.27)
+          + 2.35 * broadWarp + 0.95 * midWarp - churnT * 0.22;
+        float arm = sin(spiralPhase);
+        float branch = sin(spiralPhase * 0.5 + 1.8 * organicR - 1.2 * midWarp);
+        float filaments = 0.68 * arm + 0.2 * branch + 0.12 * fine;
+        float collar = exp(-pow((organicR - 0.92) / 0.18, 2.0));
+        float brokenCollar = collar * (0.58 + 0.42 * sin(spiralPhase + 1.4 * fine));
+
+        // The jet parts around the anticyclone and leaves a churning wake
+        // downstream, analogous to the region northwest of Jupiter's GRS.
+        float wakeX = local.x * driftSign;
+        float wake = smoothstep(0.42, 0.95, wakeX)
+          * (1.0 - smoothstep(1.65, 2.55, wakeX))
+          * exp(-pow(local.y / 0.62, 2.0));
+        float wakeNoise = snoise(vec3(wakeX * 3.1, local.y * 7.0, float(i) * 9.1)
+          - uSeedOffset.zyx + vec3(churnT * 0.55, 0.0, 0.0));
+
+        // Chromophores and lofted condensates must separate the vortex
+        // from whichever belt happens to contain it. Preserve the storm
+        // hue, but enforce a modest local albedo separation when the
+        // generated palette gives storm and belt nearly equal luminance.
+        float deckLum = dot(surface, vec3(0.2126, 0.7152, 0.0722));
+        float stormLum = dot(stormColor, vec3(0.2126, 0.7152, 0.0722));
+        float lumDelta = stormLum - deckLum;
+        float lumSense = lumDelta >= 0.0 ? 1.0 : -1.0;
+        float targetLum = deckLum + lumSense * max(abs(lumDelta), 0.07 + 0.06 * uContrast);
+        vec3 separatedStorm = stormColor * (targetLum / max(stormLum, 0.03));
+        float tint = envelope * (0.28 + 0.36 * highCore) * fade;
+        vec3 vortexCloud = separatedStorm * (0.98 + 0.07 * broadWarp + 0.035 * fine);
+        surface = mix(surface, vortexCloud, tint);
+        surface *= 1.0 + clamp(envelope * fade * (0.28 * filaments + 0.075 * brokenCollar)
+          + wake * fade * 0.16 * wakeNoise, -0.27, 0.32);
+        surface = mix(surface, uStormFresh * 1.06, brokenCollar * envelope * fade * 0.18);
+        // A few kilometres of cloud-top structure, not the old giant
+        // Gaussian dome that made every spot read as a bump.
+        cloudH += fade * (0.012 * highCore + 0.005 * brokenCollar
+          + 0.003 * envelope * filaments + 0.004 * wake * max(wakeNoise, 0.0));
       }
     }
 
     // The polar regime: streaked cap, standing-wave lane, cyclones.
     float capSharp = hexHere ? 0.022 : 0.06;
-    float cap = smoothstep(capEdge - capSharp, capEdge + capSharp, abs(wlat));
+    float capCore = smoothstep(capEdge - capSharp, capEdge + capSharp, abs(wlat));
+    // Begin the polar texture exactly where zonal anisotropy begins to
+    // fade. Keeping a separate core mask preserves a crisp physical cap
+    // boundary while avoiding a low-frequency no-man's-land between the
+    // detailed jets and detailed polar circulation.
+    float capBlend = 1.0 - zonality;
     if (hexHere) {
       float lane = exp(-pow((abs(wlat) - capEdge) / 0.014, 2.0));
       surface = mix(surface, uStormFresh * 1.08, lane * 0.4);
     }
-    if (cap > 0.01) {
+    if (capBlend > 0.01) {
       float colat = 1.5707963 - abs(lat);
-      // Differential rotation winds the deck into the polar spiral —
-      // gently, saturating well before the pole (a solid-body eye),
-      // structure only: sheared small eddies re-form, so the finer
-      // octaves stay nearly isotropic.
-      float windRad = hemi * (1.5 * smooth01((abs(lat) - capEdge + 0.3) / 1.4)
-        + uTimeDays * uPolar.w * 2.0);
-      vec3 ps = rotateY(p, windRad);
-      vec3 psB = rotateY(p, windRad + 0.09 * hemi);
-      vec3 psFine = rotateY(p, windRad * 0.3);
-      float polarDeck = 0.5 * (fbm(ps * 5.0 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5))
-        + fbm(psB * 5.0 + uSeedOffset.yxz + vec3(0.0, 0.0, churnT * 0.5)));
-      float polarFine = fbm(psFine * 15.0 - uSeedOffset.zxy + vec3(churnT * 0.9, 0.0, 0.0));
-      float polarMicro = fbm(psFine * 42.0 + uSeedOffset.xzy + vec3(0.0, churnT * 1.5, 0.0));
-      vec3 hood = uHoodColor
-        * (1.0 + uContrast * (0.4 * polarDeck + 0.24 * polarFine + 0.12 * polarMicro));
-      surface = mix(surface, hood, cap * 0.6);
-      cloudH = mix(cloudH, 0.5 + 0.2 * polarDeck + 0.05 * polarFine, cap * 0.65);
-
       vec2 pp = vec2(colat * cos(lon), colat * sin(lon));
-      float dug = 0.0;
-      float armsSum = 0.0;
+      // Advect the whole cap, then build its cloud streets in polar
+      // coordinates. The spiral phase is the large-scale signal; noise
+      // only bends and frays it. Previously the original FBM remained
+      // the dominant layer, so the new flow was mathematically present
+      // but the pole still looked like the same cellular orange peel.
+      float capSpin = hemi * (1.1 * smooth01((abs(lat) - capEdge + 0.24) / 0.95)
+        + uTimeDays * polar.w);
+      vec2 adv = rotate2(pp, capSpin);
+      vec2 flow = polarStream(adv, hemi);
+      float capTheta = atan(adv.y, adv.x);
+      float capWarp = snoise(vec3(adv * 5.5, hemi * 2.7) + uSeedOffset.yzx
+        + vec3(0.0, 0.0, churnT * 0.18));
+      float capFray = snoise(vec3((adv + flow * 0.035) * 14.0, hemi * 5.1)
+        - uSeedOffset.zxy + vec3(churnT * 0.32, 0.0, 0.0));
+      float capPhase = 3.0 * hemi * capTheta + 18.0 * colat
+        + 2.4 * capWarp + 0.65 * capFray;
+      float capSpiral = sin(capPhase);
+      float capBranch = sin(2.0 * hemi * capTheta - 11.0 * colat
+        - 1.7 * capWarp + 0.8 * capFray);
+      float polarDeck = 0.62 * capSpiral + 0.24 * capBranch + 0.14 * capFray;
+      // One cloud field spans the whole sphere. The cap changes its mean
+      // color and superposes polar circulation, but never replaces or
+      // fades the underlying detail; consequently there is no latitude
+      // at which the texture loses resolution. Small-scale turbulence is
+      // isotropic here because streakHalf has already relaxed to zero.
+      vec3 hoodRatio = uHoodColor / max(bandColor, vec3(0.04));
+      surface *= mix(vec3(1.0), hoodRatio, capBlend);
+      surface *= 1.0 + capBlend * uContrast * 0.24 * polarDeck;
+      surface = max(surface, vec3(0.0));
+      // Albedo detail remains continuous, while high-frequency vertical
+      // relief relaxes into the shallow polar deck. Decoupling those two
+      // quantities removes orange-peel lighting without blurring clouds.
+      float baseRelief = cloudH - bandMeanH;
+      float reliefCarry = mix(1.0, 0.08, capBlend);
+      cloudH = mix(bandMeanH, 0.5, capBlend)
+        + baseRelief * reliefCarry
+        + capBlend * 0.012 * polarDeck;
+
       for (int i = 0; i < 10; i++) {
-        if (float(i) > uPolar.y) break;
+        if (float(i) > polar.y) break;
         vec2 c = vec2(0.0);
-        float sizeInv = 1400.0;
+        float vortexRadius = polarScale.y * 1.65;
         if (i > 0) {
-          float a = 6.2831853 * float(i - 1) / max(uPolar.y, 1.0)
-            + uTimeDays * uPolar.w * 1.7 * hemi;
-          c = vec2(0.1 * cos(a), 0.1 * sin(a));
-          sizeInv = 2400.0;
+          float a = 6.2831853 * float(i - 1) / max(polar.y, 1.0)
+            + uTimeDays * polar.w * hemi;
+          c = polarScale.x * vec2(cos(a), sin(a));
+          vortexRadius = polarScale.y * 1.48;
+        } else if (polar.y < 0.5) {
+          // Saturn-style poles are one broad classical vortex, not the
+          // same small central dot with its companions deleted.
+          vortexRadius = max(polarScale.x * 1.05, polarScale.y * 2.6);
         }
         vec2 d = pp - c;
-        float rr = dot(d, d) * sizeInv;
-        if (rr > 7.0) continue;
-        float w = hemi * (0.9 * exp(-rr * 0.5) + uTimeDays * (1.5 + 0.25 * float(i)));
-        float cw = cos(w);
-        float sw = sin(w);
-        vec2 dw = vec2(cw * d.x - sw * d.y, sw * d.x + cw * d.y) * sqrt(sizeInv);
-        float vn = fbm(vec3(dw * 1.4, float(i) * 3.7) + uSeedOffset.xzy);
-        float core = exp(-rr * 0.8);
-        dug += core;
-        armsSum += core * (0.45 + 0.9 * vn);
+        float rr = dot(d, d) / max(vortexRadius * vortexRadius, 1e-6);
+        if (rr > 9.0) continue;
+        float phase = hemi * (float(i) * 2.399
+          + uTimeDays * (1.05 + 0.11 * float(i)));
+        vec2 local = rotate2(d / vortexRadius, phase);
+        float localR = length(local);
+        vec2 localFlow = polarStream(local, hemi);
+        float broadWarp = snoise(vec3(local * 0.72, float(i) * 3.7)
+          + uSeedOffset.xzy + vec3(0.0, 0.0, churnT * 0.12));
+        float midWarp = snoise(vec3((local + localFlow * 0.28) * 1.65, float(i) * 5.9)
+          - uSeedOffset.zyx + vec3(churnT * 0.22, 0.0, 0.0));
+        float fine = snoise(vec3((local + localFlow * 0.16) * 3.8, float(i) * 7.1)
+          + uSeedOffset.yxz + vec3(0.0, churnT * 0.36, 0.0));
+        float organicR = localR * (1.0 + 0.1 * broadWarp + 0.045 * midWarp);
+        float envelope = 1.0 - smoothstep(1.45, 2.75, organicR);
+        float eye = 1.0 - smoothstep(0.1, 0.28, organicR + 0.04 * midWarp);
+        float eyewall = exp(-pow((organicR - 0.43) / 0.16, 2.0));
+        float shield = exp(-pow((organicR - 1.72) / 0.3, 2.0));
+        // The logarithmic phase supplies a genuinely coherent two-arm
+        // cyclone. Low-frequency domain warps split and reconnect the
+        // arms; the fine octave only frays their cloud edges.
+        float vortexTheta = atan(local.y, local.x);
+        float spiralPhase = 2.0 * hemi * vortexTheta
+          + 6.8 * log(organicR + 0.24)
+          + 2.5 * broadWarp + 1.1 * midWarp + float(i) * 1.37;
+        float arm = sin(spiralPhase);
+        float branch = sin(spiralPhase * 0.5 + 2.0 * organicR - 1.4 * midWarp);
+        float filaments = 0.68 * arm + 0.2 * branch + 0.12 * fine;
+        float lane = envelope * (1.0 - eye) * smoothstep(-0.3, 0.58, arm + 0.32 * fine);
+        float brokenWall = eyewall * (0.55 + 0.45 * sin(spiralPhase + 1.3 * midWarp));
+        float vortexSignal = envelope * (0.46 * filaments + 0.05 * brokenWall + 0.12 * lane)
+          - 0.025 * shield - 0.07 * eye;
+        vec3 vortexColor = mix(uHoodColor, uStormFresh, 0.34)
+          * (1.0 + clamp(vortexSignal, -0.32, 0.38));
+        // Vortices replace the background locally instead of being a
+        // faint decal over it. This makes the circulation readable at
+        // the same distance where the old noise cells were visible.
+        surface = mix(surface, vortexColor, capCore * envelope * 0.9);
+        surface = mix(surface, uHoodColor * 0.76, capCore * eye * 0.3);
+        // Do not excavate the eye in the height field: a dark cloud-free
+        // center is not a crater in the 1-bar surface.
+        cloudH = mix(cloudH, 0.5 + 0.008 * filaments + 0.004 * brokenWall,
+          capCore * envelope * 0.75);
       }
-      dug = clamp(dug, 0.0, 1.0);
-      surface *= mix(1.0, 0.5 + 0.7 * clamp(armsSum, 0.0, 1.2), dug * cap * 0.8);
-      cloudH += -dug * cap * 0.25 + clamp(armsSum, 0.0, 1.0) * cap * 0.1;
     }
   } else {
     // Locked regime: day-night circulation, no bands. The star is
@@ -355,12 +494,28 @@ export function createPatternUniforms(
     uStorms: { value: Array.from({ length: MAX_ACTIVE_STORMS }, () => new Vector4()) },
     uStormFresh: { value: new Color(...circulation.stormFresh) },
     uStormAged: { value: new Color(...circulation.stormAged) },
-    uPolar: {
+    uPolarNorth: {
       value: new Vector4(
-        circulation.polar.capStartRad,
-        circulation.polar.cycloneCount - 1,
-        circulation.polar.hexWave,
-        0.12,
+        circulation.polar.north.capStartRad,
+        circulation.polar.north.cycloneCount - 1,
+        circulation.polar.north.hexWave,
+        circulation.polar.north.driftRadPerDay,
+      ),
+    },
+    uPolarSouth: {
+      value: new Vector4(
+        circulation.polar.south.capStartRad,
+        circulation.polar.south.cycloneCount - 1,
+        circulation.polar.south.hexWave,
+        circulation.polar.south.driftRadPerDay,
+      ),
+    },
+    uPolarScale: {
+      value: new Vector4(
+        circulation.polar.north.ringRadiusRad,
+        circulation.polar.north.cycloneRadiusRad,
+        circulation.polar.south.ringRadiusRad,
+        circulation.polar.south.cycloneRadiusRad,
       ),
     },
     uHoodColor: { value: new Color(...circulation.polar.hoodColor) },

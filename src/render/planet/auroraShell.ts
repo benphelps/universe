@@ -50,8 +50,8 @@ void main() {
   float mDot = dot(p, mAxis);
   float mColat = acos(clamp(abs(mDot), 0.0, 1.0));
   float mLon = atan(dot(p, m2), dot(p, m1)) * sign(mDot + 1e-6);
-  float core = exp(-pow((mColat - uAurora.w) / 0.022, 2.0));
-  float glow = 0.3 * exp(-pow((mColat - uAurora.w) / 0.09, 2.0));
+  float core = exp(-pow((mColat - uAurora.w) / 0.018, 2.0));
+  float glow = 0.2 * exp(-pow((mColat - uAurora.w) / 0.068, 2.0));
   float rays = 0.4
     + 0.6 * pow(0.5 + 0.5 * snoise(vec3(cos(mLon), sin(mLon), mColat * 4.0) * 11.0
         + uSeedOffset + vec3(0.0, 0.0, uTimeDays * 1.7)), 2.0);
@@ -64,10 +64,17 @@ void main() {
       * snoise(vec3(cos(mLon), sin(mLon), mColat * 9.0) * 90.0 + uSeedOffset.zxy
           + vec3(0.0, uTimeDays * 3.1, 0.0));
   }
-  float ndotl = dot(normalize(vWorldNormal), uLightDir);
+  vec3 normal = normalize(vWorldNormal);
+  float ndotl = dot(normal, uLightDir);
   float night = 1.0 - smoothstep(-0.05, 0.25, ndotl);
+  // A curtain is a long emitting path at the limb, but a short, faint
+  // path when viewed face-on. Keeping that geometry in the brightness
+  // stops the oval from painting an opaque donut over the polar weather.
+  vec3 viewDir = normalize(cameraPosition - vWorldPos);
+  float faceOn = abs(dot(normal, viewDir));
+  float curtainPath = 0.008 + 0.992 * pow(1.0 - faceOn, 1.7);
   vec3 color = vec3(0.5, 0.32, 0.85) * (core * rays + glow * (0.5 + 0.5 * rays))
-    * uAurora.x * uLayerFade * (0.05 + 0.75 * night);
+    * uAurora.x * uLayerFade * (0.05 + 0.75 * night) * curtainPath;
   gl_FragColor = vec4(color, 1.0);
 }
 `;
