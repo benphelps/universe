@@ -535,6 +535,59 @@ export class UnifiedViewer {
     return hit.lengthSq() > 0 ? hit.normalize() : origin.normalize();
   }
 
+  /**
+   * Once a press has plainly become a drag, take the pointer: it goes
+   * invisible and stops moving, so the gesture can run as far as the
+   * hand does. Waiting for real movement first leaves a plain click
+   * alone. Capture is the fallback if the lock is refused — it at
+   * least keeps events coming from outside the viewport.
+   */
+  private holdPointer(e: PointerEvent): void {
+    const lock = this.dragLock;
+    if (!lock || lock.held) return;
+    if (Math.hypot(e.clientX - lock.startX, e.clientY - lock.startY) < 3) return;
+    lock.held = true;
+    lock.x = e.clientX;
+    lock.y = e.clientY;
+    const element = this.pipeline.renderer.domElement;
+    try {
+      element.setPointerCapture(e.pointerId);
+    } catch {
+      // No capture available; the lock below is the real mechanism.
+    }
+    try {
+      const request = element.requestPointerLock() as unknown as Promise<void> | undefined;
+      request?.catch?.(() => {
+        // Refused: the capture still keeps the drag alive.
+      });
+    } catch {
+      // Same.
+    }
+  }
+
+  /** Let the pointer go, wherever the drag ended. */
+  private releasePointer(): void {
+    if (this.dragLock?.held && document.pointerLockElement === this.pipeline.renderer.domElement) {
+      document.exitPointerLock();
+    }
+    this.dragLock = null;
+  }
+
+  /**
+   * Where the drag's pointer is. A captured pointer reports the same
+   * client position forever, so it carries one of its own instead —
+   * moved by the deltas, and held inside the viewport, which is the
+   * one place a grabbed point can still be aimed at.
+   */
+  private dragPointerAt(e: PointerEvent): [number, number] {
+    const lock = this.dragLock;
+    if (!lock?.held) return [e.clientX, e.clientY];
+    const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+    lock.x = Math.max(rect.left, Math.min(rect.right, lock.x + e.movementX));
+    lock.y = Math.max(rect.top, Math.min(rect.bottom, lock.y + e.movementY));
+    return [lock.x, lock.y];
+  }
+
   /** Take hold of whatever the cursor is over, if the body is near
    *  enough to grab. */
   private beginGrab(clientX: number, clientY: number): boolean {
@@ -658,6 +711,23 @@ export class UnifiedViewer {
   /** The surface point a drag has hold of: a unit direction from the
    *  body's centre, and the sphere radius it was taken on. */
   private grabbed: { direction: Vector3; radiusKm: number } | null = null;
+  /**
+   * A surface drag holds the pointer once it is plainly a drag: hidden,
+   * and unable to walk out of the viewport and cut the gesture short
+   * halfway through a turn. `x`/`y` carry the pointer's position while
+   * it is captured, since a captured pointer has none of its own.
+   */
+  private dragLock: {
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    held: boolean;
+  } | null = null;
+  /** Distance the pointer has covered since it went down — a captured
+   *  pointer's client position never moves, so a drag would otherwise
+   *  release as a click. */
+  private dragTravelPx = 0;
   /** The regime the switch was last drawn for. */
   private dragModeLooking = false;
   /** A second finger joined this gesture: it is no longer a tap. */
@@ -704,6 +774,7 @@ export class UnifiedViewer {
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       if ((e.buttons & 1) === 0 || this.rightShiftHeld || this.flight.active) return;
       if (!this.inSurfaceRegime()) return;
+      this.holdPointer(e);
       // The head turns with the hand, at the pace it turns on foot:
       // this is the same first-person view as ground flight, reached a
       // little before the feet touch down. The ground is what gets
@@ -717,13 +788,27 @@ export class UnifiedViewer {
     // not, in the regimes where the right button matters most.
     this.pipeline.renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
     this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') return;
+      // Either button, down here: one aims the view and the other
+      // carries the ground, and both want the whole desk to work in.
+      if ((e.button === 0 || e.button === 2) && this.inSurfaceRegime()) {
+        this.dragLock = { startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, held: false };
+      }
       if (e.button !== 2) return;
       if (this.beginGrab(e.clientX, e.clientY) || this.inPanRegime()) this.panHeld = true;
     });
     window.addEventListener('pointerup', (e) => {
+      if (e.button === 0 || e.button === 2) this.releasePointer();
       if (e.button !== 2) return;
       this.panHeld = false;
       this.grabbed = null;
+    });
+    // Escape hands the pointer back mid-drag; the gesture carries on
+    // with a cursor that exists again.
+    document.addEventListener('pointerlockchange', () => {
+      if (this.dragLock && document.pointerLockElement !== this.pipeline.renderer.domElement) {
+        this.dragLock.held = false;
+      }
     });
 
     // On foot the mouse is the head: click takes pointer lock, motion
@@ -756,7 +841,8 @@ export class UnifiedViewer {
       const shiftPan = this.rightShiftHeld && e.buttons !== 0;
       if (!rightDragPan && !shiftPan) return;
       if (this.grabbed) {
-        this.dragSurface(e.clientX, e.clientY);
+        this.holdPointer(e);
+        this.dragSurface(...this.dragPointerAt(e));
         return;
       }
       if (!this.freeFlightAvailable()) return;
@@ -917,6 +1003,9 @@ export class UnifiedViewer {
     container.appendChild(lineSvg);
 
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
+      if (e.buttons !== 0) {
+        this.dragTravelPx += Math.hypot(e.movementX || 0, e.movementY || 0);
+      }
       if (document.pointerLockElement) return;
       this.dragging = e.buttons !== 0;
       // A finger has no hover, so only a tap probes; a drag must not
@@ -929,6 +1018,7 @@ export class UnifiedViewer {
       this.cursor = null;
     });
     this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
+      this.dragTravelPx = 0;
       if (e.button === 0) this.pointerDownAt = [e.clientX, e.clientY];
     });
     this.pipeline.renderer.domElement.addEventListener('pointerup', (e) => {
@@ -936,6 +1026,10 @@ export class UnifiedViewer {
       this.pointerDownAt = null;
       this.dragging = false;
       if (!down || e.button !== 0) return;
+      // A held pointer's client position never moves, so how far it
+      // actually travelled is the only thing separating a look from a
+      // click.
+      if (this.dragTravelPx > 6) return;
       if (Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
       if (e.pointerType === 'touch') {
         if (this.multiTouched) return;
