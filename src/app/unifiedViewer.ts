@@ -709,7 +709,7 @@ export class UnifiedViewer {
       // little before the feet touch down. The ground is what gets
       // grabbed and carried; the view is what gets aimed.
       this.headingRad += e.movementX * 0.0022;
-      this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.0022));
+      this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - e.movementY * 0.0022));
     });
     // The right button is a camera control at every altitude, so the
     // scene owns the menu it would otherwise raise. OrbitControls
@@ -731,6 +731,9 @@ export class UnifiedViewer {
     this.pipeline.renderer.domElement.addEventListener('click', () => {
       if (!this.flight.active || this.touchMode) return;
       if (document.pointerLockElement !== this.pipeline.renderer.domElement) {
+        // The cursor stops existing the moment it is captured; leaving
+        // its last position behind would leave a probe in the sky.
+        this.cursor = null;
         this.pipeline.renderer.domElement.requestPointerLock();
       }
     });
@@ -804,7 +807,7 @@ export class UnifiedViewer {
         // The orbit's finger, down where there is nothing to orbit: the
         // same head the drag turns on foot.
         this.headingRad += dx * 0.0032;
-        this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - dy * 0.0032));
+        this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - dy * 0.0032));
       }
     });
     const endTouch = (e: PointerEvent): void => {
@@ -1477,6 +1480,12 @@ export class UnifiedViewer {
 
   /** Find the pickable nearest the cursor and drive the tooltip. */
   private updateHover(): void {
+    // Every projection below reads the camera's world matrix, which the
+    // renderer only refreshes later in the frame — so without this the
+    // scan runs against where the camera was pointing last frame. Still,
+    // that is invisible; turning your head, it is the whole hit radius,
+    // and nothing in the sky can be reliably aimed at.
+    this.camera.updateMatrixWorld();
     const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
     let best: Pickable | null = null;
     let softStarBest = false;
@@ -1631,7 +1640,17 @@ export class UnifiedViewer {
     // never steal a clickable hover — but an anonymous cluster member
     // yields to the named cloud it lights, keeping the nebula's face
     // hoverable, and stands only where no cloud claims the cursor.
-    if ((!best || softStarBest) && this.cursor && !this.dragging && this.skyData && this.galaxyFade < 0.6) {
+    if (
+      (!best || softStarBest) &&
+      this.cursor &&
+      !this.dragging &&
+      // On foot the cursor is the head, not a probe — the same rule the
+      // body scan above keeps. Left out here, a stale cursor from before
+      // the pointer was captured went on naming clouds every frame.
+      !this.flight.active &&
+      this.skyData &&
+      this.galaxyFade < 0.6
+    ) {
       const fallback = best;
       best = null;
       const [cx, cy] = this.cursor;
@@ -2420,9 +2439,19 @@ export class UnifiedViewer {
       }
       this.pendingWheelFactor = 1;
 
-      // Nadir gaze from orbit blending to a steerable horizon gaze near
-      // the ground. Orientation set via quaternion only: camera.up must
-      // stay world-Y or OrbitControls rolls over on the way back out.
+      // Nadir gaze from orbit tipping up into a steerable horizon gaze
+      // near the ground. The tip is the only thing that blends: pitch
+      // runs from straight down to wherever the head is aimed, and the
+      // orientation is then built outright from the tangent frame.
+      //
+      // Interpolating whole orientations instead — from whatever pose
+      // the orbit left, toward a look-at — cost both ends of the
+      // control. The two poses differ by a rotation that grows with
+      // heading, so behind the camera the interpolation became
+      // ill-conditioned and the view swung tens of degrees for a
+      // degree of input; and short of the ground the blend only ever
+      // delivered a fraction of the aimed pitch, which is why the gaze
+      // hit a ceiling well below straight up.
       const horizonBlend = 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
       if (horizonBlend > 0.01) {
         const north =
@@ -2434,24 +2463,27 @@ export class UnifiedViewer {
           .clone()
           .multiplyScalar(Math.cos(this.headingRad))
           .addScaledVector(east, Math.sin(this.headingRad));
-        // Slerp from the orbit gaze into the steerable horizon gaze:
-        // blending orientations (not look-at vectors) keeps the roll
-        // continuous through the transition — a radial-up look-at near
-        // nadir would snap screen-up from north to the heading, which
-        // reads as the whole surface suddenly rotating. In flight the
-        // pitch is literal, so looking near-vertical works.
-        const forward = flying
-          ? heading.multiplyScalar(Math.cos(this.pitchRad)).addScaledVector(up, Math.sin(this.pitchRad))
-          : heading.addScaledVector(up, -0.12 + Math.sin(this.pitchRad));
-        forward.normalize();
-        const gaze = new Matrix4().lookAt(
-          this.camera.position,
-          this.camera.position.clone().add(forward),
-          up,
-        );
-        const groundQuat = new Quaternion().setFromRotationMatrix(gaze);
         const t = horizonBlend * horizonBlend * (3 - 2 * horizonBlend);
-        this.camera.quaternion.slerp(groundQuat, t);
+        // Descending tips the resting gaze from straight down to the
+        // horizon; the aim rides on top of that and keeps its whole
+        // range the whole way, so a head half way down can still look
+        // at its own zenith. Screen-up swings with the gaze through the
+        // same plane, so nadir carries the heading up the screen and
+        // there is no orientation the basis degenerates at.
+        const restPitch = -(Math.PI / 2) * (1 - t);
+        const pitch = Math.max(-1.5, Math.min(1.5, restPitch + this.pitchRad));
+        const forward = heading
+          .clone()
+          .multiplyScalar(Math.cos(pitch))
+          .addScaledVector(up, Math.sin(pitch));
+        const screenUp = up
+          .clone()
+          .multiplyScalar(Math.cos(pitch))
+          .addScaledVector(heading, -Math.sin(pitch));
+        const right = new Vector3().crossVectors(forward, screenUp);
+        this.camera.quaternion.setFromRotationMatrix(
+          new Matrix4().makeBasis(right, screenUp, forward.clone().negate()),
+        );
       }
 
       // Near tracks altitude (nothing sits closer than the ground below,
