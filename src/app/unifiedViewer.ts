@@ -411,6 +411,24 @@ export class UnifiedViewer {
     }</svg>`;
   }
 
+  /**
+   * Who owns the drag right now. The orbit gives it up to ground
+   * flight, to a finger set to pan, to a mouse pan — and to any
+   * gesture with a second finger in it: OrbitControls has no state for
+   * a two-finger gesture whose dolly and pan are both switched off, so
+   * it stays in touch-rotate and steers by the midpoint between the
+   * fingers. Left enabled, a pinch would spin the camera by whatever
+   * that midpoint did. A pinch is a pinch and nothing else.
+   */
+  private syncControlsEnabled(): void {
+    const fingerPanning = this.oneFingerDown && this.touchDragMode === 'pan';
+    this.controls.enabled =
+      !this.flight.active &&
+      !this.multiTouched &&
+      !fingerPanning &&
+      !((this.rightShiftHeld || this.panHeld) && this.freeFlightAvailable());
+  }
+
   /** Latch the span a pinch measures from. */
   private beginTwoFinger(): void {
     const [a, b] = [...this.touches.values()];
@@ -649,6 +667,8 @@ export class UnifiedViewer {
         this.multiTouched = true;
         this.beginTwoFinger();
       }
+      // Now, not at the next frame: a move can arrive before it.
+      this.syncControlsEnabled();
     });
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'touch') return;
@@ -659,7 +679,13 @@ export class UnifiedViewer {
       this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.touches.size >= 2) {
         this.updateTwoFinger();
-      } else if (this.flight.active) {
+        return;
+      }
+      // The tail of a pinch, fingers coming off one at a time: the
+      // remainder is not a fresh drag, and nothing takes it over
+      // until the hand is off the glass.
+      if (this.multiTouched) return;
+      if (this.flight.active) {
         // Pointer lock is a mouse idea; on foot the drag is the head.
         this.headingRad += dx * 0.0032;
         this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - dy * 0.0032));
@@ -680,9 +706,10 @@ export class UnifiedViewer {
       if (this.touches.size === 0) {
         this.multiTouched = false;
         this.oneFingerDown = false;
-      } else {
+      } else if (this.touches.size >= 2) {
         this.beginTwoFinger();
       }
+      this.syncControlsEnabled();
     };
     this.pipeline.renderer.domElement.addEventListener('pointerup', endTouch);
     this.pipeline.renderer.domElement.addEventListener('pointercancel', endTouch);
@@ -2197,11 +2224,7 @@ export class UnifiedViewer {
       // ground flight, the flight camera owns the position outright.
       const flying = this.flight.active;
       const freeFlight = this.freeFlightAvailable();
-      // A finger set to pan is the whole gesture: the orbit cannot
-      // also have it, the way a mouse's two buttons can share.
-      const fingerPanning = this.oneFingerDown && this.touchDragMode === 'pan';
-      this.controls.enabled =
-        !flying && !fingerPanning && !((this.rightShiftHeld || this.panHeld) && freeFlight);
+      this.syncControlsEnabled();
       if (!flying) {
         if (!freeFlight && this.controls.target.lengthSq() > 0) {
           this.controls.target.set(0, 0, 0);
