@@ -22,6 +22,10 @@ export interface PlateSpec {
  * and its measurements — the fixed card every level renders up top.
  */
 export function renderPlate(element: HTMLElement, spec: PlateSpec): void {
+  // The plate's identity, readable without reparsing its markup — the
+  // bookmark button names its mark from these.
+  element.dataset.title = spec.title;
+  element.dataset.subtitle = spec.subtitle;
   const stepper = spec.onStep
     ? `<span class="stepper">
         <button id="body-prev" title="previous body">‹</button>

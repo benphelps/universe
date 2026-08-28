@@ -16,6 +16,8 @@ import { StarInfoPanel } from './ui/starInfoPanel';
 import { SystemInfoPanel } from './ui/systemInfoPanel';
 import { UnifiedViewer } from './unifiedViewer';
 import { GALAXY_KEY, showWelcome } from './ui/welcome';
+import { VISIT_KEY, bookmarkKey, isMarked, toggleMark, type Bookmark } from './bookmarks';
+import { PoiPanel } from './ui/poiPanel';
 
 const viewElement = document.getElementById('view')!;
 
@@ -50,6 +52,8 @@ function parseLocale(value: string | null): GalacticPosition | undefined {
 }
 
 let localePc: GalacticPosition | undefined;
+/** Whether the POI tab currently owns the level section. */
+let poiOpen = false;
 
 function stepBody(delta: number): void {
   planetIndex += delta;
@@ -97,6 +101,7 @@ function selectStar(index: number): void {
  * different star somewhere else.
  */
 function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
+  poiOpen = false;
   const normalized = seedToHex(seedFromHex(nextSeedHex));
   localePc = nextLocalePc
     ? {
@@ -212,6 +217,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
       }
     }
   }
+  mountBookmarkButton();
   viewer.timeScaleDaysPerSecond = timeScale;
   viewer.exposure = exposure;
 
@@ -249,12 +255,103 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
 }
 
 const sidebar = new Sidebar(document.getElementById('sidebar')!, {
-  onView: (mode) => {
-    if (mode === viewMode) return;
-    viewMode = mode;
+  onView: (tab) => {
+    if (tab === 'poi') {
+      openPoi();
+      return;
+    }
+    if (tab === viewMode && !poiOpen) return;
+    viewMode = tab;
     load(seedHex);
   },
 });
+
+/**
+ * The current focus as a travel link: the plate's designation plus
+ * exactly the state the URL carries.
+ */
+function currentMark(): Bookmark {
+  const mark: Bookmark = {
+    name: sidebar.focus.dataset.title ?? seedHex,
+    caption: sidebar.focus.dataset.subtitle ?? '',
+    galaxy: seedToHex(galaxySeed()),
+    seed: seedHex,
+    view: viewMode,
+  };
+  if (localePc) mark.at = localeParam(localePc);
+  if (viewMode === 'planet') mark.planet = planetIndex;
+  if (viewMode === 'planet' && moonIndex >= 0) mark.moon = moonIndex;
+  if (companionIndex > 0) mark.companion = companionIndex;
+  return mark;
+}
+
+/** The bookmark beside the plate name: click to save, click to unsave. */
+function mountBookmarkButton(): void {
+  const head = sidebar.focus.querySelector('.plate-head');
+  if (!head) return;
+  const button = document.createElement('button');
+  button.id = 'bookmark-toggle';
+  button.innerHTML =
+    '<svg viewBox="0 0 24 24" width="13" height="13"><path d="M6 3h12v18l-6-5-6 5z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+  const paint = (marked: boolean): void => {
+    button.classList.toggle('marked', marked);
+    button.title = marked ? 'unmark this point of interest' : 'mark as a point of interest';
+  };
+  paint(isMarked(bookmarkKey(currentMark())));
+  button.addEventListener('click', () => {
+    paint(toggleMark(currentMark()));
+    if (poiOpen) openPoi();
+  });
+  head.insertBefore(button, head.querySelector('.stepper'));
+}
+
+function refreshBookmarkButton(): void {
+  document.getElementById('bookmark-toggle')?.remove();
+  mountBookmarkButton();
+}
+
+function openPoi(): void {
+  poiOpen = true;
+  sidebar.view = 'poi';
+  poiPanel.render(travelToMark, refreshBookmarkButton);
+}
+
+/**
+ * A mark within the current galaxy restores its state in place; one in
+ * another galaxy needs a clean boot (the galaxy locks at first use), so
+ * it navigates — flagged as a visit so the traveler's home galaxy
+ * survives the hop.
+ */
+function travelToMark(mark: Bookmark): void {
+  if (mark.galaxy !== seedToHex(galaxySeed())) {
+    const url = new URL(location.origin + location.pathname);
+    url.searchParams.set('seed', mark.seed);
+    url.searchParams.set('galaxy', mark.galaxy);
+    url.searchParams.set('view', mark.view);
+    if (mark.at) url.searchParams.set('at', mark.at);
+    if (mark.view === 'planet') url.searchParams.set('planet', String(mark.planet ?? 0));
+    if (mark.moon !== undefined) url.searchParams.set('moon', String(mark.moon));
+    if (mark.companion) url.searchParams.set('companion', String(mark.companion));
+    try {
+      sessionStorage.setItem(VISIT_KEY, '1');
+    } catch {
+      // Storage unavailable: the hop adopts the galaxy, nothing worse.
+    }
+    location.href = url.toString();
+    return;
+  }
+  viewMode = mark.view;
+  planetIndex = mark.planet ?? 0;
+  moonIndex = mark.moon ?? -1;
+  companionIndex = mark.companion ?? 0;
+  load(mark.seed, parseLocale(mark.at ?? null));
+  // A system change resets the companion focus; a companion mark asks
+  // for it back once the system exists.
+  if (mark.companion && companionIndex !== mark.companion) {
+    companionIndex = mark.companion;
+    load(mark.seed);
+  }
+}
 new SettingsMenu(document.getElementById('settings-corner')!, {
   onExposure: (value) => {
     exposure = value;
@@ -291,6 +388,7 @@ const starPanel = new StarInfoPanel(sidebar);
 const systemPanel = new SystemInfoPanel(sidebar);
 const planetPanel = new PlanetInfoPanel(sidebar);
 const galaxyPanel = new GalaxyInfoPanel(sidebar);
+const poiPanel = new PoiPanel(sidebar);
 
 const params = new URLSearchParams(location.search);
 // The galaxy must be chosen before anything derives from it: an
@@ -299,9 +397,21 @@ const params = new URLSearchParams(location.search);
 const galaxyParam = params.get('galaxy');
 if (galaxyParam) {
   setGalaxySeed(seedFromHex(galaxyParam));
+  let visiting = false;
   try {
-    if (galaxySeed() === PRIME_GALAXY_SEED) localStorage.removeItem(GALAXY_KEY);
-    else localStorage.setItem(GALAXY_KEY, seedToHex(galaxySeed()));
+    visiting = sessionStorage.getItem(VISIT_KEY) !== null;
+    sessionStorage.removeItem(VISIT_KEY);
+  } catch {
+    // Storage unavailable: treat as an explicit link.
+  }
+  try {
+    if (visiting) {
+      // An in-app hop (a bookmark in another galaxy): home stays put.
+    } else if (galaxySeed() === PRIME_GALAXY_SEED) {
+      localStorage.removeItem(GALAXY_KEY);
+    } else {
+      localStorage.setItem(GALAXY_KEY, seedToHex(galaxySeed()));
+    }
   } catch {
     // Storage unavailable: the URL alone carries the choice.
   }

@@ -2,19 +2,23 @@ import type { GalacticAddress } from '../../universe/galaxy/regions';
 
 export type ViewMode = 'star' | 'system' | 'planet' | 'galaxy';
 
+/** The last tab is not a camera level: it lists the marked POIs. */
+export type Tab = ViewMode | 'poi';
+
 export interface SidebarCallbacks {
-  onView: (view: ViewMode) => void;
+  onView: (tab: Tab) => void;
 }
 
-// Descending scale: kpc, AU, R☉, R⊕.
-const VIEWS: ViewMode[] = ['galaxy', 'system', 'star', 'planet'];
+// Descending scale: kpc, AU, R☉, R⊕ — then the address book.
+const TABS: Tab[] = ['galaxy', 'system', 'star', 'planet', 'poi'];
 
 /** The characteristic scale each level frames. */
-const VIEW_SCALE: Record<ViewMode, string> = {
+const TAB_UNIT: Record<Tab, string> = {
   star: 'R☉',
   system: 'AU',
   planet: 'R⊕',
   galaxy: 'kpc',
+  poi: '★',
 };
 
 /**
@@ -29,7 +33,7 @@ export class Sidebar {
   /** The generation readout under the framing scales. */
   readonly generation: HTMLElement;
   private readonly addressEl: HTMLElement;
-  private readonly viewButtons = new Map<ViewMode, HTMLButtonElement>();
+  private readonly viewButtons = new Map<Tab, HTMLButtonElement>();
 
   constructor(element: HTMLElement, callbacks: SidebarCallbacks) {
     element.innerHTML = `
@@ -38,8 +42,8 @@ export class Sidebar {
       <section id="level"></section>
       <footer id="gen-panel"></footer>
       <nav id="level-nav">
-        ${VIEWS.map(
-          (v) => `<button id="view-${v}"><span class="name">${v}</span><span class="unit">${VIEW_SCALE[v]}</span></button>`,
+        ${TABS.map(
+          (v) => `<button id="view-${v}"><span class="name">${v}</span><span class="unit">${TAB_UNIT[v]}</span></button>`,
         ).join('')}
       </nav>
     `;
@@ -48,10 +52,10 @@ export class Sidebar {
     this.level = element.querySelector<HTMLElement>('#level')!;
     this.generation = element.querySelector<HTMLElement>('#gen-panel')!;
 
-    for (const view of VIEWS) {
-      const button = element.querySelector<HTMLButtonElement>(`#view-${view}`)!;
-      this.viewButtons.set(view, button);
-      button.addEventListener('click', () => callbacks.onView(view));
+    for (const tab of TABS) {
+      const button = element.querySelector<HTMLButtonElement>(`#view-${tab}`)!;
+      this.viewButtons.set(tab, button);
+      button.addEventListener('click', () => callbacks.onView(tab));
     }
   }
 
@@ -60,9 +64,9 @@ export class Sidebar {
     this.addressEl.textContent = `${address.sector} Sector · ${address.zone.replace('-', ' ')}`;
   }
 
-  set view(mode: ViewMode) {
-    for (const [view, button] of this.viewButtons) {
-      button.classList.toggle('active', view === mode);
+  set view(mode: Tab) {
+    for (const [tab, button] of this.viewButtons) {
+      button.classList.toggle('active', tab === mode);
     }
   }
 }
