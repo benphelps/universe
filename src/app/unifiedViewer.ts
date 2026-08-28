@@ -704,11 +704,12 @@ export class UnifiedViewer {
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       if ((e.buttons & 1) === 0 || this.rightShiftHeld || this.flight.active) return;
       if (!this.inSurfaceRegime()) return;
-      // Both axes grab, like the ground drag beside it: the sky follows
-      // the hand. Mixing a grab across with a head-turn down the way
-      // this once did is what read as an inverted axis.
-      this.headingRad -= e.movementX * 0.004;
-      this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad + e.movementY * 0.003));
+      // The head turns with the hand, at the pace it turns on foot:
+      // this is the same first-person view as ground flight, reached a
+      // little before the feet touch down. The ground is what gets
+      // grabbed and carried; the view is what gets aimed.
+      this.headingRad += e.movementX * 0.0022;
+      this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - e.movementY * 0.0022));
     });
     // The right button is a camera control at every altitude, so the
     // scene owns the menu it would otherwise raise. OrbitControls
@@ -800,9 +801,10 @@ export class UnifiedViewer {
         if (this.grabbed) this.dragSurface(e.clientX, e.clientY);
         else if (this.inPanRegime()) this.panBy(dx, dy);
       } else if (this.inSurfaceRegime()) {
-        // The orbit's finger, down where there is nothing to orbit.
-        this.headingRad -= dx * 0.004;
-        this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad + dy * 0.003));
+        // The orbit's finger, down where there is nothing to orbit: the
+        // same head the drag turns on foot.
+        this.headingRad += dx * 0.0032;
+        this.pitchRad = Math.min(1.1, Math.max(-0.6, this.pitchRad - dy * 0.0032));
       }
     });
     const endTouch = (e: PointerEvent): void => {
