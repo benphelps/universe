@@ -70,6 +70,9 @@ export function createAtmosphereShell(
     depthWrite: false,
   });
   const mesh = new Mesh(new SphereGeometry(1, 64, 32), material);
-  mesh.scale.setScalar(planetRadiusUnits * (1 + relativeHeight));
+  // The gas follows the rotating body's figure: an oblate planet wears
+  // an equally oblate limb, not a spherical halo lifted off its poles.
+  const r = planetRadiusUnits * (1 + relativeHeight);
+  mesh.scale.set(r, r * (1 - bulk.oblateness), r);
   return mesh;
 }

@@ -1,4 +1,4 @@
-import { Color, ShaderMaterial, Vector3, Vector4 } from 'three';
+import { Color, ShaderMaterial, Vector3 } from 'three';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import { type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
@@ -42,7 +42,6 @@ uniform float uCloudReliefKm;
 uniform float uHazeAmount;
 uniform vec3 uHazeColor;
 uniform vec3 uRimColor;
-uniform vec4 uAurora;                   // strength, tiltRad, azimuthRad, ovalColat
 uniform float uRegime;                  // 0 banded, 1 locked
 uniform vec3 uHotspotDirObj;
 uniform vec3 uThermalColor;
@@ -119,42 +118,12 @@ void main() {
     color += uThermalColor * uThermalStrength * glow * limb;
   }
 
-  // Aurora: magnetic-frame curtains — a thin rayed core in a faint
-  // glow, flickering along the oval, sharpening on approach.
-  if (uAurora.x > 0.0) {
-    vec3 mAxis = vec3(
-      sin(uAurora.y) * cos(uAurora.z),
-      cos(uAurora.y),
-      sin(uAurora.y) * sin(uAurora.z)
-    );
-    vec3 m1 = normalize(cross(mAxis, vec3(0.0, 0.0, 1.0)));
-    vec3 m2 = cross(mAxis, m1);
-    float mDot = dot(p, mAxis);
-    float mColat = acos(clamp(abs(mDot), 0.0, 1.0));
-    float mLon = atan(dot(p, m2), dot(p, m1)) * sign(mDot + 1e-6);
-    float core = exp(-pow((mColat - uAurora.w) / 0.022, 2.0));
-    float glow = 0.3 * exp(-pow((mColat - uAurora.w) / 0.09, 2.0));
-    float rays = 0.4
-      + 0.6 * pow(0.5 + 0.5 * snoise(vec3(cos(mLon), sin(mLon), mColat * 4.0) * 11.0
-          + uSeedOffset + vec3(0.0, 0.0, uTimeDays * 1.7)), 2.0);
-    rays *= 0.55 + 0.45 * snoise(vec3(cos(mLon), sin(mLon), 2.6) * 33.0
-      - uSeedOffset.yzx + vec3(uTimeDays * 2.3, 0.0, 0.0));
-    if (microGate > 0.01) {
-      rays *= 1.0 + 0.5 * microGate
-        * snoise(vec3(cos(mLon), sin(mLon), mColat * 9.0) * 90.0 + uSeedOffset.zxy
-            + vec3(0.0, uTimeDays * 3.1, 0.0));
-    }
-    float night = 1.0 - smoothstep(-0.05, 0.25, ndotl);
-    color += vec3(0.5, 0.32, 0.85) * (core * rays + glow * (0.5 + 0.5 * rays))
-      * uAurora.x * (0.05 + 0.75 * night);
-  }
-
   gl_FragColor = vec4(color, 1.0);
 }
 `;
 
 /** Samples the baked deck and adds everything view- and light-
- *  dependent: relief lighting, haze, thermal glow, aurora, eclipses. */
+ *  dependent: relief lighting, haze, thermal glow, eclipses. */
 export function createGiantMaterial(
   physical: Characterization,
   circulation: Circulation,
@@ -182,14 +151,6 @@ export function createGiantMaterial(
       uHazeAmount: { value: 0.12 + 0.4 * (1 - circulation.contrast) },
       uHazeColor: { value: new Color(...circulation.stormFresh).multiplyScalar(1.04) },
       uRimColor: { value: new Color(...rim) },
-      uAurora: {
-        value: new Vector4(
-          circulation.auroraStrength,
-          circulation.auroraTiltRad,
-          circulation.auroraAzimuthRad,
-          0.3,
-        ),
-      },
       uRegime: { value: circulation.regime === 'locked' ? 1 : 0 },
       uHotspotDirObj: { value: new Vector3(0, 0, 1) },
       uThermalColor: {

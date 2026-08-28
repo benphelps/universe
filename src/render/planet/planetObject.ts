@@ -4,6 +4,7 @@ import {
   Quaternion,
   ShaderMaterial,
   SphereGeometry,
+  Vector2,
   Vector3,
   Vector4,
   type WebGLCubeRenderTarget,
@@ -16,9 +17,10 @@ import type { RingSystem } from '../../universe/rings/types';
 import { applySecondSun } from '../lighting/secondSun';
 import { foldShaderTime } from '../shaderTime';
 import { createAtmosphereShell } from './atmosphereShell';
+import { createAuroraShells } from './auroraShell';
 import { DeckBaker } from './deckBaker';
 import { createGiantMaterial } from './giantMaterial';
-import { createRingMesh } from './ringMaterial';
+import { createRingMesh, ringPatternSeed } from './ringMaterial';
 import { applyOccluders, type ShadowCaster } from './shadows';
 import { createSolidPlanetMaterial } from './solidPlanetMaterial';
 import { requestSurfaceBake } from './surfaceBakeQueue';
@@ -41,6 +43,8 @@ export class PlanetObject {
   private readonly spinRadPerDay: number;
   /** The derived atmosphere driving a giant's deck; null for solids. */
   private readonly circulation: Circulation | null;
+  private readonly rings: RingSystem | null;
+  private readonly ringMaterial: ShaderMaterial | null = null;
   private readonly baker: DeckBaker | null;
   private deckA: WebGLCubeRenderTarget | null = null;
   private deckB: WebGLCubeRenderTarget | null = null;
@@ -108,26 +112,28 @@ export class PlanetObject {
     );
     this.group.add(this.body);
 
+    // The curtains ride the body mesh: they inherit its spin (the oval
+    // is fixed in the magnetic frame) and its oblate squash.
+    if (this.circulation) {
+      for (const aurora of createAuroraShells(physical, this.circulation)) {
+        this.materials.push(aurora.material as ShaderMaterial);
+        this.body.add(aurora);
+      }
+    }
+
     const shell = createAtmosphereShell(physical, this.radiusUnits);
     if (shell) {
       this.materials.push(shell.material as ShaderMaterial);
       this.group.add(shell);
     }
 
+    this.rings = rings;
     if (rings) {
       const ringMesh = createRingMesh(rings, this.radiusUnits);
       ringMesh.rotation.x = -Math.PI / 2;
-      this.materials.push(ringMesh.material as ShaderMaterial);
+      this.ringMaterial = ringMesh.material as ShaderMaterial;
+      this.materials.push(this.ringMaterial);
       this.group.add(ringMesh);
-
-      // The rings' shadow band on the body, in the equatorial plane.
-      const opacity = Math.min(0.85, rings.opticalDepth * 1.2);
-      material.uniforms.uRingShadow.value = new Vector4(
-        rings.innerPlanetRadii * this.radiusUnits,
-        rings.outerPlanetRadii * this.radiusUnits,
-        opacity,
-        1,
-      );
     }
 
     this.group.rotation.z = physical.rotation.obliquityRad;
@@ -161,11 +167,53 @@ export class PlanetObject {
       applySecondSun(material, light2Dir, light2Color);
     }
     if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld, renderer);
-    // Ring shadows follow the tilted equatorial plane.
-    const ringNormal = new Vector3(0, 1, 0).applyQuaternion(this.group.quaternion);
+    if (this.rings) this.updateRingShadow();
+  }
+
+  /** Equatorial planet radius in world units (the group carries the
+   *  scene's scale), as its own eclipse caster for the ring plane. */
+  private selfCaster(): ShadowCaster {
+    return {
+      position: this.group.getWorldPosition(new Vector3()),
+      radius: this.group.getWorldScale(new Vector3()).x * this.radiusUnits,
+    };
+  }
+
+  /** The shadow band the rings cast on the body: world-frame plane and
+   *  bounds refreshed each frame, sharing the ring's seeded density so
+   *  gaps cross the deck as bright lanes; and the planet stands as an
+   *  occluder over its own ring plane (setOccluders keeps it there
+   *  when the viewer supplies moons as well). */
+  private updateRingShadow(): void {
+    const rings = this.rings!;
+    const uniforms = this.materials[0].uniforms;
+    const self = this.selfCaster();
+    const ringNormal = new Vector3(0, 1, 0)
+      .applyQuaternion(this.group.getWorldQuaternion(new Quaternion()));
     for (const material of this.materials) {
       if (material.uniforms.uRingNormal) material.uniforms.uRingNormal.value.copy(ringNormal);
     }
+    (uniforms.uRingShadow.value as Vector4).set(
+      rings.innerPlanetRadii * self.radius,
+      rings.outerPlanetRadii * self.radius,
+      rings.opticalDepth,
+      1,
+    );
+    (uniforms.uRingCenter.value as Vector3).copy(self.position);
+    uniforms.uRingSeed.value = ringPatternSeed(rings);
+    const gaps = rings.gaps.slice(0, 6);
+    uniforms.uRingGapCount.value = gaps.length;
+    for (let i = 0; i < gaps.length; i++) {
+      (uniforms.uRingGaps.value as Vector2[])[i].set(
+        gaps[i].radiusPlanetRadii * self.radius,
+        gaps[i].widthPlanetRadii * self.radius,
+      );
+    }
+    applyOccluders(
+      this.ringMaterial!,
+      [self],
+      this.ringMaterial!.uniforms.uStarAngularRadius.value as number,
+    );
   }
 
   /** The deck: keep two bakes bracketing the sim time and crossfade
@@ -234,10 +282,16 @@ export class PlanetObject {
     );
   }
 
-  /** Bodies that eclipse this one (world positions and radii in scene units). */
+  /** Bodies that eclipse this one (world positions and radii in scene
+   *  units). The ring material keeps the planet itself prepended, so
+   *  the body's shadow always crosses its own ring plane. */
   setOccluders(occluders: ShadowCaster[], starAngularRadius: number): void {
     for (const material of this.materials) {
+      if (material === this.ringMaterial) continue;
       applyOccluders(material, occluders, starAngularRadius);
+    }
+    if (this.ringMaterial) {
+      applyOccluders(this.ringMaterial, [this.selfCaster(), ...occluders], starAngularRadius);
     }
   }
 
