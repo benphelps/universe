@@ -363,6 +363,87 @@ export class UnifiedViewer {
     this.controls.enabled = true;
   };
 
+  /**
+   * Grab space itself: a screen-plane slide scaled by altitude, so the
+   * same gesture moves meters over a ridge and parsecs across the
+   * neighborhood. Shared by the right-drag and the two-finger pan.
+   */
+  private panBy(dxPixels: number, dyPixels: number): void {
+    const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+    const worldPerPixel =
+      (2 *
+        Math.tan((this.camera.fov * Math.PI) / 360) *
+        Math.max(this.altitudeKm, this.minAltitudeKm)) /
+      Math.max(rect.height, 1);
+    const right = new Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const upVec = new Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const delta = right
+      .multiplyScalar(-dxPixels * worldPerPixel)
+      .addScaledVector(upVec, dyPixels * worldPerPixel);
+    this.camera.position.add(delta);
+    this.controls.target.add(delta);
+  }
+
+  /** Latch the span and centroid a two-finger gesture measures from. */
+  private beginTwoFinger(): void {
+    const [a, b] = [...this.touches.values()];
+    if (!a || !b) return;
+    this.pinchSpan = Math.hypot(a.x - b.x, a.y - b.y);
+    this.pinchCentroid = [(a.x + b.x) / 2, (a.y + b.y) / 2];
+    // A gesture supersedes whatever a tap had named.
+    this.armedKey = '';
+    this.cursor = null;
+    this.tapPending = null;
+  }
+
+  /**
+   * Two fingers carry both space gestures at once: the span between
+   * them rides the scales the wheel would, and their centroid grabs
+   * space the way a right-drag does.
+   */
+  private updateTwoFinger(): void {
+    const [a, b] = [...this.touches.values()];
+    if (!a || !b) return;
+    const span = Math.hypot(a.x - b.x, a.y - b.y);
+    const cx = (a.x + b.x) / 2;
+    const cy = (a.y + b.y) / 2;
+    if (this.pinchSpan > 0 && span > 0) {
+      // Spreading the fingers descends, the way scrolling up does.
+      this.stopRideOut();
+      this.pendingWheelFactor *= this.pinchSpan / span;
+    }
+    if (this.inPanRegime()) {
+      this.panHeld = true;
+      this.panBy(cx - this.pinchCentroid[0], cy - this.pinchCentroid[1]);
+    }
+    this.pinchSpan = span;
+    this.pinchCentroid = [cx, cy];
+  }
+
+  /**
+   * A finger has no hover, so the tap itself is the probe: it waits for
+   * the next pass to name what it hit, and only a second tap on the
+   * same body acts. Travel is a long way back if it was a mis-tap.
+   */
+  private resolveTap(): void {
+    const tap = this.tapPending;
+    if (!tap) return;
+    this.tapPending = null;
+    const target = this.hovered?.target;
+    if (!target || this.flight.active) {
+      this.armedKey = '';
+      this.cursor = null;
+      return;
+    }
+    if (this.hoveredKey === this.armedKey) {
+      this.armedKey = '';
+      this.cursor = null;
+      this.onPick?.(target);
+    } else {
+      this.armedKey = this.hoveredKey;
+    }
+  }
+
   /** Above the horizon-gaze regime, right-drag grabs space instead of
    *  turning the head. */
   private inPanRegime(): boolean {
@@ -387,6 +468,8 @@ export class UnifiedViewer {
   private walkHint: HTMLDivElement | null = null;
   private walkHintText = '';
   private recenter: HTMLButtonElement | null = null;
+  /** Hold-to-fly, the ground regime's control on a touch device. */
+  private flyStick: HTMLButtonElement | null = null;
   private oceanMaterial: ShaderMaterial | null = null;
   private chunkManager: TerrainChunkManager | null = null;
   private atmosphereShell: Mesh | null = null;
@@ -437,6 +520,20 @@ export class UnifiedViewer {
   private hovered: Pickable | null = null;
   private hoveredKey = '';
   private cursor: [number, number] | null = null;
+  /** Live fingers by pointer id; the two-finger gestures read from here. */
+  private readonly touches = new Map<number, { x: number; y: number }>();
+  /** Span and centroid of the last two-finger frame, for pinch and pan deltas. */
+  private pinchSpan = 0;
+  private pinchCentroid: [number, number] = [0, 0];
+  /** A second finger joined this gesture: it is no longer a tap. */
+  private multiTouched = false;
+  /** True once the last input came from a finger: the tooltip arms
+   *  before it acts, and the ground regime grows a fly control. */
+  private touchMode = false;
+  /** A tap waiting on the next hover pass to learn what it hit. */
+  private tapPending: [number, number] | null = null;
+  /** What the last tap named; a second tap on the same body commits. */
+  private armedKey = '';
   private dragging = false;
   private readonly tooltip: HTMLDivElement;
   private readonly tooltipLine: SVGLineElement;
@@ -484,7 +581,7 @@ export class UnifiedViewer {
     // On foot the mouse is the head: click takes pointer lock, motion
     // steers the gaze, Escape hands the cursor back.
     this.pipeline.renderer.domElement.addEventListener('click', () => {
-      if (!this.flight.active) return;
+      if (!this.flight.active || this.touchMode) return;
       if (document.pointerLockElement !== this.pipeline.renderer.domElement) {
         this.pipeline.renderer.domElement.requestPointerLock();
       }
@@ -507,20 +604,45 @@ export class UnifiedViewer {
       const rightDragPan = (e.buttons & 2) !== 0 && this.panHeld;
       const shiftPan = this.rightShiftHeld && e.buttons !== 0;
       if ((!rightDragPan && !shiftPan) || !this.freeFlightAvailable()) return;
-      const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
-      const worldPerPixel =
-        (2 *
-          Math.tan((this.camera.fov * Math.PI) / 360) *
-          Math.max(this.altitudeKm, this.minAltitudeKm)) /
-        Math.max(rect.height, 1);
-      const right = new Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-      const upVec = new Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
-      const delta = right
-        .multiplyScalar(-e.movementX * worldPerPixel)
-        .addScaledVector(upVec, e.movementY * worldPerPixel);
-      this.camera.position.add(delta);
-      this.controls.target.add(delta);
+      this.panBy(e.movementX, e.movementY);
     });
+    // Fingers: one drags (OrbitControls orbits, or the gaze turns on
+    // foot), two ride and pan at once — the wheel and the right-drag
+    // of a device that has neither.
+    this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch') return;
+      this.touchMode = true;
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touches.size >= 2) {
+        this.multiTouched = true;
+        this.beginTwoFinger();
+      }
+    });
+    this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'touch') return;
+      const previous = this.touches.get(e.pointerId);
+      if (!previous) return;
+      const dx = e.clientX - previous.x;
+      const dy = e.clientY - previous.y;
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touches.size >= 2) {
+        this.updateTwoFinger();
+      } else if (this.flight.active) {
+        // Pointer lock is a mouse idea; on foot the drag is the head.
+        this.headingRad += dx * 0.0032;
+        this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - dy * 0.0032));
+      }
+    });
+    const endTouch = (e: PointerEvent): void => {
+      if (e.pointerType !== 'touch') return;
+      this.touches.delete(e.pointerId);
+      if (this.touches.size < 2) this.panHeld = false;
+      if (this.touches.size === 0) this.multiTouched = false;
+      else this.beginTwoFinger();
+    };
+    this.pipeline.renderer.domElement.addEventListener('pointerup', endTouch);
+    this.pipeline.renderer.domElement.addEventListener('pointercancel', endTouch);
+
     window.addEventListener('keydown', this.onKeyChange);
     window.addEventListener('keyup', this.onKeyChange);
     window.addEventListener('blur', this.onWindowBlur);
@@ -572,6 +694,22 @@ export class UnifiedViewer {
       this.controls.target.set(0, 0, 0);
     });
     container.appendChild(this.recenter);
+    // On foot a finger has no WASD: look with the drag, hold this to
+    // fly where you look. It shares the flight camera's key path.
+    this.flyStick = document.createElement('button');
+    this.flyStick.id = 'fly-stick';
+    this.flyStick.setAttribute('aria-label', 'fly forward');
+    this.flyStick.innerHTML =
+      '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5.5 5 18l7-3.6 7 3.6z"/></svg>';
+    this.flyStick.style.display = 'none';
+    this.flyStick.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      this.flight.press('KeyW');
+    });
+    for (const type of ['pointerup', 'pointercancel', 'pointerleave'] as const) {
+      this.flyStick.addEventListener(type, () => this.flight.release('KeyW'));
+    }
+    container.appendChild(this.flyStick);
     const lineSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     lineSvg.id = 'pick-line';
     lineSvg.setAttribute('width', '100%');
@@ -585,9 +723,12 @@ export class UnifiedViewer {
 
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
       if (document.pointerLockElement) return;
+      this.dragging = e.buttons !== 0;
+      // A finger has no hover, so only a tap probes; a drag must not
+      // leave a phantom cursor naming whatever it ended over.
+      if (e.pointerType === 'touch') return;
       const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
       this.cursor = [e.clientX - rect.left, e.clientY - rect.top];
-      this.dragging = e.buttons !== 0;
     });
     this.pipeline.renderer.domElement.addEventListener('pointerleave', () => {
       this.cursor = null;
@@ -601,6 +742,13 @@ export class UnifiedViewer {
       this.dragging = false;
       if (!down || e.button !== 0) return;
       if (Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+      if (e.pointerType === 'touch') {
+        if (this.multiTouched) return;
+        const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+        this.cursor = [e.clientX - rect.left, e.clientY - rect.top];
+        this.tapPending = this.cursor;
+        return;
+      }
       if (this.hovered?.target && !this.flight.active) this.onPick?.(this.hovered.target);
     });
 
@@ -1144,7 +1292,8 @@ export class UnifiedViewer {
     if (this.cursor && !this.dragging && !this.flight.active) {
       const [cx, cy] = this.cursor;
       const v = new Vector3();
-      let bestPx = 26;
+      // A fingertip covers more sky than a cursor point does.
+      let bestPx = this.touchMode ? 44 : 26;
       const consider = (pickable: Pickable, bias: number): void => {
         v.set(pickable.x, pickable.y, pickable.z).project(this.camera);
         if (v.z > 1 || v.z < -1) return;
@@ -1372,10 +1521,14 @@ export class UnifiedViewer {
     const key = `${best.name}|${best.info}`;
     if (key !== this.hoveredKey) {
       this.hoveredKey = key;
+      // A finger already spent its click naming the body, so the
+      // prompt asks for the one that acts.
+      const action =
+        best.action && this.touchMode ? best.action.replace(/^click/, 'tap again') : best.action;
       this.tooltip.innerHTML = `
         <div class="tip-name">${best.name}</div>
         <div class="tip-info">${best.info}</div>
-        ${best.action ? `<div class="tip-action">${best.action}</div>` : ''}
+        ${action ? `<div class="tip-action">${action}</div>` : ''}
       `;
       this.tooltip.style.display = 'block';
     }
@@ -1941,14 +2094,18 @@ export class UnifiedViewer {
 
   private updateWalkHint(): void {
     if (!this.walkHint) return;
+    if (this.flyStick) {
+      this.flyStick.style.display = this.flight.active && this.touchMode ? '' : 'none';
+    }
     let text = '';
     if (this.flight.active) {
-      text =
-        document.pointerLockElement === this.pipeline.renderer.domElement
+      text = this.touchMode
+        ? 'drag to look · hold to fly · pinch out to leave'
+        : document.pointerLockElement === this.pipeline.renderer.domElement
           ? 'w a s d fly · space rise · c dive · shift boost · scroll up to leave'
           : 'click to take the controls';
     } else if (this.field && this.altitudeKm <= this.minAltitudeKm * 1.02) {
-      text = 'scroll in to fly';
+      text = this.touchMode ? 'pinch in to fly' : 'scroll in to fly';
     }
     if (text !== this.walkHintText) {
       this.walkHintText = text;
@@ -2138,6 +2295,7 @@ export class UnifiedViewer {
 
       this.updateWorld(up);
       this.updateHover();
+      this.resolveTap();
       this.updateWalkHint();
       this.updateRecenter();
 

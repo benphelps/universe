@@ -37,9 +37,16 @@ const TAB_UNIT: Record<Tab, string> = {
  * current level holds (the scrolling table), and the four framing
  * scales along the bottom.
  */
-export function Sidebar({ snap }: { snap: AppSnapshot | null }): ReactNode {
+export function Sidebar({
+  snap,
+  folded = false,
+}: {
+  snap: AppSnapshot | null;
+  /** Off-canvas on a narrow screen: out of reach, not merely out of sight. */
+  folded?: boolean;
+}): ReactNode {
   return (
-    <aside id="sidebar">
+    <aside id="sidebar" className={snap?.consoleOpen ? 'open' : ''} inert={folded}>
       <header id="address">
         {snap && `${snap.address.sector} Sector · ${snap.address.zone.replace('-', ' ')}`}
       </header>

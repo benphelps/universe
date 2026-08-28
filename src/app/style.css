@@ -37,6 +37,8 @@ body {
 
 #root {
   height: 100%;
+  /* Mobile browser chrome collapses as you scroll; dvh follows it. */
+  height: 100dvh;
   display: flex;
 }
 
@@ -46,8 +48,43 @@ body {
   min-width: 0;
 }
 
+/* The scene owns every gesture over it: no page pan, no double-tap
+   zoom, no long-press callout stealing a drag. */
 #view canvas {
   display: block;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* The console's drawer handle. It belongs to narrow screens; on a wide
+   one the console is simply there. */
+#console-toggle {
+  display: none;
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
+  z-index: 12;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  background: rgba(10, 14, 20, 0.8);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+#console-toggle.open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#console-scrim {
+  display: none;
 }
 
 /* ---- console frame ---- */
@@ -1014,4 +1051,192 @@ tr.here .swatch {
 #welcome-continue:hover {
   background: rgba(70, 174, 198, 0.22);
   color: #b5ecf8;
+}
+
+/* Hold-to-fly: the ground regime's stick where there is no keyboard.
+   Thumb-sized, and off to the side of what you are looking at. */
+#fly-stick {
+  position: absolute;
+  right: 18px;
+  bottom: 96px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: rgba(10, 14, 20, 0.72);
+  backdrop-filter: blur(6px);
+  color: var(--accent);
+  touch-action: none;
+  cursor: pointer;
+}
+
+#fly-stick:active {
+  background: var(--accent-soft);
+  color: var(--accent-hi);
+}
+
+/* ---- narrow screens: the console folds into a drawer ---- */
+
+@media (max-width: 860px) {
+  #console-toggle {
+    display: grid;
+  }
+
+  /* Off-canvas, and over the viewport rather than beside it. */
+  #sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 11;
+    width: min(88vw, 390px);
+    padding-top: calc(env(safe-area-inset-top) + 50px);
+    padding-bottom: env(safe-area-inset-bottom);
+    border-right: 1px solid var(--line);
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.55);
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+  }
+
+  #sidebar.open {
+    transform: translateX(0);
+  }
+
+  #console-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    background: rgba(4, 6, 10, 0.5);
+  }
+
+  #console-scrim[hidden] {
+    display: none;
+  }
+
+  /* The catalog plate is the drawer's headline; the level table below
+     it gets whatever height is left. */
+  #focus {
+    padding: 10px 14px 12px;
+  }
+
+  #level {
+    padding: 0 14px 10px;
+  }
+
+  #level h2 {
+    margin: 0 -14px 9px;
+    padding: 8px 14px 6px;
+  }
+
+  /* ---- corner instruments, restacked for one thumb ---- */
+
+  /* The clock strip takes the full width along the bottom; the seed
+     keeps its copy button but sheds the hex, which the URL carries. */
+  #timeseed {
+    left: calc(8px + env(safe-area-inset-left));
+    right: calc(8px + env(safe-area-inset-right));
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    gap: 5px;
+  }
+
+  #timeseed #time-slider {
+    flex: 1;
+    min-width: 0;
+    padding: 0 12px 0 10px;
+  }
+
+  #time-rate {
+    width: 56px;
+    font-size: 11px;
+  }
+
+  #time-slider .track-wrap {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+    margin: 0 0 0 8px;
+  }
+
+  /* The detent labels do not survive the narrower track; the marks do. */
+  #time-slider .ticks span {
+    display: none;
+  }
+
+  #time-slider .ticks {
+    height: 0;
+  }
+
+  #seed-chip {
+    padding: 0 11px;
+  }
+
+  #seed-chip #seed-text {
+    display: none;
+  }
+
+  /* Decals and the ride chip share the row above the clock. */
+  #decals {
+    right: calc(8px + env(safe-area-inset-right));
+    bottom: calc(54px + env(safe-area-inset-bottom));
+    gap: 5px;
+  }
+
+  #ride {
+    left: calc(8px + env(safe-area-inset-left));
+    right: auto;
+    bottom: calc(54px + env(safe-area-inset-bottom));
+  }
+
+  #settings-corner {
+    top: calc(12px + env(safe-area-inset-top));
+    right: calc(12px + env(safe-area-inset-right));
+  }
+
+  #settings-menu {
+    width: min(76vw, 272px);
+  }
+
+  /* The overlays sit clear of the drawer handle and the cog. */
+  #recenter,
+  #walk-hint {
+    top: calc(62px + env(safe-area-inset-top));
+  }
+
+  #welcome-card {
+    padding: 22px 20px 20px;
+  }
+}
+
+/* ---- no hover to give ---- */
+
+/* A tap leaves :hover stuck on whatever it touched, so on a touch
+   device the hover affordances say nothing true. Actives still speak. */
+@media (hover: none) {
+  tr.pick:hover td,
+  .mark:hover {
+    background: none;
+  }
+
+  .mark-note.editable:hover {
+    color: var(--dim);
+  }
+
+  #sidebar button:hover:not(.active),
+  #settings-corner button:hover:not(.open),
+  #decals button:hover:not(.active),
+  #timeseed button:hover:not(.active),
+  #ride:hover:not(.active) {
+    border-color: var(--line);
+    color: var(--dim);
+  }
+
+  #level-nav button:hover:not(.active) {
+    box-shadow: inset 0 2px 0 transparent;
+    color: var(--dim);
+  }
 }

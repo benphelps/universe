@@ -21,6 +21,12 @@ function randomGalaxyHex(): string {
   return words[0].toString(16).padStart(8, '0') + words[1].toString(16).padStart(8, '0');
 }
 
+/** The same four moves, in whichever hand the visitor arrived with. */
+const CONTROLS_HINT =
+  typeof matchMedia === 'function' && matchMedia('(hover: none)').matches
+    ? 'pinch to ride between scales · drag to orbit · two fingers to pan · tap any glint twice to travel'
+    : 'scroll to ride between scales · drag to orbit · right-drag to pan · click any glint to travel';
+
 function remember(): void {
   try {
     localStorage.setItem(SEEN_KEY, '1');
@@ -148,10 +154,7 @@ export function Welcome(): ReactNode {
               of GPU memory in use and sustained CPU/GPU load. A reasonably capable computer makes
               for a better visit.
             </div>
-            <div className="controls-hint">
-              scroll to ride between scales · drag to orbit · right-drag to pan · click any glint
-              to travel
-            </div>
+            <div className="controls-hint">{CONTROLS_HINT}</div>
             <button id="welcome-continue" onClick={onContinue}>
               Continue
             </button>

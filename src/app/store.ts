@@ -59,6 +59,8 @@ export interface AppSnapshot {
   ridingOut: boolean;
   /** Bumped when saved marks change, so mark UI re-reads storage. */
   marksEpoch: number;
+  /** Narrow screens fold the console away; this is whether it stands open. */
+  consoleOpen: boolean;
 }
 
 let viewMode: ViewMode = 'star';
@@ -80,6 +82,7 @@ let planetFocus: PlanetFocus = 'planet';
 let beltPick: Asteroid | null = null;
 let ridingOut = false;
 let marksEpoch = 0;
+let consoleOpen = false;
 
 let snapshot: AppSnapshot | null = null;
 const listeners = new Set<() => void>();
@@ -104,6 +107,7 @@ function notify(): void {
           at: localePc ? localeParam(localePc) : undefined,
           ridingOut,
           marksEpoch,
+          consoleOpen,
         }
       : null;
   for (const listener of listeners) listener();
@@ -354,6 +358,26 @@ export function boot(viewElement: HTMLElement): void {
   void getGalacticLandmarks().then(() => notify());
 }
 
+export function toggleConsole(): void {
+  consoleOpen = !consoleOpen;
+  notify();
+}
+
+export function closeConsole(): void {
+  if (!consoleOpen) return;
+  consoleOpen = false;
+  notify();
+}
+
+/**
+ * Choosing a body is the end of a console errand: on a narrow screen
+ * the drawer folds away so the thing you picked is what you see.
+ * Switching levels is browsing, and leaves it standing.
+ */
+function acted(): void {
+  consoleOpen = false;
+}
+
 export function setTab(tab: Tab): void {
   if (tab === 'poi') {
     poiOpen = true;
@@ -366,12 +390,14 @@ export function setTab(tab: Tab): void {
 }
 
 export function stepBody(delta: number): void {
+  acted();
   planetIndex += delta;
   moonIndex = -1;
   load(seedHex);
 }
 
 export function selectPlanet(index: number, hostIndex = companionIndex): void {
+  acted();
   viewMode = 'planet';
   planetIndex = index;
   moonIndex = -1;
@@ -380,6 +406,7 @@ export function selectPlanet(index: number, hostIndex = companionIndex): void {
 }
 
 export function selectMoon(planet: number, moon: number): void {
+  acted();
   viewMode = 'planet';
   planetIndex = planet;
   moonIndex = moon;
@@ -388,12 +415,14 @@ export function selectMoon(planet: number, moon: number): void {
 
 /** The moon plate's stepper walks the parent's moons, wrapping. */
 export function stepMoon(delta: number): void {
+  acted();
   moonIndex += delta;
   load(seedHex);
 }
 
 /** Focus one of the system's stars: 0 the primary, then the companions. */
 export function selectStar(index: number): void {
+  acted();
   viewMode = 'star';
   companionIndex = index;
   load(seedHex);
@@ -401,10 +430,12 @@ export function selectStar(index: number): void {
 
 /** Travel to a neighbor star or landmark at its true galactic position. */
 export function travelTo(destination: { seedHex: string; positionPc: GalacticPosition }): void {
+  acted();
   load(destination.seedHex, destination.positionPc);
 }
 
 export function randomSeed(): void {
+  acted();
   load(randomSeedHex());
 }
 
@@ -415,6 +446,7 @@ export function randomSeed(): void {
  * survives the hop.
  */
 export function travelToMark(mark: Bookmark): void {
+  acted();
   if (mark.galaxy !== seedToHex(galaxySeed())) {
     const url = new URL(location.origin + location.pathname);
     url.searchParams.set('seed', mark.seed);
