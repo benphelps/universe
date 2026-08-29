@@ -162,6 +162,9 @@ export class BlackHoleObject {
   /** Kilometres per gravitational radius: the one number that turns
    *  the dimensionless geometry into this hole. */
   readonly kmPerRg: number;
+  /** Orbital period at the flow's inner edge, seconds — the clock the
+   *  turbulence keeps, since an eddy lasts about one turn of it. */
+  private readonly innerPeriodS: number;
   /** Spin axis in scene coordinates — the accretion flow lies square
    *  across it, so this is what a camera frames itself against. */
   readonly spinAxisScene: Vector3;
@@ -205,6 +208,12 @@ export class BlackHoleObject {
         (Math.sqrt(2 * Math.PI) * flow.aspectRatio)
       : 1;
 
+    // 2π(r^{3/2} + a) in units of r_g/c: the orbital period at the
+    // flow's inner edge, which is the only timescale the gas has.
+    const inner = Math.max(flow.innerRadiusRg, 1e-3);
+    this.innerPeriodS =
+      (2 * Math.PI * (inner ** 1.5 + hole.spin) * hole.gravitationalRadiusM) / 2.99792458e8;
+
     const { sceneFromBh } = spinFrames(hole.spinAxis, sceneFromFrame);
     this.bhFromScene.copy(sceneFromBh).transpose();
     const e = sceneFromBh.elements;
@@ -236,6 +245,7 @@ export class BlackHoleObject {
         uProfileStretch: { value: stretch },
         uTurbSigma: { value: flow.turbulenceSigma },
         uAspect: { value: flow.aspectRatio },
+        uFlowPhase: { value: 0 },
         uDiscGain: { value: DISC_EXPOSURE / columns },
         uLut: { value: lut },
       },
@@ -291,6 +301,8 @@ export class BlackHoleObject {
     worldToScene: Matrix3,
     opacity: number,
     skyOpacity: number,
+    /** Sim time, seconds — the flow turns and re-forms on it. */
+    timeS = 0,
   ): void {
     const uniforms = this.material.uniforms;
     this.worldToBh.multiplyMatrices(this.bhFromScene, worldToScene);
@@ -305,6 +317,7 @@ export class BlackHoleObject {
     if (!this.mesh.visible) return;
     uniforms.uOpacity.value = alpha;
     uniforms.uSkyOpacity.value = skyOpacity;
+    uniforms.uFlowPhase.value = timeS / this.innerPeriodS;
 
     this.cameraRotation.setFromMatrix4(camera.matrixWorld);
     (uniforms.uViewToBh.value as Matrix3).multiplyMatrices(this.worldToBh, this.cameraRotation);

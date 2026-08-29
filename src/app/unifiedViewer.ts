@@ -2421,7 +2421,7 @@ export class UnifiedViewer {
       pixelsPerRadian,
     );
     if (this.nuclearCluster) this.nuclearCluster.group.visible = !holeCoversSky;
-    this.blackHole?.update(this.camera, ORIGIN, identity, 1, 1);
+    this.blackHole?.update(this.camera, ORIGIN, identity, 1, 1, this.simTimeDays * 86400);
     // The geodesics are traced into the hole's own target before the
     // scene is drawn; what the scene holds is only the result.
     this.blackHole?.render(this.pipeline.renderer);
@@ -2492,7 +2492,7 @@ export class UnifiedViewer {
   private updateStellarHole(node: StarNode, position: Vector3): void {
     const hole = node.hole;
     if (!hole || !node.holeSky) return;
-    hole.update(this.camera, position, IDENTITY_MATRIX, 1, 1);
+    hole.update(this.camera, position, IDENTITY_MATRIX, 1, 1, this.simTimeDays * 86400);
     if (!hole.mesh.visible) return;
     const parallax = this.nearestStarSeparation(position);
     if (!node.capturedAt || node.capturedAt.distanceTo(position) > 0.02 * parallax) {

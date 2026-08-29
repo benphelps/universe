@@ -98,11 +98,20 @@ uniform float uRefTempK;
 uniform float uProfileStretch;
 uniform float uTurbSigma;
 uniform float uAspect;
+uniform float uFlowPhase;
 uniform float uDiscGain;
 uniform sampler2D uLut;
 
 const float LENSING_REACH = ${LENSING_REACH_RG}.0;
 const int MAX_STEPS = 384;
+const float TAU = 6.28318531;
+/**
+ * How long a clump lasts, in orbits at the flow's inner edge. The
+ * magnetorotational instability turns its eddies over in about one, so
+ * this is not a rate of change chosen for the look of it — it is the
+ * only timescale the flow has.
+ */
+const float EDDY_LIFETIME = 1.0;
 /** Mino-time step, as a fraction of the fastest coordinate's rate. */
 const float STEP_EPS = 0.045;
 /** Half-thickness above which the flow is passed through rather than
@@ -132,9 +141,16 @@ const float AXIS_RATE_CAP = 600.0;
  * range is clipped to the one or two sigma that simulated density
  * histograms actually span.
  */
-float flowDensity(float r, float phi, float mu) {
-  float wind = 9.0 * pow(r / uInnerRenderRg, -1.5);
-  float a = phi + wind;
+float turbulentField(float r, float phi, float mu, float age, float generation) {
+  float keplerian = pow(r / uInnerRenderRg, -1.5);
+  // Three things move the pattern round. The static winding it is born
+  // with; the flow's bulk rotation, which turns everything together and
+  // so never shears; and the differential part, which is the only one
+  // that combs the field into ever-finer filaments and is therefore the
+  // only one allowed to accumulate without limit — it does not, because
+  // the age it multiplies is reset each time this realisation is
+  // reseeded.
+  float a = phi + 9.0 * keplerian + TAU * uFlowPhase + TAU * age * (keplerian - 1.0);
   // Sheared hard along the radius and stretched around it: turbulence
   // in a flow that orbits differentially is drawn out into filaments
   // far longer than they are wide, which is what banding is. Height
@@ -142,7 +158,45 @@ float flowDensity(float r, float phi, float mu) {
   // sampled on a surface and a thick torus through its whole depth.
   vec3 q = vec3(6.5 * log(r), 4.0 * cos(a), 4.0 * sin(a));
   q += vec3(0.0, 0.0, 2.2 * mu / max(uAspect, 0.02));
-  float xi = (snoise(q) + 0.5 * snoise(q * 2.7) + 0.25 * snoise(q * 6.1)) / 1.32;
+  q += generation * vec3(17.3, -41.7, 29.1);
+  return (snoise(q) + 0.5 * snoise(q * 2.7) + 0.25 * snoise(q * 6.1)) / 1.32;
+}
+
+/**
+ * The flow's density where the ray meets it, relative to the smooth
+ * profile — and how that changes while you watch.
+ *
+ * Accreting gas is not smooth. The magnetorotational instability, which
+ * is what lets it accrete at all, leaves it clumped on a log-normal
+ * distribution of the width simulations measure, and the shear draws
+ * every clump into a trailing filament. Neither is it still: an eddy
+ * turns over in about an orbit and is gone, replaced by another the
+ * instability has just made, and at the innermost orbit of the hole at
+ * this galaxy's centre that is a little over a minute.
+ *
+ * Advecting one frozen field would show the first half of that and not
+ * the second — the pattern would shear without bound, stretching into
+ * finer and finer threads that never renew, until the radial structure
+ * fell below what can be resolved. So two realisations run half a
+ * lifetime out of phase, each reseeded while it carries no weight, and
+ * are blended so the variance is preserved rather than the mean, which
+ * is what keeps the contrast steady across the handover. The bulk
+ * rotation is applied to both alike and never resets, so the flow's own
+ * turning stays continuous through it.
+ */
+float flowDensity(float r, float phi, float mu) {
+  float t = uFlowPhase / EDDY_LIFETIME;
+  float phase = fract(t);
+  // The two generations are half a lifetime apart, and each carries no
+  // weight at the moment it is reseeded — sine for the one born at the
+  // whole turn, cosine for the one born at the half. Their squares sum
+  // to one, so what is held constant across the handover is the
+  // variance and not the mean: the clumping never dulls mid-crossfade.
+  float wA = sin(3.14159265 * phase);
+  float wB = cos(3.14159265 * phase);
+  float xi =
+    wA * turbulentField(r, phi, mu, phase * EDDY_LIFETIME, floor(t)) +
+    wB * turbulentField(r, phi, mu, fract(phase + 0.5) * EDDY_LIFETIME, floor(t + 0.5));
   // Log-normal, with the −σ²/2 that keeps the mean density unchanged.
   return clamp(exp(uTurbSigma * xi - 0.5 * uTurbSigma * uTurbSigma), 0.2, 4.0);
 }
@@ -330,6 +384,14 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
 
   vec3 accum = vec3(0.0);
   bool settled = false;
+  // The volume march re-reads the clumping only every few steps. What
+  // it is integrating is a path through an optically thin torus, and
+  // that path already averages over far more cells than one step
+  // resolves — the fluctuations wash out of the answer whether they are
+  // sampled finely or not, which is why a hot flow looks smooth and a
+  // disc seen at one crossing does not.
+  float heldDensity = 1.0;
+  int held = 0;
   float horizon = uHorizonRg + 0.002;
 
   for (int i = 0; i < MAX_STEPS; i++) {
@@ -372,8 +434,12 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
       if (presence > 0.002 && abs(muMid) < 3.5 * uAspect) {
         float tEmit = flowTemperature(rMid);
         if (tEmit > 0.0) {
-          float phiMid = 0.5 * (prevPhi + phi);
-          float density = flowDensity(rMid, phiMid, muMid);
+          if (held <= 0) {
+            heldDensity = flowDensity(rMid, 0.5 * (prevPhi + phi), muMid);
+            held = 3;
+          }
+          held--;
+          float density = heldDensity;
           tEmit *= pow(density, 0.25);
           vec3 u = kerrFlowVelocity(rMid, a, uInnerRg);
           float dr = 0.5 * (prev.z + y.z);
