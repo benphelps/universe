@@ -60,6 +60,9 @@ interface Outcome {
   sweep: number;
   turningRadius: number;
   steps: number;
+  /** How many times the ray crossed the equatorial plane inside the
+   *  radius a flow would occupy: one image of the disc per crossing. */
+  crossings: number;
 }
 
 /** March one ray until it falls in or leaves, exactly as the shader does. */
@@ -76,15 +79,21 @@ function march(
   let { r, mu, phi, dr, dmu } = start;
   const phi0 = phi;
   let turningRadius = r;
+  let crossings = 0;
   for (let i = 0; i < maxSteps; i++) {
-    if (r < horizon) return { captured: true, sweep: phi - phi0, turningRadius, steps: i };
-    if (r > reach && dr < 0) return { captured: false, sweep: phi - phi0, turningRadius, steps: i };
+    if (r < horizon) {
+      return { captured: true, sweep: phi - phi0, turningRadius, steps: i, crossings };
+    }
+    if (r > reach && dr < 0) {
+      return { captured: false, sweep: phi - phi0, turningRadius, steps: i, crossings };
+    }
     turningRadius = Math.min(turningRadius, r);
 
     const rate =
       Math.abs(dr) / Math.max(r, 1) + Math.abs(dmu) + Math.abs(phiRate(r, mu, a, ray.xi));
     const ds = -eps / Math.max(rate, 1e-4);
 
+    const before = mu;
     const k1 = rates(r, mu, dr, dmu, a, ray);
     const k2 = rates(
       r + k1.dr * ds * 0.5, mu + k1.dmu * ds * 0.5,
@@ -127,10 +136,10 @@ function march(
       polar = Math.max(polarPotential(mu, ray, a), 0);
     }
     dmu = (dmu < 0 ? -1 : 1) * Math.sqrt(polar);
+    // One image of the disc per crossing of its plane inside the flow.
+    if (before * mu < 0 && r < 60) crossings++;
   }
-  // Still circling when the budget runs out: the shader calls these
-  // captured, and they are the near-critical rays that wind forever.
-  return { captured: true, sweep: phi - phi0, turningRadius, steps: maxSteps };
+  return { captured: true, sweep: phi - phi0, turningRadius, steps: maxSteps, crossings };
 }
 
 /** A ray coming inward from `reach` with the given constants. */
@@ -282,6 +291,38 @@ describe('the traced deflection', () => {
     expect(loops(0.2)).toBeLessThan(0.75);
     expect(loops(1e-3)).toBeGreaterThan(1);
     expect(loops(1e-7)).toBeGreaterThan(2);
+  });
+
+  it('crosses the equatorial plane again and again near the photon orbit', () => {
+    // Higher-order images. A ray that skims the unstable circular orbit
+    // passes through the disc's plane once on the way in and again on
+    // every half turn it makes before it leaves, and each of those is a
+    // fainter, thinner copy of the disc stacked at the shadow's edge —
+    // the secondary and tertiary Einstein rings.
+    //
+    // Resolving them is a property of the step rule rather than a
+    // special case bolted on near the photon sphere: the polar rate is
+    // one of the terms that sets the step, so a ray winding in θ is
+    // stepped finely exactly where it needs to be and cannot step over
+    // its own crossings.
+    const reach = 600;
+    const crossings = (excess: number): number => {
+      const b = 3 * Math.sqrt(3) * (1 + excess);
+      // Tilted: some angular momentum about the axis, the rest in
+      // Carter's constant, so the ray genuinely crosses the plane.
+      const xi = 0.5 * b;
+      const ray: PhotonRay = { xi, eta: b * b - xi * xi, dr: 0, dmu: 0 };
+      return march(inbound(ray, 0, reach), ray, 0, reach).crossings;
+    };
+    // Well clear of the critical parameter a ray crosses once and is
+    // gone, and that is the disc you see. Approaching it the count
+    // climbs as the logarithm of how close you are, which is the rate
+    // the winding itself diverges at — one more image per factor of a
+    // few hundred, all the way down to a part in a million million.
+    expect(crossings(0.5)).toBe(1);
+    expect(crossings(1e-5)).toBeGreaterThanOrEqual(3);
+    expect(crossings(1e-8)).toBeGreaterThanOrEqual(5);
+    expect(crossings(1e-12)).toBeGreaterThanOrEqual(8);
   });
 
   it('turns around exactly at the radial potential’s root', () => {

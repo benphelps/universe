@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { iscoRadiusRg, photonSphereRadiusRg } from './blackHole';
+import { horizonRadiusRg, iscoRadiusRg, photonSphereRadiusRg } from './blackHole';
 import {
   criticalConstants,
   delta,
+  flowFourVelocity,
   orbitAngularVelocity,
   orbitTimeDilation,
   photonFromDirection,
   polarPotential,
   radialPotential,
+  type PhotonRay,
   polarShadowRadius,
   shadowOutline,
 } from './kerr';
@@ -193,5 +195,69 @@ describe('circular orbits', () => {
     const still = orbitAngularVelocity(iscoRadiusRg(0), 0);
     const spun = orbitAngularVelocity(iscoRadiusRg(0.998), 0.998);
     expect(spun / still).toBeCloseTo(6.19, 1);
+  });
+});
+
+describe('what the flow is doing', () => {
+  it('holds a circle outside the last stable orbit and falls inside it', () => {
+    // The boundary is not imposed. A circular orbit's own energy and
+    // angular momentum make the radial term vanish identically, so the
+    // same expression describes both sides and the infall switches
+    // itself on exactly where orbits stop existing.
+    for (const spin of [0, 0.5, 0.9, 0.998]) {
+      const isco = iscoRadiusRg(spin);
+      for (const r of [isco, isco * 1.5, isco * 4, 50]) {
+        expect(flowFourVelocity(r, spin, isco).ur).toBeCloseTo(0, 6);
+      }
+      for (const f of [0.98, 0.9, 0.75]) {
+        const inside = flowFourVelocity(isco * f, spin, isco);
+        expect(inside.ur).toBeLessThan(0);
+        expect(Number.isFinite(inside.ut)).toBe(true);
+      }
+    }
+  });
+
+  it('falls faster the further inside the boundary it gets', () => {
+    const spin = 0.9;
+    const isco = iscoRadiusRg(spin);
+    const near = flowFourVelocity(isco * 0.95, spin, isco).ur;
+    const deep = flowFourVelocity(isco * 0.7, spin, isco).ur;
+    expect(deep).toBeLessThan(near);
+  });
+
+  it('says no light where the gas could not have emitted any', () => {
+    // The received frequency divides by (−p·u), and the renderer needs
+    // to know where that stops being positive. It does, in one place
+    // and for one reason: within a fraction of a percent of the horizon
+    // the gas is dragged round at Ω_H, and a photon carrying more
+    // angular momentum than 1/Ω_H would have to leave it with negative
+    // energy in its own frame. Nothing emitted it, so nothing arrives —
+    // and the renderer has to return darkness there rather than clamp
+    // the denominator and turn it into the brightest thing on screen.
+    let negatives = 0;
+    for (const spin of [0, 0.5, 0.9, 0.998]) {
+      const isco = iscoRadiusRg(spin);
+      const horizon = horizonRadiusRg(spin);
+      for (let i = 0; i <= 60; i++) {
+        const r = horizon * 1.001 + (30 - horizon) * (i / 60);
+        const u = flowFourVelocity(r, spin, isco);
+        for (const xi of [-6, -3, 0, 2, 4]) {
+          const ray: PhotonRay = { xi, eta: 0, dr: 0, dmu: 0 };
+          const potential = radialPotential(r, ray, spin);
+          if (potential < 0) continue;
+          const dr = Math.sqrt(potential);
+          const shift = u.ut - xi * u.uphi - (dr * u.ur) / delta(r, spin);
+          expect(Number.isFinite(shift)).toBe(true);
+          if (shift <= 0) {
+            negatives++;
+            // Only ever within a whisker of the horizon, and only for
+            // photons the horizon's own rotation outruns.
+            expect(r).toBeLessThan(horizon * 1.01);
+            expect(xi * (u.uphi / u.ut)).toBeGreaterThan(1);
+          }
+        }
+      }
+    }
+    expect(negatives).toBeGreaterThan(0);
   });
 });

@@ -219,6 +219,46 @@ export function shadowOutline(
   return points;
 }
 
+/** Energy and angular momentum of the prograde circular orbit at r. */
+export function orbitEnergyAngular(r: number, spin: number): { e: number; l: number } {
+  const a = clampSpin(spin);
+  const s = Math.sqrt(r);
+  const root = Math.sqrt(Math.max(r * r - 3 * r + 2 * a * s, 1e-9));
+  return {
+    e: (r * r - 2 * r + a * s) / (r * root),
+    l: (r * r - 2 * a * s + a * a) / (s * root),
+  };
+}
+
+/**
+ * Four-velocity (u^t, u^φ, u^r) of accreting matter in the equatorial
+ * plane, mirroring kerrGlsl for the renderer.
+ *
+ * Outside the innermost stable orbit it is a circular geodesic. Inside
+ * there are none, so the matter falls carrying the energy and angular
+ * momentum it left the last stable circle with — nothing in the
+ * plunging region has time to change them. One expression covers both,
+ * because a circular orbit's own constants make the radial term vanish
+ * identically at and outside the boundary.
+ */
+export function flowFourVelocity(
+  r: number,
+  spin: number,
+  iscoRg: number,
+): { ut: number; uphi: number; ur: number } {
+  const a = clampSpin(spin);
+  const { e, l } = orbitEnergyAngular(Math.max(r, iscoRg), a);
+  const d = delta(r, a);
+  const p = e * (r * r + a * a) - a * l;
+  const lae = l - a * e;
+  const r2 = r * r;
+  return {
+    ut: (((r * r + a * a) * p) / d + a * lae) / r2,
+    uphi: ((a * p) / d + lae) / r2,
+    ur: -Math.sqrt(Math.max(p * p - d * (r2 + lae * lae), 0)) / r2,
+  };
+}
+
 /** Angular velocity of an equatorial circular geodesic, prograde. */
 export function orbitAngularVelocity(r: number, spin: number): number {
   return 1 / (r ** 1.5 + clampSpin(spin));

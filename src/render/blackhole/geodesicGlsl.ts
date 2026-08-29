@@ -251,6 +251,24 @@ float flowTemperature(float r) {
   return uInnerTempK * pow(r / uInnerRg, -uProfileExp) * taper;
 }
 
+/**
+ * Ratio of received to emitted frequency, g = 1/(−p·u), contracted
+ * against the four-velocity the matter actually has.
+ *
+ * Very close to the horizon the matter is dragged round at the
+ * horizon's own angular velocity, and against that a photon carrying
+ * more angular momentum than 1/Ω_H would have to have been emitted with
+ * negative energy in the gas's own frame. No such photon was emitted,
+ * so none arrives: the honest answer there is no light at all, and
+ * returning zero says exactly that. Clamping the denominator to
+ * something small instead — the obvious guard — turns the one place
+ * light cannot come from into the brightest thing on the screen.
+ */
+float shiftFactor(vec3 u, float xi, float dr, float r, float a) {
+  float received = u.x - xi * u.y - dr * u.z / kerrDelta(r, a);
+  return received > 1.0e-3 ? 1.0 / received : 0.0;
+}
+
 /** Boyer–Lindquist (r, μ) of a pseudo-Cartesian point. */
 vec2 blFromCartesian(vec3 p, float a) {
   float t = dot(p, p) - a * a;
@@ -443,7 +461,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
           tEmit *= pow(density, 0.25);
           vec3 u = kerrFlowVelocity(rMid, a, uInnerRg);
           float dr = 0.5 * (prev.z + y.z);
-          float g = 1.0 / max(u.x - xi * u.y - dr * u.z / kerrDelta(rMid, a), 0.06);
+          float g = shiftFactor(u, xi, dr, rMid, a);
           float tObs = g * tEmit;
           // How much gas this step went through: the distance the
           // photon covered, as the gas measures it, times what is there
@@ -494,7 +512,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
         // colour and, through σ(gT)⁴, the beaming as well.
         vec3 u = kerrFlowVelocity(rHit, a, uInnerRg);
         vec4 at = mix(prev, y, f);
-        float g = 1.0 / max(u.x - xi * u.y - at.z * u.z / kerrDelta(rHit, a), 0.06);
+        float g = shiftFactor(u, xi, at.z, rHit, a);
         float tObs = g * tEmit;
         vec3 through = kerrHeading(vec4(rHit, 0.0, at.z, at.w), phiHit, a, xi);
         float slant = max(abs(normalize(through).z), 0.04);

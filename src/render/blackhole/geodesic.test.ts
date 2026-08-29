@@ -31,6 +31,17 @@ describe('the geodesic tracer', () => {
     expect(MAX_SPIN).toBe(0.998);
   });
 
+  it('returns darkness where the gas could not have emitted', () => {
+    // Within a whisker of the horizon the gas is dragged at the
+    // horizon's own rate, and a photon carrying more angular momentum
+    // than that rotation outruns would have had to leave it with
+    // negative energy. Clamping the denominator — the obvious guard —
+    // turns the one place light cannot come from into the brightest
+    // thing on the screen. See the companion test in core/physics.
+    expect(GEODESIC_GLSL).toContain('received > 1.0e-3 ? 1.0 / received : 0.0');
+    expect(GEODESIC_GLSL).not.toContain('max(u.x - xi * u.y');
+  });
+
   it('gives either flow regime the same readable falloff', () => {
     // A hot torus runs T ∝ r^-1 and a thin disc r^-3/4; both have to
     // reach the screen falling at the same rate, or one is a haze and
