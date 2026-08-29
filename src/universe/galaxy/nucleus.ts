@@ -50,7 +50,7 @@ export interface GalacticNucleus {
   /** Unit spin axis in galactic coordinates — the accretion flow lies
    *  perpendicular to it. Fed by the bar, the hole ends up loosely
    *  aligned with the disk it eats from, never exactly. */
-  spinAxisGalactic: [number, number, number];
+  spinAxis: [number, number, number];
   hawkingTemperatureK: number;
   cluster: NuclearStarCluster;
   flow: AccretionFlow;
@@ -110,7 +110,7 @@ export function galacticNucleus(): GalacticNucleus {
     shadowRadiusM: shadowImpactParameterRg() * gravitationalRadiusM,
     influenceRadiusPc,
     iscoPeriodS,
-    spinAxisGalactic: [
+    spinAxis: [
       Math.sin(tilt) * Math.cos(azimuth),
       Math.sin(tilt) * Math.sin(azimuth),
       Math.cos(tilt),

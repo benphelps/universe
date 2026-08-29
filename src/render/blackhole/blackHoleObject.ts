@@ -21,7 +21,7 @@ import {
 } from 'three';
 import { discPeakRadiusRg, horizonRadiusRg } from '../../core/physics/blackHole';
 import { flowTemperature } from '../../universe/galaxy/accretionFlow';
-import type { GalacticNucleus } from '../../universe/galaxy/nucleus';
+import type { AccretionFlow } from '../../universe/galaxy/accretionFlow';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { FLOW_DRAW_SPAN, GEODESIC_GLSL, profileStretch } from './geodesicGlsl';
 import { KERR_GLSL } from './kerrGlsl';
@@ -40,6 +40,8 @@ const THICK_FLOW = (aspectRatio: number): boolean => aspectRatio > 0.15;
  *  ray's start point stops fitting in a float: the nuclear cluster is
  *  all there is to see of the centre from out here, and it is enough. */
 const RENDER_REACH_RG = 3e5;
+/** Below this Eddington ratio a flow is not drawn at all. */
+const FLOW_VISIBILITY_FLOOR = 1e-10;
 /**
  * Resolution the geodesics are traced at, against the screen's.
  *
@@ -117,6 +119,22 @@ void main() {
 `;
 
 /**
+ * Everything the tracer needs to know about a hole. There is only one
+ * kind, and only one scale in it: a stellar remnant and a galaxy's
+ * nucleus differ by seven orders of magnitude in size and in nothing
+ * else, so the same object draws both.
+ */
+export interface TracedHole {
+  /** Dimensionless a★ = Jc/GM². */
+  spin: number;
+  /** GM/c², metres — the unit every length in the trace is quoted in. */
+  gravitationalRadiusM: number;
+  /** Unit spin axis; the flow lies square across it. */
+  spinAxis: readonly [number, number, number];
+  flow: AccretionFlow;
+}
+
+/**
  * A black hole drawn by tracing light instead of shading a surface.
  * Every pixel of the screen launches one ray backwards through the
  * Kerr geometry (see kerrGlsl), so the shadow, the photon
@@ -149,17 +167,28 @@ export class BlackHoleObject {
   readonly spinAxisScene: Vector3;
 
   constructor(
-    nucleus: GalacticNucleus,
+    hole: TracedHole,
     lut: DataTexture,
-    /** Row-major galactic→scene rotation, as the sky uses. */
-    sceneFromGalaxy: Float32Array,
+    /** Row-major rotation from the frame the spin axis is quoted in to
+     *  the scene's — the sky's galactic→scene matrix for the nucleus,
+     *  the identity for a hole already described in scene coordinates. */
+    sceneFromFrame: Float32Array,
   ) {
-    this.kmPerRg = nucleus.gravitationalRadiusM / 1000;
-    const flow = nucleus.flow;
+    this.kmPerRg = hole.gravitationalRadiusM / 1000;
+    const flow = hole.flow;
     // No floor: Kerr propagation reaches the flow's own inner edge,
     // which for a starved torus is the horizon itself.
     const innerRender = flow.innerRadiusRg;
-    const outerDrawn = Math.min(flow.outerRadiusRg, innerRender * FLOW_DRAW_SPAN);
+    // Brightness is shown against the flow's own peak, so that either
+    // regime is readable — which would draw a starved hole's flow as
+    // brightly as a quasar's if nothing said otherwise. Below a part in
+    // ten billion of Eddington there is nothing there to see: the gas
+    // is fainter than the sky behind it, and what the eye gets is the
+    // lensing alone. That is the honest picture of very nearly every
+    // black hole there is.
+    const outerDrawn = flow.eddingtonRatio > FLOW_VISIBILITY_FLOOR
+      ? Math.min(flow.outerRadiusRg, innerRender * FLOW_DRAW_SPAN)
+      : 0;
     // Reference brightness: the hottest patch the trace can actually
     // reach, so the exposure means the same thing in either regime.
     const peakRadius = Math.max(discPeakRadiusRg(flow.innerRadiusRg), innerRender);
@@ -176,7 +205,7 @@ export class BlackHoleObject {
         (Math.sqrt(2 * Math.PI) * flow.aspectRatio)
       : 1;
 
-    const { sceneFromBh } = spinFrames(nucleus.spinAxisGalactic, sceneFromGalaxy);
+    const { sceneFromBh } = spinFrames(hole.spinAxis, sceneFromFrame);
     this.bhFromScene.copy(sceneFromBh).transpose();
     const e = sceneFromBh.elements;
     // Column-major in three: the third column is the axis image.
@@ -193,8 +222,8 @@ export class BlackHoleObject {
         uSkyCube: { value: null as CubeTexture | null },
         uSkyOpacity: { value: 1 },
         uOpacity: { value: 0 },
-        uSpin: { value: nucleus.spin },
-        uHorizonRg: { value: horizonRadiusRg(nucleus.spin) },
+        uSpin: { value: hole.spin },
+        uHorizonRg: { value: horizonRadiusRg(hole.spin) },
         uInnerRg: { value: flow.innerRadiusRg },
         uInnerRenderRg: { value: innerRender },
         uOuterRg: { value: outerDrawn },
@@ -321,24 +350,24 @@ export class BlackHoleObject {
  * is the z = 0 plane and the trace never has to carry an orientation.
  */
 function spinFrames(
-  axisGalactic: [number, number, number],
-  sceneFromGalaxy: Float32Array,
+  axis: readonly [number, number, number],
+  sceneFromFrame: Float32Array,
 ): { sceneFromBh: Matrix3 } {
-  const n = new Vector3(...axisGalactic).normalize();
+  const n = new Vector3(axis[0], axis[1], axis[2]).normalize();
   const seed = Math.abs(n.z) < 0.9 ? new Vector3(0, 0, 1) : new Vector3(1, 0, 0);
   const e1 = new Vector3().crossVectors(seed, n).normalize();
   const e2 = new Vector3().crossVectors(n, e1);
-  // Columns are the BH basis expressed in galactic coordinates.
-  const bhToGalaxy = new Matrix3().set(
+  // Columns are the hole's basis expressed in the incoming frame.
+  const bhToFrame = new Matrix3().set(
     e1.x, e2.x, n.x,
     e1.y, e2.y, n.y,
     e1.z, e2.z, n.z,
   );
-  const m = sceneFromGalaxy;
-  const galaxyToScene = new Matrix3().set(
+  const m = sceneFromFrame;
+  const frameToScene = new Matrix3().set(
     m[0], m[1], m[2],
     m[3], m[4], m[5],
     m[6], m[7], m[8],
   );
-  return { sceneFromBh: new Matrix3().multiplyMatrices(galaxyToScene, bhToGalaxy) };
+  return { sceneFromBh: new Matrix3().multiplyMatrices(frameToScene, bhToFrame) };
 }

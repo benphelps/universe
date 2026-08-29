@@ -77,6 +77,8 @@ import {
   LENSING_REACH_RG,
 } from '../render/blackhole/geodesicGlsl';
 import { LensedSky } from '../render/blackhole/lensedSky';
+import { stellarBlackHole } from '../universe/star/stellarHole';
+import type { Donor } from '../universe/star/compactAccretion';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
@@ -122,6 +124,9 @@ import type { Planet, StarSystem } from '../universe/system/types';
 const EARTH_RADIUS_KM = EARTH_RADIUS / 1000;
 const SOLAR_RADIUS_KM = SOLAR_RADIUS / 1000;
 const AU_KM = AU / 1000;
+/** A hole described in scene coordinates needs no rotation into them. */
+const IDENTITY_FRAME = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+const IDENTITY_MATRIX = new Matrix3();
 const PC_KM = PARSEC / 1000;
 const GALAXY_ARRIVAL_ALTITUDE_KM = 15 * PC_KM;
 /** High enough to frame the whole galaxy from above the disk. */
@@ -216,6 +221,11 @@ interface PlanetNode {
 interface StarNode {
   object: StarObject;
   radiusKm: number;
+  /** Set only where the star is a black hole: the traced hole, the sky
+   *  captured at it, and where that sky was captured from. */
+  hole: BlackHoleObject | null;
+  holeSky: LensedSky | null;
+  capturedAt: Vector3 | null;
 }
 
 /** Model frame (z out of plane) → viewer world frame. */
@@ -1104,20 +1114,38 @@ export class UnifiedViewer {
     const spriteColors: number[] = [];
     const spriteLuminosities: number[] = [];
     const spriteRadii: number[] = [];
-    const addStar = (star: Star): void => {
+    const addStar = (star: Star, index: number): void => {
       const object = new StarObject(star, this.lut);
       object.group.scale.setScalar(SOLAR_RADIUS_KM);
       this.scene.add(object.group);
-      this.starNodes.push({ object, radiusKm: Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM });
+      // A black hole is not shaded, it is traced: the same pass the
+      // galactic nucleus uses, at seven orders of magnitude less.
+      let hole: BlackHoleObject | null = null;
+      let holeSky: LensedSky | null = null;
+      if (star.stage === 'black-hole') {
+        const model = stellarBlackHole(star, this.donorsFor(system, index), this.holeAxis(system, index));
+        hole = new BlackHoleObject(model, this.lut, IDENTITY_FRAME);
+        holeSky = new LensedSky(512);
+        hole.sky = holeSky.target;
+        this.scene.add(hole.mesh);
+      }
+      this.starNodes.push({
+        object,
+        radiusKm: Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM,
+        hole,
+        holeSky,
+        capturedAt: null,
+      });
       spriteColors.push(...star.linearRgb);
       spriteLuminosities.push(star.luminosity);
       spriteRadii.push(Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM);
     };
-    addStar(system.star);
-    for (const companion of system.companions) {
+    addStar(system.star, 0);
+    for (let c = 0; c < system.companions.length; c++) {
+      const companion = system.companions[c];
       // Every companion shines, and its stellar orbit is charted like a
       // planet's — visible whenever the orbit map is.
-      addStar(companion.star);
+      addStar(companion.star, c + 1);
       this.stellarOrbits.add(createOrbitLine(companion.elements, 0xa0a0cc, 0.55));
     }
 
@@ -2233,7 +2261,7 @@ export class UnifiedViewer {
     // camera.up at the value OrbitControls latched onto when it was
     // built — its orbit axis is fixed at construction and a later
     // camera.up only rolls the image out from under the drag.
-    const frame = sceneFromUpAxis(nucleus.spinAxisGalactic);
+    const frame = sceneFromUpAxis(nucleus.spinAxis);
     this.viewpointPc = GALACTIC_CENTRE;
     this.frameQuat.identity();
     this.heliocentric.quaternion.identity();
@@ -2399,6 +2427,113 @@ export class UnifiedViewer {
     this.blackHole?.render(this.pipeline.renderer);
   }
 
+  /**
+   * The other stars in the system, as things that could be feeding this
+   * one. A hole is lit by whatever is close enough to lose material to
+   * it, so every other star is offered with the separation between
+   * them — the companion's own orbit for a hole at the primary, and the
+   * same orbit read the other way for a hole that is the companion.
+   */
+  private donorsFor(system: StarSystem, index: number): Donor[] {
+    const donors: Donor[] = [];
+    if (index === 0) {
+      for (const companion of system.companions) {
+        donors.push({
+          star: companion.star,
+          separationAu: companion.elements.semiMajorAxis / AU,
+        });
+      }
+      return donors;
+    }
+    const own = system.companions[index - 1];
+    if (!own) return donors;
+    donors.push({ star: system.star, separationAu: own.elements.semiMajorAxis / AU });
+    for (let i = 0; i < system.companions.length; i++) {
+      if (i === index - 1) continue;
+      const other = system.companions[i];
+      donors.push({
+        star: other.star,
+        separationAu:
+          Math.abs(other.elements.semiMajorAxis - own.elements.semiMajorAxis) / AU,
+      });
+    }
+    return donors;
+  }
+
+  /**
+   * Which way the hole's flow lies. Angular momentum arrives along the
+   * orbit that delivers it, so a fed hole's disc is square across its
+   * binary's own axis; a hole with nothing to eat has no disc to orient
+   * and takes the system plane.
+   */
+  private holeAxis(system: StarSystem, index: number): [number, number, number] {
+    const elements =
+      index === 0 ? system.companions[0]?.elements : system.companions[index - 1]?.elements;
+    if (!elements) return [0, 1, 0];
+    const i = elements.inclination;
+    const node = elements.longitudeOfAscendingNode;
+    // Orbital normal in the model frame, carried into the world frame.
+    const n = toWorld({
+      x: Math.sin(i) * Math.sin(node),
+      y: -Math.sin(i) * Math.cos(node),
+      z: Math.cos(i),
+    });
+    return [n.x, n.y, n.z];
+  }
+
+  /**
+   * Draw the hole standing at this star's place. The trace is only
+   * worth anything from close in — a stellar shadow is some tens of
+   * kilometres across, so from anywhere in the system it is far below a
+   * pixel and the object fades itself out — and the sky it lenses is
+   * captured at the hole, refreshed when the hole has moved far enough
+   * for its own surroundings to have shifted behind it.
+   */
+  private updateStellarHole(node: StarNode, position: Vector3): void {
+    const hole = node.hole;
+    if (!hole || !node.holeSky) return;
+    hole.update(this.camera, position, IDENTITY_MATRIX, 1, 1);
+    if (!hole.mesh.visible) return;
+    const parallax = this.nearestStarSeparation(position);
+    if (!node.capturedAt || node.capturedAt.distanceTo(position) > 0.02 * parallax) {
+      node.capturedAt = position.clone();
+      // A point sprite is sized in pixels, so drawn into a capture
+      // coarser than the screen it comes back out of it fatter than the
+      // same star beside it. Scale every sprite layer by the two
+      // resolutions' ratio for the duration of the capture, the way the
+      // nuclear cluster is scaled for the hole at the galaxy's centre.
+      const screen =
+        this.pipeline.renderer.domElement.clientHeight /
+        (2 * Math.tan((this.camera.fov * Math.PI) / 360));
+      const scale = node.holeSky.pixelsPerRadian / screen;
+      this.scaleSprites(scale);
+      node.holeSky.capture(this.pipeline.renderer, this.scene, position, [hole.mesh]);
+      this.scaleSprites(1);
+    }
+    hole.render(this.pipeline.renderer);
+  }
+
+  /** Set every point-sprite layer's size scale at once. */
+  private scaleSprites(scale: number): void {
+    this.scene.traverse((object) => {
+      const material = (object as { material?: { uniforms?: Record<string, { value: unknown }> } })
+        .material;
+      const uniform = material?.uniforms?.uSizeScale;
+      if (uniform) uniform.value = scale;
+    });
+  }
+
+  /** Distance to the nearest other star, which is the scale on which
+   *  the sky behind a moving hole actually shifts. */
+  private nearestStarSeparation(position: Vector3): number {
+    let best = Infinity;
+    for (const other of this.starNodes) {
+      const d = other.object.group.position.distanceTo(position);
+      if (d > 1 && d < best) best = d;
+    }
+    return Number.isFinite(best) ? best : 1e9;
+  }
+
   private clearFocus(): void {
     this.focusMoon = null;
     this.flight.stop();
@@ -2451,6 +2586,13 @@ export class UnifiedViewer {
   }
 
   private clearSystem(): void {
+    for (const node of this.starNodes) {
+      if (node.hole) {
+        this.scene.remove(node.hole.mesh);
+        node.hole.dispose();
+      }
+      node.holeSky?.dispose();
+    }
     for (const { object } of this.starNodes) {
       this.scene.remove(object.group);
       object.dispose();
@@ -3026,6 +3168,7 @@ export class UnifiedViewer {
       const node = this.starNodes[i];
       node.object.group.position.copy(toFocusWorld(starPositions[i]));
       node.object.update(this.simTimeDays, this.camera);
+      if (node.hole) this.updateStellarHole(node, node.object.group.position);
       spritePositions?.setXYZ(
         i,
         node.object.group.position.x,

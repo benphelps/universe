@@ -35,16 +35,22 @@ void main() {
   // than as stars of different brightness.
   float logE = log2(max(luminosity / (distancePc * distancePc), 1e-12)) + uZeroPoint;
   float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
-  float energy = clamp(0.055 * exp2(0.36 * logE), 0.012, 1.7) * uIntensity;
-  // Once the star's actual disc resolves, the photosphere carries it.
-  energy *= 1.0 - smoothstep(0.002, 0.004, aRadiusKm / distanceKm);
-  vColor = starColor * energy;
-  vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   // Sprite sizes are in pixels, so the same star drawn into a coarser
   // buffer covers a wider angle. Rendering into one — the black hole's
   // sky capture — scales them back, or every star read out of it comes
   // back fatter than the one beside it drawn straight to the screen.
-  gl_PointSize = max(size * uSizeScale, 1.0);
+  // But a sprite's light is its area times its per-pixel energy, so
+  // giving up the area would give up the light with it and hand back a
+  // sky dimmer than the one it stands for. The area lost is returned to
+  // the energy, and the star keeps its brightness at its true size.
+  float drawn = max(size * uSizeScale, 1.0);
+  float restored = (size * size) / (drawn * drawn);
+  float energy = clamp(0.055 * exp2(0.36 * logE), 0.012, 1.7) * uIntensity * restored;
+  // Once the star's actual disc resolves, the photosphere carries it.
+  energy *= 1.0 - smoothstep(0.002, 0.004, aRadiusKm / distanceKm);
+  vColor = starColor * energy;
+  vAlpha = clamp(energy * 4.0, 0.0, 1.0);
+  gl_PointSize = drawn;
   gl_Position = projectionMatrix * mvPosition;
   // Sky points sit far beyond the camera's far plane at low altitude,
   // and the far plane cuts on view depth — a camera-rotation-dependent
