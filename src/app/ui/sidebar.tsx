@@ -9,6 +9,7 @@ import {
   planetPlateSpec,
   PlanetLevel,
 } from './planetInfoPanel';
+import { nucleusPlateSpec } from './nucleusPanel';
 import { Plate, type PlateSpec } from './plate';
 import { PoiLevel } from './poiPanel';
 import { starPlateSpec, StarLevel } from './starInfoPanel';
@@ -82,6 +83,8 @@ function FocusPlate({ snap }: { snap: AppSnapshot }): ReactNode {
 }
 
 function focusSpec(snap: AppSnapshot): PlateSpec {
+  // At the centre there is no system to describe — the hole is the focus.
+  if (snap.coreView) return nucleusPlateSpec();
   const { star: hostStar, planets: hostPlanets } = host(snap);
   switch (snap.viewMode) {
     case 'star':

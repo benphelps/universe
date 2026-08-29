@@ -376,3 +376,38 @@ export function stellarDensityCeiling(minCorner: GalacticPosition, sizePc: numbe
 export function dustDensity(position: GalacticPosition): number {
   return sightlineDensities(position).dust;
 }
+
+/** Visual opacity of unit dust density, per parsec — the same 45 per
+ *  kpc the glow map and the volume march accumulate. */
+export const DUST_OPACITY_PER_PC = 0.045;
+
+/**
+ * Optical depth between two points, integrating the dust layer along
+ * the straight path. Nothing at the galactic centre is visible from
+ * the disk in optical light — the column between is dozens of depths
+ * deep — and this is the number that says so.
+ */
+export function dustOpticalDepth(
+  from: GalacticPosition,
+  to: GalacticPosition,
+  // The dust layer is 120 pc thin and a sightline can be tens of kpc
+  // long: too few samples and a grazing path misses the layer entirely.
+  steps = 256,
+): number {
+  const dx = to.xPc - from.xPc;
+  const dy = to.yPc - from.yPc;
+  const dz = to.zPc - from.zPc;
+  const lengthPc = Math.hypot(dx, dy, dz);
+  if (lengthPc < 1e-6) return 0;
+  const step = lengthPc / steps;
+  let tau = 0;
+  for (let i = 0; i < steps; i++) {
+    const f = (i + 0.5) / steps;
+    tau += dustDensity({
+      xPc: from.xPc + dx * f,
+      yPc: from.yPc + dy * f,
+      zPc: from.zPc + dz * f,
+    });
+  }
+  return tau * step * DUST_OPACITY_PER_PC;
+}

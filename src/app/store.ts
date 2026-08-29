@@ -51,6 +51,8 @@ export interface AppSnapshot {
   planetFocus: PlanetFocus;
   /** A belt member picked in the scene: its plate overrides the focus. */
   beltPick: Asteroid | null;
+  /** The camera is at the galactic centre, not in the system at all. */
+  coreView: boolean;
   neighbors: Neighbor[];
   asteroids: Asteroid[];
   landmarks: GalacticLandmark[] | null;
@@ -80,6 +82,7 @@ let localePc: GalacticPosition | undefined;
 let poiOpen = false;
 let planetFocus: PlanetFocus = 'planet';
 let beltPick: Asteroid | null = null;
+let coreView = false;
 let ridingOut = false;
 let marksEpoch = 0;
 let consoleOpen = false;
@@ -101,6 +104,7 @@ function notify(): void {
           moonIndex,
           planetFocus,
           beltPick,
+          coreView,
           neighbors: viewer.neighbors,
           asteroids: viewer.asteroids,
           landmarks: landmarksNow(),
@@ -172,6 +176,13 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   if (!viewer) return;
   poiOpen = false;
   beltPick = null;
+  // The core view tore the system down to stand at the centre; any
+  // move back into a system has to rebuild it from scratch.
+  if (coreView) {
+    coreView = false;
+    system = null;
+    currentLocaleKey = '';
+  }
   const normalized = seedToHex(seedFromHex(nextSeedHex));
   localePc = nextLocalePc
     ? {
@@ -324,6 +335,8 @@ export function boot(viewElement: HTMLElement): void {
     get viewer() {
       return viewer;
     },
+    viewCore,
+    setTab,
   };
   // Universal picking: a click on any hoverable body acts on it.
   viewer.onPick = (target) => {
@@ -384,9 +397,26 @@ export function setTab(tab: Tab): void {
     notify();
     return;
   }
-  if (tab === viewMode && !poiOpen) return;
+  if (tab === viewMode && !poiOpen && !coreView) return;
   viewMode = tab;
   load(seedHex);
+}
+
+/**
+ * Stand at the galaxy's centre. Not a system and not a preset: the
+ * viewer drops the whole stellar scene and frames the supermassive
+ * hole at its own scale, with the galaxy around it. Any other
+ * navigation rebuilds the system and comes back.
+ */
+export function viewCore(): void {
+  acted();
+  if (coreView) return;
+  poiOpen = false;
+  beltPick = null;
+  coreView = true;
+  viewMode = 'galaxy';
+  viewer?.setCoreView();
+  notify();
 }
 
 export function stepBody(delta: number): void {

@@ -24,3 +24,7 @@ export const JUPITER_RADIUS = 6.9911e7 as Meters;
 export const DAY = 86400 as Seconds;
 export const YEAR = 3.15576e7 as Seconds; // Julian year
 export const GYR = (1e9 * YEAR) as Seconds;
+
+/** Particle and radiative-transfer constants (SI). */
+export const PROTON_MASS = 1.67262192e-27 as Kilograms;
+export const THOMSON_CROSS_SECTION = 6.6524587e-29; // m²

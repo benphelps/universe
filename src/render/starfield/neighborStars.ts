@@ -14,6 +14,8 @@ attribute float aRadiusKm;
 
 uniform float uKmPerPc;
 uniform float uIntensity;
+uniform float uZeroPoint;
+uniform float uSizeScale;
 
 varying vec3 vColor;
 varying float vAlpha;
@@ -25,14 +27,24 @@ void main() {
   // Same photometric mapping as the backdrop's resolved stars, but with
   // apparent brightness from the camera's true distance — the sky at the
   // home viewpoint matches, and flying toward a star brightens it.
-  float logE = log2(max(luminosity / (distancePc * distancePc), 1e-12));
-  float size = clamp(1.5 + 0.45 * (logE + 17.0), 1.0, 6.5);
-  float energy = clamp(0.055 * exp2(0.36 * (logE + 17.0)), 0.012, 1.7) * uIntensity;
+  // The zero point is where this population sits against the size and
+  // energy ceilings. A night sky seen from a planet is calibrated by
+  // the default; a swarm the camera stands inside is not, and left on
+  // that zero point every one of its stars pins to the largest dot the
+  // material draws — which reads as a field of blurred blobs rather
+  // than as stars of different brightness.
+  float logE = log2(max(luminosity / (distancePc * distancePc), 1e-12)) + uZeroPoint;
+  float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
+  float energy = clamp(0.055 * exp2(0.36 * logE), 0.012, 1.7) * uIntensity;
   // Once the star's actual disc resolves, the photosphere carries it.
   energy *= 1.0 - smoothstep(0.002, 0.004, aRadiusKm / distanceKm);
   vColor = starColor * energy;
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
-  gl_PointSize = size;
+  // Sprite sizes are in pixels, so the same star drawn into a coarser
+  // buffer covers a wider angle. Rendering into one — the black hole's
+  // sky capture — scales them back, or every star read out of it comes
+  // back fatter than the one beside it drawn straight to the screen.
+  gl_PointSize = max(size * uSizeScale, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   // Sky points sit far beyond the camera's far plane at low altitude,
   // and the far plane cuts on view depth — a camera-rotation-dependent
@@ -58,12 +70,18 @@ void main() {
 }
 `;
 
-/** Photometric star-point material (positions interpreted in km). */
-export function createStarPointsMaterial(kmPerPc: number): ShaderMaterial {
+/** Photometric star-point material (positions interpreted in km). The
+ *  zero point sets where the population lands against the ceilings. */
+export function createStarPointsMaterial(kmPerPc: number, zeroPoint = 17): ShaderMaterial {
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
-    uniforms: { uKmPerPc: { value: kmPerPc }, uIntensity: { value: 1 } },
+    uniforms: {
+      uKmPerPc: { value: kmPerPc },
+      uIntensity: { value: 1 },
+      uZeroPoint: { value: zeroPoint },
+      uSizeScale: { value: 1 },
+    },
     blending: AdditiveBlending,
     transparent: true,
     depthWrite: false,

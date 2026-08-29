@@ -4,6 +4,7 @@ import type { GalacticAddress } from '../../universe/galaxy/regions';
 import type { Star } from '../../universe/star/types';
 import { travelTo, type AppSnapshot } from '../store';
 import { fmt } from './format';
+import { CoreDestination } from './nucleusPanel';
 import { cssColor, type PlateSpec } from './plate';
 
 /** Galaxy level's plate: the current star's full galactic address. */
@@ -49,6 +50,7 @@ export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
 
   return (
     <>
+      <CoreDestination active={snap.coreView} />
       <h2>Landmarks</h2>
       {landmarks ? (
         <table className="list">

@@ -53,3 +53,32 @@ export function rotateToScene(
     m[6] * x + m[7] * y + m[8] * z,
   ];
 }
+
+/**
+ * A scene frame with the given galactic direction standing up the
+ * scene's +Y. Used at the galactic centre, where there is no system to
+ * inherit a sky angle from and the hole's own spin axis is the natural
+ * reference: it puts the accretion flow in the scene's horizontal
+ * plane, which is also the plane the orbit camera turns in.
+ * Row-major galactic→scene, like sceneFromGalaxy.
+ */
+export function sceneFromUpAxis(axis: [number, number, number]): Float32Array {
+  const length = Math.hypot(...axis) || 1;
+  const n: [number, number, number] = [axis[0] / length, axis[1] / length, axis[2] / length];
+  const seed: [number, number, number] = Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const cross = (
+    a: [number, number, number],
+    b: [number, number, number],
+  ): [number, number, number] => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+  const e1raw = cross(seed, n);
+  const e1len = Math.hypot(...e1raw);
+  const e1: [number, number, number] = [e1raw[0] / e1len, e1raw[1] / e1len, e1raw[2] / e1len];
+  const e2 = cross(n, e1);
+  // Rows [e2, n, e1] send e2→x̂, n→ŷ, e1→ẑ, and e2 × n = e1 keeps it
+  // right-handed — a rotation, not a reflection.
+  return new Float32Array([e2[0], e2[1], e2[2], n[0], n[1], n[2], e1[0], e1[1], e1[2]]);
+}

@@ -37,7 +37,7 @@ Each sampled star inherits from its birthplace:
 - **Open clusters** along arms (co-moving, co-eval groups of 100–1,000 stars sharing age/metallicity)
 - **Globular clusters** in the halo (10⁴–10⁶ stars; rendered as aggregate + resolved core when approached)
 - **OB associations** and **emission nebulae** in arms (young hot stars + emission-spectrum gas glow)
-- **Galactic center**: supermassive black hole + dense nuclear cluster
+- **Galactic center**: supermassive black hole + dense nuclear cluster. The hole's mass comes from the galaxy's own spheroid through the M_BH–M_bulge relation, on the branch its bulge kind selects (classical bulges track it tightly; pseudobulges sit an order of magnitude below, as the Milky Way's does). Mass and spin fix horizon, photon orbit, ISCO, shadow and radiative efficiency in closed form; the Eddington ratio picks a Shakura–Sunyaev disc or a hot radiatively inefficient flow. Rendered by per-pixel null-geodesic tracing (08).
 
 ## Visual deliverables at this level
 

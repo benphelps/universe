@@ -71,18 +71,27 @@ import {
 } from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
+import { BlackHoleObject } from '../render/blackhole/blackHoleObject';
+import {
+  FLOW_DRAW_SPAN,
+  LENSING_REACH_RG,
+  RENDER_INNER_FLOOR_RG,
+} from '../render/blackhole/geodesicGlsl';
+import { LensedSky } from '../render/blackhole/lensedSky';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
+import { NuclearCluster } from '../render/galaxy/nuclearCluster';
 import { SectorChart } from '../render/galaxy/sectorChart';
 import {
   computeNeighborhood,
   NEIGHBOR_RADIUS_PC,
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
+import { galacticNucleus } from '../universe/galaxy/nucleus';
 import { starPhotometry } from '../universe/galaxy/photometry';
 import { sectorNameForSeed } from '../universe/galaxy/regions';
-import type { GalacticPosition } from '../universe/galaxy/density';
+import { dustOpticalDepth, type GalacticPosition } from '../universe/galaxy/density';
 import { spectralType } from '../universe/star/classification';
 import { starDesignation } from '../universe/star/naming';
 import type { Moon } from '../universe/moon/types';
@@ -102,7 +111,7 @@ import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
-import { rotateToScene, sceneFromGalaxy } from '../universe/galaxy/orientation';
+import { rotateToScene, sceneFromGalaxy, sceneFromUpAxis } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
 import { getGalacticLandmarks } from './landmarkService';
 import { getSkyField, skyPending, skyProgress } from './skyService';
@@ -125,6 +134,25 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
 const ORIGIN = new Vector3();
+
+/** Where the camera arrives, in units of the flow's drawn radius. Far
+ *  enough to stand outside the flow — from within it, a disc is a floor
+ *  and the hole is a bump on it — and close enough that it still
+ *  reaches the edges of the frame. */
+const FLOW_STANDOFF = 1.6;
+
+/**
+ * How far the camera stops down at the galactic centre. Eighteen
+ * thousand of the cluster's stars are drawn and every one of them is
+ * within a few parsecs — brighter, most of them, than Sirius is from
+ * Earth. A sky like that is genuinely blinding, and a camera pointed
+ * into it would be stopped right down; at the exposure the rest of the
+ * universe is viewed at, it is a white sheet.
+ */
+const CORE_EXPOSURE = 0.22;
+
+/** The galaxy's own centre — where the hole is, by definition. */
+const GALACTIC_CENTRE: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
 
 /** Point stars snap the hover only from this close (px), so the space
  *  between glints stays hoverable for nebulae, rifts, and the other
@@ -306,6 +334,21 @@ export class UnifiedViewer {
    *  breaks down with distance from the system. */
   private galaxyVolume: GalaxyVolume | null = null;
   private galaxyParticles: GalaxyParticles | null = null;
+  /** Set while the camera is at the galactic centre: no system at all,
+   *  the galaxy around it, and the hole traced at its own scale. */
+  private coreView = false;
+  private blackHole: BlackHoleObject | null = null;
+  private lensedSky: LensedSky | null = null;
+  private skyCaptured = false;
+  /** The exposure the session was viewing at before the centre. */
+  private exposureOutsideCore = 1;
+  private nuclearCluster: NuclearCluster | null = null;
+  /** Sky frame the cluster would be built in, once it is worth building. */
+  private clusterFrame: Float32Array | null = null;
+  /** Dust transmission from the camera to the galactic centre. From
+   *  inside the disk this is effectively zero — the centre is dozens of
+   *  optical depths away — and it only opens up above the dust layer. */
+  private coreTransmission = 0;
   /** The named complexes as travel targets, in scene-frame pc. */
   private landmarkList: import('../universe/galaxy/regions').GalacticLandmark[] | null = null;
   private landmarkScene: Float32Array | null = null;
@@ -634,6 +677,9 @@ export class UnifiedViewer {
    * and ground flight own the camera.
    */
   private freeFlightAvailable(): boolean {
+    // The core view orbits one point and nothing else: an anchor moved
+    // off the hole would take the altitude ladder with it.
+    if (this.coreView) return false;
     const grounded = this.field !== null || this.focusAsteroid !== null;
     return !grounded || this.altitudeKm > this.radiusKm * 0.12;
   }
@@ -1049,6 +1095,7 @@ export class UnifiedViewer {
   /** Build the system-wide content: stars, planets, belts, comets, overlay. */
   setSystem(system: StarSystem): void {
     this.clearFocus();
+    this.clearCore();
     this.clearSystem();
     this.system = system;
 
@@ -1116,6 +1163,11 @@ export class UnifiedViewer {
     this.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
     this.pcGroup.add(this.galaxyParticles.group);
+    // The nuclear cluster waits until something could see it. From
+    // anywhere in the disk the centre is a hundred magnitudes of dust
+    // away, so surveying tens of thousands of its stars and shipping
+    // them to the GPU on every arrival would buy a black screen.
+    this.clusterFrame = galaxyOrientation;
     // The landmark catalog is universal; orient it into this system's
     // sky frame when it lands (once per session, off-thread).
     getGalacticLandmarks().then((landmarks) => {
@@ -2044,11 +2096,16 @@ export class UnifiedViewer {
     radiusAttr.needsUpdate = true;
   }
 
+  get exposure(): number {
+    return this.pipeline.exposure;
+  }
+
   set exposure(value: number) {
     this.pipeline.exposure = value;
   }
 
   dispose(): void {
+    this.clearCore();
     this.disposed = true;
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('keydown', this.onKeyChange);
@@ -2155,6 +2212,189 @@ export class UnifiedViewer {
         };
       });
     this.scene.add(this.moonGroup);
+  }
+
+  /**
+   * Travel to the galaxy's own centre. There is no system here — the
+   * hole is the only body, and the sky is the galaxy seen from the
+   * inside of its own nucleus. The camera frames the accretion flow
+   * from fifteen degrees above its plane, which is where the far side
+   * of the flow comes up over the top of the shadow.
+   */
+  setCoreView(): void {
+    this.clearFocus();
+    this.clearCore();
+    this.clearSystem();
+    this.coreView = true;
+
+    const nucleus = galacticNucleus();
+    // The centre has no system to inherit a sky angle from, so it takes
+    // the hole's own: spin axis up the scene's +Y. That lays the
+    // accretion flow in the plane the orbit camera turns in, and keeps
+    // camera.up at the value OrbitControls latched onto when it was
+    // built — its orbit axis is fixed at construction and a later
+    // camera.up only rolls the image out from under the drag.
+    const frame = sceneFromUpAxis(nucleus.spinAxisGalactic);
+    this.viewpointPc = GALACTIC_CENTRE;
+    this.frameQuat.identity();
+    this.heliocentric.quaternion.identity();
+    this.heliocentric.position.set(0, 0, 0);
+
+    this.galaxyVolume = new GalaxyVolume(GALACTIC_CENTRE, frame);
+    this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
+    this.scene.add(this.galaxyVolume.mesh);
+    this.galaxyParticles = new GalaxyParticles(GALACTIC_CENTRE, frame, PC_KM);
+    this.pcGroup.add(this.galaxyParticles.group);
+    this.nuclearCluster = new NuclearCluster(GALACTIC_CENTRE, frame, PC_KM);
+    this.pcGroup.add(this.nuclearCluster.group);
+
+    const hole = new BlackHoleObject(nucleus, this.lut, frame);
+    this.scene.add(hole.mesh);
+    this.blackHole = hole;
+    this.lensedSky = new LensedSky();
+    hole.sky = this.lensedSky.target;
+    this.skyCaptured = false;
+
+    // The shadow is the body here: everything the camera does is
+    // measured against the radius a distant eye actually sees. But the
+    // flow is what sets where to stand — inside it there is no picture
+    // to take, only a lit floor with a dark bump on it, which is what
+    // makes a disc drawn to its true edge look bigger than the galaxy.
+    this.radiusKm = nucleus.shadowRadiusM / 1000;
+    this.minAltitudeKm = this.radiusKm * 0.35;
+    const drawnFlowKm =
+      Math.min(
+        nucleus.flow.outerRadiusRg,
+        Math.max(nucleus.flow.innerRadiusRg, RENDER_INNER_FLOOR_RG) * FLOW_DRAW_SPAN,
+      ) *
+      nucleus.gravitationalRadiusM *
+      1e-3;
+    this.altitudeKm = drawnFlowKm * FLOW_STANDOFF - this.radiusKm;
+
+    // Fifteen degrees above the flow: high enough that its far side
+    // comes up over the top of the shadow, low enough to keep it.
+    const lift = (15 * Math.PI) / 180;
+    this.camera.position
+      .set(Math.cos(lift), Math.sin(lift), 0)
+      .multiplyScalar(this.radiusKm + this.altitudeKm);
+    this.camera.up.set(0, 1, 0);
+    this.controls.target.set(0, 0, 0);
+    this.pendingWheelFactor = 1;
+    this.stopRideOut();
+    this.controls.update();
+    this.headingRad = 0;
+    this.pitchRad = 0;
+    this.galaxyFade = 1;
+    // Stopped down while standing in the cluster and back up on the way
+    // out, so the galaxy seen from here at kiloparsec range is the same
+    // galaxy the system views show. Leaving restores it outright: the
+    // store sets the exposure again on load.
+    this.exposureOutsideCore = this.exposure;
+    this.exposure = CORE_EXPOSURE;
+  }
+
+  /** Whether the camera is at the galactic centre rather than a system. */
+  get atCore(): boolean {
+    return this.coreView;
+  }
+
+  private clearCore(): void {
+    if (!this.coreView) return;
+    this.coreView = false;
+    this.lensedSky?.dispose();
+    this.lensedSky = null;
+    this.skyCaptured = false;
+    if (this.blackHole) {
+      this.scene.remove(this.blackHole.mesh);
+      this.blackHole.dispose();
+      this.blackHole = null;
+    }
+    this.camera.up.set(0, 1, 0);
+  }
+
+  /**
+   * The core view's own frame: one point to orbit, one wheel ladder,
+   * and the galaxy always on — the distance-from-a-system crossfade
+   * that drives it everywhere else has nothing to measure here.
+   */
+  private frameCore(dtSeconds: number): void {
+    this.controls.rotateSpeed = Math.min(
+      1.2,
+      Math.max(0.05, (0.9 * this.altitudeKm) / this.radiusKm),
+    );
+    this.controls.enabled = !this.multiTouched;
+    this.controls.target.set(0, 0, 0);
+    this.controls.update();
+
+    if (this.rideOutRate > 0) {
+      if (this.altitudeKm >= this.maxAltitudeKm() * 0.999) this.stopRideOut();
+      else this.pendingWheelFactor *= 10 ** (this.rideOutRate * dtSeconds);
+    }
+    const up = this.camera.position.clone().normalize();
+    const free = Math.max(this.camera.position.length() - this.radiusKm, this.minAltitudeKm);
+    this.altitudeKm = Math.min(
+      this.maxAltitudeKm(),
+      Math.max(free * this.pendingWheelFactor, this.minAltitudeKm),
+    );
+    this.camera.position.copy(up).multiplyScalar(this.radiusKm + this.altitudeKm);
+    this.pendingWheelFactor = 1;
+
+    this.camera.near = Math.max(this.altitudeKm * 1e-4, 1);
+    this.camera.far = Math.max(this.camera.position.length() * 2.5, NEIGHBOR_RADIUS_PC * PC_KM * 2.5);
+    this.camera.updateProjectionMatrix();
+
+    const identity = new Matrix3();
+    const pixelsPerRadian =
+      this.pipeline.renderer.domElement.clientHeight /
+      (2 * Math.tan((this.camera.fov * Math.PI) / 360));
+    if (this.nuclearCluster) {
+      this.nuclearCluster.intensity = 1;
+      this.nuclearCluster.group.visible = true;
+      const out = this.nuclearCluster.update(this.camera.position.length() / PC_KM);
+      this.exposure = CORE_EXPOSURE + (this.exposureOutsideCore - CORE_EXPOSURE) * out;
+    }
+    // The particle galaxy is a statistical stand-in whose grains are
+    // hundreds of parsecs wide: from inside the nucleus the camera
+    // sits within its own sprites, so it only takes over once there is
+    // room to see it as a galaxy. The cluster and the volume carry the
+    // centre until then — which is also the honest picture, since the
+    // disk beyond is a hundred magnitudes of dust away.
+    const centrePc = this.camera.position.length() / PC_KM;
+    const bodyFade = Math.min(1, Math.max(0, (centrePc - 200) / 1800));
+
+    // The bent rays' background is the sky arriving at the hole, so it
+    // is photographed from the hole — once, with the dome re-centred
+    // there and the hole itself out of frame.
+    if (this.lensedSky && this.blackHole && !this.skyCaptured) {
+      this.skyCaptured = true;
+      this.galaxyVolume?.update(ORIGIN, identity, PC_KM, 1, 1e15);
+      this.galaxyParticles?.update(0, pixelsPerRadian);
+      if (this.nuclearCluster) {
+        this.nuclearCluster.sizeScale = this.lensedSky.pixelsPerRadian / pixelsPerRadian;
+      }
+      this.lensedSky.capture(this.pipeline.renderer, this.scene, ORIGIN, [this.blackHole.mesh]);
+      if (this.nuclearCluster) this.nuclearCluster.sizeScale = 1;
+    }
+
+    // Close in, every ray on screen is bent enough that the hole draws
+    // the whole sky itself, out of the cube map — the dome's own march
+    // would be paid for and then covered over.
+    const holeCoversSky =
+      this.blackHole !== null &&
+      this.camera.position.length() < LENSING_REACH_RG * this.blackHole.kmPerRg;
+    this.galaxyVolume?.update(
+      this.camera.position,
+      identity,
+      PC_KM,
+      holeCoversSky ? 0 : 1,
+      Math.min(this.camera.far * 0.3, 3e15),
+    );
+    this.galaxyParticles?.update(
+      holeCoversSky ? 0 : bodyFade * bodyFade * (3 - 2 * bodyFade),
+      pixelsPerRadian,
+    );
+    if (this.nuclearCluster) this.nuclearCluster.group.visible = !holeCoversSky;
+    this.blackHole?.update(this.camera, ORIGIN, identity, 1, 1);
   }
 
   private clearFocus(): void {
@@ -2277,6 +2517,12 @@ export class UnifiedViewer {
       this.galaxyParticles.dispose();
       this.galaxyParticles = null;
     }
+    if (this.nuclearCluster) {
+      this.pcGroup.remove(this.nuclearCluster.group);
+      this.nuclearCluster.dispose();
+      this.nuclearCluster = null;
+    }
+    this.clusterFrame = null;
     if (this.landmarkMarkers) {
       this.pcGroup.remove(this.landmarkMarkers);
       this.landmarkMarkers.geometry.dispose();
@@ -2310,6 +2556,9 @@ export class UnifiedViewer {
     if (this.farPoints) {
       (this.farPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
     }
+    // Nothing at the centre reaches the disk in visible light; only a
+    // camera lifted clear of the dust layer ever sees the cluster.
+    if (this.nuclearCluster) this.nuclearCluster.intensity = value * this.coreTransmission;
   }
 
   /**
@@ -2434,7 +2683,9 @@ export class UnifiedViewer {
     this.lastFrameMs = now;
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
-    if (this.system) {
+    if (this.coreView) {
+      this.frameCore(dtSeconds);
+    } else if (this.system) {
       this.controls.rotateSpeed = Math.min(
         1.2,
         Math.max(0.012, (1.4 * this.altitudeKm) / this.radiusKm),
@@ -2656,6 +2907,21 @@ export class UnifiedViewer {
           this.galaxyFade,
           Math.min(this.camera.far * 0.3, 3e15),
         );
+        // The nuclear cluster's light comes through the same dust the
+        // volume march extinguishes the band with.
+        const kpc = this.galaxyVolume.cameraGalacticKpc;
+        this.coreTransmission = Math.exp(
+          -dustOpticalDepth(
+            { xPc: kpc.x * 1000, yPc: kpc.y * 1000, zPc: kpc.z * 1000 },
+            GALACTIC_CENTRE,
+          ),
+        );
+        // Out of the dust at last: now the cluster is worth having.
+        if (!this.nuclearCluster && this.clusterFrame && this.coreTransmission > 1e-3) {
+          this.nuclearCluster = new NuclearCluster(this.viewpointPc, this.clusterFrame, PC_KM);
+          this.pcGroup.add(this.nuclearCluster.group);
+        }
+        this.nuclearCluster?.update(Math.hypot(kpc.x, kpc.y, kpc.z) * 1000);
       }
       this.galaxyParticles?.update(
         this.galaxyFade,
