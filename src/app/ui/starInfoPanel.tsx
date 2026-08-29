@@ -5,6 +5,11 @@ import { generateStar } from '../../universe/star/generate';
 import { shortDesignation } from '../../universe/star/naming';
 import type { Star } from '../../universe/star/types';
 import { selectStar, travelTo, type AppSnapshot } from '../store';
+import { AU } from '../../core/physics/constants';
+import { radiativeEfficiency } from '../../core/physics/blackHole';
+import { solarMassesPerYear, type Donor } from '../../universe/star/compactAccretion';
+import { stellarBlackHole } from '../../universe/star/stellarHole';
+import type { StarSystem } from '../../universe/system/types';
 import { fmt, fmtDays, fmtYears } from './format';
 import { cssColor, type PlateSpec } from './plate';
 
@@ -24,8 +29,95 @@ const STAGE_LABEL: Record<Star['stage'], string> = {
   'black-hole': 'black hole',
 };
 
+/**
+ * A black hole's plate is not a star's. Luminosity and temperature are
+ * zero and the rotation on file belongs to a progenitor that stopped
+ * existing; what it has instead is a geometry, and one number — how
+ * fast it turns — that fixes every length in it. What it is eating, if
+ * anything, comes from the system around it.
+ */
+function holePlateSpec(star: Star, system: StarSystem, index: number): PlateSpec {
+  const hole = stellarBlackHole(star, donorsFor(system, index), [0, 0, 1]);
+  const rg = hole.gravitationalRadiusM / 1000;
+  const { feeding } = hole;
+  const donor =
+    feeding.donorIndex >= 0 ? donorStars(system, index)[feeding.donorIndex] : null;
+  const rows: Array<[string, ReactNode]> = [
+    ['Mass', `${fmt(star.mass)} M☉ (from ${fmt(star.massInitial)} at birth)`],
+    ['Spin', `a★ ${fmt(hole.spin, 3)} · ${fmt(radiativeEfficiency(hole.spin) * 100, 3)}% of infalling mass radiated`],
+    ['Horizon', `${fmt(hole.horizonRadiusM / 1000)} km`],
+    ['Photon orbit', `${fmt(hole.photonSphereRadiusM / 1000)} km`],
+    ['Last stable orbit', `${fmt(hole.iscoRadiusM / 1000)} km · ${fmt(hole.iscoRadiusM / hole.gravitationalRadiusM, 3)} r_g`],
+    ['Shadow', `${fmt(2 * hole.shadowRadiusM / 1000)} km across`],
+    ['Gravitational radius', `${fmt(rg)} km`],
+  ];
+  if (feeding.mode === 'starved') {
+    // The honest headline for very nearly every black hole there is.
+    rows.push(['Accretion', 'starved · interstellar gas only']);
+    rows.push([
+      'Luminosity',
+      `${feeding.eddingtonRatio.toExponential(1)} L_Edd — a lens, and nothing more`,
+    ]);
+  } else {
+    rows.push([
+      'Accretion',
+      `${feeding.mode === 'roche-lobe' ? 'Roche-lobe overflow' : 'wind-fed'} from ${
+        donor ? donor.designation : 'companion'
+      } at ${fmt(feeding.separationAu, 3)} AU`,
+    ]);
+    rows.push(['Ṁ', `${solarMassesPerYear(feeding.rateKgPerS).toExponential(2)} M☉/yr`]);
+    rows.push([
+      'Luminosity',
+      `${feeding.eddingtonRatio.toExponential(2)} L_Edd · ${hole.flow.regime === 'riaf' ? 'hot ion torus' : 'thin disc'}`,
+    ]);
+  }
+  rows.push(['Age', fmtYears(star.ageGyr * 1e9)]);
+  rows.push(['Survey id', `SIM-${star.seedHex.slice(-8).toUpperCase()}`]);
+  return {
+    title: star.designation,
+    subtitle: `${star.spectralType} · black hole`,
+    color: 'rgb(90, 96, 120)',
+    rows,
+  };
+}
+
+/** The other stars in the system, in the order feedingFor sees them. */
+function donorStars(system: StarSystem, index: number): Star[] {
+  if (index === 0) return system.companions.map((c) => c.star);
+  const own = system.companions[index - 1];
+  if (!own) return [];
+  return [
+    system.star,
+    ...system.companions.filter((_, i) => i !== index - 1).map((c) => c.star),
+  ];
+}
+
+function donorsFor(system: StarSystem, index: number): Donor[] {
+  if (index === 0) {
+    return system.companions.map((c) => ({
+      star: c.star,
+      separationAu: c.elements.semiMajorAxis / AU,
+    }));
+  }
+  const own = system.companions[index - 1];
+  if (!own) return [];
+  const donors: Donor[] = [
+    { star: system.star, separationAu: own.elements.semiMajorAxis / AU },
+  ];
+  for (let i = 0; i < system.companions.length; i++) {
+    if (i === index - 1) continue;
+    donors.push({
+      star: system.companions[i].star,
+      separationAu:
+        Math.abs(system.companions[i].elements.semiMajorAxis - own.elements.semiMajorAxis) / AU,
+    });
+  }
+  return donors;
+}
+
 /** Star level's plate: the focused star's physics. */
-export function starPlateSpec(star: Star): PlateSpec {
+export function starPlateSpec(star: Star, system?: StarSystem, index = 0): PlateSpec {
+  if (star.stage === 'black-hole' && system) return holePlateSpec(star, system, index);
   const rows: Array<[string, ReactNode]> = [
     ['Mass', `${fmt(star.mass)} M☉${massLossNote(star)}`],
     ['Radius', `${fmt(star.radius)} R☉`],

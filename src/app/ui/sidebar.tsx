@@ -88,7 +88,7 @@ function focusSpec(snap: AppSnapshot): PlateSpec {
   const { star: hostStar, planets: hostPlanets } = host(snap);
   switch (snap.viewMode) {
     case 'star':
-      return starPlateSpec(hostStar);
+      return starPlateSpec(hostStar, snap.system, snap.companionIndex);
     case 'system':
       return systemPlateSpec(snap.system, snap.companionIndex);
     case 'galaxy':
