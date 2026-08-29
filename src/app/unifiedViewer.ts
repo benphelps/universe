@@ -75,7 +75,6 @@ import { BlackHoleObject } from '../render/blackhole/blackHoleObject';
 import {
   FLOW_DRAW_SPAN,
   LENSING_REACH_RG,
-  RENDER_INNER_FLOOR_RG,
 } from '../render/blackhole/geodesicGlsl';
 import { LensedSky } from '../render/blackhole/lensedSky';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
@@ -2265,7 +2264,7 @@ export class UnifiedViewer {
     const drawnFlowKm =
       Math.min(
         nucleus.flow.outerRadiusRg,
-        Math.max(nucleus.flow.innerRadiusRg, RENDER_INNER_FLOOR_RG) * FLOW_DRAW_SPAN,
+        nucleus.flow.innerRadiusRg * FLOW_DRAW_SPAN,
       ) *
       nucleus.gravitationalRadiusM *
       1e-3;
@@ -2395,6 +2394,9 @@ export class UnifiedViewer {
     );
     if (this.nuclearCluster) this.nuclearCluster.group.visible = !holeCoversSky;
     this.blackHole?.update(this.camera, ORIGIN, identity, 1, 1);
+    // The geodesics are traced into the hole's own target before the
+    // scene is drawn; what the scene holds is only the result.
+    this.blackHole?.render(this.pipeline.renderer);
   }
 
   private clearFocus(): void {

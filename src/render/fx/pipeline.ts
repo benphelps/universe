@@ -32,10 +32,17 @@ export class RenderPipeline {
   }
 
   setSize(width: number, height: number): void {
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const ratio = Math.min(window.devicePixelRatio, 2);
+    this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(width, height);
+    // The composer owns its own targets and inherits nothing from the
+    // renderer, so it has to be told the pixel ratio separately. Left
+    // out, every pass runs at CSS resolution and is scaled up to a
+    // drawing buffer twice the size — the whole scene through a half
+    // resolution it never asked for, which on a dense display reads as
+    // a star field that will not come into focus.
+    this.composer.setPixelRatio(ratio);
     this.composer.setSize(width, height);
-    this.bloom.resolution.set(width, height);
   }
 
   set exposure(value: number) {

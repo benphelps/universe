@@ -1,36 +1,59 @@
 import {
+  HalfFloatType,
+  LinearFilter,
   Matrix3,
   Mesh,
+  NoColorSpace,
   NormalBlending,
+  NoBlending,
+  OrthographicCamera,
   PlaneGeometry,
+  Scene,
   ShaderMaterial,
   Vector2,
   Vector3,
+  WebGLRenderTarget,
   type CubeTexture,
   type DataTexture,
   type PerspectiveCamera,
   type WebGLCubeRenderTarget,
+  type WebGLRenderer,
 } from 'three';
-import { discPeakRadiusRg } from '../../core/physics/blackHole';
+import { discPeakRadiusRg, horizonRadiusRg } from '../../core/physics/blackHole';
 import { flowTemperature } from '../../universe/galaxy/accretionFlow';
 import type { GalacticNucleus } from '../../universe/galaxy/nucleus';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
-import {
-  FLOW_DRAW_SPAN,
-  GEODESIC_GLSL,
-  profileStretch,
-  RENDER_INNER_FLOOR_RG,
-} from './geodesicGlsl';
+import { FLOW_DRAW_SPAN, GEODESIC_GLSL, profileStretch } from './geodesicGlsl';
+import { KERR_GLSL } from './kerrGlsl';
 
 /** Where the flow's own inner edge lands in HDR: the shutter. Set so
  *  the hottest ring blooms without the disc behind it clipping to a
  *  white wall. Everything relative to it — the beaming asymmetry, the
  *  radial fall-off, the redshift — is physical. */
 const DISC_EXPOSURE = 2.0;
+/** Above this half-thickness the flow is drawn as a volume rather than
+ *  a surface — the same threshold the shader branches on. A cold disc
+ *  sits near 0.02 and a starved ion torus at 0.55, so nothing lands
+ *  anywhere near the line. */
+const THICK_FLOW = (aspectRatio: number): boolean => aspectRatio > 0.15;
 /** Past this separation the shadow is a millionth of a pixel and the
  *  ray's start point stops fitting in a float: the nuclear cluster is
  *  all there is to see of the centre from out here, and it is enough. */
 const RENDER_REACH_RG = 3e5;
+/**
+ * Resolution the geodesics are traced at, against the screen's.
+ *
+ * One ray per pixel per frame is the whole cost of the hole, and it is
+ * not close: the rest of the scene at the galactic centre renders in
+ * eight milliseconds, and the trace alone in a hundred and twenty. But
+ * what it produces is nearly all smooth — a lensed sky and a flow that
+ * vary slowly across the frame — and the two features that are not, the
+ * shadow's edge and the photon ring, sit at a boundary decided in
+ * closed form rather than by sampling. So the trace runs on its own
+ * grid and is scaled up, while the stars, which have to stay points,
+ * keep every pixel the display has.
+ */
+const TRACE_SCALE = 0.55;
 
 const VERTEX = /* glsl */ `
 varying vec2 vNdc;
@@ -42,6 +65,15 @@ void main() {
 }
 `;
 
+/** What the scene draws: the traced image, and nothing else. */
+const COMPOSITE_FRAGMENT = /* glsl */ `
+varying vec2 vNdc;
+uniform sampler2D uTrace;
+void main() {
+  gl_FragColor = texture2D(uTrace, vNdc * 0.5 + 0.5);
+}
+`;
+
 const FRAGMENT = /* glsl */ `
 varying vec2 vNdc;
 uniform mat3 uBhToScene;
@@ -50,6 +82,7 @@ uniform float uSkyOpacity;
 uniform float uOpacity;
 
 ${SIMPLEX_NOISE_GLSL}
+${KERR_GLSL}
 ${GEODESIC_GLSL}
 
 void main() {
@@ -86,7 +119,7 @@ void main() {
 /**
  * A black hole drawn by tracing light instead of shading a surface.
  * Every pixel of the screen launches one ray backwards through the
- * Schwarzschild geometry (see geodesicGlsl), so the shadow, the photon
+ * Kerr geometry (see kerrGlsl), so the shadow, the photon
  * ring, the lensed galaxy behind, and the accretion flow's wrapped-over
  * image are all consequences of the same integration rather than
  * separate effects layered together. The flow it lights comes wholly
@@ -98,6 +131,12 @@ void main() {
 export class BlackHoleObject {
   readonly mesh: Mesh;
   private readonly material: ShaderMaterial;
+  private readonly composite: ShaderMaterial;
+  private readonly traceScene = new Scene();
+  private readonly traceCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private readonly traceQuad: Mesh;
+  private readonly target: WebGLRenderTarget;
+  private readonly bufferSize = new Vector2();
   private readonly bhFromScene = new Matrix3();
   private readonly cameraRotation = new Matrix3();
   private readonly worldToBh = new Matrix3();
@@ -117,13 +156,25 @@ export class BlackHoleObject {
   ) {
     this.kmPerRg = nucleus.gravitationalRadiusM / 1000;
     const flow = nucleus.flow;
-    const innerRender = Math.max(flow.innerRadiusRg, RENDER_INNER_FLOOR_RG);
+    // No floor: Kerr propagation reaches the flow's own inner edge,
+    // which for a starved torus is the horizon itself.
+    const innerRender = flow.innerRadiusRg;
     const outerDrawn = Math.min(flow.outerRadiusRg, innerRender * FLOW_DRAW_SPAN);
     // Reference brightness: the hottest patch the trace can actually
     // reach, so the exposure means the same thing in either regime.
     const peakRadius = Math.max(discPeakRadiusRg(flow.innerRadiusRg), innerRender);
     const refTempK = Math.max(flowTemperature(flow, peakRadius), 1);
     const stretch = profileStretch(flow.profileExponent);
+    // A thick flow is a path integral, not a surface, so a ray through
+    // it collects many times what one crossing would give — that is
+    // what a translucent torus is. Setting the shutter by how many
+    // columns of its own gas a central ray actually runs through is
+    // what puts the two regimes on the same exposure without telling
+    // either one what its brightness ought to be.
+    const columns = THICK_FLOW(flow.aspectRatio)
+      ? (2 * Math.log(outerDrawn / innerRender)) /
+        (Math.sqrt(2 * Math.PI) * flow.aspectRatio)
+      : 1;
 
     const { sceneFromBh } = spinFrames(nucleus.spinAxisGalactic, sceneFromGalaxy);
     this.bhFromScene.copy(sceneFromBh).transpose();
@@ -142,6 +193,8 @@ export class BlackHoleObject {
         uSkyCube: { value: null as CubeTexture | null },
         uSkyOpacity: { value: 1 },
         uOpacity: { value: 0 },
+        uSpin: { value: nucleus.spin },
+        uHorizonRg: { value: horizonRadiusRg(nucleus.spin) },
         uInnerRg: { value: flow.innerRadiusRg },
         uInnerRenderRg: { value: innerRender },
         uOuterRg: { value: outerDrawn },
@@ -153,7 +206,8 @@ export class BlackHoleObject {
         uRefTempK: { value: refTempK },
         uProfileStretch: { value: stretch },
         uTurbSigma: { value: flow.turbulenceSigma },
-        uDiscGain: { value: DISC_EXPOSURE },
+        uAspect: { value: flow.aspectRatio },
+        uDiscGain: { value: DISC_EXPOSURE / columns },
         uLut: { value: lut },
       },
       blending: NormalBlending,
@@ -161,7 +215,28 @@ export class BlackHoleObject {
       depthWrite: false,
       depthTest: true,
     });
-    this.mesh = new Mesh(new PlaneGeometry(2, 2), this.material);
+    // The trace draws into its own target, at its own resolution, with
+    // blending off so the target holds exactly what it computed.
+    this.material.blending = NoBlending;
+    this.material.transparent = false;
+    this.material.depthTest = false;
+    this.traceQuad = new Mesh(new PlaneGeometry(2, 2), this.material);
+    this.traceQuad.frustumCulled = false;
+    this.traceScene.add(this.traceQuad);
+    this.target = new WebGLRenderTarget(2, 2, {
+      type: HalfFloatType,
+      colorSpace: NoColorSpace,
+      minFilter: LinearFilter,
+      magFilter: LinearFilter,
+      depthBuffer: false,
+    });
+
+    this.composite = new ShaderMaterial({
+      vertexShader: VERTEX,
+      fragmentShader: COMPOSITE_FRAGMENT,
+      uniforms: { uTrace: { value: this.target.texture } },
+    });
+    this.mesh = new Mesh(new PlaneGeometry(2, 2), this.composite);
     this.mesh.frustumCulled = false;
     // Reversed-Z flips three's render lists, so the *lowest* render
     // order draws last: the hole composites over every sky layer, all
@@ -209,9 +284,35 @@ export class BlackHoleObject {
     (uniforms.uTanHalfFov.value as Vector2).set(tanHalf * camera.aspect, tanHalf);
   }
 
+  /**
+   * Trace the geodesics into the hole's own target. Called once a frame
+   * before the scene is drawn, since the composite quad in the scene
+   * does nothing but read the result.
+   */
+  render(renderer: WebGLRenderer): void {
+    if (!this.mesh.visible) return;
+    renderer.getDrawingBufferSize(this.bufferSize);
+    const width = Math.max(2, Math.round(this.bufferSize.x * TRACE_SCALE));
+    const height = Math.max(2, Math.round(this.bufferSize.y * TRACE_SCALE));
+    if (this.target.width !== width || this.target.height !== height) {
+      this.target.setSize(width, height);
+    }
+    const previous = renderer.getRenderTarget();
+    renderer.setRenderTarget(this.target);
+    // Discarded rays must leave nothing behind, or the sky the hole
+    // never touched would composite over the sky that is already there.
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, false, false);
+    renderer.render(this.traceScene, this.traceCamera);
+    renderer.setRenderTarget(previous);
+  }
+
   dispose(): void {
     this.mesh.geometry.dispose();
+    this.traceQuad.geometry.dispose();
     this.material.dispose();
+    this.composite.dispose();
+    this.target.dispose();
   }
 }
 

@@ -1,44 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import {
-  iscoRadiusRg,
-  MAX_SPIN,
-  photonSphereRadiusRg,
-  shadowImpactParameterRg,
-} from '../../core/physics/blackHole';
-import {
-  DISPLAY_FALLOFF,
-  GEODESIC_GLSL,
-  LENSING_REACH_RG,
-  profileStretch,
-  RENDER_INNER_FLOOR_RG,
-} from './geodesicGlsl';
-
-/** Numeric value of a `const float NAME = …;` in the shader source. */
-function shaderConstant(name: string): number {
-  const match = GEODESIC_GLSL.match(new RegExp(`const float ${name} = ([-0-9.e]+);`));
-  if (!match) throw new Error(`${name} is not a float constant of the tracer`);
-  return Number(match[1]);
-}
+import { MAX_SPIN, shadowImpactParameterRg } from '../../core/physics/blackHole';
+import { DISPLAY_FALLOFF, GEODESIC_GLSL, LENSING_REACH_RG, profileStretch } from './geodesicGlsl';
+import { KERR_GLSL } from './kerrGlsl';
 
 describe('the geodesic tracer', () => {
-  it('draws the shadow at the impact parameter the physics gives', () => {
-    // The shader shortcuts capture below the critical impact parameter
-    // rather than integrating through the photon sphere, so this
-    // constant *is* the shadow's edge: it has to be 3√3, and it has to
-    // stay tied to the model the info panel quotes.
-    expect(shaderConstant('CRITICAL_IMPACT')).toBeCloseTo(shadowImpactParameterRg(), 6);
-    expect(shaderConstant('HORIZON')).toBe(2);
+  it('settles the shadow against the critical curve, not a fitted radius', () => {
+    // The shader decides capture in closed form rather than integrating
+    // through the photon orbit, and the closed form is Bardeen's
+    // spherical-orbit constants — the exact Kerr critical curve. Its
+    // static limit has to be 3√3, which is the number the info panel
+    // quotes, and the only literal the branch is allowed to carry.
+    expect(KERR_GLSL).toContain('xiIn * xiIn + eta < 27.0');
+    expect(27).toBeCloseTo(shadowImpactParameterRg() ** 2, 6);
+    // No perturbative bend factor, no squeeze parameter, no strength
+    // dial: if one ever appears, the shadow has stopped being a result.
+    for (const dial of ['uSpinStrength', 'uSqueeze', 'SPIN_FACTOR', 'BEND_SCALE']) {
+      expect(KERR_GLSL).not.toContain(dial);
+      expect(GEODESIC_GLSL).not.toContain(dial);
+    }
   });
 
-  it('keeps the flow outside the radius where circular orbits die', () => {
-    // No circular orbit exists inside the photon sphere at 3 r_g, and
-    // none is bound inside 4 — the emitter kinematics the shader uses
-    // are only defined outside that.
-    expect(RENDER_INNER_FLOOR_RG).toBeGreaterThan(photonSphereRadiusRg(0));
-    // Spin still moves the inner edge: the floor bites only for a hole
-    // spinning fast enough that its ISCO has come inside it.
-    expect(RENDER_INNER_FLOOR_RG).toBeLessThan(iscoRadiusRg(0));
-    expect(iscoRadiusRg(MAX_SPIN)).toBeLessThan(RENDER_INNER_FLOOR_RG);
+  it('lets the flow reach its own inner edge at any spin', () => {
+    // The Schwarzschild tracer had to hold the flow outside 4 r_g,
+    // because inside that its emitter kinematics were undefined. Kerr
+    // propagation with a plunging interior has no such floor, so the
+    // shader must not reimpose one — a Thorne-limited disc starts at
+    // 1.24 r_g and a starved torus at its horizon.
+    expect(GEODESIC_GLSL).not.toContain('RENDER_INNER_FLOOR');
+    expect(KERR_GLSL).toContain('kerrFlowVelocity');
+    expect(MAX_SPIN).toBe(0.998);
   });
 
   it('gives either flow regime the same readable falloff', () => {

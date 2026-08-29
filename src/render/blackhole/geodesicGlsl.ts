@@ -1,46 +1,27 @@
 /**
- * Null geodesics in the Schwarzschild metric, traced backwards from
- * the eye, one ray per pixel.
+ * Null geodesics in the Kerr metric, traced backwards from the eye, one
+ * ray per pixel.
  *
  * Lengths are gravitational radii (r_g = GM/c², so M = 1): the geometry
  * has no other scale, and a hole of any mass is the same picture blown
- * up. In those units the orbit of a photon obeys
+ * up. The propagation is in kerrGlsl — Carter's separated equations in
+ * Mino time, exact, with the constants of each ray read off the tetrad
+ * of an actual observer at the camera. This file is what the rays are
+ * for: where they start, what they cross, and what that looks like.
  *
- *     d²x/dλ² = −3 b² x / r⁵ ,   b = |x × dx/dλ| ,
- *
- * which is the Binet equation u″ + u = 3u² written in Cartesian form —
- * exact for null geodesics, not an approximation, and well behaved for
- * radial rays where the angle-parameterised version is not. The affine
- * parameter is normalised so the conserved energy is 1, which makes b
- * exactly the impact parameter and lets |dx/dλ| grow as 1 + 2b²/r³ near
- * the hole the way it should.
- *
- * What comes out of that, with nothing else added: the shadow (every
- * ray with b < 3√3 ends on the horizon), the photon ring stacked at its
- * edge from rays that wind one or more times before escaping, the
- * Einstein ring of whatever is behind, and the accretion flow's far
- * side lifted into view over the top of the hole and under the bottom,
+ * What comes out of the integration, with nothing else added: the
+ * shadow — a circle of 3√3 for a static hole, dragged into a D and
+ * offset from the ring's centre as the spin rises — the photon ring
+ * stacked at its edge from rays that wind before escaping, the Einstein
+ * ring of whatever lies behind, and the accretion flow's far side
+ * lifted into view over the top of the hole and under the bottom,
  * because the rays that reach the eye from there went over and under.
  *
- * Rotation is carried by the disc, not the metric: the flow's inner
- * edge, its radiative efficiency and its orbital speeds all come from
- * the Kerr model, while ray propagation is Schwarzschild. Frame
- * dragging therefore does not skew the shadow — at the spins a fed
- * hole reaches, that is a few percent of the shadow's radius. The
- * flow's inner edge is held at the traced metric's marginally bound
- * orbit for the same reason: a Kerr disc reaches closer than
- * Schwarzschild supports a circular orbit at all.
+ * Spin is now carried by the metric rather than by the disc alone, so
+ * the flow's inner edge is the true Kerr innermost stable orbit — 1.24
+ * r_g at the Thorne limit against 6 for a static hole — and the light
+ * leaving it is bent by the same geometry that put it there.
  */
-/**
- * Innermost radius the accretion flow is drawn from, r_g: the
- * marginally bound circular orbit of the traced metric. Inside it
- * Schwarzschild admits no bound circular orbit — material there is
- * plunging, and treating it as orbiting sends the Doppler factor
- * through infinity. A rapid Kerr disc's real inner edge lies inside
- * this, so spin's effect on the size of the inner hole is compressed
- * rather than lost: 4 r_g at high spin against 6 at none.
- */
-export const RENDER_INNER_FLOOR_RG = 4;
 
 /**
  * How far out the flow is drawn, in units of its own inner radius.
@@ -116,15 +97,30 @@ uniform float uOpacityExp;
 uniform float uRefTempK;
 uniform float uProfileStretch;
 uniform float uTurbSigma;
+uniform float uAspect;
 uniform float uDiscGain;
 uniform sampler2D uLut;
 
-/** Horizon of the traced metric. Rays that reach it are gone. */
-const float HORIZON = 2.0;
 const float LENSING_REACH = ${LENSING_REACH_RG}.0;
-/** 3√3: below this a ray has no turning point at all. */
-const float CRITICAL_IMPACT = 5.19615242;
-const int MAX_STEPS = 256;
+const int MAX_STEPS = 384;
+/** Mino-time step, as a fraction of the fastest coordinate's rate. */
+const float STEP_EPS = 0.045;
+/** Half-thickness above which the flow is passed through rather than
+ *  crossed. Cold discs sit near 0.02, ion tori at 0.55. */
+const float THICK_FLOW = 0.15;
+/**
+ * Ceiling on how much the azimuth's rate may shrink the step.
+ *
+ * Near the spin axis dφ/dσ = ξ/sin²θ runs away, and it is a coordinate
+ * that is running away, not the photon — the trajectory through there
+ * is perfectly ordinary. But the azimuth is what decides where a ray
+ * finally points, so it cannot simply be left coarse either: at a
+ * ceiling of 24 the sky came out visibly wrong in a band a dozen pixels
+ * wide up the axis. Six hundred costs five percent of the trace and
+ * closes the band to the width of the caustic that genuinely lives
+ * there.
+ */
+const float AXIS_RATE_CAP = 600.0;
 
 /**
  * The flow's density where a ray crosses it, relative to the smooth
@@ -136,22 +132,39 @@ const int MAX_STEPS = 256;
  * range is clipped to the one or two sigma that simulated density
  * histograms actually span.
  */
-float flowDensity(vec3 hit, float r) {
+float flowDensity(float r, float phi, float mu) {
   float wind = 9.0 * pow(r / uInnerRenderRg, -1.5);
-  float a = atan(hit.y, hit.x) + wind;
+  float a = phi + wind;
   // Sheared hard along the radius and stretched around it: turbulence
   // in a flow that orbits differentially is drawn out into filaments
-  // far longer than they are wide, which is what banding is.
+  // far longer than they are wide, which is what banding is. Height
+  // enters in units of the flow's own thickness, so a thin disc is
+  // sampled on a surface and a thick torus through its whole depth.
   vec3 q = vec3(6.5 * log(r), 4.0 * cos(a), 4.0 * sin(a));
+  q += vec3(0.0, 0.0, 2.2 * mu / max(uAspect, 0.02));
   float xi = (snoise(q) + 0.5 * snoise(q * 2.7) + 0.25 * snoise(q * 6.1)) / 1.32;
   // Log-normal, with the −σ²/2 that keeps the mean density unchanged.
   return clamp(exp(uTurbSigma * xi - 0.5 * uTurbSigma * uTurbSigma), 0.2, 4.0);
 }
 
-/** The whole of the field equations, for a null ray: −3b²x/r⁵. */
-vec3 pull(vec3 x, float b2) {
-  float r2 = dot(x, x);
-  return x * (-3.0 * b2 / (r2 * r2 * sqrt(r2)));
+/**
+ * How much of the flow sits at height μ, per unit length, normalised so
+ * that a column straight through it comes to exactly one.
+ *
+ * Vertical hydrostatic support gives a Gaussian of scale height h = εr,
+ * and since z = rμ the profile in μ is the same at every radius — the
+ * torus is a wedge, not a slab. Normalising the column is what lets a
+ * volume and a sheet be compared: a ray crossing the midplane square on
+ * collects exactly what the sheet would have given it, and every other
+ * ray collects more, in proportion to how far it travelled through the
+ * gas. That excess is not a liberty. It is why a hot flow shows a ring:
+ * lines of sight that graze tangentially run through far more plasma
+ * than those that punch through, and the limb lights up.
+ */
+float flowColumn(float r, float mu) {
+  float e = max(uAspect, 0.02);
+  float z = mu / e;
+  return exp(-0.5 * z * z) / (2.5066282 * e * r);
 }
 
 /** Blackbody hue at T, from the same mired-indexed table the stars use. */
@@ -184,6 +197,51 @@ float flowTemperature(float r) {
   return uInnerTempK * pow(r / uInnerRg, -uProfileExp) * taper;
 }
 
+/** Boyer–Lindquist (r, μ) of a pseudo-Cartesian point. */
+vec2 blFromCartesian(vec3 p, float a) {
+  float t = dot(p, p) - a * a;
+  float r2 = 0.5 * (t + sqrt(max(t * t + 4.0 * a * a * p.z * p.z, 0.0)));
+  float r = sqrt(max(r2, 1.0e-12));
+  return vec2(r, clamp(p.z / r, -1.0, 1.0));
+}
+
+/**
+ * The pseudo-Cartesian direction the ray is travelling, from its
+ * Boyer–Lindquist state — by stepping the state a little and
+ * differencing, which costs less than the chain rule and cannot
+ * disagree with the path actually integrated.
+ */
+vec3 kerrHeading(vec4 y, float phi, float a, float xi) {
+  float h = 0.01 * y.x / max(abs(y.z), 1.0e-6);
+  vec3 p0 = kerrPosition(y.x, y.y, phi, a);
+  vec3 p1 = kerrPosition(
+    y.x + h * y.z,
+    clamp(y.y + h * y.w, -1.0, 1.0),
+    phi + h * kerrPhiRate(y.x, y.y, a, xi),
+    a
+  );
+  return p1 - p0;
+}
+
+/**
+ * The size of one Mino-time step: small enough that no coordinate moves
+ * far, in units of its own scale. Radius is measured against itself, so
+ * steps grow with distance and a ray a thousand r_g out crosses in a
+ * handful; angles are measured absolutely, so a ray winding the photon
+ * ring is stepped finely however slowly its radius changes.
+ */
+float kerrStep(vec4 y, float a, float xi) {
+  // The azimuth is a pure quadrature — nothing else reads it — so its
+  // rate is allowed to inform the step but not to dominate it. Near
+  // the axis sin²θ goes to nothing and dφ/dσ to a great deal, and
+  // chasing that to convergence would spend a whole ray's budget
+  // resolving a coordinate rather than a trajectory.
+  float rate = abs(y.z) / max(y.x, 1.0)
+    + abs(y.w)
+    + min(abs(kerrPhiRate(y.x, y.y, a, xi)), AXIS_RATE_CAP);
+  return STEP_EPS / max(rate, 1.0e-4);
+}
+
 /**
  * What the eye sees along one ray: the flow it crosses, and the sky
  * behind wherever it escapes to. escaped tells the caller whether a
@@ -191,102 +249,163 @@ float flowTemperature(float r) {
  * carries only the light it picked up before falling in.
  */
 vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float transmittance) {
+  float a = uSpin;
   vec3 cam = uCamRg;
   // A camera lying exactly in the disc plane would have every ray stay
   // in it and never register a crossing.
   if (abs(cam.z) < 1.0e-4) cam.z = 1.0e-4;
-  float camR = length(cam);
-  vec3 camHat = cam / camR;
-
-  // Impact parameter as the static observer at the camera measures it:
-  // b = r sinψ / √(1 − 2/r), with ψ the angle off the outward radial.
-  float cosPsi = dot(dir, camHat);
-  vec3 tangent = dir - cosPsi * camHat;
-  float sinPsi = length(tangent);
-  float lapse = sqrt(max(1.0 - HORIZON / camR, 1.0e-6));
-  float b = camR * sinPsi / lapse;
 
   escapeDir = dir;
   escaped = true;
   transmittance = 1.0;
-  if (b > LENSING_REACH) return vec3(0.0);
 
-  vec3 tHat = sinPsi > 1.0e-9 ? tangent / sinPsi : normalize(cross(camHat, vec3(0.0, 0.0, 1.0)));
-  vec3 hHat = normalize(cross(camHat, tHat));
+  // The photon travels toward the camera, against the trace. Its
+  // constants come from the frame of an observer there — exactly, at
+  // the camera's own position, however far out that is.
+  vec2 camBl = blFromCartesian(cam, a);
+  float camR = camBl.x;
+  float camMu = camBl.y;
+  float camPhi = atan(cam.y, cam.x);
+  float sinT = sqrt(max(1.0 - camMu * camMu, 1.0e-12));
+  float rho = sqrt(camR * camR + a * a);
+  float cp = cos(camPhi);
+  float sp = sin(camPhi);
+  // The coordinate directions, which are orthogonal in this
+  // reconstruction, normalised into the observer's own axes.
+  vec3 rHat = normalize(vec3(camR / rho * sinT * cp, camR / rho * sinT * sp, camMu));
+  vec3 tHat = normalize(vec3(rho * camMu * cp, rho * camMu * sp, -camR * sinT));
+  vec3 pHat = vec3(-sp, cp, 0.0);
+  vec3 arrive = -dir;
+  vec3 n = normalize(vec3(dot(arrive, rHat), dot(arrive, tHat), dot(arrive, pHat)));
 
-  // Far from the hole a ray is a straight line to one part in r/b, so
-  // the integration starts where bending begins: keeping every
-  // coordinate within a few thousand r_g is what lets a camera eight
-  // kiloparsecs out still resolve a shadow a light-hour across.
-  float reach = max(max(320.0, 24.0 * b), 1.3 * uOuterRg);
-  vec3 pos;
-  vec3 vel;
+  vec4 photon = kerrPhoton(camR, camMu, a, n);
+  float xi = photon.x;
+  float eta = photon.y;
+  float impact = sqrt(max(xi * xi + eta, 0.0));
+  if (impact > LENSING_REACH) return vec3(0.0);
+
+  // Where the trace begins and ends, set by the accuracy it owes
+  // rather than by a round number. The bending still to come beyond
+  // radius r is about b/r², so holding that under a fraction of a
+  // milliradian — half a pixel of the sky cube — asks for r ≳ 40√b,
+  // and that is the whole rule. It also has to start outside the drawn
+  // flow, or the ray would begin already past what it should cross.
+  //
+  // The constants are the camera's exact ones however far out it sits;
+  // only the starting point is approximated, and only where the
+  // approximation costs less than the sky can show. A ray at the
+  // shadow's edge now begins at ninety gravitational radii instead of
+  // three hundred and twenty, which is most of the cost of the trace.
+  float reach = max(40.0 * sqrt(max(impact, 0.01)), 1.3 * uOuterRg);
+  vec4 y;
+  float phi;
   if (camR <= reach) {
-    pos = cam;
-    vel = cosPsi * camHat + (b / camR) * tHat;
+    y = vec4(camR, camMu, photon.z, photon.w);
+    phi = camPhi;
   } else {
     float tClose = -dot(cam, dir);
-    float entry = tClose - sqrt(max(reach * reach - b * b, 0.0));
-    pos = cam + dir * max(entry, 0.0);
-    float r = length(pos);
-    vec3 rHat = pos / r;
-    vec3 rTan = normalize(cross(hHat, rHat));
-    float radial = -sqrt(max(1.0 - (1.0 - HORIZON / r) * b * b / (r * r), 0.0));
-    vel = radial * rHat + (b / r) * rTan;
+    float entry = max(tClose - sqrt(max(reach * reach - impact * impact, 0.0)), 0.0);
+    vec3 start = cam + dir * entry;
+    vec2 bl = blFromCartesian(start, a);
+    // Magnitudes from the potentials, which the constants satisfy
+    // exactly; signs from the geometry. The photon is on its way out
+    // to the camera here, so its radius is growing, and its polar
+    // angle moves the way the straight line does.
+    float mu2 = blFromCartesian(start - dir * (0.001 * reach), a).y;
+    y = vec4(
+      bl.x,
+      bl.y,
+      sqrt(max(kerrRadial(bl.x, xi, eta, a), 0.0)),
+      sign(mu2 - bl.y) * sqrt(max(kerrPolar(bl.y, xi, eta, a), 0.0))
+    );
+    phi = atan(start.y, start.x);
   }
 
-  // The photon's angular momentum about the spin axis, per unit
-  // energy. The trace runs against the photon's flight, so the sign
-  // flips: this is what decides which limb of the flow is approaching.
-  float bAxis = -b * hHat.z;
-  float b2 = b * b;
-
-  // The shadow, exactly. Below the critical impact parameter the
-  // effective potential has no turning point, so a ray already falling
-  // inward can only reach the horizon — no amount of integration will
-  // change that, and asserting it keeps the shadow's edge analytic
-  // instead of leaving it to whatever the arithmetic does while a ray
-  // hovers at the photon sphere.
-  bool doomed = b < CRITICAL_IMPACT && dot(pos, vel) < 0.0;
+  // The shadow, exactly. A photon whose constants sit inside the
+  // critical curve has no radial turning point outside the horizon, so
+  // a trace already running inward can only end there — settled in
+  // closed form rather than left to whatever the arithmetic does while
+  // a ray hovers at the photon orbit.
+  bool doomed = y.z > 0.0 && kerrCaptured(xi, eta, a);
 
   vec3 accum = vec3(0.0);
-  vec3 prev = pos;
-  vec3 prevVel = vel;
   bool settled = false;
+  float horizon = uHorizonRg + 0.002;
 
   for (int i = 0; i < MAX_STEPS; i++) {
-    float r = length(pos);
-    if (r < HORIZON) { escaped = false; settled = true; break; }
+    float r = y.x;
+    if (r < horizon) { escaped = false; settled = true; break; }
     // A doomed ray only ever moves inward: once it is under the flow
     // there is nothing left for it to pick up.
     if (doomed && r < uInnerRenderRg) { escaped = false; settled = true; break; }
-    if (!doomed && r > reach && dot(pos, vel) > 0.0) { settled = true; break; }
+    // Mino time runs backwards along the trace, so a ray on its way
+    // out has a shrinking radius in the photon's own parameter.
+    if (!doomed && r > reach && y.z < 0.0) { settled = true; break; }
 
-    // Steps scale with radius: coarse where the ray is straight, fine
-    // where it winds. The r^-5 pull is stiff and RK4 earns its cost.
-    float dt = clamp(0.11 * (r - 1.55), 0.02, 0.12 * reach);
-    vec3 k1v = pull(pos, b2);
-    vec3 p2 = pos + vel * (dt * 0.5);
-    vec3 k2v = pull(p2, b2);
-    vec3 v2 = vel + k1v * (dt * 0.5);
-    vec3 p3 = pos + v2 * (dt * 0.5);
-    vec3 k3v = pull(p3, b2);
-    vec3 v3 = vel + k2v * (dt * 0.5);
-    vec3 p4 = pos + v3 * dt;
-    vec3 k4v = pull(p4, b2);
-    vec3 v4 = vel + k3v * dt;
+    float ds = -kerrStep(y, a, xi);
+    vec4 k1 = kerrRates(y, a, xi, eta);
+    vec4 k2 = kerrRates(y + k1 * (ds * 0.5), a, xi, eta);
+    vec4 k3 = kerrRates(y + k2 * (ds * 0.5), a, xi, eta);
+    vec4 k4 = kerrRates(y + k3 * ds, a, xi, eta);
+    float w1 = kerrPhiRate(y.x, y.y, a, xi);
+    float w2 = kerrPhiRate(y.x + k1.x * ds * 0.5, y.y + k1.y * ds * 0.5, a, xi);
+    float w3 = kerrPhiRate(y.x + k2.x * ds * 0.5, y.y + k2.y * ds * 0.5, a, xi);
+    float w4 = kerrPhiRate(y.x + k3.x * ds, y.y + k3.y * ds, a, xi);
 
-    prev = pos;
-    prevVel = vel;
-    pos += (dt / 6.0) * (vel + 2.0 * v2 + 2.0 * v3 + v4);
-    vel += (dt / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
+    vec4 prev = y;
+    float prevPhi = phi;
+    y = kerrProject(y + (ds / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4), a, xi, eta);
+    phi += (ds / 6.0) * (w1 + 2.0 * w2 + 2.0 * w3 + w4);
 
-    // The equatorial flow is the z = 0 plane of this frame; the step
-    // that changes the sign of z crossed it.
-    if (prev.z * pos.z < 0.0) {
-      float f = prev.z / (prev.z - pos.z);
-      vec3 hit = mix(prev, pos, f);
-      float rHit = length(hit);
+    // A thick flow is passed through rather than crossed. A starved
+    // hole puffs its gas into an ion torus half as deep as it is wide
+    // and thin enough to see through, so there is no surface anywhere
+    // to intersect: what reaches the eye is the whole column the ray
+    // travelled, gathered step by step. This is the difference between
+    // a picture of a disc and a picture of what the Event Horizon
+    // Telescope resolved — the ring is not a ring of material, it is
+    // where the line of sight runs longest through the same plasma.
+    if (uAspect > THICK_FLOW) {
+      float rMid = 0.5 * (prev.x + y.x);
+      float muMid = 0.5 * (prev.y + y.y);
+      float presence = flowPresence(rMid);
+      if (presence > 0.002 && abs(muMid) < 3.5 * uAspect) {
+        float tEmit = flowTemperature(rMid);
+        if (tEmit > 0.0) {
+          float phiMid = 0.5 * (prevPhi + phi);
+          float density = flowDensity(rMid, phiMid, muMid);
+          tEmit *= pow(density, 0.25);
+          vec3 u = kerrFlowVelocity(rMid, a, uInnerRg);
+          float dr = 0.5 * (prev.z + y.z);
+          float g = 1.0 / max(u.x - xi * u.y - dr * u.z / kerrDelta(rMid, a), 0.06);
+          float tObs = g * tEmit;
+          // How much gas this step went through: the distance the
+          // photon covered, as the gas measures it, times what is there
+          // at that height. Optically thin, so the emission is the path
+          // integral and the opacity only dims what lies behind — the
+          // two are separate, as they are not for a surface.
+          float through =
+            flowColumn(rMid, muMid) * kerrProperLength(rMid, muMid, ds, g, a) * presence;
+          float emitted = tEmit / uRefTempK;
+          float profile = emitted * emitted * emitted * emitted;
+          float shown = pow(profile, uProfileStretch);
+          float shift = tObs / max(tEmit, 1.0);
+          float beamed = shift * shift * shift * shift;
+          accum += transmittance * through * lutColor(tObs) * shown * beamed * uDiscGain;
+          transmittance *= exp(
+            -uOpticalDepth * pow(rMid / uInnerRenderRg, -uOpacityExp) * density * through
+          );
+          if (transmittance < 0.004) { escaped = false; settled = true; break; }
+        }
+      }
+    }
+
+    // The equatorial flow is θ = π/2 at any spin: the step that changes
+    // the sign of μ crossed it.
+    if (uAspect <= THICK_FLOW && prev.y * y.y < 0.0) {
+      float f = prev.y / (prev.y - y.y);
+      float rHit = mix(prev.x, y.x, f);
+      float phiHit = mix(prevPhi, phi, f);
       float tEmit = flowTemperature(rHit);
       float presence = flowPresence(rHit);
       if (tEmit > 0.0 && presence > 0.002) {
@@ -295,20 +414,24 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
         // whatever its density, so a clump shows as the fourth root of
         // itself in temperature — and, through T⁴, as itself in
         // brightness. The same clump thickens the column.
-        float density = flowDensity(hit, rHit);
+        float density = flowDensity(rHit, phiHit, 0.0);
         tEmit *= pow(density, 0.25);
-        // Doppler and gravity in one factor: g = √(1 − 3/r) / (1 − Ω b_z),
-        // the ratio of received to emitted frequency for a circular
-        // geodesic seen from infinity. A blackbody stays a blackbody
-        // under it, at temperature gT — so the shift is the colour and,
-        // through σ(gT)⁴, the beaming as well.
-        float omega = 1.0 / (rHit * sqrt(rHit));
-        // Orbital speed reaches 1/√2 at the innermost radius drawn, so
-        // the shift factor is bounded — the clamp is only a guard.
-        float g = sqrt(max(1.0 - 3.0 / rHit, 1.0e-4)) / max(1.0 - omega * bAxis, 0.15);
+        // Doppler and gravity in one factor: g = 1/(−p·u), the ratio of
+        // received to emitted frequency, contracted against the four-
+        // velocity the matter actually has — orbiting outside the last
+        // stable circle, plunging inside it. ξ is the photon's own
+        // conserved angular momentum, so which limb is approaching is
+        // decided by the ray rather than by any assumption about the
+        // geometry, and the infall term carries the extra redshift of
+        // matter falling away from the eye. A blackbody stays a
+        // blackbody under this, at temperature gT — so the shift is the
+        // colour and, through σ(gT)⁴, the beaming as well.
+        vec3 u = kerrFlowVelocity(rHit, a, uInnerRg);
+        vec4 at = mix(prev, y, f);
+        float g = 1.0 / max(u.x - xi * u.y - at.z * u.z / kerrDelta(rHit, a), 0.06);
         float tObs = g * tEmit;
-        vec3 through = normalize(mix(prevVel, vel, f));
-        float slant = max(abs(through.z), 0.04);
+        vec3 through = kerrHeading(vec4(rHit, 0.0, at.z, at.w), phiHit, a, xi);
+        float slant = max(abs(normalize(through).z), 0.04);
         // Column through the flow: its vertical depth thinned by the
         // radial fall-off, stretched by how obliquely the ray cuts it.
         float column =
@@ -334,10 +457,16 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
     }
   }
 
-  // A ray still circling when the step budget runs out is one of the
-  // near-critical ones that wind many times: those fall in.
-  if (!settled || doomed) escaped = false;
-  escapeDir = normalize(vel);
+  // Whether the hole took the ray was already settled in closed form.
+  // Running out of steps is a statement about the coordinates, not
+  // about the photon: rays that pass near the spin axis have to resolve
+  // an azimuth that sweeps a half turn in almost no affine parameter,
+  // and spending the budget on that used to be read as capture, which
+  // drew a black seam up the axis through sky that is plainly visible.
+  if (doomed) escaped = false;
+  // The light came from where the trace ended up, which is against the
+  // photon's own direction of travel.
+  escapeDir = normalize(-kerrHeading(y, phi, a, xi));
   return accum;
 }
 `;
