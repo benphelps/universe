@@ -61,6 +61,32 @@ export function skyProgress(): SkyBuildProgress {
   return progress.get(running.value) ?? { fraction: 0, stage: '', stageFraction: -1 };
 }
 
+/**
+ * Abandon every sky build in flight.
+ *
+ * The worker is serial and has no way of being told to stop, so
+ * stopping it means ending it — the right trade whenever the answer has
+ * stopped being wanted. Diving to a galaxy's centre leaves that
+ * system's sky building for a viewpoint nobody is standing at any more,
+ * and so does travelling on to the next star: work that will be thrown
+ * away when it lands, a progress bar counting toward it, and a queue
+ * the next request has to wait behind.
+ */
+export function cancelSkyBuilds(): void {
+  if (!worker) return;
+  worker.terminate();
+  worker = null;
+  // A promise whose worker is gone never settles, so it must not be
+  // left in the cache for the next caller to await forever.
+  for (const seedHex of waiting.keys()) {
+    for (const key of [...cache.keys()]) {
+      if (key.startsWith(`${seedHex}:`)) cache.delete(key);
+    }
+  }
+  waiting.clear();
+  progress.clear();
+}
+
 export function getSkyField(seedHex: string, viewpoint: GalacticPosition): Promise<SkyField> {
   const key = `${seedHex}:${viewpoint.xPc.toFixed(4)},${viewpoint.yPc.toFixed(4)},${viewpoint.zPc.toFixed(4)}`;
   const cached = cache.get(key);

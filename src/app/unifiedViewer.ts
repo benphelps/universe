@@ -112,7 +112,7 @@ import { holeDonors } from '../universe/system/holeDonors';
 import { rotateToScene, sceneFromGalaxy, sceneFromUpAxis } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
 import { getGalacticLandmarks } from './landmarkService';
-import { getSkyField, skyPending, skyProgress } from './skyService';
+import { cancelSkyBuilds, getSkyField, skyPending, skyProgress } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
 import { fmt } from './ui/format';
@@ -2582,6 +2582,9 @@ export class UnifiedViewer {
   }
 
   private clearSystem(): void {
+    // Whatever sky was still building was building for here, and here
+    // is being left.
+    cancelSkyBuilds();
     for (const node of this.starNodes) {
       if (node.hole) {
         this.scene.remove(node.hole.mesh);
