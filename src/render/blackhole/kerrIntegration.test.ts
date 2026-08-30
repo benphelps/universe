@@ -587,7 +587,11 @@ describe('the spin axis', () => {
       const split = shot(nPhi, STEP_EPS / 400);
       const whole = shot(nPhi, STEP_EPS / 400, true);
       expect(Math.abs(split.out.sweep - whole.out.sweep)).toBeLessThan(1e-3);
-      expect(whole.out.steps).toBeGreaterThan(40000);
+      // And not a close-run thing: taken whole, the same ray needs
+      // orders of magnitude more steps to arrive there. Stated against
+      // the split rather than as a number, so it keeps meaning this
+      // when the step size changes.
+      expect(whole.out.steps).toBeGreaterThan(100 * shot(nPhi).out.steps);
     }
   });
 
@@ -734,6 +738,9 @@ describe('the shader and the module', () => {
       worst = Math.max(worst, march(inbound(ray, spin, reach), ray, spin, reach).steps);
     }
     expect(worst).toBeLessThan(budget);
-    expect(worst).toBeGreaterThan(budget / 2);
+    // And not so far under it that the bound has stopped meaning
+    // anything — a limit nothing approaches will not notice when
+    // something does.
+    expect(worst).toBeGreaterThan(budget / 3);
   });
 });

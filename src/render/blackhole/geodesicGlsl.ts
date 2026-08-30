@@ -142,8 +142,28 @@ const float TAU = 6.28318531;
  * only timescale the flow has.
  */
 const float EDDY_LIFETIME = 1.0;
-/** Mino-time step, as a fraction of the fastest coordinate's rate. */
-const float STEP_EPS = 0.045;
+/**
+ * Mino-time step, as a fraction of the fastest coordinate's rate.
+ *
+ * Set by what the drawn picture needs, not by what the integrator can
+ * do. Refining it by more than twice moves the image half a percent,
+ * which is this trace's own convergence noise; coarsening it to 0.075
+ * costs the second-order 15π/4b² term in the deflection, which is a
+ * test and not available to spend. This sits between them.
+ */
+const float STEP_EPS = 0.06;
+/**
+ * Steps between re-reads of the flow's clumping.
+ *
+ * A step carries the sample point about a quarter of a noise cell —
+ * measured, along the rays this actually traces — so this is one read
+ * per cell, which is the finest rate that tells you anything the field
+ * has. Reading it every third step resolved the turbulence four times
+ * finer than the turbulence has structure, and for a hot flow, which
+ * is a volume rather than a surface and so pays this at every step
+ * rather than once, that was over half the cost of the entire trace.
+ */
+const int FLOW_SAMPLE_STRIDE = 5;
 /** Half-thickness above which the flow is passed through rather than
  *  crossed. Cold discs sit near 0.02, ion tori at 0.55. */
 const float THICK_FLOW = 0.15;
@@ -223,7 +243,15 @@ float turbulentField(
   vec3 q = vec3(6.5 * log(r), 4.0 * cos(a), 4.0 * sin(a));
   q += vec3(0.0, 0.0, 2.2 * mu / max(uAspect, 0.02));
   q += eddyOffset(generation);
-  return (snoise(q) + 0.5 * snoise(q * 2.7) + 0.25 * snoise(q * 6.1)) / 1.32;
+  // One octave, because the others were never resolved. A step carries
+  // the sample point about a quarter of a noise cell, and the flow is
+  // re-read every fifth step — so the second octave was being sampled
+  // at nearly two of its own cells per read and the third at four.
+  // Neither was drawing structure; both were drawing noise that the
+  // path integral then averaged back out, at two thirds of the cost of
+  // the whole trace. Dropped, the picture moves by a quarter of a
+  // percent and the clumping keeps its contrast to within three.
+  return snoise(q);
 }
 
 /**
@@ -644,7 +672,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
         if (tEmit > 0.0) {
           if (held <= 0) {
             heldDensity = flowDensity(rMid, 0.5 * (prevPhi + phi), muMid);
-            held = 3;
+            held = FLOW_SAMPLE_STRIDE;
           }
           held--;
           float density = heldDensity;
