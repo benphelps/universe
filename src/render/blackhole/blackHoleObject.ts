@@ -279,7 +279,6 @@ export class BlackHoleObject {
         uTurbSigma: { value: flow.turbulenceSigma },
         uAspect: { value: flow.aspectRatio },
         uFlowPhase: { value: 0 },
-        uFlowSpin: { value: 0 },
         uDiscGain: { value: DISC_EXPOSURE / columns },
         uLut: { value: lut },
       },
@@ -365,9 +364,6 @@ export class BlackHoleObject {
     this.lastSimS = timeS;
     this.flowTurns += Math.min(Math.max(asked, 0), FLOW_TURNS_PER_FRAME);
     uniforms.uFlowPhase.value = this.flowTurns;
-    // The same clock as an angle, folded into one turn before it is
-    // handed to a float that has to add φ to it.
-    uniforms.uFlowSpin.value = this.flowTurns - Math.floor(this.flowTurns);
 
     // The camera's world matrix is only rebuilt when the scene renders,
     // which happens after this — so read straight off it and the trace

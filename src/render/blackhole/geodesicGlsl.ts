@@ -127,7 +127,6 @@ uniform float uProfileStretch;
 uniform float uTurbSigma;
 uniform float uAspect;
 uniform float uFlowPhase;
-uniform float uFlowSpin;
 uniform float uDiscGain;
 uniform sampler2D uLut;
 
@@ -136,12 +135,28 @@ const float LENSING_SOLID = ${LENSING_SOLID_RG}.0;
 const int MAX_STEPS = 512;
 const float TAU = 6.28318531;
 /**
- * How long a clump lasts, in orbits at the flow's inner edge. The
- * magnetorotational instability turns its eddies over in about one, so
- * this is not a rate of change chosen for the look of it — it is the
- * only timescale the flow has.
+ * How long a clump lasts, in orbits at the flow's inner edge.
+ *
+ * The magnetorotational instability turns its eddies over in about one
+ * orbit — one *local* orbit, so the true lifetime falls off outward
+ * with the orbital period. A clock per radius is what that asks for,
+ * and it cannot be drawn: see flowDensity for why the picture, not the
+ * arithmetic, is what fails. One clock for the whole flow means one
+ * number here, and the number is the only free parameter left.
+ *
+ * It is bounded on both sides, and both bounds are visible. Too short
+ * and no clump survives long enough to travel: at one inner orbit the
+ * flow past a couple of gravitational radii is replaced before it has
+ * been anywhere, and boils in place instead of turning. Too long and
+ * differential rotation combs it — a clump is wound by 1.5 Ωτ per
+ * e-fold of radius, and the clumping is sampled on a ring four noise
+ * cells across, so at sixteen inner orbits there are more windings
+ * across an e-fold than there are pixels, and the wisps draw as fine
+ * combed strips and then as haze. Four is what sits between them:
+ * still an orbit or better wherever a disc is bright, still six
+ * windings per e-fold at the very edge of the flow, which resolves.
  */
-const float EDDY_LIFETIME = 1.0;
+const float EDDY_LIFETIME = 4.0;
 /**
  * Mino-time step, as a fraction of the fastest coordinate's rate.
  *
@@ -220,21 +235,20 @@ float turbulentField(
   float age,
   float generation
 ) {
-  // Three things move the pattern round. The static winding it is born
-  // with; the flow's bulk rotation, which turns everything together and
-  // so never shears; and the differential part, which is the only one
-  // that combs the field into ever-finer filaments and is therefore the
-  // only one allowed to accumulate — it does not accumulate without
-  // limit, because the age it multiplies resets when this realisation
-  // is reseeded. The two rotation terms sum, over one lifetime, to
-  // exactly one turn at the local orbital rate.
+  // Two things move the pattern round: the static winding it is born
+  // with, and the turning it has done since. The turning is at the
+  // local orbital rate and is measured from this realisation's own
+  // birth, so it never exceeds one lifetime's worth — and a lifetime
+  // is what bounds how far differential rotation can comb the field
+  // before the field is replaced.
   //
-  // The bulk rotation arrives already folded into a single turn. It is
-  // an angle and only ever read as one, so the whole count of turns
-  // would add nothing but its own size — and its size is what stops a
-  // float from resolving φ at all once the disc has gone round a few
-  // hundred thousand times. Folded, the pattern turns forever.
-  float a = phi + 9.0 * keplerian + TAU * uFlowSpin + TAU * age * (keplerian - 1.0);
+  // What matters about that bound is not the angle, which is read
+  // through a cosine and could be folded, but its derivative across
+  // the radius: that is the number of filaments packed into an e-fold,
+  // and it is 1.5 Ωτ, so an age reaching one turn draws three half
+  // turns of winding per e-fold and no more, at any spin and at any
+  // time since the flow was first drawn.
+  float a = phi + 9.0 * keplerian + TAU * age * keplerian;
   // Sheared hard along the radius and stretched around it: turbulence
   // in a flow that orbits differentially is drawn out into filaments
   // far longer than they are wide, which is what banding is. Height
@@ -265,51 +279,59 @@ float turbulentField(
  * turns over in about an orbit and is gone, replaced by another the
  * instability has just made.
  *
- * In about an orbit *of its own*. That is the whole of the clock here,
- * and getting it wrong is visible immediately: run every radius on the
- * inner edge's orbit instead and the gas at twice that radius, which
- * turns at a third of the rate, is replaced after a third of a
- * rotation — the pattern restarts before it has been anywhere. Tied to
- * the local orbit, every radius completes exactly one turn before it is
- * renewed, however long that takes out there.
+ * In about an orbit *of its own*, which asks for a clock per radius —
+ * and a clock per radius cannot be drawn. Its phase at radius r is
+ * fract(T Ω(r)), and while that stays inside a turn forever, its
+ * derivative across the radius is 1.5 T Ω and grows for as long as
+ * anyone watches. Within a minute or two it packs more windings of the
+ * clumping into an e-fold of radius than there are pixels across one,
+ * and what a viewer sees is the wispy structure combing itself into
+ * ever finer strips and then into an even haze that never comes back.
+ * Nothing goes out of range the whole time. It is the slope that runs
+ * away, and no amount of folding touches a slope.
+ *
+ * So the flow turns over on one clock. The phase then has no radial
+ * derivative at all, and the only thing left varying with radius is
+ * the winding inside a single lifetime, which is bounded because the
+ * lifetime is. What that gives up is written at EDDY_LIFETIME: flow
+ * well outside the inner edge is replaced sooner than its own orbit
+ * would replace it.
  *
  * Advecting one frozen field would show the first half of what
  * turbulence does and not the second: the pattern would shear without
- * bound, stretching into finer and finer threads that never renew,
- * until the radial structure fell below anything that could be
- * resolved. So two realisations run half a lifetime out of phase, each
- * reseeded while it carries no weight, and are blended so the variance
- * is preserved rather than the mean, which keeps the contrast steady
- * across the handover. Both the reseeding and the weights read the same
- * clock, so a generation changes only where its weight is nothing —
- * which is what lets that clock vary with radius without drawing a ring
- * at every place it ticks.
+ * bound, stretching into finer and finer threads that never renew. So
+ * two realisations run half a lifetime out of phase, each introduced
+ * and retired while it carries no weight, and are blended so the
+ * variance is preserved rather than the mean — the contrast holds
+ * across the handover instead of dulling through it.
  */
 float flowDensity(float r, float phi, float mu) {
   float keplerian = pow(r / uInnerRenderRg, -1.5);
-  // Orbits this radius has completed, on its own clock.
-  float t = (uFlowPhase * keplerian) / EDDY_LIFETIME;
-  float phase = fract(t);
-  // The two generations are half a lifetime apart, and each carries no
-  // weight at the moment it is reseeded — sine for the one born at the
-  // whole turn, cosine for the one born at the half. Their squares sum
-  // to one, so what is held constant across the handover is the
-  // variance and not the mean: the clumping never dulls mid-crossfade.
-  float wA = sin(3.14159265 * phase);
-  float wB = cos(3.14159265 * phase);
-  // Ages are in the units the winding term wants — the shared bulk
-  // rotation is counted in inner-edge turns, so an age is too.
-  float span = EDDY_LIFETIME / max(keplerian, 1.0e-6);
-  // Half a generation apart in the hash as well as in time. Counted
-  // plainly the two indices agree for half of every cycle — floor(t)
-  // and floor(t+½) are the same number until t passes the half — and
-  // two realisations that are the same realisation do not average to a
-  // steady contrast, they beat between one and √2 of it. At the inner
-  // edge, where there is no differential winding to tell them apart
-  // either, they were the identical field.
+  // Slots of half a lifetime, so two generations are alive at once:
+  // the one just born and the one born a slot ago. At each boundary
+  // the new becomes the old and another is born behind it, which is
+  // what lets a generation be introduced and retired unseen. One clock
+  // for the whole flow, so every radius does it at the same moment.
+  float t = 2.0 * uFlowPhase / EDDY_LIFETIME;
+  float f = fract(t);
+  // Quarter-turn quadrature, so each weight rises from nothing and
+  // falls back to nothing over its own life and is never negative.
+  // Half a turn was: it carried the older realisation down through
+  // zero to minus one, and then across the slot boundary that same
+  // realisation — same hash, same age — came back at plus one. The
+  // clumping inverted between two frames, dense for sparse, everywhere
+  // that shared the moment. On a clock per radius nowhere shared it
+  // and the flash was smeared out into nothing; on one clock the whole
+  // flow does it at once, which is what a jump is.
+  //
+  // Their squares still sum to one, so what is held constant across
+  // the handover is the variance and not the mean: the clumping does
+  // not dull mid-crossfade.
+  float wNew = sin(1.5707963 * f);
+  float wOld = cos(1.5707963 * f);
   float xi =
-    wA * turbulentField(r, phi, mu, keplerian, phase * span, floor(t)) +
-    wB * turbulentField(r, phi, mu, keplerian, fract(phase + 0.5) * span, floor(t + 0.5) + 0.5);
+    wNew * turbulentField(r, phi, mu, keplerian, 0.5 * f * EDDY_LIFETIME, floor(t)) +
+    wOld * turbulentField(r, phi, mu, keplerian, 0.5 * (1.0 + f) * EDDY_LIFETIME, floor(t) - 1.0);
   // Log-normal, with the −σ²/2 that keeps the mean density unchanged.
   return clamp(exp(uTurbSigma * xi - 0.5 * uTurbSigma * uTurbSigma), 0.2, 4.0);
 }

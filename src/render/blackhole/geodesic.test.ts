@@ -100,77 +100,61 @@ describe('the geodesic tracer', () => {
     }
   });
 
-  it('keeps the two realisations from being the same realisation', () => {
-    // Counted plainly, floor(t) and floor(t+½) agree for half of every
-    // cycle, so the two fields the crossfade blends were drawn from the
-    // same offset in the noise — different only by how far the shear
-    // had wound them apart, which at the flow's inner edge is not at
-    // all. Two copies of one field do not blend to a steady contrast:
-    // sin+cos runs between one and √2, so the clumping beat by forty
-    // percent every orbit at the very radius that is brightest.
+  it('hands one generation to the next without inverting it', () => {
+    // Two generations overlap by half a lifetime, and the crossfade
+    // has to satisfy three things at once: neither weight negative,
+    // both vanishing at their own birth and death, and their squares
+    // summing to one so the clumping's contrast does not dull halfway
+    // through the handover.
+    //
+    // Quadrature over a half turn gets the third and fails the first.
+    // It carries the older realisation down through zero to minus one,
+    // and then at the slot boundary that same realisation — same hash,
+    // same age — is read again at plus one. Nothing about the field
+    // changes; its sign does. Dense goes sparse between two frames.
+    const halfTurn = (f: number): number => Math.cos(Math.PI * f);
+    expect(halfTurn(0.99)).toBeLessThan(-0.9);
+    expect(halfTurn(0)).toBeGreaterThan(0.9);
+    // Over a quarter turn instead, every weight is a rise from nothing
+    // and a fall back to it, and the boundary is a plain relabelling:
+    // what was the new one at the end of its slot is the old one at
+    // the start of the next, at the same weight and the same age.
+    const wNew = (f: number): number => Math.sin((Math.PI / 2) * f);
+    const wOld = (f: number): number => Math.cos((Math.PI / 2) * f);
+    expect(wNew(1)).toBeCloseTo(wOld(0), 12);
+    const ageNew = (f: number): number => 0.5 * f;
+    const ageOld = (f: number): number => 0.5 * (1 + f);
+    expect(ageNew(1)).toBeCloseTo(ageOld(0), 12);
     for (let i = 0; i <= 400; i++) {
-      const t = (i / 400) * 4;
-      const a = Math.floor(t);
-      const b = Math.floor(t + 0.5) + 0.5;
-      expect(a).not.toBe(b);
-      // And they part company by a whole generation across a cycle, so
-      // neither is ever a stale copy of the other.
-      expect(Math.abs(a - b)).toBeGreaterThanOrEqual(0.5);
+      const f = i / 400;
+      expect(wNew(f)).toBeGreaterThanOrEqual(0);
+      expect(wOld(f)).toBeGreaterThanOrEqual(0);
+      expect(wNew(f) ** 2 + wOld(f) ** 2).toBeCloseTo(1, 12);
+      // The two are never the same realisation: one generation apart,
+      // always, so neither is a stale copy of the other.
+      const t = f * 4;
+      expect(Math.abs(Math.floor(t) - (Math.floor(t) - 1))).toBe(1);
     }
-    expect(GEODESIC_GLSL).toContain('floor(t + 0.5) + 0.5');
+    // Born at nothing and retired at nothing, so a generation is never
+    // introduced or dropped where it could be seen.
+    expect(wNew(0)).toBeCloseTo(0, 12);
+    expect(wOld(1)).toBeCloseTo(0, 12);
+    expect(GEODESIC_GLSL).toContain('sin(1.5707963 * f)');
+    expect(GEODESIC_GLSL).toContain('cos(1.5707963 * f)');
+    expect(GEODESIC_GLSL).not.toContain('sin(3.14159265 * phase)');
   });
 
-  it('draws every generation from somewhere a float can still resolve', () => {
-    // Walking the sample point a fixed distance per generation is fine
-    // until the offset dwarfs the ±4 the pattern itself spans. Then the
-    // spacing between representable coordinates grows past the noise's
-    // own cells, the field comes back flat, and the clumping dissolves
-    // into an even glow — which is what a disc watched above real time
-    // used to do within seconds. Hashed into a box instead, the offset
-    // never leaves the range a float resolves finely.
-    const offset = (generation: number): number[] => {
-      const fract = (x: number): number => x - Math.floor(x);
-      const h = [0.1031, 0.11369, 0.13787].map((c) => fract((generation % 4096) * c));
-      const d = h[0] * (h[1] + 33.33) + h[1] * (h[2] + 33.33) + h[2] * (h[0] + 33.33);
-      const g = h.map((x) => x + d);
-      return [
-        fract((g[0] + g[1]) * g[2]),
-        fract((g[0] + g[2]) * g[1]),
-        fract((g[1] + g[2]) * g[0]),
-      ].map((x) => x * 128);
-    };
-    // Bounded, for any generation a session could ever reach.
-    for (const g of [0, 1, 41, 4095, 4096, 1e5, 1e7]) {
-      for (const c of offset(g)) {
-        expect(c).toBeGreaterThanOrEqual(0);
-        expect(c).toBeLessThan(128);
-        // Still resolved far finer than one noise cell, which is what
-        // the unbounded offset stopped being.
-        expect(Math.fround(c + 1) - Math.fround(c)).toBeCloseTo(1, 4);
-      }
-    }
-    // Consecutive generations land somewhere genuinely else.
-    for (let g = 0; g < 40; g++) {
-      const [a, b] = [offset(g), offset(g + 1)];
-      const apart = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-      expect(apart).toBeGreaterThan(4);
-    }
-    expect(GEODESIC_GLSL).toContain('eddyOffset(generation)');
-    expect(GEODESIC_GLSL).not.toContain('generation * vec3(');
-  });
-
-  it('folds the bulk rotation before a float has to add an azimuth to it', () => {
-    // The pattern's angle is only ever read through a sine and a
-    // cosine, so the whole count of turns contributes nothing but its
-    // own magnitude — and its magnitude is what stops a float from
-    // resolving φ. At a hundred thousand turns the azimuth is down to a
-    // hundred distinguishable places around the ring; at a million
-    // there is one, and the disc is a set of perfectly smooth
-    // concentric bands. Folded first, φ keeps every digit it had.
+  it('keeps the winding, and its slope across the radius, bounded', () => {
+    // Two ways for a rotating pattern to destroy itself, and only one
+    // of them is about the size of a number.
+    //
+    // The first is the angle. It is read through a sine and a cosine,
+    // so a whole count of turns adds nothing but its own magnitude —
+    // and its magnitude is what stops a float resolving φ. At a
+    // hundred thousand turns the azimuth is down to a hundred
+    // distinguishable places around the ring; at a million there is
+    // one, and the disc is a set of perfectly smooth bands.
     const TAU = 2 * Math.PI;
-    // How many distinct angles a float can still tell apart around one
-    // circuit, once this many turns have been added to them: the gap
-    // between neighbouring floats at that magnitude, against 2π.
     const resolvedPlaces = (turns: number): number => {
       const base = Math.abs(Math.fround(TAU * turns));
       if (base === 0) return Infinity;
@@ -178,11 +162,59 @@ describe('the geodesic tracer', () => {
     };
     expect(resolvedPlaces(1e6)).toBeLessThan(64);
     expect(resolvedPlaces(1e5)).toBeLessThan(256);
-    // Folded, every count of turns resolves the ring the same way.
-    for (const turns of [0.25, 1e3, 1e6, 1e9]) {
-      expect(resolvedPlaces(turns - Math.floor(turns))).toBeGreaterThan(1e6);
+
+    // The second is the slope, and it is the one that was actually
+    // wrong. The winding may sit inside a single turn and still be
+    // useless, because what draws the clumping is how much of it is
+    // packed into an e-fold of radius. The pattern is sampled on a
+    // ring four noise cells across, so a turn of winding per e-fold is
+    // this many cells of structure across one:
+    const cellsPerTurn = TAU * 4;
+    // and an e-fold of the inner disc covers a couple of hundred
+    // pixels, so past a few turns per e-fold there is nothing left to
+    // see but aliasing.
+    const keplerian = (rOverInner: number): number => rOverInner ** -1.5;
+
+    // A clock per radius: the phase is fract(T Ω), the age is that
+    // over Ω, and the winding is the age against a fixed reference.
+    // Differentiating in ln r, with dΩ/dln r = −1.5 Ω, the floor term
+    // survives — and it counts elapsed orbits.
+    const slopePerRadius = (rOverInner: number, turns: number): number => {
+      const k = keplerian(rOverInner);
+      const orbits = Math.floor(turns * k);
+      return Math.abs(-1.5 * (orbits * (k - 1)) / k - 1.5 * ((turns * k) % 1));
+    };
+    // One clock for the flow: the age has no radial variation at all,
+    // so only Ω itself carries one.
+    const slopeShared = (rOverInner: number, turns: number): number =>
+      Math.abs((turns % 1) * -1.5 * keplerian(rOverInner));
+
+    // Four gravitational radii out, the old slope grows without bound
+    // with time — it is proportional to the orbits elapsed — and is
+    // already past anything renderable within a minute of watching.
+    const grew = [10, 100, 1000].map((t) => slopePerRadius(4, t));
+    expect(grew[1] / grew[0]).toBeGreaterThan(5);
+    expect(grew[2] / grew[1]).toBeGreaterThan(5);
+    expect(grew[0] * cellsPerTurn).toBeGreaterThan(200);
+    expect(grew[2] * cellsPerTurn).toBeGreaterThan(20000);
+
+    // Shared, the slope never exceeds one and a half turns per e-fold
+    // — that is r dΩ/dr over a lifetime, and it is the same however
+    // long anyone has been watching.
+    for (const turns of [0.25, 10.5, 1e3 + 0.5, 1e6 + 0.5, 1e9 + 0.5]) {
+      for (const rOverInner of [1, 2, 4, 12, 40]) {
+        expect(slopeShared(rOverInner, turns)).toBeLessThanOrEqual(1.5);
+      }
+      // And the angle itself stays inside a turn, so φ keeps every
+      // digit it had.
+      expect(resolvedPlaces((turns % 1) * keplerian(1))).toBeGreaterThan(1e6);
     }
-    expect(GEODESIC_GLSL).toContain('TAU * uFlowSpin');
+
+    // The clock is one clock, and the winding is the local rate times
+    // an age that resets with the generation.
+    expect(GEODESIC_GLSL).toContain('float t = 2.0 * uFlowPhase / EDDY_LIFETIME;');
+    expect(GEODESIC_GLSL).toContain('TAU * age * keplerian');
+    expect(GEODESIC_GLSL).not.toContain('uFlowPhase * keplerian');
     expect(GEODESIC_GLSL).not.toContain('TAU * uFlowPhase');
   });
 
