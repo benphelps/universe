@@ -114,30 +114,63 @@ float kerrPolarTurn(float mu, float xi, float eta, float a) {
 }
 
 /**
- * The azimuth a ray has swept, measured from its polar turning point,
- * while it is close enough to the spin axis for μ² ≈ 1.
+ * The azimuth a ray sweeps about the spin axis, in closed form.
  *
- * Integrating dφ/dσ = ξ/sin²θ through there numerically cannot work in
- * single precision: sin²θ falls to a hundred-millionth, and however it
- * is carried the absolute error picked up while it was still of order
- * one is larger than the value it ends at. But the integral has a
- * closed form — ∫ξ dμ/[(1−μ²)√Θ] is an arctangent — and written with
- * dμ/dσ in the numerator, which is a state variable and exact, nothing
- * subtracts and nothing divides by a vanishing quantity.
+ * dφ/dσ carries ξ/sin²θ, and a ray reaching for the pole drives that
+ * to whatever it likes: sin²θ bottoms out at ξ²/(η+a²), so the rate
+ * peaks at (η+a²)/ξ and a ray with a thousandth of a unit of angular
+ * momentum sweeps most of a half turn in almost no affine parameter.
+ * No step rule can follow that, and every attempt to dodge it — capping
+ * the rate, holding rays off the axis — answers a different question
+ * for a whole band of the image rather than for the few rays that are
+ * really singular.
  *
- * Over a full passage in and back out it comes to 2·arctan(|dμ|/|ξ|),
- * which tends to π as ξ tends to zero: the half turn a ray makes when
- * it passes over the pole, and the thing whose absence drew a black
- * line up the axis.
+ * It does not have to be integrated. The term splits exactly,
+ *
+ *   ξ/sin²θ = ξ|cosθ|/sin²θ + ξ/(1 + |cosθ|),
+ *
+ * and the whole difficulty is in the first piece, which has an
+ * elementary antiderivative: written in s = sin²θ the polar potential
+ * is exactly the quadratic Θ = −a²s² + Bs − ξ², and ∫ds/(s√Θ) is an
+ * arcsine. This is that arcsine, arranged to vanish at the polar
+ * turning point — which is what lets a step that crosses the turning
+ * point be differenced without knowing that it did. What is left over,
+ * ξ/(1+|cosθ|), is bounded by ξ, divides by nothing small and
+ * subtracts nothing; it goes through the integrator with the rest.
+ *
+ * Over a full passage this comes to π as ξ goes to nothing: the half
+ * turn a ray makes going over the pole, exactly, whether it passes a
+ * radian from the axis or a millionth of one.
  */
-float kerrCapAzimuth(float dmu, float xi) {
-  return atan(abs(dmu) / max(abs(xi), 1.0e-20));
+float kerrAxisAzimuth(float sinSq, float mu, float dmu, float xi, float eta, float a) {
+  float x2 = xi * xi;
+  float b = eta + a * a + x2;
+  float disc = sqrt(max(b * b - 4.0 * a * a * x2, 0.0));
+  float arg = clamp((b * sinSq - 2.0 * x2) / max(sinSq * disc, 1.0e-30), -1.0, 1.0);
+  // Which branch the ray is on: climbing toward its pole, or falling
+  // back from it. The bracket is zero where the two meet, so a step
+  // that turns around inside itself is still only a difference.
+  float branch = mu * dmu < 0.0 ? -1.0 : 1.0;
+  float sgn = xi < 0.0 ? -1.0 : 1.0;
+  return -0.5 * sgn * branch * (asin(arg) + 1.5707963);
 }
 
-/** dφ/dσ with sin²θ supplied rather than reconstructed. */
-float kerrPhiRateFrom(float r, float sinSq, float a, float xi, float xiNumerator) {
-  float p = r * r + a * a - a * xi;
-  return a * p / kerrDelta(r, a) + xiNumerator / max(sinSq, 1.0e-14) - a;
+/**
+ * The step that antiderivative takes when a ray crosses the equator.
+ *
+ * sin²θ turns around there too — at its largest rather than its
+ * smallest — so the branch flips a second time, and unlike the polar
+ * turn the bracket is not zero where it happens. The size of the jump
+ * depends on the ray's constants alone, so it is worked out once and
+ * taken back off whenever μ changes sign.
+ */
+float kerrEquatorJump(float xi, float eta, float a) {
+  float x2 = xi * xi;
+  float b = eta + a * a + x2;
+  float disc = sqrt(max(b * b - 4.0 * a * a * x2, 0.0));
+  float arg = clamp((b - 2.0 * x2) / max(disc, 1.0e-30), -1.0, 1.0);
+  float sgn = xi < 0.0 ? -1.0 : 1.0;
+  return sgn * (asin(arg) + 1.5707963);
 }
 
 /**
@@ -228,10 +261,16 @@ vec4 kerrProject(vec4 y, float a, float xi, float eta) {
   return y;
 }
 
-/** dφ/dσ = aP/Δ + ξ/sin²θ − a: the only rational one of the three. */
+/**
+ * What is left of dφ/dσ once the axis has been taken out of it: the
+ * frame dragging aP/Δ − a, which the horizon owns and the pole never
+ * touches, and the ξ/(1+|cosθ|) that kerrAxisAzimuth leaves behind.
+ * Both are bounded by the ray's own constants, so this is the whole of
+ * what the integrator has to follow and the step rule has to resolve.
+ */
 float kerrPhiRate(float r, float mu, float a, float xi) {
   float p = r * r + a * a - a * xi;
-  return a * p / kerrDelta(r, a) + xi / max(1.0 - mu * mu, 1.0e-6) - a;
+  return a * p / kerrDelta(r, a) - a + xi / (1.0 + abs(mu));
 }
 
 /**

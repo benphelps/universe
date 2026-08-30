@@ -123,6 +123,83 @@ export function polarPotential(mu: number, ray: PhotonRay, spin: number): number
   return ray.eta + m2 * (a * a - ray.xi * ray.xi - ray.eta) - a * a * m2 * m2;
 }
 
+/** Θ with sin²θ supplied rather than reconstructed from μ. Carried,
+ *  sin²θ keeps its relative precision to a millionth; differenced out
+ *  of 1 − μ² it has none left, and everything that divides by it
+ *  inherits the loss. */
+export function polarFromSinSq(
+  sinSq: number,
+  mu: number,
+  ray: PhotonRay,
+  spin: number,
+): number {
+  const a = clampSpin(spin);
+  return sinSq * (ray.eta + a * a * mu * mu) - ray.xi * ray.xi * mu * mu;
+}
+
+/** Where the polar motion turns, as a value of sin²θ. */
+export function polarTurningSinSq(mu: number, ray: PhotonRay, spin: number): number {
+  const a = clampSpin(spin);
+  return (ray.xi * ray.xi * mu * mu) / Math.max(ray.eta + a * a * mu * mu, 1e-12);
+}
+
+/**
+ * The azimuth a ray sweeps about the spin axis, in closed form.
+ *
+ * dφ/dσ carries ξ/sin²θ, and a ray reaching for the pole drives that
+ * wherever it likes: sin²θ bottoms out at ξ²/(η+a²), so the rate peaks
+ * at (η+a²)/ξ and a ray with a thousandth of a unit of angular momentum
+ * sweeps most of a half turn in almost no affine parameter. No step
+ * rule can follow that. But it splits exactly,
+ *
+ *   ξ/sin²θ = ξ|cosθ|/sin²θ + ξ/(1 + |cosθ|),
+ *
+ * and the first piece — the whole of the difficulty — is elementary:
+ * in s = sin²θ the polar potential is exactly the quadratic
+ * Θ = −a²s² + Bs − ξ² with B = η + a² + ξ², and ∫ds/(s√Θ) is an
+ * arcsine. This is that arcsine, offset so it vanishes at the polar
+ * turning point, which is what lets a step that crossed the turning
+ * point be taken as a plain difference. Over a full passage it comes
+ * to π as ξ goes to nothing: the half turn over the pole, exactly.
+ */
+export function axisAzimuth(
+  sinSq: number,
+  mu: number,
+  dmu: number,
+  ray: PhotonRay,
+  spin: number,
+): number {
+  const a = clampSpin(spin);
+  const x2 = ray.xi * ray.xi;
+  const b = ray.eta + a * a + x2;
+  const disc = Math.sqrt(Math.max(b * b - 4 * a * a * x2, 0));
+  const arg = Math.min(1, Math.max(-1, (b * sinSq - 2 * x2) / Math.max(sinSq * disc, 1e-300)));
+  const branch = mu * dmu < 0 ? -1 : 1;
+  const sgn = ray.xi < 0 ? -1 : 1;
+  return -0.5 * sgn * branch * (Math.asin(arg) + Math.PI / 2);
+}
+
+/**
+ * The step that antiderivative takes when a ray crosses the equator,
+ * where sin²θ turns around at its far end and moves the arcsine onto
+ * its other branch. A function of the ray's constants alone.
+ */
+export function equatorAzimuthJump(ray: PhotonRay, spin: number): number {
+  const a = clampSpin(spin);
+  const x2 = ray.xi * ray.xi;
+  const b = ray.eta + a * a + x2;
+  const disc = Math.sqrt(Math.max(b * b - 4 * a * a * x2, 0));
+  const arg = Math.min(1, Math.max(-1, (b - 2 * x2) / Math.max(disc, 1e-300)));
+  return (ray.xi < 0 ? -1 : 1) * (Math.asin(arg) + Math.PI / 2);
+}
+
+/** What is left of dφ/dσ once the axis has been taken out of it. */
+export function azimuthRate(r: number, mu: number, ray: PhotonRay, spin: number): number {
+  const a = clampSpin(spin);
+  const p = r * r + a * a - a * ray.xi;
+  return (a * p) / delta(r, a) - a + ray.xi / (1 + Math.abs(mu));
+}
+
 /**
  * Where the shadow's edge comes from: the photons that neither escape
  * nor fall, circling forever on spherical orbits of radius r. Bardeen's

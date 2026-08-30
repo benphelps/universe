@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  axisAzimuth,
   criticalConstants,
+  delta,
+  equatorAzimuthJump,
   photonFromDirection,
+  polarFromSinSq,
   polarPotential,
+  polarTurningSinSq,
   radialPotential,
   shadowOutline,
   type PhotonRay,
@@ -38,6 +43,11 @@ interface State {
   dmu: number;
 }
 
+/** sin²θ, carried alongside μ exactly as the shader carries it. */
+function startingSinSq(mu: number): number {
+  return Math.max(1 - mu * mu, 0);
+}
+
 function rates(r: number, mu: number, dr: number, dmu: number, a: number, ray: PhotonRay) {
   const p = r * r + a * a - a * ray.xi;
   const kk = (ray.xi - a) * (ray.xi - a) + ray.eta;
@@ -49,9 +59,17 @@ function rates(r: number, mu: number, dr: number, dmu: number, a: number, ray: P
   };
 }
 
+/** The bounded half of dφ/dσ; the other half is closed form. */
 function phiRate(r: number, mu: number, a: number, xi: number): number {
   const p = r * r + a * a - a * xi;
-  return (a * p) / (r * r - 2 * r + a * a) + xi / Math.max(1 - mu * mu, 1e-6) - a;
+  return (a * p) / (r * r - 2 * r + a * a) - a + xi / (1 + Math.abs(mu));
+}
+
+/** All of dφ/dσ, ξ/sin²θ and all, for the comparison that shows why
+ *  it is not integrated this way. */
+function wholeRate(r: number, mu: number, a: number, xi: number): number {
+  const p = r * r + a * a - a * xi;
+  return (a * p) / (r * r - 2 * r + a * a) - a + xi / Math.max(1 - mu * mu, 1e-14);
 }
 
 interface Outcome {
@@ -63,6 +81,11 @@ interface Outcome {
   /** How many times the ray crossed the equatorial plane inside the
    *  radius a flow would occupy: one image of the disc per crossing. */
   crossings: number;
+  /** The nearest the ray came to the spin axis, as sin²θ. */
+  closestSinSq: number;
+  /** Where the trace ended, and the sin²θ it carried there. */
+  end: State;
+  endSinSq: number;
 }
 
 /** March one ray until it falls in or leaves, exactly as the shader does. */
@@ -73,24 +96,33 @@ function march(
   reach: number,
   maxSteps = 40000,
   eps = STEP_EPS,
+  /** Integrate ξ/sin²θ whole, the way it was done before the split.
+   *  Only a test asks for this — it is the thing being checked. */
+  direct = false,
 ): Outcome {
   const a = spin;
   const horizon = horizonRadiusRg(a) + 0.002;
   let { r, mu, phi, dr, dmu } = start;
+  let sinSq = startingSinSq(mu);
+  const jump = equatorAzimuthJump(ray, a);
   const phi0 = phi;
   let turningRadius = r;
   let crossings = 0;
+  let closestSinSq = sinSq;
   for (let i = 0; i < maxSteps; i++) {
-    if (r < horizon) {
-      return { captured: true, sweep: phi - phi0, turningRadius, steps: i, crossings };
-    }
-    if (r > reach && dr < 0) {
-      return { captured: false, sweep: phi - phi0, turningRadius, steps: i, crossings };
-    }
+    const done = (captured: boolean): Outcome => ({
+      captured, sweep: phi - phi0, turningRadius, steps: i, crossings, closestSinSq,
+      end: { r, mu, phi, dr, dmu }, endSinSq: sinSq,
+    });
+    if (r < horizon) return done(true);
+    if (r > reach && dr < 0) return done(false);
     turningRadius = Math.min(turningRadius, r);
+    closestSinSq = Math.min(closestSinSq, sinSq);
 
     const rate =
-      Math.abs(dr) / Math.max(r, 1) + Math.abs(dmu) + Math.abs(phiRate(r, mu, a, ray.xi));
+      Math.abs(dr) / Math.max(r, 1) +
+      Math.abs(dmu) +
+      Math.abs(direct ? wholeRate(r, mu, a, ray.xi) : phiRate(r, mu, a, ray.xi));
     const ds = -eps / Math.max(rate, 1e-4);
 
     const before = mu;
@@ -107,15 +139,23 @@ function march(
       r + k3.dr * ds, mu + k3.dmu * ds,
       dr + k3.ddr * ds, dmu + k3.ddmu * ds, a, ray,
     );
-    const w1 = phiRate(r, mu, a, ray.xi);
-    const w2 = phiRate(r + k1.dr * ds * 0.5, mu + k1.dmu * ds * 0.5, a, ray.xi);
-    const w3 = phiRate(r + k2.dr * ds * 0.5, mu + k2.dmu * ds * 0.5, a, ray.xi);
-    const w4 = phiRate(r + k3.dr * ds, mu + k3.dmu * ds, a, ray.xi);
+    const s1 = -2 * mu * k1.dmu;
+    const s2 = -2 * (mu + k1.dmu * ds * 0.5) * k2.dmu;
+    const s3 = -2 * (mu + k2.dmu * ds * 0.5) * k3.dmu;
+    const s4 = -2 * (mu + k3.dmu * ds) * k4.dmu;
+    const w = direct ? wholeRate : phiRate;
+    const w1 = w(r, mu, a, ray.xi);
+    const w2 = w(r + k1.dr * ds * 0.5, mu + k1.dmu * ds * 0.5, a, ray.xi);
+    const w3 = w(r + k2.dr * ds * 0.5, mu + k2.dmu * ds * 0.5, a, ray.xi);
+    const w4 = w(r + k3.dr * ds, mu + k3.dmu * ds, a, ray.xi);
+    const prevArc = axisAzimuth(sinSq, mu, dmu, ray, a);
+    const prevBranch = mu * dmu < 0 ? -1 : 1;
 
     r += (ds / 6) * (k1.dr + 2 * k2.dr + 2 * k3.dr + k4.dr);
     mu += (ds / 6) * (k1.dmu + 2 * k2.dmu + 2 * k3.dmu + k4.dmu);
     dr += (ds / 6) * (k1.ddr + 2 * k2.ddr + 2 * k3.ddr + k4.ddr);
     dmu += (ds / 6) * (k1.ddmu + 2 * k2.ddmu + 2 * k3.ddmu + k4.ddmu);
+    sinSq += (ds / 6) * (s1 + 2 * s2 + 2 * s3 + s4);
     phi += (ds / 6) * (w1 + 2 * w2 + 2 * w3 + w4);
     // The same projection back onto the constraint the shader applies,
     // reflecting off a turning point the step went past.
@@ -129,17 +169,59 @@ function march(
       radial = Math.max(radialPotential(r, ray, a), 0);
     }
     dr = (dr < 0 ? -1 : 1) * Math.sqrt(radial);
-    let polar = polarPotential(mu, ray, a);
-    if (polar < 0) {
-      mu = reflect(mu, polar, 2 * mu * (a * a - ray.xi ** 2 - ray.eta) - 4 * a * a * mu ** 3);
+    const turn = polarTurningSinSq(mu, ray, a);
+    if (sinSq < turn) {
+      sinSq = 2 * turn - sinSq;
       dmu = -dmu;
-      polar = Math.max(polarPotential(mu, ray, a), 0);
     }
-    dmu = (dmu < 0 ? -1 : 1) * Math.sqrt(polar);
+    sinSq = Math.min(1, Math.max(0, sinSq));
+    if (sinSq < 0.25) mu = (mu < 0 ? -1 : 1) * Math.sqrt(1 - sinSq);
+    else sinSq = 1 - mu * mu;
+    dmu = (dmu < 0 ? -1 : 1) * Math.sqrt(Math.max(polarFromSinSq(sinSq, mu, ray, a), 0));
+    // The half of the azimuth the pole owns, differenced rather than
+    // integrated, and put back on one branch across the equator.
+    if (!direct) {
+      phi += axisAzimuth(sinSq, mu, dmu, ray, a) - prevArc;
+      if (before * mu < 0) phi -= prevBranch * jump;
+    }
     // One image of the disc per crossing of its plane inside the flow.
     if (before * mu < 0 && r < 60) crossings++;
   }
-  return { captured: true, sweep: phi - phi0, turningRadius, steps: maxSteps, crossings };
+  return {
+    captured: true, sweep: phi - phi0, turningRadius, steps: maxSteps, crossings, closestSinSq,
+    end: { r, mu, phi, dr, dmu }, endSinSq: sinSq,
+  };
+}
+
+/**
+ * The direction the ray is travelling, in the space the shader draws
+ * in — kerrHeading, mirrored. This is what a pixel finally points at.
+ */
+function heading(
+  state: { r: number; mu: number; phi: number; dr: number; dmu: number },
+  sinSq: number,
+  ray: PhotonRay,
+  a: number,
+): [number, number, number] {
+  const { r, mu, phi, dr, dmu } = state;
+  const s = Math.sqrt(Math.max(sinSq, 1e-14));
+  const rho = Math.sqrt(r * r + a * a);
+  const overSin = ray.xi / s;
+  const polar =
+    (dmu > 0 ? -1 : 1) *
+    Math.sqrt(Math.max(ray.eta + a * a * mu * mu - overSin * overSin * mu * mu, 0));
+  const p = r * r + a * a - a * ray.xi;
+  const azimuth = rho * (s * ((a * p) / delta(r, a) - a) + overSin);
+  const cp = Math.cos(phi);
+  const sp = Math.sin(phi);
+  const radial = (r * dr) / rho;
+  const v: [number, number, number] = [
+    radial * s * cp + rho * mu * polar * cp - azimuth * sp,
+    radial * s * sp + rho * mu * polar * sp + azimuth * cp,
+    dr * mu - r * s * polar,
+  ];
+  const n = Math.hypot(...v);
+  return [v[0] / n, v[1] / n, v[2] / n];
 }
 
 /** A ray coming inward from `reach` with the given constants. */
@@ -344,6 +426,165 @@ describe('the traced deflection', () => {
   });
 });
 
+describe('the spin axis', () => {
+  /**
+   * The observer that made this necessary: near enough the axis to be
+   * looking down it, which is where every ray on screen carries almost
+   * no angular momentum about the pole and passes close enough to it
+   * that ξ/sin²θ runs away. Fifteen degrees above the flow the problem
+   * does not arise at all, which is why it went unnoticed.
+   */
+  const spin = 0.89;
+  const camR = 28;
+  const camMu = 0.9975;
+  const reach = 140;
+  /** Aimed to pass the hole around twelve gravitational radii out,
+   *  which is where the seam was reproduced. */
+  const psi = 0.436;
+
+  /** A photon arriving with `nPhi` of azimuthal tilt, and where on the
+   *  sky the trace says it came from. */
+  const shot = (nPhi: number, eps = STEP_EPS, direct = false, standOff = false) => {
+    const nTheta = -Math.sqrt(Math.max(Math.sin(psi) ** 2 - nPhi * nPhi, 0));
+    let ray = photonFromDirection(camR, camMu, spin, [Math.cos(psi), nTheta, nPhi]);
+    if (standOff) {
+      // The treatment this replaced: no ray was allowed nearer the
+      // axis than sin²θ = 3·10⁻⁴, so any that would have gone closer
+      // had its angular momentum pushed out to the least that kept it
+      // integrable. Kept here because it is what the comparison below
+      // is against.
+      const floor = Math.sqrt(3e-4 * (ray.eta + spin * spin));
+      if (Math.abs(ray.xi) < floor) ray = { ...ray, xi: ray.xi < 0 ? -floor : floor };
+    }
+    const out = march(
+      { r: camR, mu: camMu, phi: 0, dr: ray.dr, dmu: ray.dmu },
+      ray, spin, reach, 4000000, eps, direct,
+    );
+    return { ray, out, dir: heading(out.end, out.endSinSq, ray, spin) };
+  };
+
+  /** How the worst jump between neighbouring rays compares with the
+   *  typical one, walking the aim across the axis. A seam is a number
+   *  much bigger than one; a picture that holds together is a number
+   *  near it. Scale-free on purpose — nothing here is tuned to a pixel
+   *  size or a step count. */
+  const worstJump = (standOff: boolean): number => {
+    const dirs = [];
+    for (let i = 0; i <= 80; i++) dirs.push(shot(-0.16 + (0.32 * i) / 80, STEP_EPS, false, standOff).dir);
+    const gaps = [];
+    for (let i = 1; i < dirs.length; i++) gaps.push(angleBetween(dirs[i - 1], dirs[i]));
+    return Math.max(...gaps) / [...gaps].sort((x, y) => x - y)[Math.floor(gaps.length / 2)];
+  };
+
+  const angleBetween = (u: number[], v: number[]): number =>
+    Math.acos(Math.min(1, Math.max(-1, u[0] * v[0] + u[1] * v[1] + u[2] * v[2])));
+
+  it('sends neighbouring rays to neighbouring places across ξ = 0', () => {
+    // The bug this section exists for. Rays either side of the axis
+    // carry angular momentum of opposite sign and go round the pole
+    // opposite ways, and the azimuth each accumulates differs by very
+    // nearly a full turn — which is no difference at all, if it is
+    // computed. Dodged instead, by holding rays off the axis, every
+    // ray in a band is handed the same angular momentum with the sign
+    // of whichever side it was on: a flat stripe with a step down the
+    // middle of it, which is what a seam is.
+    //
+    // Walking the aim across the axis, the worst jump between
+    // neighbours was three hundred and seventy times the typical one.
+    // It is now within a fifth of it.
+    expect(worstJump(true)).toBeGreaterThan(50);
+    expect(worstJump(false)).toBeLessThan(1.5);
+
+    // And the sweep does cross zero angular momentum, with the rays
+    // either side of the middle genuinely threading the axis — or the
+    // test would be watching the wrong thing. sinθ bottoms out at
+    // |ξ|/√(η+a²), which for the ray next to the centre is a
+    // twentieth of a milliradian off the pole, its neighbour on the
+    // other side the mirror of it. That pair is the seam.
+    expect(shot(-0.16).ray.xi).toBeLessThan(-0.1);
+    expect(shot(0.16).ray.xi).toBeGreaterThan(0.1);
+    const grazing = shot(0.32 / 80).ray;
+    expect(Math.abs(grazing.xi) / Math.sqrt(grazing.eta + spin * spin)).toBeLessThan(1e-3);
+  });
+
+  it('is the same integral as ξ/sin²θ, taken whole', () => {
+    // The split is exact rather than approximate, so refined it has to
+    // land where integrating the singular form directly lands. The
+    // direct one needs some fifty thousand steps to get there for a ray
+    // this close to the axis, which is the reason it is not what runs.
+    for (const nPhi of [0.05, 0.09, 0.16, -0.12]) {
+      const split = shot(nPhi, STEP_EPS / 400);
+      const whole = shot(nPhi, STEP_EPS / 400, true);
+      expect(Math.abs(split.out.sweep - whole.out.sweep)).toBeLessThan(1e-3);
+      expect(whole.out.steps).toBeGreaterThan(40000);
+    }
+  });
+
+  it('costs a ray that threads the axis nothing extra to trace', () => {
+    // What the closed form buys. dφ/dσ peaks at (η+a²)/ξ, so a ray a
+    // millionth off the pole would want millions of steps for the
+    // passage alone and no budget could hold it. Split, the rate the
+    // stepper follows is bounded by the ray's own constants, and a ray
+    // that goes straight over the pole costs what a ray a tenth of a
+    // radian away from it costs.
+    const budget = Number(/const int MAX_STEPS = ([0-9]+);/.exec(GEODESIC_GLSL)?.[1]);
+    const wide = shot(0.16).out.steps;
+    for (const nPhi of [1e-2, 1e-4, 1e-6, 0]) {
+      expect(shot(nPhi).out.steps).toBeLessThan(budget);
+      expect(shot(nPhi).out.steps).toBeLessThan(wide * 1.2);
+    }
+  });
+
+  it('sweeps half a turn over the pole as the angular momentum vanishes', () => {
+    // The physical content of the closed form. A ray that threads the
+    // axis goes over the top of it, and the azimuth on the far side is
+    // π from the azimuth on the near side however little angular
+    // momentum it carries — discontinuously in sign, because the sign
+    // of ξ is which side it passes, and the two are the same ray.
+    //
+    // It approaches that limit at a definite rate: the deficit is
+    // 2|ξ|/√(η+a²), the arcsine's own square-root approach to its
+    // endpoint. Matching the rate and not just the limit is what says
+    // the antiderivative is the right one.
+    const eta = 137;
+    for (const xi of [1e-1, 1e-2, 1e-3, 1e-4]) {
+      const deficit = Math.PI - equatorAzimuthJump({ xi, eta, dr: 0, dmu: 0 }, spin);
+      expect(deficit / ((2 * xi) / Math.sqrt(eta + spin * spin))).toBeCloseTo(1, 2);
+      // Mirrored for retrograde rays, which go round the other way.
+      expect(equatorAzimuthJump({ xi: -xi, eta, dr: 0, dmu: 0 }, spin)).toBeCloseTo(
+        -(Math.PI - deficit), 12,
+      );
+    }
+    // Below what a double can resolve the deficit simply is not there,
+    // and the half turn is exact — which is the limit itself.
+    expect(equatorAzimuthJump({ xi: 1e-9, eta, dr: 0, dmu: 0 }, spin)).toBe(Math.PI);
+  });
+
+  it('splits the azimuthal rate without changing it', () => {
+    // The identity the whole scheme rests on, checked as arithmetic:
+    //   ξ/sin²θ = ξ|cosθ|/sin²θ + ξ/(1 + |cosθ|)
+    // and the closed form differentiates back to the first piece.
+    for (const mu of [-0.999999, -0.6, 0, 0.3, 0.9999]) {
+      const sinSq = 1 - mu * mu;
+      const xi = 0.7;
+      expect((xi * Math.abs(mu)) / sinSq + xi / (1 + Math.abs(mu))).toBeCloseTo(xi / sinSq, 9);
+    }
+    // dA/dσ against the rate it stands for, along a real trajectory:
+    // ds/dσ = −2μ dμ/dσ, so the chain rule closes on the state.
+    const ray: PhotonRay = { xi: 0.31, eta: 150, dr: 0, dmu: 0 };
+    for (const mu of [0.2, 0.9, 0.999]) {
+      const sinSq = 1 - mu * mu;
+      const dmu = Math.sqrt(Math.max(polarFromSinSq(sinSq, mu, ray, spin), 0));
+      const h = 1e-9;
+      const at = (t: number): number => {
+        const s = sinSq - 2 * mu * dmu * t;
+        return axisAzimuth(s, mu + dmu * t, dmu, ray, spin);
+      };
+      expect((at(h) - at(-h)) / (2 * h)).toBeCloseTo((ray.xi * Math.abs(mu)) / sinSq, 4);
+    }
+  });
+});
+
 describe('rays launched from an observer', () => {
   it('carries tetrad constants into a capture that matches the curve', () => {
     // End to end: a direction on someone's sky, through the tetrad,
@@ -389,11 +630,17 @@ describe('the shader and the module', () => {
     // lines that would have to change together.
     expect(KERR_GLSL).toContain('2.0 * r * p - (r - 1.0) * kk');
     expect(KERR_GLSL).toContain('-mu * (eta + xi * xi - a * a) - 2.0 * a * a * mu * mu * mu');
-    expect(KERR_GLSL).toContain('a * p / kerrDelta(r, a) + xi / max(1.0 - mu * mu, 1.0e-6) - a');
+    expect(KERR_GLSL).toContain('a * p / kerrDelta(r, a) - a + xi / (1.0 + abs(mu))');
+    expect(KERR_GLSL).toContain('-0.5 * sgn * branch * (asin(arg) + 1.5707963)');
     expect(GEODESIC_GLSL).toContain('STEP_EPS / max(rate, 1.0e-4)');
-    // sin²θ is carried, never differenced — see AXIS_APPROACH.
+    // sin²θ is carried, never differenced.
     expect(GEODESIC_GLSL).toContain('sinSq += (ds / 6.0)');
-    expect(GEODESIC_GLSL).not.toContain('xi / max(1.0 - mu * mu');
+    // The azimuth is split, not capped and not held off the axis.
+    expect(GEODESIC_GLSL).toContain('kerrAxisAzimuth(sinSq, y.y, y.w, xi, eta, a) - prevArc');
+    expect(GEODESIC_GLSL).toContain('phi -= prevBranch * equatorJump');
+    expect(KERR_GLSL).not.toContain('xi / max(1.0 - mu * mu');
+    expect(GEODESIC_GLSL).not.toContain('AXIS_RATE_CAP');
+    expect(GEODESIC_GLSL).not.toContain('AXIS_APPROACH');
     expect(GEODESIC_GLSL).toContain('kerrProjectRadial(y, a, xi, eta)');
     expect(KERR_GLSL).toContain('kerrReflect');
     expect(GEODESIC_GLSL).toContain('40.0 * sqrt(max(impact, 0.01))');
