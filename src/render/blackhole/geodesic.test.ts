@@ -1,4 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { PerspectiveCamera, Quaternion } from 'three';
 import { describe, expect, it } from 'vitest';
+
+/** The renderer object's own source, for the ordering it has to keep. */
+const BLACK_HOLE_SOURCE = readFileSync(
+  new URL('./blackHoleObject.ts', import.meta.url),
+  'utf8',
+);
 import {
   MAX_SPIN,
   horizonRadiusRg,
@@ -262,6 +270,47 @@ describe('the geodesic tracer', () => {
         expect(norm(r, spin, isco)).toBeCloseTo(-1, 6);
       }
     }
+  });
+
+  it('aims the trace where the camera points now, not where it pointed', () => {
+    // The traced image is the whole picture at the distances a hole is
+    // looked at from, so if it is aimed anywhere but exactly where the
+    // camera is pointing, the hole slides across the screen. It was.
+    //
+    // three rebuilds a camera's world matrix when the scene renders,
+    // which happens after the trace is drawn — so reading the
+    // orientation off matrixWorld gives last frame's, while the
+    // position is read off the camera directly and is current. Still,
+    // the two agree and nothing shows; orbiting, they differ by exactly
+    // one frame of rotation, which measured fifty device pixels of
+    // sideways drift at a brisk drag.
+    //
+    // This is what that staleness looks like, so the reason the call
+    // below exists is written down rather than remembered:
+    const camera = new PerspectiveCamera(55, 1, 0.1, 100);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    const settled = new Quaternion().setFromRotationMatrix(camera.matrixWorld);
+
+    // Move it the way an orbit control does — position and quaternion,
+    // no matrix update — and the world matrix still holds the old one.
+    camera.position.set(10, 0, 0);
+    camera.lookAt(0, 0, 0);
+    const stale = new Quaternion().setFromRotationMatrix(camera.matrixWorld);
+    expect(stale.angleTo(settled)).toBeLessThan(1e-9);
+    expect(stale.angleTo(camera.quaternion)).toBeGreaterThan(1);
+
+    // Updating it first is what makes the two agree.
+    camera.updateMatrixWorld();
+    const fresh = new Quaternion().setFromRotationMatrix(camera.matrixWorld);
+    expect(fresh.angleTo(camera.quaternion)).toBeLessThan(1e-9);
+
+    // And the trace does update it first.
+    const before = BLACK_HOLE_SOURCE.indexOf('camera.updateMatrixWorld()');
+    const reads = BLACK_HOLE_SOURCE.indexOf('setFromMatrix4(camera.matrixWorld)');
+    expect(before).toBeGreaterThan(-1);
+    expect(reads).toBeGreaterThan(before);
   });
 
   it('gives either flow regime the same readable falloff', () => {

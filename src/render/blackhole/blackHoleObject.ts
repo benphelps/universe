@@ -369,6 +369,16 @@ export class BlackHoleObject {
     // handed to a float that has to add φ to it.
     uniforms.uFlowSpin.value = this.flowTurns - Math.floor(this.flowTurns);
 
+    // The camera's world matrix is only rebuilt when the scene renders,
+    // which happens after this — so read straight off it and the trace
+    // is aimed where the camera was pointing last frame while the rest
+    // of the frame is drawn from where it points now. Standing still
+    // the two agree and nothing shows. Orbiting, they differ by exactly
+    // one frame of rotation, and since the traced image is the whole
+    // picture at these distances, the hole slides across the screen by
+    // that much: fifty pixels at a brisk drag, which is what "dragging
+    // sideways drags the black hole sideways" is.
+    camera.updateMatrixWorld();
     this.cameraRotation.setFromMatrix4(camera.matrixWorld);
     (uniforms.uViewToBh.value as Matrix3).multiplyMatrices(this.worldToBh, this.cameraRotation);
 
