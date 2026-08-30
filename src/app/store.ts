@@ -2,7 +2,11 @@ import { useSyncExternalStore } from 'react';
 import { seedFromHex, seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galaxySeed, PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy/galaxySeed';
-import type { Neighbor } from '../universe/galaxy/neighborhood';
+import {
+  neighborBudget,
+  setNeighborBudget,
+  type Neighbor,
+} from '../universe/galaxy/neighborhood';
 import {
   galacticAddress,
   type GalacticAddress,
@@ -329,6 +333,13 @@ export function boot(viewElement: HTMLElement): void {
   moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
   companionIndex = Number(params.get('companion') ?? 0) || 0;
 
+  try {
+    const saved = Number(localStorage.getItem(NEIGHBOR_BUDGET_KEY));
+    if (Number.isFinite(saved) && saved > 0) setNeighborBudget(saved);
+  } catch {
+    // No storage, shipped budget.
+  }
+
   viewer = new UnifiedViewer(viewElement);
   viewer.onRideOutChange = (active) => {
     ridingOut = active;
@@ -574,6 +585,28 @@ export function saveCaption(key: string, caption: string): void {
 export function setExposure(value: number): void {
   exposure = value;
   if (viewer) viewer.exposure = value;
+}
+
+/** How many neighborhood stars to resolve, as a multiple of what the
+ *  disk around us costs. Persisted, because it is a statement about the
+ *  machine and not about the trip. */
+export const NEIGHBOR_BUDGET_KEY = 'universe-neighbor-budget';
+
+export function setStarBudget(multiple: number): void {
+  setNeighborBudget(multiple);
+  try {
+    localStorage.setItem(NEIGHBOR_BUDGET_KEY, String(neighborBudget()));
+  } catch {
+    // A browser refusing storage is not a reason to refuse the setting.
+  }
+  // The neighborhood is built when a system is entered, so the new
+  // budget needs the system built again to be spent.
+  if (viewer && !coreView && seedHex) load(seedHex, localePc);
+  notify();
+}
+
+export function starBudget(): number {
+  return neighborBudget();
 }
 
 export function setTimeScale(daysPerSecond: number): void {

@@ -1,13 +1,54 @@
 import { buildTemperatureLut, temperatureToLutCoord } from '../../core/color/blackbody';
 import { seedToHex } from '../../core/rng/hash';
 import { starsNear } from './catalog';
-import type { GalacticPosition } from './density';
+import { stellarDensity, type GalacticPosition } from './density';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { viewpointForSeed } from './sectors';
 
 /** Matches the sky field's near radius so 3D points hand off to the backdrop. */
 export const NEIGHBOR_RADIUS_PC = 30;
+
+/**
+ * The stellar density the radius above was chosen at: the thin disk
+ * around the inhabited belt, which is where a traveler mostly is.
+ */
+const REFERENCE_DENSITY = 0.1;
+
+/**
+ * How many stars the neighborhood is willing to resolve, as a multiple
+ * of what the disk around us costs. One is the shipped budget.
+ */
+let budget = 1;
+
+export function setNeighborBudget(multiple: number): void {
+  budget = Math.min(64, Math.max(0.25, multiple));
+}
+
+export function neighborBudget(): number {
+  return budget;
+}
+
+/**
+ * How far the neighborhood actually reaches from here.
+ *
+ * Thirty parsecs is a count, not a distance. Around the sun it holds
+ * eleven thousand stars and half a second of work; toward the galactic
+ * center it holds one and three quarter million and ten seconds — on
+ * the main thread, before the system is handed over, which is a browser
+ * offering to kill the tab. Shrunk as the cube root of the density, the
+ * count is what stays fixed, and the count is what the work is.
+ *
+ * The budget scales that count directly, since a cube root inside a
+ * cube is a straight multiple. It only bites where the shrink does: in
+ * the disk the radius is already the full thirty and no budget buys
+ * more, because thirty parsecs is where these points hand off to the
+ * backdrop and past it they would be drawn twice.
+ */
+export function neighborRadiusPc(viewpoint: GalacticPosition): number {
+  const here = Math.max(stellarDensity(viewpoint), 1e-9);
+  return NEIGHBOR_RADIUS_PC * Math.min(1, Math.cbrt((budget * REFERENCE_DENSITY) / here));
+}
 
 export interface Neighbor {
   seedHex: string;
@@ -50,7 +91,7 @@ export function computeNeighborhood(
   const neighbors: Neighbor[] = [];
   const seedHexes: string[] = [];
 
-  for (const slot of starsNear(viewpoint, NEIGHBOR_RADIUS_PC)) {
+  for (const slot of starsNear(viewpoint, neighborRadiusPc(viewpoint))) {
     const physical = starPhotometry(slot.seed, slot.positionPc);
     if (physical.luminosity <= 0) continue;
     const dx = slot.positionPc.xPc - viewpoint.xPc;
