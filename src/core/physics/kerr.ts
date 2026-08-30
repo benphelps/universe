@@ -73,12 +73,23 @@ export function photonFromDirection(
   mu: number,
   spin: number,
   n: readonly [number, number, number],
+  /**
+   * sinθ, where the caller has it to better precision than 1 − μ² can
+   * give. An observer looking down the spin axis has |μ| within a part
+   * in a million million of one, and the difference is then zero in
+   * single precision — so ξ, which carries a factor of sinθ, comes
+   * back as zero for every ray on the screen, every one of them
+   * travels in the observer's own meridian, and a whole ring of pixels
+   * lands on one point of sky. The renderer forms it from the camera's
+   * own distance off the axis instead, which subtracts nothing.
+   */
+  sinThetaIn?: number,
 ): PhotonRay {
   const a = clampSpin(spin);
   const sig = sigma(r, mu, a);
   const del = delta(r, a);
   const A = bigA(r, mu, a);
-  const sinTheta = Math.sqrt(Math.max(1 - mu * mu, 0));
+  const sinTheta = sinThetaIn ?? Math.sqrt(Math.max(1 - mu * mu, 0));
   const alpha = lapse(r, mu, a);
 
   // Energy and angular momentum with the pole's cancellation already

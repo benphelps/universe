@@ -507,6 +507,77 @@ describe('the spin axis', () => {
     expect(Math.abs(grazing.xi) / Math.sqrt(grazing.eta + spin * spin)).toBeLessThan(1e-3);
   });
 
+  it('keeps a picture when the camera sits on the axis', () => {
+    // Looking straight down the spin axis is where the coordinates are
+    // at their worst, and the whole image was collapsing there. |μ| is
+    // then within a part in a million million of one, 1 − μ² is zero in
+    // the single precision a shader has, and ξ — which carries a factor
+    // of sinθ — comes back as exactly zero for every ray on screen.
+    // Every one of them is then a photon with no angular momentum about
+    // the axis, travelling in the observer's own meridian; they all
+    // start at the same azimuth so they all leave at the same azimuth,
+    // and a whole ring of pixels lands on one point of sky. The star
+    // field turned into smooth concentric circles.
+    //
+    // Formed from the observer's own distance off the axis instead —
+    // x² + y² = (r²+a²)sin²θ, which subtracts nothing — screen azimuth
+    // maps one to one onto sky azimuth, as by symmetry it must: a
+    // camera on the axis sees the sky turned, not flattened.
+    const camR = 28;
+    const offAxis = 1e-4;
+    const sinT = offAxis / Math.sqrt(camR * camR + spin * spin);
+    const camMu = -Math.sqrt(1 - sinT * sinT);
+
+    // The subtraction really does lose it, and the geometry really does
+    // keep it, at the precision the shader works in.
+    expect(Math.fround(1 - Math.fround(camMu) * Math.fround(camMu))).toBe(0);
+    expect(Math.fround(sinT)).toBeGreaterThan(3e-6);
+
+    const skyAzimuth = (screenChi: number, useSinT: boolean): number => {
+      // A ray aimed inward, tilted off the axis at screen azimuth chi.
+      const psi = 0.36;
+      const n: [number, number, number] = [
+        Math.cos(psi),
+        -Math.sin(psi) * Math.cos(screenChi),
+        Math.sin(psi) * Math.sin(screenChi),
+      ];
+      const ray = useSinT
+        ? photonFromDirection(camR, camMu, spin, n, sinT)
+        : photonFromDirection(camR, camMu, spin, n, 0);
+      const out = march(
+        { r: camR, mu: camMu, phi: 0, dr: ray.dr, dmu: ray.dmu },
+        ray, spin, 140, 40000, STEP_EPS,
+      );
+      const d = heading(out.end, out.endSinSq, ray, spin);
+      return Math.atan2(d[1], d[0]);
+    };
+
+    const turns = (useSinT: boolean): number => {
+      let previous = skyAzimuth(0, useSinT);
+      let swept = 0;
+      for (let k = 1; k <= 32; k++) {
+        const here = skyAzimuth((k / 32) * 2 * Math.PI, useSinT);
+        let step = here - previous;
+        while (step > Math.PI) step -= 2 * Math.PI;
+        while (step < -Math.PI) step += 2 * Math.PI;
+        swept += step;
+        previous = here;
+      }
+      return Math.abs(swept) / (2 * Math.PI);
+    };
+
+    // One turn of the screen is one turn of the sky.
+    expect(turns(true)).toBeCloseTo(1, 2);
+    // With sinθ lost, the sky does not turn at all.
+    expect(turns(false)).toBeLessThan(0.05);
+
+    // And the shader forms it the way that survives.
+    expect(GEODESIC_GLSL).toContain('float sinT = length(cam.xy) / rho;');
+    expect(GEODESIC_GLSL).not.toContain('sqrt(max(1.0 - camMu * camMu');
+    expect(GEODESIC_GLSL).toContain('AXIS_STANDOFF');
+    expect(KERR_GLSL).toContain('vec4 kerrPhoton(float r, float mu, float sinT, float a, vec3 n)');
+  });
+
   it('is the same integral as ξ/sin²θ, taken whole', () => {
     // The split is exact rather than approximate, so refined it has to
     // land where integrating the singular form directly lands. The

@@ -43,12 +43,24 @@ float kerrBigA(float r, float mu, float a) {
  * through the tetrad of the locally non-rotating observer at (r, mu).
  * n is (outward, southward, prograde) and must be unit length.
  * Returns (ξ, η, dr/dσ, dμ/dσ).
+ *
+ * sinTheta is passed in rather than recovered from μ, and that is not
+ * tidiness. An observer looking down the spin axis has |μ| within a
+ * part in a million million of one, and 1 − μ² is then zero in single
+ * precision — so ξ, which carries a factor of sinθ, comes back as
+ * exactly zero for every ray on the screen. Every one of them is then
+ * a photon with no angular momentum about the axis, travelling in the
+ * observer's own meridian, and since they all start at the same
+ * azimuth they all leave at the same azimuth too. A whole ring of
+ * pixels lands on one point of sky, the star field collapses into
+ * smooth circles, and the picture stops being a picture. The caller
+ * has the observer's distance from the axis in hand and can form sinθ
+ * from it without subtracting anything.
  */
-vec4 kerrPhoton(float r, float mu, float a, vec3 n) {
+vec4 kerrPhoton(float r, float mu, float sinT, float a, vec3 n) {
   float sig = kerrSigma(r, mu, a);
   float del = kerrDelta(r, a);
   float bigA = kerrBigA(r, mu, a);
-  float sinT = sqrt(max(1.0 - mu * mu, 0.0));
   float lapse = sqrt(max(sig * del / bigA, 1.0e-12));
 
   // Energy and angular momentum, with the pole's cancellation already

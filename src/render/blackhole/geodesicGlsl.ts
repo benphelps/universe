@@ -147,6 +147,17 @@ const float STEP_EPS = 0.045;
 /** Half-thickness above which the flow is passed through rather than
  *  crossed. Cold discs sit near 0.02, ion tori at 0.55. */
 const float THICK_FLOW = 0.15;
+/**
+ * The least distance from the spin axis a camera is placed at, in r_g.
+ *
+ * Boyer–Lindquist has no azimuth on the axis, and a camera sitting
+ * exactly there hands every ray the same one — the trace then runs
+ * every pixel in one meridian and the image collapses onto a line of
+ * sky. This is the same standoff the disc plane already gets, for the
+ * same reason and at the same size: at the radii this draws from it
+ * moves the viewpoint by a small fraction of a pixel.
+ */
+const float AXIS_STANDOFF = 1.0e-4;
 
 /**
  * Where in the noise one generation of eddies is drawn from.
@@ -443,6 +454,13 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
   // A camera lying exactly in the disc plane would have every ray stay
   // in it and never register a crossing.
   if (abs(cam.z) < 1.0e-4) cam.z = 1.0e-4;
+  // And one lying exactly on the spin axis has no azimuth at all, so
+  // every ray would be handed the same one and the whole image would
+  // collapse onto a single meridian. Any direction off the axis will
+  // do — the geometry is symmetric about it — so it is held the least
+  // distance that gives atan something to work with, which at the
+  // framings this draws is a ten-thousandth of a pixel.
+  if (dot(cam.xy, cam.xy) < AXIS_STANDOFF * AXIS_STANDOFF) cam.xy = vec2(AXIS_STANDOFF, 0.0);
 
   escapeDir = dir;
   escaped = true;
@@ -455,8 +473,13 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
   float camR = camBl.x;
   float camMu = camBl.y;
   float camPhi = atan(cam.y, cam.x);
-  float sinT = sqrt(max(1.0 - camMu * camMu, 1.0e-12));
   float rho = sqrt(camR * camR + a * a);
+  // sinθ from where the camera is, never from 1 − μ². In the
+  // reconstruction this draws in, x² + y² = (r²+a²)sin²θ exactly, so
+  // the camera's own distance from the axis gives sinθ without
+  // subtracting anything — and looking down the axis that is the
+  // difference between a picture and a set of concentric circles.
+  float sinT = length(cam.xy) / rho;
   float cp = cos(camPhi);
   float sp = sin(camPhi);
   // The coordinate directions, which are orthogonal in this
@@ -467,7 +490,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
   vec3 arrive = -dir;
   vec3 n = normalize(vec3(dot(arrive, rHat), dot(arrive, tHat), dot(arrive, pHat)));
 
-  vec4 photon = kerrPhoton(camR, camMu, a, n);
+  vec4 photon = kerrPhoton(camR, camMu, sinT, a, n);
   float xi = photon.x;
   float eta = photon.y;
   // What the antiderivative jumps by each time this ray crosses the
@@ -514,7 +537,9 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
       sign(mu2 - bl.y) * sqrt(max(kerrPolar(bl.y, xi, eta, a), 0.0))
     );
     phi = atan(start.y, start.x);
-    sinSq = max(1.0 - bl.y * bl.y, 0.0);
+    // Again from the geometry rather than from 1 − μ²: a camera on the
+    // axis enters the trace near the axis too.
+    sinSq = dot(start.xy, start.xy) / (bl.x * bl.x + a * a);
   }
 
   // The shadow, exactly. A photon whose constants sit inside the
