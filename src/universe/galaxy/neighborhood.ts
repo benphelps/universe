@@ -16,38 +16,22 @@ export const NEIGHBOR_RADIUS_PC = 30;
 const REFERENCE_DENSITY = 0.1;
 
 /**
- * How many stars the neighborhood is willing to resolve, as a multiple
- * of what the disk around us costs. One is the shipped budget.
- */
-let budget = 1;
-
-export function setNeighborBudget(multiple: number): void {
-  budget = Math.min(64, Math.max(0.25, multiple));
-}
-
-export function neighborBudget(): number {
-  return budget;
-}
-
-/**
  * How far the neighborhood actually reaches from here.
  *
  * Thirty parsecs is a count, not a distance. Around the sun it holds
  * eleven thousand stars and half a second of work; toward the galactic
- * center it holds one and three quarter million and ten seconds — on
- * the main thread, before the system is handed over, which is a browser
- * offering to kill the tab. Shrunk as the cube root of the density, the
- * count is what stays fixed, and the count is what the work is.
+ * centre it holds one and three quarter million and nearly six seconds
+ * — on the main thread, before the system is handed over, which is a
+ * browser offering to kill the tab. Shrunk as the cube root of the
+ * density, the count is what stays fixed, and the count is the work.
  *
- * The budget scales that count directly, since a cube root inside a
- * cube is a straight multiple. It only bites where the shrink does: in
- * the disk the radius is already the full thirty and no budget buys
- * more, because thirty parsecs is where these points hand off to the
- * backdrop and past it they would be drawn twice.
+ * It never reaches past the shipped thirty, because that is where these
+ * points hand off to the backdrop and beyond it the same stars would be
+ * drawn twice.
  */
 export function neighborRadiusPc(viewpoint: GalacticPosition): number {
   const here = Math.max(stellarDensity(viewpoint), 1e-9);
-  return NEIGHBOR_RADIUS_PC * Math.min(1, Math.cbrt((budget * REFERENCE_DENSITY) / here));
+  return NEIGHBOR_RADIUS_PC * Math.min(1, Math.cbrt(REFERENCE_DENSITY / here));
 }
 
 export interface Neighbor {

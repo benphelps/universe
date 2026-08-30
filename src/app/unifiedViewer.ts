@@ -307,9 +307,7 @@ export class UnifiedViewer {
   private hostSeedHex = '';
   private neighborSeedHexes: string[] = [];
   private neighborGalacticPc: Float32Array = new Float32Array(0);
-  /** Where the sky and the neighborhood are built from — read by
-   *  the settings dial to know whether a change would reach it. */
-  viewpointPc: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
+  private viewpointPc: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
   private neighborPositionsPc: Float32Array = new Float32Array(0);
   /** Photometric glints for the system's own stars at unresolved range. */
   private starSprites: Points | null = null;
@@ -2592,11 +2590,9 @@ export class UnifiedViewer {
   /**
    * The stars around this one, as far out as the budget reaches.
    *
-   * Its own method because the reach is a setting, and a setting has to
-   * be able to land without the system being torn down and rebuilt
-   * under it — that would throw the camera away and is what made the
-   * dial feel broken. Nothing else in the scene depends on how far this
-   * goes, so nothing else has to move.
+   * How far it reaches depends on how crowded it is here, so it is
+   * worth having by itself rather than buried in the middle of setting
+   * a system up.
    */
   private buildNeighborhood(): void {
     if (!this.system) return;
@@ -2613,11 +2609,6 @@ export class UnifiedViewer {
     this.neighborGalacticPc = hood.galacticPc;
     this.neighborPoints = createNeighborStars(hood, PC_KM);
     this.pcGroup.add(this.neighborPoints);
-  }
-
-  /** Rebuild it after the reach has been changed. */
-  refreshNeighborhood(): void {
-    this.buildNeighborhood();
   }
 
   private clearSystem(): void {
