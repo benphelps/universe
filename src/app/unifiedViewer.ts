@@ -33,8 +33,10 @@ import {
   PARSEC,
   SOLAR_MASS,
   SOLAR_RADIUS,
+  SOLAR_LUMINOSITY,
 } from '../core/physics/constants';
 import { mu as muOf, seconds, type Mu, type Seconds } from '../core/physics/units';
+import { blackbodyLinearRgb } from '../core/color/blackbody';
 import { Rng } from '../core/rng/rng';
 import { deriveSeed, seedFromHex, seedToHex } from '../core/rng/hash';
 import { createTemperatureLutTexture } from '../render/color/temperatureLut';
@@ -1119,12 +1121,22 @@ export class UnifiedViewer {
       // galactic nucleus uses, at seven orders of magnitude less.
       let hole: BlackHoleObject | null = null;
       let holeSky: LensedSky | null = null;
+      // A remnant's own luminosity is zero, which is the truth about
+      // the hole and a lie about the system: what falls in radiates,
+      // and for one taking a companion's overflow that is tens of
+      // thousands of suns out of an object no wider than a town. Left
+      // at zero it has no sprite and casts no light, so the brightest
+      // thing for a light-hour around is invisible.
+      let luminosity = star.luminosity;
+      let color = star.linearRgb;
       if (star.stage === 'black-hole') {
         const model = stellarBlackHole(star, holeDonors(system, index), this.holeAxis(system, index));
         hole = new BlackHoleObject(model, this.lut, IDENTITY_FRAME);
         holeSky = new LensedSky(512);
         hole.sky = holeSky.target;
         this.scene.add(hole.mesh);
+        luminosity = model.flow.luminosityW / SOLAR_LUMINOSITY;
+        color = blackbodyLinearRgb(model.flow.innerTemperatureK);
       }
       this.starNodes.push({
         object,
@@ -1133,8 +1145,8 @@ export class UnifiedViewer {
         holeSky,
         capturedAt: null,
       });
-      spriteColors.push(...star.linearRgb);
-      spriteLuminosities.push(star.luminosity);
+      spriteColors.push(...color);
+      spriteLuminosities.push(luminosity);
       spriteRadii.push(Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM);
     };
     addStar(system.star, 0);
