@@ -3,8 +3,9 @@ import type { ViewMode } from './ui/sidebar';
 /**
  * A bookmark is a travel link: everything the URL needs to stand at a
  * body again — galaxy, system seed, locale, view, and body indices —
- * plus the plate's designation from the moment it was saved. Saved
- * marks live per browser; the survey ships its own highlights.
+ * plus the plate's designation from the moment it was saved. Marks
+ * live per browser and nothing ships in them: the galaxies in
+ * galaxyCatalog are the only places the survey names for you.
  */
 export interface Bookmark {
   name: string;
@@ -21,43 +22,6 @@ export interface Bookmark {
 }
 
 const STORE_KEY = 'universe-bookmarks';
-
-const PRIME = '53494d5f554e4956';
-
-/** The survey's own highlights: known remarkable bodies of the prime galaxy. */
-export const SURVEY_MARKS: Bookmark[] = [
-  {
-    name: 'Doni LIY7 i',
-    caption: 'the survey’s best Earth analog — 288 K, N₂/O₂ air, oceans, a biosphere',
-    galaxy: PRIME,
-    seed: '92c174576e06c1d3',
-    view: 'planet',
-    planet: 7,
-  },
-  {
-    name: 'Thoubreim WJQR c',
-    caption: 'an 80%-ocean super-earth rolled retrograde, its nights lit by a moon three full-Moons bright',
-    galaxy: PRIME,
-    seed: '00000000000b8ef5',
-    view: 'planet',
-    planet: 1,
-  },
-  {
-    name: 'Syavelaekryak P7N9',
-    caption: 'a red dwarf whose sky the great Marusyaveim complex owns outright',
-    galaxy: PRIME,
-    seed: '78e011100ad27e30',
-    view: 'star',
-  },
-  {
-    name: 'Marudiak JOQT k',
-    caption: '70% oceans at 1 g, rolled to a 48° tilt — seasons without mercy',
-    galaxy: PRIME,
-    seed: '48194251ddfaeff4',
-    view: 'planet',
-    planet: 9,
-  },
-];
 
 /** One body, one key: the identity a toggle flips. */
 export function bookmarkKey(mark: Bookmark): string {

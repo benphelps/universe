@@ -233,7 +233,28 @@ body {
   padding: 1px 5px;
 }
 
-.badge.far {
+/* A galaxy is a folder: its centre is the header row, and whatever the
+   traveler marked inside it hangs beneath on a rule. */
+.folder {
+  margin-bottom: 9px;
+}
+
+.folder > .mark .mark-head {
+  color: var(--accent-hi);
+}
+
+.folder-marks {
+  margin: 1px 0 0 6px;
+  padding-left: 9px;
+  border-left: 1px solid var(--line);
+}
+
+.folder-marks .empty {
+  margin: 1px 0 3px;
+  font-size: 11.5px;
+}
+
+.badge.here {
   background: var(--accent-soft);
   color: var(--accent-hi);
 }
@@ -1262,14 +1283,7 @@ tr.here .swatch {
     background: none;
   }
 
-  /* The catalogue's own numbers, set apart from the prose above them. */
-.mark-note.figures {
-  margin-top: 3px;
-  color: var(--faint);
-  letter-spacing: 0.02em;
-}
-
-.mark-note.editable:hover {
+  .mark-note.editable:hover {
     color: var(--dim);
   }
 

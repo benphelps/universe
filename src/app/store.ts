@@ -24,7 +24,6 @@ import { UnifiedViewer } from './unifiedViewer';
 import type { DecalState } from './ui/decalToggles';
 import type { GenerationStatus } from './ui/generationIndicator';
 import type { Tab, ViewMode } from './ui/sidebar';
-import type { CatalogGalaxy } from './galaxyCatalog';
 import { GALAXY_KEY } from './ui/welcome';
 
 /** The default pace until the surveyor speeds up: one minute a second. */
@@ -477,15 +476,15 @@ export function travelTo(destination: { seedHex: string; positionPc: GalacticPos
  * one already running — but the address it navigates to carries the
  * whole trip, which means it is also the link to hand someone else.
  */
-export function travelToGalaxy(entry: CatalogGalaxy): void {
+export function travelToGalaxy(destination: { galaxy: string; seed?: string }): void {
   acted();
-  if (entry.galaxy === seedToHex(galaxySeed())) {
+  if (destination.galaxy === seedToHex(galaxySeed()) || !destination.seed) {
     viewCore();
     return;
   }
   const url = new URL(location.origin + location.pathname);
-  url.searchParams.set('galaxy', entry.galaxy);
-  url.searchParams.set('seed', entry.seed);
+  url.searchParams.set('galaxy', destination.galaxy);
+  url.searchParams.set('seed', destination.seed);
   url.searchParams.set('view', 'galaxy');
   url.searchParams.set('core', '1');
   location.href = url.toString();

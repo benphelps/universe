@@ -52,6 +52,16 @@ export function generatedName(seed: bigint): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+/**
+ * A galaxy's own name, from the same phonology that names its arms and
+ * sectors. Pure in the seed rather than in the session's galaxy, so a
+ * mark can name the galaxy it belongs to without that galaxy ever
+ * having been materialized.
+ */
+export function galaxyName(seed: bigint): string {
+  return generatedName(deriveSeed(seed, 'galaxy-name'));
+}
+
 let armNames: string[] | null = null;
 function armNamesOf(): string[] {
   return (armNames ??= [0, 1].map((arm) =>
