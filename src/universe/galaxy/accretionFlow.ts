@@ -9,7 +9,7 @@ import {
   radiativeEfficiency,
   selfGravityRadiusRg,
 } from '../../core/physics/blackHole';
-import { SIGMA_SB } from '../../core/physics/constants';
+import { C_LIGHT, PROTON_MASS, SIGMA_SB, THOMSON_CROSS_SECTION } from '../../core/physics/constants';
 
 /**
  * What a black hole is eating, and what that makes of it.
@@ -68,6 +68,51 @@ export interface AccretionFlow {
 
 /** Where the flow changes character: below this the gas cannot cool. */
 const THIN_DISC_THRESHOLD = 0.01;
+
+/** Shakura–Sunyaev viscosity. Everything a hot flow does on its own
+ *  timescale — how fast it drifts inward, and so how much of it is in
+ *  the way at any moment — carries this, and simulations and fitted
+ *  discs both put it near a tenth. */
+const VISCOSITY_ALPHA = 0.1;
+
+/**
+ * How much of the light behind a hot flow gets through it.
+ *
+ * A radiatively inefficient flow is optically thin — that is half of
+ * what makes it look like anything at all — but *how* thin depends
+ * entirely on how much is being fed into it, and a fixed value gets
+ * that badly wrong at both ends. A hole starving at a millionth of
+ * Eddington was drawing the same veil across its own shadow as one
+ * feeding a thousand times harder.
+ *
+ * The column follows from the supply and nothing else. Steady inflow
+ * puts Ṁ = 2πRΣv_r through every radius; a thick flow drifts inward at
+ * v_r = α v_K (H/R)²; and electron scattering gives every kilogram of
+ * it the same cross-section. So Σ = Ṁ/(2πR v_r) and τ = κΣ/2, with
+ * κ = σ_T/m_p. No free parameter beyond α.
+ *
+ * The result is anchored at both ends of the model's own range. At the
+ * percent of Eddington where the flow stops being radiatively
+ * inefficient, τ comes out near two — the flow turns optically thick
+ * exactly where it turns into a disc, which is not something put in.
+ * Three decades further down, where most galactic centres actually
+ * sit, τ is three percent: a hot torus you can see the far side of,
+ * and the sky behind it.
+ */
+function riafOpacity(
+  massSolar: number,
+  rateKgPerS: number,
+  innerRadiusRg: number,
+  aspectRatio: number,
+): number {
+  const rMetres = innerRadiusRg * gravitationalRadius(massSolar);
+  // v_r = α v_K (H/R)², with v_K = c/√(r/r_g).
+  const inflow =
+    VISCOSITY_ALPHA * (C_LIGHT / Math.sqrt(innerRadiusRg)) * aspectRatio * aspectRatio;
+  const surfaceDensity = rateKgPerS / (2 * Math.PI * rMetres * inflow);
+  const tau = 0.5 * (THOMSON_CROSS_SECTION / PROTON_MASS) * surfaceDensity;
+  return 1 - Math.exp(-tau);
+}
 
 /**
  * The flow a hole of this mass and spin settles into at this feeding
@@ -129,6 +174,17 @@ export function accretionFlowFor(
   // that reaches inside the last stable orbit and plunges. Its
   // emission is centrally concentrated and its brightness temperature
   // is simply the luminosity spread over the emitting surface.
+  //
+  // It also does not radiate what it is given. Its efficiency falls in
+  // step with its supply — η = η₀ ṁ/ṁ_crit, which is the same relation
+  // that makes L go as the square of the rate — so the same light is
+  // bought with far more gas than a disc would need: five decades down,
+  // fifty times more. That rate is not a detail. It is what decides how
+  // much of the flow is in the way of everything behind it, and it is
+  // what η here has to mean if L = ηṀc² is to stay true.
+  const supplyEddington = Math.sqrt(THIN_DISC_THRESHOLD * eddingtonRatio);
+  const hotEfficiency = efficiency * (supplyEddington / THIN_DISC_THRESHOLD);
+  const hotRateKgPerS = accretionRate(luminosityW, hotEfficiency);
   const innerRadiusRg = horizonRadiusRg(spin);
   const outerRadiusRg = 60;
   const profileExponent = 1;
@@ -141,6 +197,8 @@ export function accretionFlowFor(
   );
   return {
     ...common,
+    efficiency: hotEfficiency,
+    rateKgPerS: hotRateKgPerS,
     regime: 'riaf',
     innerRadiusRg,
     outerRadiusRg,
@@ -148,8 +206,10 @@ export function accretionFlowFor(
     profileExponent,
     edgeTaper: 0,
     aspectRatio: 0.55,
-    opacity: 0.45,
-    opacityExponent: 1.5,
+    opacity: riafOpacity(massSolar, hotRateKgPerS, innerRadiusRg, 0.55),
+    // Σ = Ṁ/(2πR v_r) with v_r ∝ R^−½: the column thins as the square
+    // root of the radius, which is far slower than the emission does.
+    opacityExponent: 0.5,
     turbulenceSigma: 0.9,
   };
 }

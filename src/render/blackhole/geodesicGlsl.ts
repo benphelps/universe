@@ -257,19 +257,37 @@ float flowDensity(float r, float phi, float mu) {
  * How much of the flow sits at height μ, per unit length, normalised so
  * that a column straight through it comes to exactly one.
  *
- * Vertical hydrostatic support gives a Gaussian of scale height h = εr,
- * and since z = rμ the profile in μ is the same at every radius — the
- * torus is a wedge, not a slab. Normalising the column is what lets a
- * volume and a sheet be compared: a ray crossing the midplane square on
- * collects exactly what the sheet would have given it, and every other
- * ray collects more, in proportion to how far it travelled through the
- * gas. That excess is not a liberty. It is why a hot flow shows a ring:
- * lines of sight that graze tangentially run through far more plasma
- * than those that punch through, and the limb lights up.
+ * The exponent is cot θ over the aspect ratio, not μ over it, and for a
+ * flow this thick that is the whole difference between a torus and a
+ * ball of gas. Hydrostatic support against the vertical pull of a
+ * body rotating at the local Keplerian rate gives ρ ∝ exp(−cot²θ/2ε²):
+ * near the midplane cot θ → μ and it is the familiar Gaussian of scale
+ * height εR, but toward the axis cot θ runs away and the density falls
+ * faster than any exponential. That is the funnel — the evacuated
+ * channel along the spin axis that every simulation of a hot flow
+ * shows, and that a jet would occupy.
+ *
+ * Written in μ instead, the same expression leaves nineteen percent of
+ * the midplane density sitting on the axis of a torus half as deep as
+ * it is wide. Looking down at one, the eye then travels the whole way
+ * through that, and the shadow — the thing being looked at — is behind
+ * a veil of gas that has no business being there. It cost the shadow
+ * five sixths of its contrast.
+ *
+ * Normalising the column is what lets a volume and a sheet be compared:
+ * a ray crossing the midplane square on collects exactly what the sheet
+ * would have given it, and every other ray collects more, in proportion
+ * to how far it travelled through the gas. That excess is not a
+ * liberty. It is why a hot flow shows a ring: lines of sight that graze
+ * tangentially run through far more plasma than those that punch
+ * through, and the limb lights up.
  */
 float flowColumn(float r, float mu) {
   float e = max(uAspect, 0.02);
-  float z = mu / e;
+  // cot θ = μ/sin θ, which is z/R exactly — so the scale height is εR
+  // in the cylindrical radius, as hydrostatic equilibrium asks, rather
+  // than ε times the spherical one.
+  float z = mu / (e * sqrt(max(1.0 - mu * mu, 1.0e-8)));
   return exp(-0.5 * z * z) / (2.5066282 * e * r);
 }
 

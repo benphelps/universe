@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  accretionRate,
+  eddingtonLuminosity,
   gravitationalRadius,
   iscoRadiusRg,
   radiativeEfficiency,
@@ -125,6 +127,42 @@ describe('the nucleus', () => {
       (bright.rateKgPerS * bright.efficiency * C_LIGHT ** 2) / bright.luminosityW,
     ).toBeCloseTo(1, 9);
     expect(bright.efficiency).toBeCloseTo(radiativeEfficiency(0.5), 9);
+
+    // A hot flow's optical depth is its supply, not a constant. Fed at
+    // a millionth of Eddington it is transparent; fed at the percent
+    // where it stops being radiatively inefficient it is not.
+    const thin = (flow: { opacity: number }): number => -Math.log(1 - flow.opacity);
+    expect(thin(accretionFlowFor(mass, 0.5, 1e-7))).toBeLessThan(0.02);
+    expect(thin(quiet)).toBeLessThan(0.1);
+    // Order unity right where the flow turns into a disc: the model's
+    // own threshold, arrived at from the column rather than assumed.
+    const atThreshold = thin(accretionFlowFor(mass, 0.5, 0.0099));
+    expect(atThreshold).toBeGreaterThan(0.3);
+    expect(atThreshold).toBeLessThan(4);
+    // And monotonic in between, since Σ ∝ Ṁ and nothing else moves.
+    let previous = 0;
+    for (const lambda of [1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 5e-3]) {
+      const tau = thin(accretionFlowFor(mass, 0.5, lambda));
+      expect(tau).toBeGreaterThan(previous);
+      previous = tau;
+    }
+
+    // The hot flow keeps L = ηṀc² too — but with the efficiency it
+    // actually has. It cannot radiate what it is given, so the same
+    // light is bought with far more gas: the rate is what decides how
+    // much of it is in the way, and reporting the disc's efficiency
+    // for it would understate the supply by fifty times.
+    expect(
+      (quiet.rateKgPerS * quiet.efficiency * C_LIGHT ** 2) / quiet.luminosityW,
+    ).toBeCloseTo(1, 9);
+    expect(quiet.efficiency).toBeLessThan(0.05 * radiativeEfficiency(0.5));
+    expect(accretionFlowFor(mass, 0.5, 1e-6).rateKgPerS).toBeGreaterThan(
+      20 * accretionRate(1e-6 * eddingtonLuminosity(mass), radiativeEfficiency(0.5)),
+    );
+    // Continuous with the disc branch: at the threshold the efficiency
+    // has climbed all the way back to the one the geometry allows.
+    const edge = accretionFlowFor(mass, 0.5, 0.00999);
+    expect(edge.efficiency / radiativeEfficiency(0.5)).toBeCloseTo(1, 2);
 
     // Both are turbulent — the instability that clumps them is what
     // lets either accrete at all — within the log-normal width

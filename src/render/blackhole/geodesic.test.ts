@@ -172,6 +172,42 @@ describe('the geodesic tracer', () => {
     expect(GEODESIC_GLSL).not.toContain('TAU * uFlowPhase');
   });
 
+  it('leaves the spin axis empty, as a thick flow does', () => {
+    // Vertical support against a body rotating at the local Keplerian
+    // rate gives ρ ∝ exp(−cot²θ/2ε²). Near the midplane cot θ → μ and
+    // that is the ordinary Gaussian of scale height εR; toward the
+    // axis cot θ runs away and the density falls faster than any
+    // exponential, which is the funnel — the evacuated channel every
+    // simulation of a hot flow shows.
+    //
+    // Written in μ instead, the same expression leaves a fifth of the
+    // midplane density sitting on the axis of a torus half as deep as
+    // it is wide. Looking down at one, the eye travels the whole way
+    // through that, and what it is looking at is behind it.
+    const aspect = 0.55;
+    const asShipped = (mu: number): number =>
+      Math.exp((-0.5 * (mu / (aspect * Math.sqrt(Math.max(1 - mu * mu, 1e-8)))) ** 2));
+    const inMuAlone = (mu: number): number => Math.exp(-0.5 * (mu / aspect) ** 2);
+    // On the axis: nothing, against a fifth of the midplane.
+    expect(inMuAlone(1)).toBeGreaterThan(0.15);
+    expect(asShipped(1)).toBeLessThan(1e-30);
+    // Two scale heights up it is already three orders down.
+    expect(asShipped(0.9) / inMuAlone(0.9)).toBeLessThan(0.01);
+    // And the midplane is untouched — this is the same disc where a
+    // disc is what it is.
+    for (const mu of [0, 0.05, 0.1]) {
+      expect(asShipped(mu) / inMuAlone(mu)).toBeCloseTo(1, 2);
+    }
+    // Monotonic all the way out, with no shelf for a ray to sit in.
+    let previous = 1;
+    for (const mu of [0.1, 0.3, 0.5, 0.7, 0.9, 0.99]) {
+      const here = asShipped(mu);
+      expect(here).toBeLessThan(previous);
+      previous = here;
+    }
+    expect(GEODESIC_GLSL).toContain('mu / (e * sqrt(max(1.0 - mu * mu, 1.0e-8)))');
+  });
+
   it('gives either flow regime the same readable falloff', () => {
     // A hot torus runs T ∝ r^-1 and a thin disc r^-3/4; both have to
     // reach the screen falling at the same rate, or one is a haze and
