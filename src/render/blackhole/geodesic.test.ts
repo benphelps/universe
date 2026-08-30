@@ -218,6 +218,87 @@ describe('the geodesic tracer', () => {
     expect(GEODESIC_GLSL).not.toContain('TAU * uFlowPhase');
   });
 
+  it('meets a disc at its photosphere and not at its midplane', () => {
+    // A disc is opaque, so a ray stops at the surface — and the
+    // surface is z = ±H(r). Nothing about that is a detail at a third
+    // of Eddington: radiation pressure holds H at very nearly one
+    // height for the whole disc, so H/R climbs from nothing at the
+    // torque-free inner edge, peaks a couple of inner radii out, and
+    // only then falls as 1/r. Drawn at the midplane instead, the flow
+    // has no rim, the inner wall hides nothing behind it, and the disc
+    // ends in a line.
+    const rIn = 2.0;
+    const coefficient = 1.234;
+    const aspect = (r: number): number =>
+      coefficient * (r / rIn) ** -1 * Math.max(0, 1 - Math.sqrt(rIn / r));
+    // The content of the radiation-pressure solution is that radius
+    // cancels: the flux holding the disc open and the gravity pulling
+    // it shut both go as r^-3. So H is one number times the
+    // torque-free taper and nothing else — exactly, at every radius.
+    const taper = (r: number): number => 1 - Math.sqrt(rIn / r);
+    const bare = [3, 4, 8, 16, 24].map((r) => (aspect(r) * r) / taper(r));
+    for (const h of bare) expect(h).toBeCloseTo(bare[0], 10);
+    // Which leaves H climbing only while that taper is still opening,
+    // and flat once it has: a fifth over the outer half of the disc.
+    const outer = [12, 16, 20, 24].map((r) => aspect(r) * r);
+    expect(Math.max(...outer) / Math.min(...outer)).toBeLessThan(1.25);
+    // Nothing at the inner edge, a fifth of the radius by two of them.
+    expect(aspect(rIn)).toBe(0);
+    expect(aspect(2 * rIn)).toBeGreaterThan(0.15);
+    // And falling away outward — as 1/r, since H has stopped changing —
+    // so the far disc is less than half the thickness of the near one.
+    const peak = (coefficient * 4) / 27;
+    expect(aspect(12 * rIn) / peak).toBeLessThan(0.45);
+    expect(aspect(12 * rIn)).toBeLessThan(0.1);
+
+    // The two faces are tested separately rather than as |z| < H, so
+    // that a flow with no thickness left — the inner edge, or a hole
+    // fed too little to puff one open — degenerates to exactly the
+    // midplane crossing, with no special case anywhere.
+    const entersSlab = (muBefore: number, muAfter: number, eps: number): boolean =>
+      (muBefore - eps > 0 && muAfter - eps <= 0) ||
+      (muBefore + eps < 0 && muAfter + eps >= 0);
+    for (const [before, after] of [
+      [0.4, -0.4], [-0.4, 0.4], [0.4, 0.2], [-0.2, -0.4], [0.02, -0.02],
+    ] as [number, number][]) {
+      expect(entersSlab(before, after, 0)).toBe(before * after <= 0);
+    }
+    // With a thickness, a ray that never reaches the midplane still
+    // lands on the disc — which is the rim, and is what a sheet cannot
+    // have.
+    expect(entersSlab(0.4, 0.1, 0.18)).toBe(true);
+    expect(entersSlab(0.4, 0.1, 0)).toBe(false);
+    // Leaving is not arriving: a ray on its way out of the slab must
+    // not be read as a second surface.
+    expect(entersSlab(-0.1, 0.4, 0.18)).toBe(false);
+    // And neither face is crossed at all by a ray running the length
+    // of the disc between them, which is every ray in an edge-on view.
+    // Tested on the faces alone the disc draws hollow — two sheets
+    // with the sky between — so a step that begins already inside is
+    // a hit in its own right.
+    // Bounded at two scale heights rather than one, because the disc
+    // has no hard surface: the density is a Gaussian in height, so at
+    // the edge of that band the gas is a seventh of the midplane and
+    // there is no silhouette there for a step to terrace.
+    expect(Math.exp(-0.5 * 2 ** 2)).toBeLessThan(0.15);
+    expect(Math.exp(-0.5 * 1 ** 2)).toBeGreaterThan(0.5);
+    const within = (mu: number, eps: number): boolean => Math.abs(mu) <= 2 * eps;
+    expect(entersSlab(0.05, 0.04, 0.18)).toBe(false);
+    expect(within(0.05, 0.18)).toBe(true);
+    expect(within(0.05, 0)).toBe(false);
+
+    // The shader carries the same law the model does.
+    expect(GEODESIC_GLSL).toContain('uAspect * pow(max(r, 1.0e-3) / uInnerRg, -uHeightExp)');
+    // The surface closes at the outer edge; the density profile keeps
+    // its own scale height, or a torus would be drawn in to a blade.
+    expect(GEODESIC_GLSL).toContain('flowAspect(r) * (1.0 - smoothstep(0.5 * uOuterRg, uOuterRg, r))');
+    expect(GEODESIC_GLSL).toContain('float e = max(flowAspect(r), 0.02);');
+    expect(GEODESIC_GLSL).toContain('upPrev > 0.0 && upNow <= 0.0');
+    expect(GEODESIC_GLSL).toContain('bool within = abs(prev.y) <= 2.0 * epsPrev;');
+    expect(GEODESIC_GLSL).toContain('downPrev < 0.0 && downNow >= 0.0');
+    expect(GEODESIC_GLSL).not.toContain('THICK_FLOW');
+  });
+
   it('leaves the spin axis empty, as a thick flow does', () => {
     // Vertical support against a body rotating at the local Keplerian
     // rate gives ρ ∝ exp(−cot²θ/2ε²). Near the midplane cot θ → μ and

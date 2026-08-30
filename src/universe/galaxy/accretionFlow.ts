@@ -47,8 +47,24 @@ export interface AccretionFlow {
   /** 1 applies the torque-free (1 − √(r_in/r))^¼ edge of a thin disc;
    *  0 is a flow that plunges straight through. */
   edgeTaper: number;
-  /** Vertical half-thickness over radius: razor-thin disc vs ion torus. */
-  aspectRatio: number;
+  /**
+   * The coefficient of the flow's thickness law, which is H/R at the
+   * inner edge before the taper. Read it through flowAspectAt rather
+   * than on its own — for a disc it is not the aspect ratio anywhere,
+   * because H/R varies across the flow.
+   */
+  heightCoefficient: number;
+  /**
+   * How H/R falls with radius: H/R = coefficient (r_in/r)^this.
+   *
+   * Zero for a torus, which is held open by its own trapped heat and
+   * so keeps a fixed opening angle at every radius. One for a disc,
+   * where the support is the radiation pressure of the flux passing
+   * through it — and since that flux and the vertical gravity carry
+   * the same r^-3, H comes out the *same* at every radius and H/R
+   * falls as 1/r.
+   */
+  heightExponent: number;
   /** Optical depth through the flow — 1 hides what is behind it, a
    *  RIAF lets the far side show through. */
   opacity: number;
@@ -74,6 +90,13 @@ const THIN_DISC_THRESHOLD = 0.01;
  *  the way at any moment — carries this, and simulations and fitted
  *  discs both put it near a tenth. */
 const VISCOSITY_ALPHA = 0.1;
+/**
+ * How far open an ion torus stands. A flow that cannot radiate what it
+ * gains keeps the heat, and the sound speed comes up to within a factor
+ * of the orbital speed — H/R = c_s/v_K is then of order a half, at
+ * every radius alike, which is what simulations of hot flows settle to.
+ */
+const RIAF_ASPECT = 0.55;
 
 /**
  * How much of the light behind a hot flow gets through it.
@@ -156,9 +179,20 @@ export function accretionFlowFor(
       innerTemperatureK,
       profileExponent: 0.75,
       edgeTaper: 1,
-      // Radiation pressure puffs the inner disc a little; it is still
-      // effectively a sheet, and an opaque one.
-      aspectRatio: 0.02 + 0.06 * Math.min(1, eddingtonRatio),
+      // Vertical hydrostatic support against Ω²z, with the pressure
+      // supplied by the radiation on its way out: (κ/c)F = Ω²H, and
+      // F = 3GMṀ(1 − √(r_in/r))/8πr³ carries the same r^-3 as Ω², so
+      // the radius cancels outright and
+      //
+      //   H = (3/2)(ṁ/η) r_g (1 − √(r_in/r))
+      //
+      // — one height for the whole disc, set by nothing but how hard
+      // it is being fed. That is why a quasar is not a sheet: at a
+      // third of Eddington this reaches a fifth of the radius a couple
+      // of gravitational radii out, and only becomes thin further out
+      // because r grows and H does not.
+      heightCoefficient: (1.5 * eddingtonRatio) / (efficiency * iscoRg),
+      heightExponent: 1,
       // Opaque at the inner edge and thinning outward: the column a
       // ray has to see through is the disc's surface density, and that
       // falls away with radius. Only the innermost disc is a surface;
@@ -205,8 +239,9 @@ export function accretionFlowFor(
     innerTemperatureK,
     profileExponent,
     edgeTaper: 0,
-    aspectRatio: 0.55,
-    opacity: riafOpacity(massSolar, hotRateKgPerS, innerRadiusRg, 0.55),
+    heightCoefficient: RIAF_ASPECT,
+    heightExponent: 0,
+    opacity: riafOpacity(massSolar, hotRateKgPerS, innerRadiusRg, RIAF_ASPECT),
     // Σ = Ṁ/(2πR v_r) with v_r ∝ R^−½: the column thins as the square
     // root of the radius, which is far slower than the emission does.
     opacityExponent: 0.5,
@@ -250,4 +285,21 @@ export function flowTemperature(flow: AccretionFlow, radiusRg: number): number {
   return (
     flow.innerTemperatureK * (radiusRg / flow.innerRadiusRg) ** -flow.profileExponent * taper
   );
+}
+
+/**
+ * The flow's half-thickness over its cylindrical radius, where the ray
+ * actually is.
+ *
+ * A torus keeps the same opening angle everywhere. A disc does not: its
+ * H is very nearly one height for the whole disc, so H/R falls as 1/r
+ * and the flow is a flared bowl near the middle and a sheet further
+ * out. No single number describes that, which is why the coefficient
+ * and the law are carried separately and read through here.
+ */
+export function flowAspectAt(flow: AccretionFlow, radiusRg: number): number {
+  const r = Math.max(radiusRg, 1e-6);
+  const taper =
+    flow.edgeTaper > 0 ? Math.max(0, 1 - Math.sqrt(flow.innerRadiusRg / r)) : 1;
+  return flow.heightCoefficient * (r / flow.innerRadiusRg) ** -flow.heightExponent * taper;
 }
