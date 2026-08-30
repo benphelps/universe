@@ -20,7 +20,7 @@ import {
   type WebGLRenderer,
 } from 'three';
 import { discPeakRadiusRg, horizonRadiusRg, iscoRadiusRg } from '../../core/physics/blackHole';
-import { flowAspectAt, flowTemperature } from '../../universe/galaxy/accretionFlow';
+import { flowTemperature } from '../../universe/galaxy/accretionFlow';
 import type { AccretionFlow } from '../../universe/galaxy/accretionFlow';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { FLOW_DRAW_SPAN, GEODESIC_GLSL, profileStretch } from './geodesicGlsl';
@@ -35,24 +35,7 @@ const DISC_EXPOSURE = 2.0;
  *  a surface — the same threshold the shader branches on. A cold disc
  *  sits near 0.02 and a starved ion torus at 0.55, so nothing lands
  *  anywhere near the line. */
-/**
- * Whether a flow is drawn as the volume it is or as the surface it
- * presents.
- *
- * Not a choice about thickness — a quasar disc reaches a fifth of its
- * radius and is still a surface. It is a choice about what a ray meets.
- * A torus is held open by heat it cannot radiate, which is the same
- * heat that leaves it translucent: the ray runs through the whole
- * column and what it collects is the integral. A disc's thickness is
- * the radiation pressure of its own escaping flux, which means the
- * flux got out, which means the gas is opaque — so the ray stops at a
- * photosphere and what it collects is σT⁴ from that surface, however
- * far the surface happens to stand off the midplane.
- *
- * The thickness law is what tells them apart: a fixed opening angle at
- * every radius is the torus, a fixed height is the disc.
- */
-const MARCHED_VOLUME = (flow: AccretionFlow): boolean => flow.heightExponent < 0.5;
+const THICK_FLOW = (aspectRatio: number): boolean => aspectRatio > 0.15;
 /** Past this separation the shadow is a millionth of a pixel and the
  *  ray's start point stops fitting in a float: the nuclear cluster is
  *  all there is to see of the centre from out here, and it is enough. */
@@ -250,9 +233,9 @@ export class BlackHoleObject {
     // columns of its own gas a central ray actually runs through is
     // what puts the two regimes on the same exposure without telling
     // either one what its brightness ought to be.
-    const columns = MARCHED_VOLUME(flow)
+    const columns = THICK_FLOW(flow.aspectRatio)
       ? (2 * Math.log(outerDrawn / innerRender)) /
-        (Math.sqrt(2 * Math.PI) * flowAspectAt(flow, peakRadius))
+        (Math.sqrt(2 * Math.PI) * flow.aspectRatio)
       : 1;
 
     // 2π(r^{3/2} + a) in units of r_g/c: the orbital period at the
@@ -294,8 +277,7 @@ export class BlackHoleObject {
         uRefTempK: { value: refTempK },
         uProfileStretch: { value: stretch },
         uTurbSigma: { value: flow.turbulenceSigma },
-        uAspect: { value: flow.heightCoefficient },
-        uHeightExp: { value: flow.heightExponent },
+        uAspect: { value: flow.aspectRatio },
         uFlowPhase: { value: 0 },
         uDiscGain: { value: DISC_EXPOSURE / columns },
         uLut: { value: lut },

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   accretionRate,
-  discPeakRadiusRg,
   eddingtonLuminosity,
   gravitationalRadius,
   iscoRadiusRg,
@@ -9,7 +8,7 @@ import {
   shadowImpactParameterRg,
 } from '../../core/physics/blackHole';
 import { C_LIGHT, G, PARSEC, SIGMA_SB, SOLAR_MASS } from '../../core/physics/constants';
-import { accretionFlowFor, flowAspectAt, flowTemperature } from './accretionFlow';
+import { accretionFlowFor, flowTemperature } from './accretionFlow';
 import { galacticNucleus } from './nucleus';
 import { centralSpheroid, hernquistMassWithin, nuclearStarCluster } from './spheroid';
 import { galaxyStellarMass, meanStellarMass } from './stellarMass';
@@ -118,22 +117,7 @@ describe('the nucleus', () => {
     // The hot flow is thick, see-through, and reaches inside the last
     // stable orbit; the cold one is a razor-thin opaque sheet that
     // stops there.
-    // A starving hole puffs into a torus of fixed opening angle; a fed
-    // one settles into a disc whose height is set by the radiation
-    // pressure holding it up, and which is therefore thin only because
-    // its radius is large. Compared where the disc is brightest, the
-    // torus is still several times the thicker of the two — but not
-    // the hundredfold a razor-thin sheet would give, because a quasar
-    // disc is genuinely puffed.
-    const brightPeak = flowAspectAt(bright, discPeakRadiusRg(bright.innerRadiusRg));
-    const quietPeak = flowAspectAt(quiet, discPeakRadiusRg(quiet.innerRadiusRg));
-    expect(quietPeak / brightPeak).toBeGreaterThan(2);
-    expect(brightPeak).toBeGreaterThan(0.05);
-    // And it closes to nothing at the inner edge, where the disc is
-    // torque-free and has no flux to hold itself open with.
-    expect(flowAspectAt(bright, bright.innerRadiusRg)).toBe(0);
-    // The torus does not: it is the same angle at every radius.
-    expect(flowAspectAt(quiet, quiet.innerRadiusRg * 4)).toBeCloseTo(quietPeak, 12);
+    expect(quiet.aspectRatio).toBeGreaterThan(10 * bright.aspectRatio);
     expect(quiet.opacity).toBeLessThan(1);
     expect(bright.opacity).toBe(1);
     expect(quiet.innerRadiusRg).toBeLessThan(iscoRadiusRg(0.5));

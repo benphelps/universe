@@ -126,7 +126,6 @@ uniform float uRefTempK;
 uniform float uProfileStretch;
 uniform float uTurbSigma;
 uniform float uAspect;
-uniform float uHeightExp;
 uniform float uFlowPhase;
 uniform float uDiscGain;
 uniform sampler2D uLut;
@@ -180,6 +179,9 @@ const float STEP_EPS = 0.06;
  * rather than once, that was over half the cost of the entire trace.
  */
 const int FLOW_SAMPLE_STRIDE = 5;
+/** Half-thickness above which the flow is passed through rather than
+ *  crossed. Cold discs sit near 0.02, ion tori at 0.55. */
+const float THICK_FLOW = 0.15;
 /**
  * The least distance from the spin axis a camera is placed at, in r_g.
  *
@@ -335,44 +337,6 @@ float flowDensity(float r, float phi, float mu) {
 }
 
 /**
- * The flow's half-thickness over its cylindrical radius, at radius r —
- * flowAspectAt, mirrored. A torus keeps one opening angle everywhere;
- * a disc holds one *height* everywhere, because the flux that supports
- * it vertically falls with radius at exactly the rate the gravity
- * pulling it back does, so H/R falls as 1/r and closes to nothing at
- * the inner edge where the torque-free boundary lets the flux go.
- */
-float flowAspect(float r) {
-  // Nothing at the inner edge, where the disc is torque-free and has
-  // no flux left to hold itself open with.
-  float inner = uEdgeTaper > 0.5
-    ? max(0.0, 1.0 - sqrt(uInnerRg / r))
-    : 1.0;
-  return uAspect * pow(max(r, 1.0e-3) / uInnerRg, -uHeightExp) * inner;
-}
-/**
- * Where an opaque flow presents a surface — the same half-thickness,
- * closed off at the outer edge on the taper the emission fades along.
- *
- * A disc does not stop in a cylinder wall: whatever ends it, self-
- * gravity breaking it into clumps or simply the last radius worth
- * drawing, takes the gas with it, so the surface has to close rather
- * than be cut. Ended square it leaves a rim standing at full height
- * with nothing behind it, which reads as a machined plate. Closed, the
- * flow is a lens — thickest between its edges, knife-edged at both —
- * and the rim becomes a face a ray crosses cleanly, found by
- * interpolation, rather than a wall it hits end-on and resolves to
- * whatever the step happened to be.
- *
- * This is the boundary, not the gas: the density profile keeps its own
- * scale height, which is what flowAspect is for. Closing that too
- * would draw a torus in as a blade at its outer edge, and make a
- * volume march pay for the pinch.
- */
-float flowSurface(float r) {
-  return flowAspect(r) * (1.0 - smoothstep(0.5 * uOuterRg, uOuterRg, r));
-}
-/**
  * How much of the flow sits at height μ, per unit length, normalised so
  * that a column straight through it comes to exactly one.
  *
@@ -402,7 +366,7 @@ float flowSurface(float r) {
  * through, and the limb lights up.
  */
 float flowColumn(float r, float mu) {
-  float e = max(flowAspect(r), 0.02);
+  float e = max(uAspect, 0.02);
   // cot θ = μ/sin θ, which is z/R exactly — so the scale height is εR
   // in the cylindrical radius, as hydrostatic equilibrium asks, rather
   // than ε times the spherical one.
@@ -700,7 +664,6 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
 
     vec4 prev = y;
     float prevPhi = phi;
-    float prevSinSq = sinSq;
     float prevArc = kerrAxisAzimuth(sinSq, y.y, y.w, xi, eta, a);
     float prevBranch = y.y * y.w < 0.0 ? -1.0 : 1.0;
     y += (ds / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
@@ -745,7 +708,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
     // a picture of a disc and a picture of what the Event Horizon
     // Telescope resolved — the ring is not a ring of material, it is
     // where the line of sight runs longest through the same plasma.
-    if (uHeightExp < 0.5) {
+    if (uAspect > THICK_FLOW) {
       float rMid = 0.5 * (prev.x + y.x);
       float muMid = 0.5 * (prev.y + y.y);
       float presence = flowPresence(rMid);
@@ -784,52 +747,12 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
       }
     }
 
-    // A disc is opaque, so what a ray meets is a surface — but the
-    // surface is the photosphere at z = ±H(r), not the midplane. The
-    // difference is the whole of what having a thickness means: the
-    // near rim stands in front of the far side instead of alongside
-    // it, the inner wall hides the plunging gas behind it, and the
-    // flow ends in an edge rather than in a line. Written as the two
-    // faces separately rather than as |z| < H, so that a disc whose
-    // height has tapered to nothing — at the inner edge, or in a hole
-    // fed too little to puff one open — degenerates back to exactly
-    // the θ = π/2 crossing it used to be, with no special case.
-    float epsPrev = flowSurface(prev.x) * sqrt(max(prevSinSq, 0.0));
-    float epsNow = flowSurface(y.x) * sqrt(max(sinSq, 0.0));
-    float upPrev = prev.y - epsPrev;
-    float upNow = y.y - epsNow;
-    float downPrev = prev.y + epsPrev;
-    float downNow = y.y + epsNow;
-    // Crossings first, and they are the ordinary case: because the
-    // thickness tapers to nothing at both edges, a ray arriving along
-    // the plane meets a surface rising to meet it rather than a wall
-    // stood across it, and that is a crossing like any other, found by
-    // interpolation and so drawn to better than a step.
-    //
-    // What no crossing catches is the ray that begins already between
-    // the faces and never leaves them — and leaving that out is the
-    // difference between a solid of revolution and a pair of sheets
-    // with the sky showing between. Its band is two scale heights and
-    // not one, because the disc has no hard surface to find: the
-    // density is a Gaussian in height, so what a ray meets is the
-    // depth at which the column it has swallowed comes to one, which
-    // is a place the ray decides and not the geometry. Cut at one, the
-    // band ends where the gas is still more than half its midplane
-    // density, and grazing that edge draws the terraces a step size
-    // makes of any silhouette; cut at two, the edge is down to a
-    // seventh and there is nothing left there to draw.
-    bool within = abs(prev.y) <= 2.0 * epsPrev;
-    bool onto = upPrev > 0.0 && upNow <= 0.0;
-    bool under = downPrev < 0.0 && downNow >= 0.0;
-    float f = onto ? upPrev / (upPrev - upNow)
-      : under ? downPrev / (downPrev - downNow)
-      : within ? 0.5
-      : -1.0;
-    if (uHeightExp >= 0.5 && f >= 0.0) {
+    // The equatorial flow is θ = π/2 at any spin: the step that changes
+    // the sign of μ crossed it.
+    if (uAspect <= THICK_FLOW && prev.y * y.y < 0.0) {
+      float f = prev.y / (prev.y - y.y);
       float rHit = mix(prev.x, y.x, f);
       float phiHit = mix(prevPhi, phi, f);
-      float muHit = mix(prev.y, y.y, f);
-      float sinSqHit = clamp(mix(prevSinSq, sinSq, f), 0.0, 1.0);
       float tEmit = flowTemperature(rHit);
       float presence = flowPresence(rHit);
       if (tEmit > 0.0 && presence > 0.002) {
@@ -838,7 +761,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
         // whatever its density, so a clump shows as the fourth root of
         // itself in temperature — and, through T⁴, as itself in
         // brightness. The same clump thickens the column.
-        float density = flowDensity(rHit, phiHit, muHit);
+        float density = flowDensity(rHit, phiHit, 0.0);
         tEmit *= pow(density, 0.25);
         // Doppler and gravity in one factor: g = 1/(−p·u), the ratio of
         // received to emitted frequency, contracted against the four-
@@ -854,24 +777,13 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
         vec4 at = mix(prev, y, f);
         float g = shiftFactor(u, xi, at.z, rHit, a);
         float tObs = g * tEmit;
-        vec3 through = kerrHeading(vec4(rHit, muHit, at.z, at.w), sinSqHit, phiHit, a, xi, eta);
+        vec3 through = kerrHeading(vec4(rHit, 0.0, at.z, at.w), 1.0, phiHit, a, xi, eta);
         float slant = max(abs(normalize(through).z), 0.04);
         // Column through the flow: its vertical depth thinned by the
-        // radial fall-off, and however much of that depth this ray
-        // actually covers.
-        //
-        // A ray that crossed swallowed the whole column, stretched by
-        // how obliquely it cut — the 1/cos this has always been. One
-        // running the length of the disc instead swallows only what
-        // the distance it went and the height it went at give it. The
-        // two agree in the limit: flowColumn is normalised so that a
-        // crossing summed step by step comes to that same one column.
-        float crossed = onto || under
-          ? 1.0 / slant
-          : flowColumn(rHit, muHit) * kerrProperLength(rHit, muHit, ds, g, a);
+        // radial fall-off, stretched by how obliquely the ray cuts it.
         float column =
           uOpticalDepth * pow(rHit / uInnerRenderRg, -uOpacityExp) * presence * density;
-        float alpha = 1.0 - exp(-column * crossed);
+        float alpha = 1.0 - exp(-column / slant);
         // Brightness splits in two. The radial profile carries the
         // flow's own σT⁴ from its inner edge outward, and between the
         // edges that is four or more decades — further than any single
