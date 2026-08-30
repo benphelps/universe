@@ -207,6 +207,13 @@ body {
   line-height: 1.35;
 }
 
+/* The catalogue's own numbers, set apart from the prose above them. */
+.mark-note.figures {
+  margin-top: 3px;
+  color: var(--faint);
+  letter-spacing: 0.02em;
+}
+
 .mark-note.editable:hover {
   color: var(--ink);
   cursor: text;
@@ -1255,7 +1262,14 @@ tr.here .swatch {
     background: none;
   }
 
-  .mark-note.editable:hover {
+  /* The catalogue's own numbers, set apart from the prose above them. */
+.mark-note.figures {
+  margin-top: 3px;
+  color: var(--faint);
+  letter-spacing: 0.02em;
+}
+
+.mark-note.editable:hover {
     color: var(--dim);
   }
 

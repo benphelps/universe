@@ -162,15 +162,22 @@ const float AXIS_APPROACH = 3.0e-4;
  * range is clipped to the one or two sigma that simulated density
  * histograms actually span.
  */
-float turbulentField(float r, float phi, float mu, float age, float generation) {
-  float keplerian = pow(r / uInnerRenderRg, -1.5);
+float turbulentField(
+  float r,
+  float phi,
+  float mu,
+  float keplerian,
+  float age,
+  float generation
+) {
   // Three things move the pattern round. The static winding it is born
   // with; the flow's bulk rotation, which turns everything together and
   // so never shears; and the differential part, which is the only one
   // that combs the field into ever-finer filaments and is therefore the
-  // only one allowed to accumulate without limit — it does not, because
-  // the age it multiplies is reset each time this realisation is
-  // reseeded.
+  // only one allowed to accumulate — it does not accumulate without
+  // limit, because the age it multiplies resets when this realisation
+  // is reseeded. The two rotation terms sum, over one lifetime, to
+  // exactly one turn at the local orbital rate.
   float a = phi + 9.0 * keplerian + TAU * uFlowPhase + TAU * age * (keplerian - 1.0);
   // Sheared hard along the radius and stretched around it: turbulence
   // in a flow that orbits differentially is drawn out into filaments
@@ -192,21 +199,32 @@ float turbulentField(float r, float phi, float mu, float age, float generation) 
  * distribution of the width simulations measure, and the shear draws
  * every clump into a trailing filament. Neither is it still: an eddy
  * turns over in about an orbit and is gone, replaced by another the
- * instability has just made, and at the innermost orbit of the hole at
- * this galaxy's centre that is a little over a minute.
+ * instability has just made.
  *
- * Advecting one frozen field would show the first half of that and not
- * the second — the pattern would shear without bound, stretching into
- * finer and finer threads that never renew, until the radial structure
- * fell below what can be resolved. So two realisations run half a
- * lifetime out of phase, each reseeded while it carries no weight, and
- * are blended so the variance is preserved rather than the mean, which
- * is what keeps the contrast steady across the handover. The bulk
- * rotation is applied to both alike and never resets, so the flow's own
- * turning stays continuous through it.
+ * In about an orbit *of its own*. That is the whole of the clock here,
+ * and getting it wrong is visible immediately: run every radius on the
+ * inner edge's orbit instead and the gas at twice that radius, which
+ * turns at a third of the rate, is replaced after a third of a
+ * rotation — the pattern restarts before it has been anywhere. Tied to
+ * the local orbit, every radius completes exactly one turn before it is
+ * renewed, however long that takes out there.
+ *
+ * Advecting one frozen field would show the first half of what
+ * turbulence does and not the second: the pattern would shear without
+ * bound, stretching into finer and finer threads that never renew,
+ * until the radial structure fell below anything that could be
+ * resolved. So two realisations run half a lifetime out of phase, each
+ * reseeded while it carries no weight, and are blended so the variance
+ * is preserved rather than the mean, which keeps the contrast steady
+ * across the handover. Both the reseeding and the weights read the same
+ * clock, so a generation changes only where its weight is nothing —
+ * which is what lets that clock vary with radius without drawing a ring
+ * at every place it ticks.
  */
 float flowDensity(float r, float phi, float mu) {
-  float t = uFlowPhase / EDDY_LIFETIME;
+  float keplerian = pow(r / uInnerRenderRg, -1.5);
+  // Orbits this radius has completed, on its own clock.
+  float t = (uFlowPhase * keplerian) / EDDY_LIFETIME;
   float phase = fract(t);
   // The two generations are half a lifetime apart, and each carries no
   // weight at the moment it is reseeded — sine for the one born at the
@@ -215,9 +233,12 @@ float flowDensity(float r, float phi, float mu) {
   // variance and not the mean: the clumping never dulls mid-crossfade.
   float wA = sin(3.14159265 * phase);
   float wB = cos(3.14159265 * phase);
+  // Ages are in the units the winding term wants — the shared bulk
+  // rotation is counted in inner-edge turns, so an age is too.
+  float span = EDDY_LIFETIME / max(keplerian, 1.0e-6);
   float xi =
-    wA * turbulentField(r, phi, mu, phase * EDDY_LIFETIME, floor(t)) +
-    wB * turbulentField(r, phi, mu, fract(phase + 0.5) * EDDY_LIFETIME, floor(t + 0.5));
+    wA * turbulentField(r, phi, mu, keplerian, phase * span, floor(t)) +
+    wB * turbulentField(r, phi, mu, keplerian, fract(phase + 0.5) * span, floor(t + 0.5));
   // Log-normal, with the −σ²/2 that keeps the mean density unchanged.
   return clamp(exp(uTurbSigma * xi - 0.5 * uTurbSigma * uTurbSigma), 0.2, 4.0);
 }

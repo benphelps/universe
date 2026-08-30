@@ -13,7 +13,6 @@ import type { Planet, StarSystem } from '../universe/system/types';
 import { generateSystem } from '../universe/system/generate';
 import type { Star } from '../universe/star/types';
 import {
-  VISIT_KEY,
   bookmarkKey,
   removeMark,
   setCaption,
@@ -25,6 +24,7 @@ import { UnifiedViewer } from './unifiedViewer';
 import type { DecalState } from './ui/decalToggles';
 import type { GenerationStatus } from './ui/generationIndicator';
 import type { Tab, ViewMode } from './ui/sidebar';
+import type { CatalogGalaxy } from './galaxyCatalog';
 import { GALAXY_KEY } from './ui/welcome';
 
 /** The default pace until the surveyor speeds up: one minute a second. */
@@ -242,14 +242,30 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   viewer.timeScaleDaysPerSecond = timeScale;
   viewer.exposure = exposure;
 
+  syncAddress();
+}
+
+/**
+ * Write where we are into the address bar. Every field the boot reads
+ * back, so the URL in the bar is always a link that lands someone else
+ * exactly here — which is only true if it is rewritten wherever the
+ * view changes, not only where a system is loaded.
+ */
+function syncAddress(): void {
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
-  if (galaxySeed() !== PRIME_GALAXY_SEED) {
-    url.searchParams.set('galaxy', seedToHex(galaxySeed()));
-  } else {
-    url.searchParams.delete('galaxy');
-  }
+  // Always, even in the prime galaxy. A seed means nothing without the
+  // galaxy it was drawn in — the locale differs, so the same sixteen
+  // digits name a different star — and a link that leaves it out is
+  // read against whatever galaxy the reader happens to be standing in.
+  // Writing it every time is what makes an address portable.
+  url.searchParams.set('galaxy', seedToHex(galaxySeed()));
   url.searchParams.set('view', viewMode);
+  if (coreView) {
+    url.searchParams.set('core', '1');
+  } else {
+    url.searchParams.delete('core');
+  }
   if (localePc) {
     url.searchParams.set('at', localeParam(localePc));
   } else {
@@ -282,36 +298,24 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
 export function boot(viewElement: HTMLElement): void {
   if (viewer) return;
   const params = new URLSearchParams(location.search);
-  // An explicit ?galaxy= wins and becomes the persisted choice;
-  // otherwise the browser's remembered personal galaxy (welcome
-  // dialog) applies.
+  // Which galaxy this session materializes: the address if the link
+  // carries one, otherwise the traveler's own.
+  //
+  // Following a link no longer moves anyone's home. It used to, and the
+  // result was that every shared address quietly rewrote where you
+  // lived — and, worse, that a link *without* a galaxy was read against
+  // wherever you had last been sent, so the same seed named a different
+  // star for every reader. Home is now set in one place only, by the
+  // traveler choosing it; a link decides nothing but the trip.
   const galaxyParam = params.get('galaxy');
   if (galaxyParam) {
     setGalaxySeed(seedFromHex(galaxyParam));
-    let visiting = false;
-    try {
-      visiting = sessionStorage.getItem(VISIT_KEY) !== null;
-      sessionStorage.removeItem(VISIT_KEY);
-    } catch {
-      // Storage unavailable: treat as an explicit link.
-    }
-    try {
-      if (visiting) {
-        // An in-app hop (a bookmark in another galaxy): home stays put.
-      } else if (galaxySeed() === PRIME_GALAXY_SEED) {
-        localStorage.removeItem(GALAXY_KEY);
-      } else {
-        localStorage.setItem(GALAXY_KEY, seedToHex(galaxySeed()));
-      }
-    } catch {
-      // Storage unavailable: the URL alone carries the choice.
-    }
   } else {
     try {
-      const remembered = localStorage.getItem(GALAXY_KEY);
-      if (remembered) setGalaxySeed(seedFromHex(remembered));
+      const home = localStorage.getItem(GALAXY_KEY);
+      if (home) setGalaxySeed(seedFromHex(home));
     } catch {
-      // Storage unavailable: prime galaxy.
+      // Storage unavailable: the prime galaxy, which is the default.
     }
   }
   const viewParam = params.get('view');
@@ -365,6 +369,9 @@ export function boot(viewElement: HTMLElement): void {
   };
 
   load(params.get('seed') ?? randomSeedHex(), parseLocale(params.get('at')));
+  // The centre is a place a link can name, so it has to be a place a
+  // link can restore.
+  if (params.get('core') !== null) viewCore();
 
   // Chart the landmark catalog in the background; the snapshot picks
   // it up once it lands.
@@ -416,7 +423,7 @@ export function viewCore(): void {
   coreView = true;
   viewMode = 'galaxy';
   viewer?.setCoreView();
-  notify();
+  syncAddress();
 }
 
 export function stepBody(delta: number): void {
@@ -464,6 +471,26 @@ export function travelTo(destination: { seedHex: string; positionPc: GalacticPos
   load(destination.seedHex, destination.positionPc);
 }
 
+/**
+ * Go and stand at another galaxy's centre. The galaxy locks at first
+ * use, so this is a clean boot into it rather than a move within the
+ * one already running — but the address it navigates to carries the
+ * whole trip, which means it is also the link to hand someone else.
+ */
+export function travelToGalaxy(entry: CatalogGalaxy): void {
+  acted();
+  if (entry.galaxy === seedToHex(galaxySeed())) {
+    viewCore();
+    return;
+  }
+  const url = new URL(location.origin + location.pathname);
+  url.searchParams.set('galaxy', entry.galaxy);
+  url.searchParams.set('seed', entry.seed);
+  url.searchParams.set('view', 'galaxy');
+  url.searchParams.set('core', '1');
+  location.href = url.toString();
+}
+
 export function randomSeed(): void {
   acted();
   load(randomSeedHex());
@@ -471,9 +498,9 @@ export function randomSeed(): void {
 
 /**
  * A mark within the current galaxy restores its state in place; one in
- * another galaxy needs a clean boot (the galaxy locks at first use), so
- * it navigates — flagged as a visit so the traveler's home galaxy
- * survives the hop.
+ * another galaxy needs a clean boot, since the galaxy locks at first
+ * use — so it navigates. Nothing about the traveler's home is touched
+ * either way: a trip is a trip.
  */
 export function travelToMark(mark: Bookmark): void {
   acted();
@@ -486,12 +513,12 @@ export function travelToMark(mark: Bookmark): void {
     if (mark.view === 'planet') url.searchParams.set('planet', String(mark.planet ?? 0));
     if (mark.moon !== undefined) url.searchParams.set('moon', String(mark.moon));
     if (mark.companion) url.searchParams.set('companion', String(mark.companion));
-    try {
-      sessionStorage.setItem(VISIT_KEY, '1');
-    } catch {
-      // Storage unavailable: the hop adopts the galaxy, nothing worse.
-    }
+    if (mark.core) url.searchParams.set('core', '1');
     location.href = url.toString();
+    return;
+  }
+  if (mark.core) {
+    viewCore();
     return;
   }
   viewMode = mark.view;

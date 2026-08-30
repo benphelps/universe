@@ -2,13 +2,14 @@ import { useRef, useState, type ReactNode } from 'react';
 import { seedToHex } from '../../core/rng/hash';
 import { galaxySeed } from '../../universe/galaxy/galaxySeed';
 import { SURVEY_MARKS, bookmarkKey, savedMarks, type Bookmark } from '../bookmarks';
-import { removeSavedMark, saveCaption, travelToMark } from '../store';
+import { CATALOG_GALAXIES, type CatalogGalaxy } from '../galaxyCatalog';
+import { removeSavedMark, saveCaption, travelToGalaxy, travelToMark } from '../store';
 
 /**
- * The POI tab: the survey's shipped highlights up top, the traveler's
- * own marks below — every row a travel link, marks made in another
- * galaxy carrying it along. The catalog plate above stays on the
- * current body; this tab is the address book, not a camera level.
+ * The POI tab: galaxies first, then the survey's shipped bodies, then
+ * the traveler's own marks — every row a travel link, and the ones in
+ * another galaxy carrying it along. The catalog plate above stays on
+ * the current body; this tab is the address book, not a camera level.
  */
 export function PoiLevel(): ReactNode {
   const here = seedToHex(galaxySeed());
@@ -17,6 +18,10 @@ export function PoiLevel(): ReactNode {
 
   return (
     <>
+      <h2>Galaxies · {CATALOG_GALAXIES.length}</h2>
+      {CATALOG_GALAXIES.map((entry) => (
+        <GalaxyRow key={entry.galaxy} entry={entry} here={here} />
+      ))}
       <h2>Survey highlights · {SURVEY_MARKS.length}</h2>
       {SURVEY_MARKS.map((mark) => (
         <MarkRow key={bookmarkKey(mark)} mark={mark} here={here} />
@@ -43,6 +48,43 @@ export function PoiLevel(): ReactNode {
       )}
     </>
   );
+}
+
+/**
+ * One galaxy, and the hole at the middle of it. The figures are the
+ * model's own and are checked against it by galaxyCatalog.test, so what
+ * this row says is what standing there will show.
+ */
+function GalaxyRow({ entry, here }: { entry: CatalogGalaxy; here: string }): ReactNode {
+  return (
+    <div className="mark pick" onClick={() => travelToGalaxy(entry)}>
+      <div className="mark-head">
+        <span className="kind">core</span> {entry.name}
+        {entry.galaxy === here && <span className="badge">you are here</span>}
+      </div>
+      <div className="mark-note">{entry.note}</div>
+      <div className="mark-note figures">
+        {solarMasses(entry.massSolar)} M☉ · a★ {entry.spin.toFixed(3)} ·{' '}
+        {eddington(entry.eddingtonRatio)} L_Edd ·{' '}
+        {entry.regime === 'thin-disc' ? 'thin disc' : 'hot torus'}
+      </div>
+    </div>
+  );
+}
+
+/** Solar masses, in the units the eye reads fastest. */
+function solarMasses(value: number): string {
+  if (value >= 1e8) return `${(value / 1e6).toFixed(0)}M`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(0)}k`;
+  return value.toFixed(0);
+}
+
+/** Eddington ratio: percentages where it means something, exponents
+ *  where the hole is starving. */
+function eddington(value: number): string {
+  if (value >= 0.01) return `${(value * 100).toFixed(0)}%`;
+  return value.toExponential(0);
 }
 
 function MarkRow({

@@ -16,15 +16,11 @@ export interface Bookmark {
   moon?: number;
   companion?: number;
   at?: string;
+  /** Set for the galaxy's centre — a place with no system in it. */
+  core?: boolean;
 }
 
 const STORE_KEY = 'universe-bookmarks';
-
-/**
- * Set before an in-app hop into another galaxy so the boot sync treats
- * it as a visit — the traveler's persisted home galaxy stays put.
- */
-export const VISIT_KEY = 'universe-visiting';
 
 const PRIME = '53494d5f554e4956';
 
@@ -68,7 +64,7 @@ export function bookmarkKey(mark: Bookmark): string {
   return [
     mark.galaxy,
     mark.seed,
-    mark.view,
+    mark.core ? 'core' : mark.view,
     mark.at ?? '',
     mark.planet ?? -1,
     mark.moon ?? -1,
