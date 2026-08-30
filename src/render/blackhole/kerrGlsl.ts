@@ -353,6 +353,18 @@ vec2 kerrOrbitEL(float r, float a) {
  * short of the region a real one occupies.
  */
 vec3 kerrFlowVelocity(float r, float a, float iscoRg) {
+  // The last stable circular orbit, and not the flow's inner edge —
+  // for a cold disc they are the same radius, but a hot flow reaches
+  // its horizon, and asking kerrOrbitEL for a circular orbit below the
+  // photon sphere asks for one that does not exist. r² − 3r + 2a√r
+  // goes negative there, the clamp under its square root hands back an
+  // energy and angular momentum some ten thousand times too large, and
+  // what comes out is not a timelike four-velocity at all. −p·u is
+  // positive for every real photon and every real observer; that one
+  // was passing through zero, and 1/(−p·u) through the roof with it,
+  // so a stray pixel within a percent of the horizon came out three
+  // hundred times blueshifted and, beamed as the fourth power, some
+  // two thousand times brighter than the pixel beside it.
   vec2 el = kerrOrbitEL(max(r, iscoRg), a);
   float e = el.x;
   float l = el.y;

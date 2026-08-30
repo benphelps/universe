@@ -88,12 +88,33 @@ export function profileStretch(profileExponent: number): number {
  */
 export const LENSING_REACH_RG = 160;
 
+/**
+ * Impact parameter inside which the traced image is the whole picture.
+ *
+ * The trace does not stop at LENSING_REACH_RG, it fades out over the
+ * last stretch — so between this radius and that one the drawn pixel
+ * is part traced sky and part whatever is behind it, which is the
+ * galaxy's own dome and its nuclear cluster, and the two have to be
+ * there to be blended with.
+ *
+ * That makes this the radius the dome may be switched off at, and no
+ * larger. Since a ray's impact parameter can never exceed the camera's
+ * own distance from the hole, a camera inside this radius has every
+ * pixel on screen at full coverage, the dome is completely hidden
+ * behind the trace, and turning it off changes nothing. Switched off
+ * at LENSING_REACH_RG instead — as it was — the outer part of the
+ * frame lost the dome while the trace was still fading in over it, and
+ * everything but the brightest lensed arcs went black.
+ */
+export const LENSING_SOLID_RG = 88;
+
 export const GEODESIC_GLSL = /* glsl */ `
 uniform vec3 uCamRg;
 uniform mat3 uViewToBh;
 uniform vec2 uTanHalfFov;
 
 uniform float uInnerRg;
+uniform float uIscoRg;
 uniform float uInnerRenderRg;
 uniform float uOuterRg;
 uniform float uInnerTempK;
@@ -111,6 +132,7 @@ uniform float uDiscGain;
 uniform sampler2D uLut;
 
 const float LENSING_REACH = ${LENSING_REACH_RG}.0;
+const float LENSING_SOLID = ${LENSING_SOLID_RG}.0;
 const int MAX_STEPS = 512;
 const float TAU = 6.28318531;
 /**
@@ -602,7 +624,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
           held--;
           float density = heldDensity;
           tEmit *= pow(density, 0.25);
-          vec3 u = kerrFlowVelocity(rMid, a, uInnerRg);
+          vec3 u = kerrFlowVelocity(rMid, a, uIscoRg);
           float dr = 0.5 * (prev.z + y.z);
           float g = shiftFactor(u, xi, dr, rMid, a);
           float tObs = g * tEmit;
@@ -653,7 +675,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
         // matter falling away from the eye. A blackbody stays a
         // blackbody under this, at temperature gT — so the shift is the
         // colour and, through σ(gT)⁴, the beaming as well.
-        vec3 u = kerrFlowVelocity(rHit, a, uInnerRg);
+        vec3 u = kerrFlowVelocity(rHit, a, uIscoRg);
         vec4 at = mix(prev, y, f);
         float g = shiftFactor(u, xi, at.z, rHit, a);
         float tObs = g * tEmit;

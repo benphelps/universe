@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_SPIN, shadowImpactParameterRg } from '../../core/physics/blackHole';
+import {
+  MAX_SPIN,
+  horizonRadiusRg,
+  iscoRadiusRg,
+  shadowImpactParameterRg,
+} from '../../core/physics/blackHole';
+import { flowFourVelocity } from '../../core/physics/kerr';
 import { DISPLAY_FALLOFF, GEODESIC_GLSL, LENSING_REACH_RG, profileStretch } from './geodesicGlsl';
 import { KERR_GLSL } from './kerrGlsl';
 
@@ -206,6 +212,56 @@ describe('the geodesic tracer', () => {
       previous = here;
     }
     expect(GEODESIC_GLSL).toContain('mu / (e * sqrt(max(1.0 - mu * mu, 1.0e-8)))');
+  });
+
+  it('gives the flow a four-velocity that stays timelike to the horizon', () => {
+    // −p·u is the energy a photon has in the frame of whoever is
+    // looking, and for any real photon and any real observer it is
+    // positive. Everything the renderer does with the shift — the
+    // colour, and the beaming as its fourth power — divides by it, so
+    // if it can reach zero the picture has a pole in it.
+    //
+    // It could. kerrFlowVelocity takes the radius where circular
+    // orbits stop existing, and it was being handed the flow's inner
+    // edge instead. For a cold disc those are the same radius. For a
+    // hot flow, which reaches its own horizon, the inner edge is the
+    // horizon — so the circular branch was being asked for orbits from
+    // the photon sphere down, where r² − 3r + 2a√r is negative and the
+    // clamp under its square root returns an energy ten thousand times
+    // too large. The result is not timelike, −p·u passes through zero
+    // somewhere inside it, and a stray pixel comes back hundreds of
+    // times blueshifted and thousands of times too bright.
+    const norm = (r: number, spin: number, inner: number): number => {
+      const u = flowFourVelocity(r, spin, inner);
+      const sigma = r * r;
+      const delta = r * r - 2 * r + spin * spin;
+      const bigA = (r * r + spin * spin) ** 2 - spin * spin * delta;
+      return (
+        -(1 - 2 / r) * u.ut * u.ut -
+        ((4 * spin) / r) * u.ut * u.uphi +
+        (sigma / delta) * u.ur * u.ur +
+        (bigA / sigma) * u.uphi * u.uphi
+      );
+    };
+    // Handed the horizon, as a hot flow used to hand it, the same
+    // expression comes back spacelike by eight orders of magnitude.
+    expect(norm(1.4736, 0.89, horizonRadiusRg(0.89))).toBeGreaterThan(1e6);
+    expect(norm(1.4736, 0.89, iscoRadiusRg(0.89))).toBeCloseTo(-1, 6);
+    // And the shader is asking for the right one now.
+    expect(GEODESIC_GLSL).toContain('kerrFlowVelocity(rMid, a, uIscoRg)');
+    expect(GEODESIC_GLSL).toContain('kerrFlowVelocity(rHit, a, uIscoRg)');
+    expect(GEODESIC_GLSL).not.toContain('kerrFlowVelocity(rMid, a, uInnerRg)');
+
+    for (const spin of [0, 0.5, 0.89, 0.998]) {
+      const horizon = horizonRadiusRg(spin);
+      const isco = iscoRadiusRg(spin);
+      for (let i = 1; i <= 60; i++) {
+        const r = horizon * 1.001 + ((isco * 3 - horizon) * i) / 60;
+        // u·u = −1, in the equatorial Kerr metric, everywhere from
+        // just outside the horizon to well beyond the last stable orbit.
+        expect(norm(r, spin, isco)).toBeCloseTo(-1, 6);
+      }
+    }
   });
 
   it('gives either flow regime the same readable falloff', () => {

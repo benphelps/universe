@@ -19,7 +19,7 @@ import {
   type WebGLCubeRenderTarget,
   type WebGLRenderer,
 } from 'three';
-import { discPeakRadiusRg, horizonRadiusRg } from '../../core/physics/blackHole';
+import { discPeakRadiusRg, horizonRadiusRg, iscoRadiusRg } from '../../core/physics/blackHole';
 import { flowTemperature } from '../../universe/galaxy/accretionFlow';
 import type { AccretionFlow } from '../../universe/galaxy/accretionFlow';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
@@ -121,7 +121,7 @@ void main() {
   vec3 cam = uCamRg;
   float ahead = -dot(cam, dir);
   float impact = length(cam + dir * max(ahead, 0.0));
-  float coverage = 1.0 - smoothstep(LENSING_REACH * 0.55, LENSING_REACH, impact);
+  float coverage = 1.0 - smoothstep(LENSING_SOLID, LENSING_REACH, impact);
   if (ahead <= 0.0 && length(cam) > LENSING_REACH) coverage = 0.0;
   if (coverage < 0.004) discard;
 
@@ -264,6 +264,9 @@ export class BlackHoleObject {
         uSpin: { value: hole.spin },
         uHorizonRg: { value: horizonRadiusRg(hole.spin) },
         uInnerRg: { value: flow.innerRadiusRg },
+        // Where circular orbits stop existing, which is where the flow
+        // starts plunging — not where the flow starts.
+        uIscoRg: { value: iscoRadiusRg(hole.spin) },
         uInnerRenderRg: { value: innerRender },
         uOuterRg: { value: outerDrawn },
         uInnerTempK: { value: flow.innerTemperatureK },

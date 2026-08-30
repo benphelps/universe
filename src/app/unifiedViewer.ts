@@ -72,10 +72,7 @@ import {
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import { BlackHoleObject } from '../render/blackhole/blackHoleObject';
-import {
-  FLOW_DRAW_SPAN,
-  LENSING_REACH_RG,
-} from '../render/blackhole/geodesicGlsl';
+import { FLOW_DRAW_SPAN, LENSING_SOLID_RG } from '../render/blackhole/geodesicGlsl';
 import { LensedSky } from '../render/blackhole/lensedSky';
 import { stellarBlackHole } from '../universe/star/stellarHole';
 import type { Donor } from '../universe/star/compactAccretion';
@@ -2405,10 +2402,15 @@ export class UnifiedViewer {
 
     // Close in, every ray on screen is bent enough that the hole draws
     // the whole sky itself, out of the cube map — the dome's own march
-    // would be paid for and then covered over.
+    // would be paid for and then covered over. Only once it really is
+    // covered over: the trace fades out across its last stretch, and a
+    // camera further out than LENSING_SOLID_RG has frame edges where
+    // that fade has begun. Switching the dome off there took the sky
+    // away from under a half-transparent image of it and left the
+    // outside of the frame black but for the brightest arcs.
     const holeCoversSky =
       this.blackHole !== null &&
-      this.camera.position.length() < LENSING_REACH_RG * this.blackHole.kmPerRg;
+      this.camera.position.length() < LENSING_SOLID_RG * this.blackHole.kmPerRg;
     this.galaxyVolume?.update(
       this.camera.position,
       identity,
