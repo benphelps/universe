@@ -86,6 +86,92 @@ describe('the geodesic tracer', () => {
     }
   });
 
+  it('keeps the two realisations from being the same realisation', () => {
+    // Counted plainly, floor(t) and floor(t+½) agree for half of every
+    // cycle, so the two fields the crossfade blends were drawn from the
+    // same offset in the noise — different only by how far the shear
+    // had wound them apart, which at the flow's inner edge is not at
+    // all. Two copies of one field do not blend to a steady contrast:
+    // sin+cos runs between one and √2, so the clumping beat by forty
+    // percent every orbit at the very radius that is brightest.
+    for (let i = 0; i <= 400; i++) {
+      const t = (i / 400) * 4;
+      const a = Math.floor(t);
+      const b = Math.floor(t + 0.5) + 0.5;
+      expect(a).not.toBe(b);
+      // And they part company by a whole generation across a cycle, so
+      // neither is ever a stale copy of the other.
+      expect(Math.abs(a - b)).toBeGreaterThanOrEqual(0.5);
+    }
+    expect(GEODESIC_GLSL).toContain('floor(t + 0.5) + 0.5');
+  });
+
+  it('draws every generation from somewhere a float can still resolve', () => {
+    // Walking the sample point a fixed distance per generation is fine
+    // until the offset dwarfs the ±4 the pattern itself spans. Then the
+    // spacing between representable coordinates grows past the noise's
+    // own cells, the field comes back flat, and the clumping dissolves
+    // into an even glow — which is what a disc watched above real time
+    // used to do within seconds. Hashed into a box instead, the offset
+    // never leaves the range a float resolves finely.
+    const offset = (generation: number): number[] => {
+      const fract = (x: number): number => x - Math.floor(x);
+      const h = [0.1031, 0.11369, 0.13787].map((c) => fract((generation % 4096) * c));
+      const d = h[0] * (h[1] + 33.33) + h[1] * (h[2] + 33.33) + h[2] * (h[0] + 33.33);
+      const g = h.map((x) => x + d);
+      return [
+        fract((g[0] + g[1]) * g[2]),
+        fract((g[0] + g[2]) * g[1]),
+        fract((g[1] + g[2]) * g[0]),
+      ].map((x) => x * 128);
+    };
+    // Bounded, for any generation a session could ever reach.
+    for (const g of [0, 1, 41, 4095, 4096, 1e5, 1e7]) {
+      for (const c of offset(g)) {
+        expect(c).toBeGreaterThanOrEqual(0);
+        expect(c).toBeLessThan(128);
+        // Still resolved far finer than one noise cell, which is what
+        // the unbounded offset stopped being.
+        expect(Math.fround(c + 1) - Math.fround(c)).toBeCloseTo(1, 4);
+      }
+    }
+    // Consecutive generations land somewhere genuinely else.
+    for (let g = 0; g < 40; g++) {
+      const [a, b] = [offset(g), offset(g + 1)];
+      const apart = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      expect(apart).toBeGreaterThan(4);
+    }
+    expect(GEODESIC_GLSL).toContain('eddyOffset(generation)');
+    expect(GEODESIC_GLSL).not.toContain('generation * vec3(');
+  });
+
+  it('folds the bulk rotation before a float has to add an azimuth to it', () => {
+    // The pattern's angle is only ever read through a sine and a
+    // cosine, so the whole count of turns contributes nothing but its
+    // own magnitude — and its magnitude is what stops a float from
+    // resolving φ. At a hundred thousand turns the azimuth is down to a
+    // hundred distinguishable places around the ring; at a million
+    // there is one, and the disc is a set of perfectly smooth
+    // concentric bands. Folded first, φ keeps every digit it had.
+    const TAU = 2 * Math.PI;
+    // How many distinct angles a float can still tell apart around one
+    // circuit, once this many turns have been added to them: the gap
+    // between neighbouring floats at that magnitude, against 2π.
+    const resolvedPlaces = (turns: number): number => {
+      const base = Math.abs(Math.fround(TAU * turns));
+      if (base === 0) return Infinity;
+      return TAU / 2 ** (Math.floor(Math.log2(base)) - 23);
+    };
+    expect(resolvedPlaces(1e6)).toBeLessThan(64);
+    expect(resolvedPlaces(1e5)).toBeLessThan(256);
+    // Folded, every count of turns resolves the ring the same way.
+    for (const turns of [0.25, 1e3, 1e6, 1e9]) {
+      expect(resolvedPlaces(turns - Math.floor(turns))).toBeGreaterThan(1e6);
+    }
+    expect(GEODESIC_GLSL).toContain('TAU * uFlowSpin');
+    expect(GEODESIC_GLSL).not.toContain('TAU * uFlowPhase');
+  });
+
   it('gives either flow regime the same readable falloff', () => {
     // A hot torus runs T ∝ r^-1 and a thin disc r^-3/4; both have to
     // reach the screen falling at the same rate, or one is a haze and

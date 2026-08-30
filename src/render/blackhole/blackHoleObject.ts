@@ -56,6 +56,30 @@ const FLOW_VISIBILITY_FLOOR = 1e-10;
  * keep every pixel the display has.
  */
 const TRACE_SCALE = 0.55;
+/**
+ * The most of a turn the flow is allowed to advance between two drawn
+ * frames.
+ *
+ * Not a speed limit on the hole — the shadow, the beaming and the
+ * shape of the flow do not depend on this clock at all, only the
+ * clumping's motion does. It is a limit on what a sequence of frames
+ * can carry. The turbulence is sampled on a ring some twenty-five
+ * noise cells around, so a pattern moving more than half a cell
+ * between frames is aliased, and past that showing it turn faster does
+ * not show it turning faster: it shows a wagon wheel, and then, once
+ * the count of turns is large enough to swallow the azimuth in a
+ * float, nothing at all.
+ *
+ * The time control reaches ten years a second. At the galactic centre
+ * that is eight million orbits of the inner edge every second, and at
+ * a stellar hole it is far more; either one runs out of float inside a
+ * second or two of watching, and what a viewer sees is the clumping
+ * dissolving into an even glow and staying there. Held to a fiftieth
+ * of a turn a frame, the inner edge turns about once a second however
+ * hard time is driven, and the flow keeps its texture for as long as
+ * anyone watches it.
+ */
+const FLOW_TURNS_PER_FRAME = 0.02;
 
 const VERTEX = /* glsl */ `
 varying vec2 vNdc;
@@ -165,6 +189,12 @@ export class BlackHoleObject {
   /** Orbital period at the flow's inner edge, seconds — the clock the
    *  turbulence keeps, since an eddy lasts about one turn of it. */
   private readonly innerPeriodS: number;
+  /** Turns of the flow's inner edge drawn so far, and the sim time the
+   *  last of them was drawn at. The flow's own clock: it advances with
+   *  sim time, but no faster than a frame can show — see
+   *  FLOW_TURNS_PER_FRAME. */
+  private flowTurns = 0;
+  private lastSimS: number | null = null;
   /** Spin axis in scene coordinates — the accretion flow lies square
    *  across it, so this is what a camera frames itself against. */
   readonly spinAxisScene: Vector3;
@@ -246,6 +276,7 @@ export class BlackHoleObject {
         uTurbSigma: { value: flow.turbulenceSigma },
         uAspect: { value: flow.aspectRatio },
         uFlowPhase: { value: 0 },
+        uFlowSpin: { value: 0 },
         uDiscGain: { value: DISC_EXPOSURE / columns },
         uLut: { value: lut },
       },
@@ -325,7 +356,15 @@ export class BlackHoleObject {
     if (!this.mesh.visible) return;
     uniforms.uOpacity.value = alpha;
     uniforms.uSkyOpacity.value = skyOpacity;
-    uniforms.uFlowPhase.value = timeS / this.innerPeriodS;
+    // The flow's clock, advanced by however much of a turn sim time
+    // asks for and a frame can show, whichever is less.
+    const asked = this.lastSimS === null ? 0 : (timeS - this.lastSimS) / this.innerPeriodS;
+    this.lastSimS = timeS;
+    this.flowTurns += Math.min(Math.max(asked, 0), FLOW_TURNS_PER_FRAME);
+    uniforms.uFlowPhase.value = this.flowTurns;
+    // The same clock as an angle, folded into one turn before it is
+    // handed to a float that has to add φ to it.
+    uniforms.uFlowSpin.value = this.flowTurns - Math.floor(this.flowTurns);
 
     this.cameraRotation.setFromMatrix4(camera.matrixWorld);
     (uniforms.uViewToBh.value as Matrix3).multiplyMatrices(this.worldToBh, this.cameraRotation);

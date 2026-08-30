@@ -106,6 +106,7 @@ uniform float uProfileStretch;
 uniform float uTurbSigma;
 uniform float uAspect;
 uniform float uFlowPhase;
+uniform float uFlowSpin;
 uniform float uDiscGain;
 uniform sampler2D uLut;
 
@@ -124,6 +125,29 @@ const float STEP_EPS = 0.045;
 /** Half-thickness above which the flow is passed through rather than
  *  crossed. Cold discs sit near 0.02, ion tori at 0.55. */
 const float THICK_FLOW = 0.15;
+
+/**
+ * Where in the noise one generation of eddies is drawn from.
+ *
+ * Walking the sample point a fixed distance per generation is the
+ * obvious way to get a fresh field each time, and it works until it
+ * doesn't: after a few tens of thousands of turnovers the offset is
+ * large enough that a float can no longer resolve the ±4 the pattern
+ * itself spans, and the noise comes back flat. A disc watched at any
+ * speed above real time reaches that in seconds, and what it looks
+ * like is the clumping quietly dissolving into an even glow.
+ *
+ * A generation only has to be *different* from its neighbours, not
+ * further away, so it is hashed into a bounded box instead. Four
+ * thousand of them come round before one repeats, which at the inner
+ * edge is an hour of watching, and by then no eddy that was there is
+ * there to compare it against.
+ */
+vec3 eddyOffset(float generation) {
+  vec3 h = fract(mod(generation, 4096.0) * vec3(0.1031, 0.11369, 0.13787));
+  h += dot(h, h.yzx + 33.33);
+  return fract((h.xxy + h.yzz) * h.zyx) * 128.0;
+}
 
 /**
  * The flow's density where a ray crosses it, relative to the smooth
@@ -151,7 +175,13 @@ float turbulentField(
   // limit, because the age it multiplies resets when this realisation
   // is reseeded. The two rotation terms sum, over one lifetime, to
   // exactly one turn at the local orbital rate.
-  float a = phi + 9.0 * keplerian + TAU * uFlowPhase + TAU * age * (keplerian - 1.0);
+  //
+  // The bulk rotation arrives already folded into a single turn. It is
+  // an angle and only ever read as one, so the whole count of turns
+  // would add nothing but its own size — and its size is what stops a
+  // float from resolving φ at all once the disc has gone round a few
+  // hundred thousand times. Folded, the pattern turns forever.
+  float a = phi + 9.0 * keplerian + TAU * uFlowSpin + TAU * age * (keplerian - 1.0);
   // Sheared hard along the radius and stretched around it: turbulence
   // in a flow that orbits differentially is drawn out into filaments
   // far longer than they are wide, which is what banding is. Height
@@ -159,7 +189,7 @@ float turbulentField(
   // sampled on a surface and a thick torus through its whole depth.
   vec3 q = vec3(6.5 * log(r), 4.0 * cos(a), 4.0 * sin(a));
   q += vec3(0.0, 0.0, 2.2 * mu / max(uAspect, 0.02));
-  q += generation * vec3(17.3, -41.7, 29.1);
+  q += eddyOffset(generation);
   return (snoise(q) + 0.5 * snoise(q * 2.7) + 0.25 * snoise(q * 6.1)) / 1.32;
 }
 
@@ -209,9 +239,16 @@ float flowDensity(float r, float phi, float mu) {
   // Ages are in the units the winding term wants — the shared bulk
   // rotation is counted in inner-edge turns, so an age is too.
   float span = EDDY_LIFETIME / max(keplerian, 1.0e-6);
+  // Half a generation apart in the hash as well as in time. Counted
+  // plainly the two indices agree for half of every cycle — floor(t)
+  // and floor(t+½) are the same number until t passes the half — and
+  // two realisations that are the same realisation do not average to a
+  // steady contrast, they beat between one and √2 of it. At the inner
+  // edge, where there is no differential winding to tell them apart
+  // either, they were the identical field.
   float xi =
     wA * turbulentField(r, phi, mu, keplerian, phase * span, floor(t)) +
-    wB * turbulentField(r, phi, mu, keplerian, fract(phase + 0.5) * span, floor(t + 0.5));
+    wB * turbulentField(r, phi, mu, keplerian, fract(phase + 0.5) * span, floor(t + 0.5) + 0.5);
   // Log-normal, with the −σ²/2 that keeps the mean density unchanged.
   return clamp(exp(uTurbSigma * xi - 0.5 * uTurbSigma * uTurbSigma), 0.2, 4.0);
 }
