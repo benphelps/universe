@@ -31,7 +31,7 @@
  */
 
 /**
- * How far out the flow is drawn, in units of its own inner radius.
+ * How far out a *disc* is drawn, in units of its own inner radius.
  *
  * A cold disc's true outer edge is where its own gravity fragments it
  * into stars — thousands of r_g out, hundreds of times the shadow. But
@@ -40,11 +40,48 @@
  * across nearly all of the area. Drawn, they are an opaque plane that
  * swallows the frame and leaves the hole a speck in the middle of it;
  * that is why no photograph, render or GRMHD simulation of an accretion
- * disc shows them either. A hot flow has faded four orders of magnitude
- * by the same radius, so the limit costs it nothing. The model keeps
- * the true edge — this is what a picture of it holds.
+ * disc shows them either. The model keeps the true edge — this is what
+ * a picture of it holds.
  */
 export const FLOW_DRAW_SPAN = 12;
+
+/**
+ * How far out to draw the flow, r_g — and it is not one rule.
+ *
+ * Only a disc has decades of cold outskirts to leave off. A hot torus
+ * ends where the hot gas ends, sixty r_g, and it is bright to that rim
+ * because its temperature falls as r^−1 rather than trailing away over
+ * a thousand radii. Holding both to the same dozen inner radii cut the
+ * torus off at sixteen r_g — a quarter of itself — to spare a disc
+ * something the torus does not have.
+ *
+ */
+export function drawnFlowRadiusRg(flow: {
+  regime: string;
+  innerRadiusRg: number;
+  outerRadiusRg: number;
+}): number {
+  if (flow.regime === 'riaf') return flow.outerRadiusRg;
+  return Math.min(flow.outerRadiusRg, flow.innerRadiusRg * FLOW_DRAW_SPAN);
+}
+
+/**
+ * How far out the flow decides where the camera stands, r_g.
+ *
+ * A different question from how far to draw it, and answering both
+ * with one number is what made drawing the whole torus cost the
+ * shadow: standing clear of everything drawn pushed the camera out
+ * with it, and the hole that the picture is of came back a third the
+ * size. What the eye wants framed is the bright part — a dozen inner
+ * radii in either regime — and the rest is welcome to run off the
+ * edge, which is what pulling back is for.
+ */
+export function framedFlowRadiusRg(flow: {
+  innerRadiusRg: number;
+  outerRadiusRg: number;
+}): number {
+  return Math.min(flow.outerRadiusRg, flow.innerRadiusRg * FLOW_DRAW_SPAN);
+}
 
 /**
  * How steeply the flow's *source* falls off on screen: σT⁴ compressed

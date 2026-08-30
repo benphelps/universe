@@ -23,7 +23,7 @@ import { discPeakRadiusRg, horizonRadiusRg, iscoRadiusRg } from '../../core/phys
 import { flowTemperature } from '../../universe/galaxy/accretionFlow';
 import type { AccretionFlow } from '../../universe/galaxy/accretionFlow';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
-import { FLOW_DRAW_SPAN, GEODESIC_GLSL, profileStretch } from './geodesicGlsl';
+import { drawnFlowRadiusRg, GEODESIC_GLSL, profileStretch } from './geodesicGlsl';
 import { KERR_GLSL } from './kerrGlsl';
 
 /** Where the flow's own inner edge lands in HDR: the shutter. Set so
@@ -219,9 +219,8 @@ export class BlackHoleObject {
     // is fainter than the sky behind it, and what the eye gets is the
     // lensing alone. That is the honest picture of very nearly every
     // black hole there is.
-    const outerDrawn = flow.eddingtonRatio > FLOW_VISIBILITY_FLOOR
-      ? Math.min(flow.outerRadiusRg, innerRender * FLOW_DRAW_SPAN)
-      : 0;
+    const outerDrawn =
+      flow.eddingtonRatio > FLOW_VISIBILITY_FLOOR ? drawnFlowRadiusRg(flow) : 0;
     // Reference brightness: the hottest patch the trace can actually
     // reach, so the exposure means the same thing in either regime.
     const peakRadius = Math.max(discPeakRadiusRg(flow.innerRadiusRg), innerRender);

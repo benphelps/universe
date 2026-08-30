@@ -17,6 +17,17 @@
  * torus and a quasar arrive at the same shutter and it is the hue and
  * the transparency that separate them.
  *
+ * Which is why the two pairs are not the same pair. Blackbody hue
+ * freezes above about thirty thousand kelvin — a flow at two hundred
+ * thousand and one at a million and a half are the same blue-white to
+ * within a few percent of one channel — so the tori, which straddle
+ * that, are a temperature pair and the discs, which are both far above
+ * it, cannot be. What separates the two discs is size: a hundred and
+ * fifty-six times the mass, and the same again in the width of the
+ * shadow. The temperature is why they are both blue and the mass is
+ * what you actually see, and those are the same fact read twice, since
+ * a cold disc is nothing but a heavier hole.
+ *
  * None of these were placed. They are the ends of both distributions
  * over six hundred generated galaxies.
  *
@@ -64,7 +75,8 @@ export const HOME_GALAXY: CatalogGalaxy = {
   regime: 'riaf',
 };
 
-/** The four the survey picked, across regime and temperature. */
+/** The four the survey picked: two regimes, and within each the axis
+ *  that regime can actually show. */
 export const CATALOG_GALAXIES: CatalogGalaxy[] = [
   {
     // The coldest disc found: forty million suns, so the same
@@ -80,9 +92,13 @@ export const CATALOG_GALAXIES: CatalogGalaxy[] = [
     regime: 'thin-disc',
   },
   {
-    // The hottest: a hole a hundred and fifty times lighter eating a
-    // fifth of its Eddington limit, which puts a million and a half
-    // kelvin at the inner edge and holds the disc white to its rim.
+    // The other disc, and the axis between them is mass: a hole a
+    // hundred and fifty-six times lighter, so a shadow a hundred and
+    // fifty-six times narrower, tight and bright where the first is
+    // broad. It runs seven times hotter as well — that is what being
+    // light means at a fifth of Eddington — but both are far past the
+    // temperature where hue stops changing, so that part does not
+    // reach the eye.
     galaxy: '9d6bf2111a538d4c',
     seed: '4be7c6760446f0e2',
     massSolar: 260991.4,

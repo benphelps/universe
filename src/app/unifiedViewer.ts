@@ -74,7 +74,7 @@ import {
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import { BlackHoleObject } from '../render/blackhole/blackHoleObject';
-import { FLOW_DRAW_SPAN, LENSING_SOLID_RG } from '../render/blackhole/geodesicGlsl';
+import { framedFlowRadiusRg, LENSING_SOLID_RG } from '../render/blackhole/geodesicGlsl';
 import { LensedSky } from '../render/blackhole/lensedSky';
 import { stellarBlackHole } from '../universe/star/stellarHole';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
@@ -2288,18 +2288,16 @@ export class UnifiedViewer {
     // The shadow is the body here: everything the camera does is
     // measured against the radius a distant eye actually sees. But the
     // flow is what sets where to stand — inside it there is no picture
-    // to take, only a lit floor with a dark bump on it, which is what
-    // makes a disc drawn to its true edge look bigger than the galaxy.
+    // to take, only a lit floor with a dark bump on it. Where to stand
+    // is the bright part of the flow, not all of it: a torus is drawn
+    // out to its own edge and standing clear of that would cost the
+    // shadow two thirds of its size for gas that can hang off the
+    // frame instead.
     this.radiusKm = nucleus.shadowRadiusM / 1000;
     this.minAltitudeKm = this.radiusKm * 0.35;
-    const drawnFlowKm =
-      Math.min(
-        nucleus.flow.outerRadiusRg,
-        nucleus.flow.innerRadiusRg * FLOW_DRAW_SPAN,
-      ) *
-      nucleus.gravitationalRadiusM *
-      1e-3;
-    this.altitudeKm = drawnFlowKm * FLOW_STANDOFF - this.radiusKm;
+    const litFlowKm =
+      framedFlowRadiusRg(nucleus.flow) * nucleus.gravitationalRadiusM * 1e-3;
+    this.altitudeKm = litFlowKm * FLOW_STANDOFF - this.radiusKm;
 
     // Fifteen degrees above the flow: high enough that its far side
     // comes up over the top of the shadow, low enough to keep it.

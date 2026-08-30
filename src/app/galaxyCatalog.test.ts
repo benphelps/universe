@@ -36,29 +36,36 @@ describe('the galaxy catalogue', () => {
     });
   }
 
-  it('holds a cold one and a hot one in each regime', () => {
-    // The catalogue is built across the two axes that decide what a
-    // centre looks like: the shape the flow takes, and how hot it runs
-    // inside that shape. Four entries is the smallest set that crosses
-    // both, and it is only worth shipping while the pairs stay far
-    // enough apart to look like different places. Home is not one of
-    // the four and does not answer for the spread.
-    for (const [regime, apart] of [
-      ['thin-disc', 5],
-      ['riaf', 50],
-    ] as const) {
-      const temperatures = ofRegime(regime).map((g) => g.innerTemperatureK);
-      expect(temperatures.length).toBe(2);
-      expect(Math.max(...temperatures) / Math.min(...temperatures)).toBeGreaterThan(apart);
-    }
-    // And the cold one is the heavy one, both times. T goes as
-    // (ṁ/M)^¼, so a cold flow is not a dial — it is a bigger hole.
+  it('separates each pair on something the eye can see', () => {
+    // Four entries across two regimes, and within each regime the axis
+    // that regime can actually show. Home is not one of the four and
+    // does not answer for the spread.
     for (const regime of ['thin-disc', 'riaf'] as const) {
-      const [cold, hot] = ofRegime(regime).sort(
-        (a, b) => a.innerTemperatureK - b.innerTemperatureK,
-      );
-      expect(cold.massSolar).toBeGreaterThan(hot.massSolar);
+      expect(ofRegime(regime).length).toBe(2);
     }
+
+    // The tori are the temperature pair. Blackbody hue keeps moving
+    // below about thirty thousand kelvin and stops above it, so this
+    // is the one pair that can be separated that way — and it is, from
+    // one side of that line to the other.
+    const tori = ofRegime('riaf').map((g) => g.innerTemperatureK).sort((a, b) => a - b);
+    expect(tori[0]).toBeLessThan(HUE_FREEZES_K);
+    expect(tori[1]).toBeGreaterThan(HUE_FREEZES_K);
+    expect(tori[1] / tori[0]).toBeGreaterThan(100);
+
+    // The discs cannot be. Both sit far above that line — the regime
+    // needs a percent of Eddington, and the heaviest hole the model
+    // grows still lands near 1e5 K — so whatever their temperatures
+    // say, they arrive the same colour. What separates them is size,
+    // and that is the same fact told twice: T goes as (ṁ/M)^¼, so the
+    // colder disc is simply the heavier hole, and the mass is the half
+    // of it that reaches the eye.
+    const discs = ofRegime('thin-disc');
+    for (const disc of discs) expect(disc.innerTemperatureK).toBeGreaterThan(HUE_FREEZES_K);
+    const [light, heavy] = discs.sort((a, b) => a.massSolar - b.massSolar);
+    expect(heavy.massSolar / light.massSolar).toBeGreaterThan(100);
+    expect(heavy.innerTemperatureK).toBeLessThan(light.innerTemperatureK);
+
     // Both tori stay see-through. Feeding a hot flow harder raises its
     // temperature and its column together, and past about a half it
     // draws a veil over its own shadow — at which point it has given up
@@ -84,6 +91,11 @@ describe('the galaxy catalogue', () => {
     }
   });
 });
+
+/** Where blackbody hue stops changing. Past it every flow is the same
+ *  blue-white however much hotter it goes — off the model's own table,
+ *  28 800 K and 1 432 640 K agree to six percent of one channel. */
+const HUE_FREEZES_K = 30000;
 
 function ofRegime(regime: CatalogGalaxy['regime']): CatalogGalaxy[] {
   return CATALOG_GALAXIES.filter((g) => g.regime === regime);
