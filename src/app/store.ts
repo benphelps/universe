@@ -4,6 +4,7 @@ import type { GalacticPosition } from '../universe/galaxy/density';
 import { galaxySeed, PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy/galaxySeed';
 import {
   neighborBudget,
+  neighborRadiusPc,
   setNeighborBudget,
   type Neighbor,
 } from '../universe/galaxy/neighborhood';
@@ -593,15 +594,21 @@ export function setExposure(value: number): void {
 export const NEIGHBOR_BUDGET_KEY = 'universe-neighbor-budget';
 
 export function setStarBudget(multiple: number): void {
+  const here = viewer?.viewpointPc;
+  const before = here ? neighborRadiusPc(here) : 0;
   setNeighborBudget(multiple);
   try {
     localStorage.setItem(NEIGHBOR_BUDGET_KEY, String(neighborBudget()));
   } catch {
     // A browser refusing storage is not a reason to refuse the setting.
   }
-  // The neighborhood is built when a system is entered, so the new
-  // budget needs the system built again to be spent.
-  if (viewer && !coreView && seedHex) load(seedHex, localePc);
+  // Spending the budget means building the neighborhood again, and that
+  // costs the view its place. Only worth it where the reach can
+  // actually move: out in the disk it is already the whole thirty
+  // parsecs at every setting, so a rebuild there would throw the camera
+  // away and hand back the same sky.
+  const moved = here ? Math.abs(neighborRadiusPc(here) - before) > 1e-3 : false;
+  if (moved && viewer && !coreView) viewer.refreshNeighborhood();
   notify();
 }
 
