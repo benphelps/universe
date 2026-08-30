@@ -75,7 +75,6 @@ import { BlackHoleObject } from '../render/blackhole/blackHoleObject';
 import { FLOW_DRAW_SPAN, LENSING_SOLID_RG } from '../render/blackhole/geodesicGlsl';
 import { LensedSky } from '../render/blackhole/lensedSky';
 import { stellarBlackHole } from '../universe/star/stellarHole';
-import type { Donor } from '../universe/star/compactAccretion';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
@@ -109,6 +108,7 @@ import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
 import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
+import { holeDonors } from '../universe/system/holeDonors';
 import { rotateToScene, sceneFromGalaxy, sceneFromUpAxis } from '../universe/galaxy/orientation';
 import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
 import { getGalacticLandmarks } from './landmarkService';
@@ -1120,7 +1120,7 @@ export class UnifiedViewer {
       let hole: BlackHoleObject | null = null;
       let holeSky: LensedSky | null = null;
       if (star.stage === 'black-hole') {
-        const model = stellarBlackHole(star, this.donorsFor(system, index), this.holeAxis(system, index));
+        const model = stellarBlackHole(star, holeDonors(system, index), this.holeAxis(system, index));
         hole = new BlackHoleObject(model, this.lut, IDENTITY_FRAME);
         holeSky = new LensedSky(512);
         hole.sky = holeSky.target;
@@ -2396,7 +2396,7 @@ export class UnifiedViewer {
       if (this.nuclearCluster) {
         this.nuclearCluster.sizeScale = this.lensedSky.pixelsPerRadian / pixelsPerRadian;
       }
-      this.lensedSky.capture(this.pipeline.renderer, this.scene, ORIGIN, [this.blackHole.mesh]);
+      this.captureWithSkyAt(this.lensedSky, ORIGIN, [this.blackHole.mesh]);
       if (this.nuclearCluster) this.nuclearCluster.sizeScale = 1;
     }
 
@@ -2435,38 +2435,6 @@ export class UnifiedViewer {
    * it, so every other star is offered with the separation between
    * them — the companion's own orbit for a hole at the primary, and the
    * same orbit read the other way for a hole that is the companion.
-   */
-  private donorsFor(system: StarSystem, index: number): Donor[] {
-    const donors: Donor[] = [];
-    if (index === 0) {
-      for (const companion of system.companions) {
-        donors.push({
-          star: companion.star,
-          separationAu: companion.elements.semiMajorAxis / AU,
-        });
-      }
-      return donors;
-    }
-    const own = system.companions[index - 1];
-    if (!own) return donors;
-    donors.push({ star: system.star, separationAu: own.elements.semiMajorAxis / AU });
-    for (let i = 0; i < system.companions.length; i++) {
-      if (i === index - 1) continue;
-      const other = system.companions[i];
-      donors.push({
-        star: other.star,
-        separationAu:
-          Math.abs(other.elements.semiMajorAxis - own.elements.semiMajorAxis) / AU,
-      });
-    }
-    return donors;
-  }
-
-  /**
-   * Which way the hole's flow lies. Angular momentum arrives along the
-   * orbit that delivers it, so a fed hole's disc is square across its
-   * binary's own axis; a hole with nothing to eat has no disc to orient
-   * and takes the system plane.
    */
   private holeAxis(system: StarSystem, index: number): [number, number, number] {
     const elements =
@@ -2509,13 +2477,39 @@ export class UnifiedViewer {
         (2 * Math.tan((this.camera.fov * Math.PI) / 360));
       const scale = node.holeSky.pixelsPerRadian / screen;
       this.scaleSprites(scale);
-      node.holeSky.capture(this.pipeline.renderer, this.scene, position, [hole.mesh]);
+      this.captureWithSkyAt(node.holeSky, position, [hole.mesh]);
       this.scaleSprites(1);
     }
     hole.render(this.pipeline.renderer);
   }
 
   /** Set every point-sprite layer's size scale at once. */
+  /**
+   * Take a cube capture with the sky moved to where it is being
+   * photographed from.
+   *
+   * The backdrop is a sphere of finite radius centred on the camera
+   * every frame, because from the camera that is indistinguishable from
+   * a sky at infinity. From anywhere else it is not. A capture taken at
+   * a hole sixty thousand kilometres away sees that sphere from three
+   * quarters of the way to its wall: the galaxy piles into one side of
+   * the cube and smears off the other, and once the camera is further
+   * from the hole than the sphere's own radius the hole is outside the
+   * sky altogether and the capture comes back black. Which is what it
+   * looked like — a crowded cream Milky Way everywhere on screen, and a
+   * few streaks on nothing inside the lensing.
+   *
+   * Recentred for the capture and put back after, the sky the lensing
+   * bends is the sky the eye is already looking at.
+   */
+  private captureWithSkyAt(sky: LensedSky, atWorldKm: Vector3, hidden: Mesh[]): void {
+    const backdrop = this.backdrop?.group;
+    const was = backdrop?.position.clone();
+    backdrop?.position.copy(atWorldKm);
+    sky.capture(this.pipeline.renderer, this.scene, atWorldKm, hidden);
+    if (backdrop && was) backdrop.position.copy(was);
+  }
+
   private scaleSprites(scale: number): void {
     this.scene.traverse((object) => {
       const material = (object as { material?: { uniforms?: Record<string, { value: unknown }> } })
