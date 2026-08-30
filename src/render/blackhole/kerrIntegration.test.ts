@@ -99,6 +99,9 @@ function march(
   /** Integrate ξ/sin²θ whole, the way it was done before the split.
    *  Only a test asks for this — it is the thing being checked. */
   direct = false,
+  /** Size the step by speed alone, the way it was done before the
+   *  curvature limit. Only a test asks for this, for the same reason. */
+  speedOnly = false,
 ): Outcome {
   const a = spin;
   const horizon = horizonRadiusRg(a) + 0.002;
@@ -119,14 +122,19 @@ function march(
     turningRadius = Math.min(turningRadius, r);
     closestSinSq = Math.min(closestSinSq, sinSq);
 
-    const rate =
+    const speed =
       Math.abs(dr) / Math.max(r, 1) +
       Math.abs(dmu) +
       Math.abs(direct ? wholeRate(r, mu, a, ray.xi) : phiRate(r, mu, a, ray.xi));
-    const ds = -eps / Math.max(rate, 1e-4);
 
     const before = mu;
     const k1 = rates(r, mu, dr, dmu, a, ray);
+    // Speed alone leaves the step unbounded where the motion turns
+    // around; the curvature bounds it there. Same rule as the shader.
+    const bend = Math.abs(k1.ddr) / Math.max(r, 1) + Math.abs(k1.ddmu);
+    const ds = speedOnly
+      ? -eps / Math.max(speed, 1e-4)
+      : -Math.min(eps / Math.max(speed, 1e-4), Math.sqrt((2 * eps) / Math.max(bend, 1e-4)));
     const k2 = rates(
       r + k1.dr * ds * 0.5, mu + k1.dmu * ds * 0.5,
       dr + k1.ddr * ds * 0.5, dmu + k1.ddmu * ds * 0.5, a, ray,
@@ -707,7 +715,10 @@ describe('the shader and the module', () => {
     expect(KERR_GLSL).toContain('-mu * (eta + xi * xi - a * a) - 2.0 * a * a * mu * mu * mu');
     expect(KERR_GLSL).toContain('a * p / kerrDelta(r, a) - a + xi / (1.0 + abs(mu))');
     expect(KERR_GLSL).toContain('-0.5 * sgn * branch * (asin(arg) + 1.5707963)');
-    expect(GEODESIC_GLSL).toContain('STEP_EPS / max(rate, 1.0e-4)');
+    // The step is bounded by speed and by curvature, and takes the
+    // smaller: drop either limit and the mirror stops being one.
+    expect(GEODESIC_GLSL).toContain('STEP_EPS / max(speed, 1.0e-4)');
+    expect(GEODESIC_GLSL).toContain('sqrt(2.0 * STEP_EPS / max(bend, 1.0e-4))');
     // sin²θ is carried, never differenced.
     expect(GEODESIC_GLSL).toContain('sinSq += (ds / 6.0)');
     // The azimuth is split, not capped and not held off the axis.
@@ -742,5 +753,102 @@ describe('the shader and the module', () => {
     // anything — a limit nothing approaches will not notice when
     // something does.
     expect(worst).toBeGreaterThan(budget / 3);
+  });
+});
+
+
+describe('a turning point', () => {
+  /**
+   * The observer that made this necessary: fifteen degrees above the
+   * flow, which is where most of these are looked at. Directly above
+   * and below the hole, rays reach for the pole and turn around there,
+   * and some of those are near their closest approach in radius at the
+   * same moment.
+   *
+   * Both turnings are places where a coordinate's speed passes through
+   * nothing while its motion does not, and the step was sized by speed
+   * alone. Where the two nearly coincide the rate collapsed, the step
+   * grew twentyfold in one iteration, and the state left the domain
+   * altogether — μ past one, sin²θ below nothing, the ray finishing a
+   * thousand gravitational radii out pointing at unrelated sky. On
+   * screen it was a chevron above the hole and a fainter one below,
+   * because the locus where both turnings meet is a cone about the
+   * spin axis.
+   */
+  const spin = 0.8902520322160761;
+  const camR = 27.9366;
+  const camMu = 0.2588190694476481;
+  /** Aimed to pass the hole about twelve gravitational radii out and
+   *  over the pole, which is where the chevron was reproduced. */
+  const psi = 0.45;
+
+  /** Walk the aim across the axis and report what the trace did:
+   *  whether any ray left the domain, and the worst disagreement
+   *  between neighbours against the typical one. */
+  const sweep = (speedOnly: boolean) => {
+    const dirs: number[][] = [];
+    let escapedDomain = 0;
+    for (let i = 0; i <= 200; i++) {
+      const nPhi = -0.05 + (0.1 * i) / 200;
+      const nTheta = Math.sqrt(Math.max(Math.sin(psi) ** 2 - nPhi * nPhi, 0));
+      const ray = photonFromDirection(camR, camMu, spin, [Math.cos(psi), nTheta, nPhi]);
+      const impact = Math.sqrt(Math.max(ray.xi * ray.xi + ray.eta, 0));
+      const reach = Math.max(40 * Math.sqrt(Math.max(impact, 0.01)), 22.7);
+      const out = march(
+        { r: camR, mu: camMu, phi: 0, dr: ray.dr, dmu: ray.dmu },
+        ray, spin, reach, 4000, STEP_EPS, false, speedOnly,
+      );
+      // θ is an angle: sin²θ cannot be negative and |cos θ| cannot
+      // exceed one. Either means the march is no longer on a sphere.
+      if (out.closestSinSq < 0 || Math.abs(out.end.mu) > 1.000001) escapedDomain++;
+      dirs.push(heading(out.end, out.endSinSq, ray, spin));
+    }
+    const gaps: number[] = [];
+    for (let i = 1; i < dirs.length; i++) {
+      const c = dirs[i][0] * dirs[i - 1][0] + dirs[i][1] * dirs[i - 1][1] + dirs[i][2] * dirs[i - 1][2];
+      gaps.push(Math.acos(Math.min(1, Math.max(-1, c))));
+    }
+    const median = [...gaps].sort((x, y) => x - y)[Math.floor(gaps.length / 2)];
+    return { escapedDomain, jumpRatio: Math.max(...gaps) / median };
+  };
+
+  it('keeps the march on the sphere where the motion turns around', () => {
+    // Sized by speed alone, three rays in two hundred left the domain
+    // and the worst jump between neighbours was twenty thousand times
+    // the typical one. Bounded by the curvature as well, none leave
+    // and the sweep holds together.
+    const before = sweep(true);
+    const after = sweep(false);
+    expect(before.escapedDomain).toBeGreaterThan(0);
+    expect(before.jumpRatio).toBeGreaterThan(1000);
+    expect(after.escapedDomain).toBe(0);
+    expect(after.jumpRatio).toBeLessThan(100);
+  });
+
+  it('pays almost nothing for it', () => {
+    // The two limits are taken as a minimum, so a step away from a
+    // turning point is the step it always was. The strip above is the
+    // worst case on purpose and pays a tenth; a whole screen of rays,
+    // which is what sets the frame rate, pays a fraction of a percent.
+    const cost = (speedOnly: boolean): number => {
+      let steps = 0;
+      for (let j = 0; j <= 40; j++) {
+        const tilt = (0.9 * j) / 40 + 0.02;
+        for (let i = 0; i <= 40; i++) {
+          const frac = -1 + (2 * i) / 40;
+          const nPhi = Math.sin(tilt) * frac;
+          const nTheta = Math.sqrt(Math.max(Math.sin(tilt) ** 2 - nPhi * nPhi, 0));
+          const ray = photonFromDirection(camR, camMu, spin, [Math.cos(tilt), nTheta, nPhi]);
+          const impact = Math.sqrt(Math.max(ray.xi * ray.xi + ray.eta, 0));
+          const reach = Math.max(40 * Math.sqrt(Math.max(impact, 0.01)), 22.7);
+          steps += march(
+            { r: camR, mu: camMu, phi: 0, dr: ray.dr, dmu: ray.dmu },
+            ray, spin, reach, 4000, STEP_EPS, false, speedOnly,
+          ).steps;
+        }
+      }
+      return steps;
+    };
+    expect(cost(false) / cost(true)).toBeLessThan(1.01);
   });
 });
