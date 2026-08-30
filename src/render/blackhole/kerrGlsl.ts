@@ -48,25 +48,35 @@ vec4 kerrPhoton(float r, float mu, float a, vec3 n) {
   float sig = kerrSigma(r, mu, a);
   float del = kerrDelta(r, a);
   float bigA = kerrBigA(r, mu, a);
-  float sinT = sqrt(max(1.0 - mu * mu, 1.0e-12));
+  float sinT = sqrt(max(1.0 - mu * mu, 0.0));
   float lapse = sqrt(max(sig * del / bigA, 1.0e-12));
-  float omega = 2.0 * a * r / bigA;
 
-  float pt = 1.0 / lapse;
-  float pr = sqrt(max(del / sig, 0.0)) * n.x;
-  float pth = n.y / sqrt(sig);
-  float pph = omega / lapse + sqrt(sig / bigA) * n.z / sinT;
+  // Energy and angular momentum, with the pole's cancellation already
+  // done. Written the direct way, the azimuthal momentum carries a
+  // n_φ/sinθ that runs away on the axis and is then multiplied by a
+  // g_φφ ∝ sin²θ that goes to nothing — finite in exact arithmetic and
+  // ruinous in single precision, which is what a camera looking
+  // straight down the spin axis was seeing. Cancelling by hand leaves
+  // L_z = √(A/Σ) sinθ n_φ, which simply vanishes on the axis, as it
+  // must: every photon reaching a point on the axis arrives with no
+  // angular momentum about it. The frame-dragging term drops out of the
+  // energy for the same reason it always does — the observer rotates at
+  // exactly the rate that makes it.
+  float energy = lapse + (2.0 * a * r * sinT * n.z) / sqrt(sig * bigA);
+  float xi = (sqrt(bigA / sig) * sinT * n.z) / energy;
+  // ξ/sinθ, needed by Carter's constant and singular only if written
+  // as the quotient of the two things that vanish together.
+  float overSin = (sqrt(bigA / sig) * n.z) / energy;
+  float pThetaLower = (sqrt(sig) * n.y) / energy;
+  float eta = pThetaLower * pThetaLower + mu * mu * (overSin * overSin - a * a);
 
-  float gtt = -(1.0 - 2.0 * r / sig);
-  float gtp = -2.0 * a * r * sinT * sinT / sig;
-  float gpp = bigA / sig * sinT * sinT;
-  float energy = -(gtt * pt + gtp * pph);
-  float angular = gtp * pt + gpp * pph;
-
-  float xi = angular / energy;
-  float pThetaLower = sig * pth / energy;
-  float eta = pThetaLower * pThetaLower + mu * mu * (xi * xi / (sinT * sinT) - a * a);
-  return vec4(xi, eta, sig * pr / energy, -sinT * sig * pth / energy);
+  // dr/dλ = p^r and dμ/dλ = −sinθ p^θ; Mino time divides out Σ.
+  return vec4(
+    xi,
+    eta,
+    (sqrt(sig * del) * n.x) / energy,
+    (-sinT * sqrt(sig) * n.y) / energy
+  );
 }
 
 /** R(r) = r⁴ + (a²−ξ²−η)r² + 2Kr − a²η, the radial potential. */
@@ -79,6 +89,55 @@ float kerrRadial(float r, float xi, float eta, float a) {
 float kerrPolar(float mu, float xi, float eta, float a) {
   float m2 = mu * mu;
   return eta + m2 * (a * a - xi * xi - eta) - a * a * m2 * m2;
+}
+
+/**
+ * The same potential, factored so that sin²θ enters as a carried
+ * quantity rather than as 1 − μ².
+ *
+ * That difference decides whether the renderer works near the spin
+ * axis. A ray that passes close to it has sin²θ down at a millionth,
+ * and in the single precision a shader has, 1 − μ² there is the
+ * subtraction of two numbers that agree to seven digits: the answer
+ * comes back with a fifth of its value in error, sometimes as zero.
+ * Carried instead — accumulated from its own smooth rate, never
+ * differenced — sin²θ keeps its relative precision all the way down,
+ * and everything that divides by it stays honest.
+ */
+float kerrPolarFrom(float sinSq, float mu, float xi, float eta, float a) {
+  return sinSq * (eta + a * a * mu * mu) - xi * xi * mu * mu;
+}
+
+/** Where the polar motion turns: Θ = 0, solved for sin²θ. */
+float kerrPolarTurn(float mu, float xi, float eta, float a) {
+  return (xi * xi * mu * mu) / max(eta + a * a * mu * mu, 1.0e-12);
+}
+
+/**
+ * The azimuth a ray has swept, measured from its polar turning point,
+ * while it is close enough to the spin axis for μ² ≈ 1.
+ *
+ * Integrating dφ/dσ = ξ/sin²θ through there numerically cannot work in
+ * single precision: sin²θ falls to a hundred-millionth, and however it
+ * is carried the absolute error picked up while it was still of order
+ * one is larger than the value it ends at. But the integral has a
+ * closed form — ∫ξ dμ/[(1−μ²)√Θ] is an arctangent — and written with
+ * dμ/dσ in the numerator, which is a state variable and exact, nothing
+ * subtracts and nothing divides by a vanishing quantity.
+ *
+ * Over a full passage in and back out it comes to 2·arctan(|dμ|/|ξ|),
+ * which tends to π as ξ tends to zero: the half turn a ray makes when
+ * it passes over the pole, and the thing whose absence drew a black
+ * line up the axis.
+ */
+float kerrCapAzimuth(float dmu, float xi) {
+  return atan(abs(dmu) / max(abs(xi), 1.0e-20));
+}
+
+/** dφ/dσ with sin²θ supplied rather than reconstructed. */
+float kerrPhiRateFrom(float r, float sinSq, float a, float xi, float xiNumerator) {
+  float p = r * r + a * a - a * xi;
+  return a * p / kerrDelta(r, a) + xiNumerator / max(sinSq, 1.0e-14) - a;
 }
 
 /**
@@ -129,6 +188,21 @@ vec4 kerrRates(vec4 y, float a, float xi, float eta) {
 float kerrReflect(float value, float potential, float slope) {
   float turn = value - potential / (abs(slope) < 1.0e-12 ? 1.0e-12 : slope);
   return 2.0 * turn - value;
+}
+
+/** The radial half of the projection; the polar half is done in the
+ *  marching loop, where sin²θ is carried. */
+vec4 kerrProjectRadial(vec4 y, float a, float xi, float eta) {
+  float radial = kerrRadial(y.x, xi, eta, a);
+  if (radial < 0.0) {
+    float kk = (xi - a) * (xi - a) + eta;
+    y.x = kerrReflect(y.x, radial, 4.0 * y.x * y.x * y.x
+      + 2.0 * (a * a - xi * xi - eta) * y.x + 2.0 * kk);
+    y.z = -y.z;
+    radial = max(kerrRadial(y.x, xi, eta, a), 0.0);
+  }
+  y.z = (y.z < 0.0 ? -1.0 : 1.0) * sqrt(radial);
+  return y;
 }
 
 vec4 kerrProject(vec4 y, float a, float xi, float eta) {

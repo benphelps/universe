@@ -270,10 +270,18 @@ export class BlackHoleObject {
       depthBuffer: false,
     });
 
+    // What the scene draws. It must blend, because the trace covers
+    // only the footprint where bending is worth drawing and is
+    // transparent everywhere else — opaque, it would paint that
+    // emptiness over the sky as a hard-edged disc of nothing.
     this.composite = new ShaderMaterial({
       vertexShader: VERTEX,
       fragmentShader: COMPOSITE_FRAGMENT,
       uniforms: { uTrace: { value: this.target.texture } },
+      blending: NormalBlending,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
     });
     this.mesh = new Mesh(new PlaneGeometry(2, 2), this.composite);
     this.mesh.frustumCulled = false;

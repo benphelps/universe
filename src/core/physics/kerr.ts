@@ -78,37 +78,33 @@ export function photonFromDirection(
   const sig = sigma(r, mu, a);
   const del = delta(r, a);
   const A = bigA(r, mu, a);
-  const sinTheta = Math.sqrt(Math.max(1 - mu * mu, 1e-12));
+  const sinTheta = Math.sqrt(Math.max(1 - mu * mu, 0));
   const alpha = lapse(r, mu, a);
-  const omega = frameDragging(r, mu, a);
 
-  // Coordinate components of the momentum, from the tetrad legs
-  // e_(t) = (∂_t + ω∂_φ)/α, e_(r) = √(Δ/Σ)∂_r,
-  // e_(θ) = ∂_θ/√Σ, e_(φ) = √(Σ/A)∂_φ/sinθ. Energy is carried as 1 in
-  // the local frame and divided out at the end.
-  const pt = 1 / alpha;
-  const pr = Math.sqrt(del / sig) * n[0];
-  const ptheta = n[1] / Math.sqrt(sig);
-  const pphi = omega / alpha + (Math.sqrt(sig / A) * n[2]) / sinTheta;
-
-  // Lowered, through the metric, to reach the conserved quantities.
-  const gtt = -(1 - (2 * r) / sig);
-  const gtphi = (-2 * a * r * sinTheta * sinTheta) / sig;
-  const gphiphi = ((A / sig) * sinTheta * sinTheta);
-  const energy = -(gtt * pt + gtphi * pphi);
-  const angular = gtphi * pt + gphiphi * pphi;
-
-  const xi = angular / energy;
-  // p_θ = Σ p^θ; Carter's constant for a null geodesic.
-  const pThetaLower = (sig * ptheta) / energy;
-  const eta = pThetaLower * pThetaLower + mu * mu * (xi * xi / (sinTheta * sinTheta) - a * a);
+  // Energy and angular momentum with the pole's cancellation already
+  // done. Written directly, the azimuthal momentum carries an
+  // n_φ/sinθ that runs away on the axis and is then multiplied by a
+  // g_φφ ∝ sin²θ that goes to nothing: finite in exact arithmetic and
+  // ruinous in the single precision the shader has. Cancelled by hand,
+  // L_z = √(A/Σ) sinθ n_φ, which vanishes on the axis as it must —
+  // every photon reaching a point on the axis arrives carrying no
+  // angular momentum about it. Frame dragging drops out of the energy
+  // for the reason it always does: the observer rotates at exactly the
+  // rate that makes it.
+  const energy = alpha + (2 * a * r * sinTheta * n[2]) / Math.sqrt(sig * A);
+  const xi = (Math.sqrt(A / sig) * sinTheta * n[2]) / energy;
+  // ξ/sinθ, which Carter's constant needs and which is singular only
+  // if written as the quotient of the two things that vanish together.
+  const overSin = (Math.sqrt(A / sig) * n[2]) / energy;
+  const pThetaLower = (Math.sqrt(sig) * n[1]) / energy;
+  const eta = pThetaLower * pThetaLower + mu * mu * (overSin * overSin - a * a);
 
   // dr/dλ = p^r and dμ/dλ = −sinθ p^θ; Mino time divides out Σ.
   return {
     xi,
     eta,
-    dr: (sig * pr) / energy,
-    dmu: (-sinTheta * sig * ptheta) / energy,
+    dr: (Math.sqrt(sig * del) * n[0]) / energy,
+    dmu: (-sinTheta * Math.sqrt(sig) * n[1]) / energy,
   };
 }
 

@@ -103,7 +103,7 @@ uniform float uDiscGain;
 uniform sampler2D uLut;
 
 const float LENSING_REACH = ${LENSING_REACH_RG}.0;
-const int MAX_STEPS = 384;
+const int MAX_STEPS = 512;
 const float TAU = 6.28318531;
 /**
  * How long a clump lasts, in orbits at the flow's inner edge. The
@@ -130,6 +130,27 @@ const float THICK_FLOW = 0.15;
  * there.
  */
 const float AXIS_RATE_CAP = 600.0;
+/**
+ * How near the spin axis a ray is allowed to pass.
+ *
+ * A photon threading the axis has almost no angular momentum about it,
+ * and sin²θ at its closest approach falls as ξ². Below about a
+ * hundred-thousandth there is no way to carry it in the single
+ * precision a shader has: ξ/sin²θ is then the ratio of two numbers
+ * that have both lost their meaning, the azimuth runs away, and the
+ * ray leaves for nowhere. That drew a black line up the axis.
+ *
+ * The trajectories on either side are not in doubt — they are smooth,
+ * and they agree. A ray aimed to pass a ten-thousandth of a radian from
+ * the axis and one aimed to pass a hundredth of a degree from it land
+ * within a thousandth of a radian of each other on the sky, because the
+ * mapping through there varies that slowly. So the handful of rays that
+ * cannot be integrated are traced as the nearest ones that can. It is
+ * the one place the renderer answers a slightly different question than
+ * the one asked, and it does so because the honest answer is not
+ * representable, not because it is expensive.
+ */
+const float AXIS_APPROACH = 3.0e-4;
 
 /**
  * The flow's density where a ray crosses it, relative to the smooth
@@ -278,21 +299,46 @@ vec2 blFromCartesian(vec3 p, float a) {
 }
 
 /**
- * The pseudo-Cartesian direction the ray is travelling, from its
- * Boyer–Lindquist state — by stepping the state a little and
- * differencing, which costs less than the chain rule and cannot
- * disagree with the path actually integrated.
+ * The direction the ray is travelling, in the space it is drawn in.
+ *
+ * Differencing two reconstructed positions is the obvious way to get
+ * this, and it fails exactly where it matters most. A ray leaving along
+ * the spin axis has both of those points sitting on that axis, and the
+ * azimuth separating them is then the difference of two quantities that
+ * have both gone to nothing — so every such ray is handed almost the
+ * same direction, and a whole column of the image is sent to one place
+ * on the sky. That is a dark stripe up the axis, and no amount of
+ * stepping more finely removes it, because the loss is in the
+ * reconstruction rather than in the trajectory.
+ *
+ * Differentiating instead costs no more and is regular there, provided
+ * two things are written the right way round: the polar motion as
+ * dθ/dσ, which is finite on the axis, rather than dμ/dσ over a sine
+ * that is not; and the azimuthal term as ρ·ξ/sinθ, which is bounded,
+ * rather than ρ sinθ · ξ/sin²θ, which is a cancellation.
  */
-vec3 kerrHeading(vec4 y, float phi, float a, float xi) {
-  float h = 0.01 * y.x / max(abs(y.z), 1.0e-6);
-  vec3 p0 = kerrPosition(y.x, y.y, phi, a);
-  vec3 p1 = kerrPosition(
-    y.x + h * y.z,
-    clamp(y.y + h * y.w, -1.0, 1.0),
-    phi + h * kerrPhiRate(y.x, y.y, a, xi),
-    a
+vec3 kerrHeading(vec4 y, float sinSq, float phi, float a, float xi, float eta) {
+  float r = y.x;
+  float mu = clamp(y.y, -1.0, 1.0);
+  float s = sqrt(max(sinSq, 1.0e-14));
+  float rho = sqrt(r * r + a * a);
+  // ξ/sinθ. A ray can only approach the axis as closely as its own
+  // angular momentum allows, so this is bounded by the impact
+  // parameter however small the sine gets.
+  float overSin = xi / s;
+  // (dθ/dσ)² = Θ/sin²θ, which the axis leaves finite.
+  float polar = (y.w > 0.0 ? -1.0 : 1.0) *
+    sqrt(max((eta + a * a * mu * mu) - overSin * overSin * mu * mu, 0.0));
+  float p = r * r + a * a - a * xi;
+  float azimuth = rho * (s * (a * p / kerrDelta(r, a) - a) + overSin);
+  float cp = cos(phi);
+  float sp = sin(phi);
+  float radial = r * y.z / rho;
+  return vec3(
+    radial * s * cp + rho * mu * polar * cp - azimuth * sp,
+    radial * s * sp + rho * mu * polar * sp + azimuth * cp,
+    y.z * mu - r * s * polar
   );
-  return p1 - p0;
 }
 
 /**
@@ -302,7 +348,7 @@ vec3 kerrHeading(vec4 y, float phi, float a, float xi) {
  * handful; angles are measured absolutely, so a ray winding the photon
  * ring is stepped finely however slowly its radius changes.
  */
-float kerrStep(vec4 y, float a, float xi) {
+float kerrStep(vec4 y, float sinSq, float floorSq, float a, float xi, float xiNum) {
   // The azimuth is a pure quadrature — nothing else reads it — so its
   // rate is allowed to inform the step but not to dominate it. Near
   // the axis sin²θ goes to nothing and dφ/dσ to a great deal, and
@@ -310,7 +356,7 @@ float kerrStep(vec4 y, float a, float xi) {
   // resolving a coordinate rather than a trajectory.
   float rate = abs(y.z) / max(y.x, 1.0)
     + abs(y.w)
-    + min(abs(kerrPhiRate(y.x, y.y, a, xi)), AXIS_RATE_CAP);
+    + min(abs(kerrPhiRateFrom(y.x, max(sinSq, floorSq), a, xi, xiNum)), AXIS_RATE_CAP);
   return STEP_EPS / max(rate, 1.0e-4);
 }
 
@@ -353,6 +399,12 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
   vec4 photon = kerrPhoton(camR, camMu, a, n);
   float xi = photon.x;
   float eta = photon.y;
+  // Hold the ray off the axis by the least that keeps it integrable —
+  // see AXIS_APPROACH. Both signs give the same picture: the azimuth
+  // they accumulate differs by a full turn, which is no difference.
+  float axisFloor = sqrt(AXIS_APPROACH * (eta + a * a));
+  if (abs(xi) < axisFloor) xi = (xi < 0.0 ? -axisFloor : axisFloor);
+
   float impact = sqrt(max(xi * xi + eta, 0.0));
   if (impact > LENSING_REACH) return vec3(0.0);
 
@@ -371,9 +423,11 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
   float reach = max(40.0 * sqrt(max(impact, 0.01)), 1.3 * uOuterRg);
   vec4 y;
   float phi;
+  float sinSq;
   if (camR <= reach) {
     y = vec4(camR, camMu, photon.z, photon.w);
     phi = camPhi;
+    sinSq = sinT * sinT;
   } else {
     float tClose = -dot(cam, dir);
     float entry = max(tClose - sqrt(max(reach * reach - impact * impact, 0.0)), 0.0);
@@ -391,6 +445,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
       sign(mu2 - bl.y) * sqrt(max(kerrPolar(bl.y, xi, eta, a), 0.0))
     );
     phi = atan(start.y, start.x);
+    sinSq = max(1.0 - bl.y * bl.y, 0.0);
   }
 
   // The shadow, exactly. A photon whose constants sit inside the
@@ -422,20 +477,54 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
     // out has a shrinking radius in the photon's own parameter.
     if (!doomed && r > reach && y.z < 0.0) { settled = true; break; }
 
-    float ds = -kerrStep(y, a, xi);
+    float floorSq = kerrPolarTurn(y.y, xi, eta, a);
+    float ds = -kerrStep(y, sinSq, floorSq, a, xi, xi);
     vec4 k1 = kerrRates(y, a, xi, eta);
     vec4 k2 = kerrRates(y + k1 * (ds * 0.5), a, xi, eta);
     vec4 k3 = kerrRates(y + k2 * (ds * 0.5), a, xi, eta);
     vec4 k4 = kerrRates(y + k3 * ds, a, xi, eta);
-    float w1 = kerrPhiRate(y.x, y.y, a, xi);
-    float w2 = kerrPhiRate(y.x + k1.x * ds * 0.5, y.y + k1.y * ds * 0.5, a, xi);
-    float w3 = kerrPhiRate(y.x + k2.x * ds * 0.5, y.y + k2.y * ds * 0.5, a, xi);
-    float w4 = kerrPhiRate(y.x + k3.x * ds, y.y + k3.y * ds, a, xi);
+    // d(sin²θ)/dσ = −2μ dμ/dσ, on the same stages.
+    float s1 = -2.0 * y.y * k1.y;
+    float s2 = -2.0 * (y.y + k1.y * ds * 0.5) * k2.y;
+    float s3 = -2.0 * (y.y + k2.y * ds * 0.5) * k3.y;
+    float s4 = -2.0 * (y.y + k3.y * ds) * k4.y;
+    // No stage may put sin²θ below the value that makes Θ vanish: the
+    // photon cannot be there, and ξ/sin²θ evaluated below it is not a
+    // large number but a meaningless one. Without this floor a single
+    // stage straying past the turning point sends the azimuth to
+    // infinity, and the ray leaves for nowhere.
+    float w1 = kerrPhiRateFrom(y.x, max(sinSq, floorSq), a, xi, xi);
+    float w2 = kerrPhiRateFrom(y.x + k1.x * ds * 0.5, max(sinSq + s1 * ds * 0.5, floorSq), a, xi, xi);
+    float w3 = kerrPhiRateFrom(y.x + k2.x * ds * 0.5, max(sinSq + s2 * ds * 0.5, floorSq), a, xi, xi);
+    float w4 = kerrPhiRateFrom(y.x + k3.x * ds, max(sinSq + s3 * ds, floorSq), a, xi, xi);
 
     vec4 prev = y;
     float prevPhi = phi;
-    y = kerrProject(y + (ds / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4), a, xi, eta);
+    float prevSinSq = sinSq;
+    y += (ds / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+    // sin²θ is advanced by its own rate, −2μ dμ/dσ, and never by
+    // subtracting μ² from one. That is the whole of the difference
+    // near the axis: an accumulated quantity keeps its relative
+    // precision at a millionth, a differenced one has none left.
+    sinSq += (ds / 6.0) * (s1 + 2.0 * s2 + 2.0 * s3 + s4);
     phi += (ds / 6.0) * (w1 + 2.0 * w2 + 2.0 * w3 + w4);
+    y = kerrProjectRadial(y, a, xi, eta);
+    // The polar turning point, in the carried variable: Θ goes negative
+    // exactly where sin²θ falls below the value that makes it vanish.
+    // Reflect back across it and reverse the polar motion — clamping to
+    // it instead would leave dμ at nothing and the ray stuck there.
+    float turn = kerrPolarTurn(y.y, xi, eta, a);
+    if (sinSq < turn) {
+      sinSq = 2.0 * turn - sinSq;
+      y.w = -y.w;
+    }
+    sinSq = clamp(sinSq, 0.0, 1.0);
+    // Below a quarter, sin²θ is the trustworthy one and μ follows it;
+    // above it, the reverse. Each is then formed where it loses nothing.
+    if (sinSq < 0.25) y.y = (y.y < 0.0 ? -1.0 : 1.0) * sqrt(1.0 - sinSq);
+    else sinSq = 1.0 - y.y * y.y;
+    y.w = (y.w < 0.0 ? -1.0 : 1.0)
+      * sqrt(max(kerrPolarFrom(sinSq, y.y, xi, eta, a), 0.0));
 
     // A thick flow is passed through rather than crossed. A starved
     // hole puffs its gas into an ion torus half as deep as it is wide
@@ -514,7 +603,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
         vec4 at = mix(prev, y, f);
         float g = shiftFactor(u, xi, at.z, rHit, a);
         float tObs = g * tEmit;
-        vec3 through = kerrHeading(vec4(rHit, 0.0, at.z, at.w), phiHit, a, xi);
+        vec3 through = kerrHeading(vec4(rHit, 0.0, at.z, at.w), 1.0, phiHit, a, xi, eta);
         float slant = max(abs(normalize(through).z), 0.04);
         // Column through the flow: its vertical depth thinned by the
         // radial fall-off, stretched by how obliquely the ray cuts it.
@@ -550,7 +639,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
   if (doomed) escaped = false;
   // The light came from where the trace ended up, which is against the
   // photon's own direction of travel.
-  escapeDir = normalize(-kerrHeading(y, phi, a, xi));
+  escapeDir = normalize(-kerrHeading(y, sinSq, phi, a, xi, eta));
   return accum;
 }
 `;

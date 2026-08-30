@@ -391,7 +391,10 @@ describe('the shader and the module', () => {
     expect(KERR_GLSL).toContain('-mu * (eta + xi * xi - a * a) - 2.0 * a * a * mu * mu * mu');
     expect(KERR_GLSL).toContain('a * p / kerrDelta(r, a) + xi / max(1.0 - mu * mu, 1.0e-6) - a');
     expect(GEODESIC_GLSL).toContain('STEP_EPS / max(rate, 1.0e-4)');
-    expect(GEODESIC_GLSL).toContain('kerrProject(y + (ds / 6.0)');
+    // sin²θ is carried, never differenced — see AXIS_APPROACH.
+    expect(GEODESIC_GLSL).toContain('sinSq += (ds / 6.0)');
+    expect(GEODESIC_GLSL).not.toContain('xi / max(1.0 - mu * mu');
+    expect(GEODESIC_GLSL).toContain('kerrProjectRadial(y, a, xi, eta)');
     expect(KERR_GLSL).toContain('kerrReflect');
     expect(GEODESIC_GLSL).toContain('40.0 * sqrt(max(impact, 0.01))');
   });
