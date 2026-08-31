@@ -246,6 +246,37 @@ export interface SweepSlab {
 }
 
 /**
+ * The half of a sky that the star sweep has no say in: where the gas
+ * and dust are, where the chart borders run, and how bright the
+ * unresolved background is in every direction. Built beside the sweep
+ * rather than after it, and shown as soon as it lands.
+ */
+export interface SkyBackground {
+  nebulae: NebulaPatch[];
+  nebulaAtlas: Float32Array;
+  darkClouds: DarkCloudPatch[];
+  darkAtlas: Float32Array;
+  /** Cluster and nebula members, which are not in the catalogue. They
+   *  join the star list after every swept star, where they have always
+   *  gone. */
+  groupStars: PackedStars;
+  sceneFromGalaxy: Float32Array;
+  sectorBounds: Float32Array;
+  sectorHomeBounds: Float32Array;
+  sectorLabels: SectorLabel[];
+  glowWidth: number;
+  glowHeight: number;
+  glowData: Float32Array;
+  riftData: Float32Array;
+}
+
+/** The background on its way to the screen, ahead of the stars. */
+export interface SkyBackgroundPreview {
+  seedHex: string;
+  background: SkyBackground;
+}
+
+/**
  * One slab's worth of far stars, on their way to the screen while the
  * rest of the sky is still being swept. Enough to draw them and
  * nothing else.
@@ -439,27 +470,78 @@ function appendPacked(acc: StarAccum, packed: PackedStars): void {
  * clouds, charts, and the glow — assembled onto the merged sweep
  * slabs (which must arrive in row-then-slab order).
  */
+/**
+ * Everything about a sky that the stars have no say in.
+ *
+ * The nebulae, the dark clouds and rifts, the chart borders and the
+ * unresolved glow all follow from where the traveler is standing and
+ * which galaxy they are standing in — nothing here reads the catalogue
+ * sweep at all, and only the constellations, which are cut around the
+ * bright stars, ever do. So this half can be built beside the sweep
+ * instead of behind it, which is the difference between the Milky Way
+ * arriving a couple of seconds in and arriving a minute in.
+ *
+ * The groups do push stars: young clusters and their nebulae light up
+ * with members that are not in the catalogue. Those come back here
+ * rather than going straight into a list, so the assembly can put them
+ * exactly where they have always gone — after every swept star, which
+ * is what keeps the order, and the constellations cut from it, the
+ * same as when this ran at the end.
+ */
+export function buildSkyBackground(
+  viewpoint: GalacticPosition,
+  seed = 0n,
+  onProgress?: SkyProgress,
+): SkyBackground {
+  const lut = buildTemperatureLut(96);
+  const groupStars = makeAccum();
+  const push: PushStar = (dx, dy, dz, luminosity, tEff) =>
+    pushTo(groupStars, lut, dx, dy, dz, luminosity, tEff, 0n);
+
+  const localDensity = stellarDensity(viewpoint);
+  onProgress?.(0, 'nebulae', -1);
+  const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
+  onProgress?.(0.1, 'dark clouds', -1);
+  const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA);
+  onProgress?.(0.25, 'charting', -1);
+  const bounds = buildSectorBounds(viewpoint, sceneFromGalaxy(seed));
+  const glow = buildGlow(viewpoint, spriteSeeds, (fraction) =>
+    onProgress?.(0.3 + 0.7 * fraction, 'milky way glow', fraction),
+  );
+
+  return {
+    nebulae,
+    nebulaAtlas,
+    darkClouds,
+    darkAtlas,
+    groupStars: packAccum(groupStars),
+    sceneFromGalaxy: sceneFromGalaxy(seed),
+    ...bounds,
+    ...glow,
+  };
+}
+
 export function assembleSkyField(
   viewpoint: GalacticPosition,
   seed = 0n,
   slabs: SweepSlab[] = [],
   onProgress?: SkyProgress,
+  background?: SkyBackground,
 ): SkyField {
-  const lut = buildTemperatureLut(96);
   const near = makeAccum();
   const far = makeAccum();
   for (const slab of slabs) appendPacked(near, slab.near);
   for (const slab of slabs) appendPacked(far, slab.far);
-  const push: PushStar = (dx, dy, dz, luminosity, tEff) =>
-    pushTo(far, lut, dx, dy, dz, luminosity, tEff, 0n);
   const nearStarCount = near.brightness.length;
 
-  const localDensity = stellarDensity(viewpoint);
-  onProgress?.(0.84, 'nebulae', -1);
-  const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
-  onProgress?.(0.86, 'dark clouds', -1);
-  const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA);
-  onProgress?.(0.88, 'charting', -1);
+  const built = background ?? buildSkyBackground(viewpoint, seed, (fraction, stage) =>
+    onProgress?.(0.84 + 0.05 * fraction, stage, -1),
+  );
+  const { nebulae, nebulaAtlas, darkClouds, darkAtlas } = built;
+  // The group members go in after every swept star, where they have
+  // always gone: the constellations are cut from this list in order.
+  appendPacked(far, built.groupStars);
+  onProgress?.(0.9, 'charting', -1);
 
   const join = (a: number[], b: number[]): Float32Array => {
     const out = new Float32Array(a.length + b.length);
@@ -474,19 +556,13 @@ export function assembleSkyField(
   const starDirs = join(near.dirs, far.dirs);
   const starBrightness = join(near.brightness, far.brightness);
 
-  const charts = {
-    ...buildSectorBounds(viewpoint, sceneFromGalaxy(seed)),
-    ...buildConstellations(
-      nebulae,
-      darkClouds,
-      sceneFromGalaxy(seed),
-      starDirs,
-      starBrightness,
-      starSeeds,
-    ),
-  };
-  const glow = buildGlow(viewpoint, spriteSeeds, (fraction) =>
-    onProgress?.(0.89 + 0.11 * fraction, 'milky way glow', fraction),
+  const constellations = buildConstellations(
+    nebulae,
+    darkClouds,
+    built.sceneFromGalaxy,
+    starDirs,
+    starBrightness,
+    starSeeds,
   );
 
   return {
@@ -502,9 +578,15 @@ export function assembleSkyField(
     nebulaAtlas,
     darkClouds,
     darkAtlas,
-    sceneFromGalaxy: sceneFromGalaxy(seed),
-    ...charts,
-    ...glow,
+    sceneFromGalaxy: built.sceneFromGalaxy,
+    sectorBounds: built.sectorBounds,
+    sectorHomeBounds: built.sectorHomeBounds,
+    sectorLabels: built.sectorLabels,
+    glowWidth: built.glowWidth,
+    glowHeight: built.glowHeight,
+    glowData: built.glowData,
+    riftData: built.riftData,
+    ...constellations,
   };
 }
 

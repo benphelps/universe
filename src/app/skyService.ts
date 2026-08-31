@@ -1,7 +1,11 @@
 import { seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galaxySeed } from '../universe/galaxy/galaxySeed';
-import type { SkyField, SkyPreview } from '../universe/galaxy/skyfield';
+import type {
+  SkyBackground,
+  SkyField,
+  SkyPreview,
+} from '../universe/galaxy/skyfield';
 
 /**
  * One shared sky-building worker with a small per-seed cache, so every
@@ -12,6 +16,8 @@ let worker: Worker | null = null;
 const waiting = new Map<string, (sky: SkyField) => void>();
 /** Who wants to draw slabs as they land, per seed. */
 const watching = new Map<string, (preview: SkyPreview) => void>();
+/** Who wants the gas and glow as soon as it exists, per seed. */
+const watchingBackground = new Map<string, (background: SkyBackground) => void>();
 
 export interface SkyBuildProgress {
   fraction: number;
@@ -33,6 +39,7 @@ function ensureWorker(): Worker {
       stage?: string;
       stageFraction?: number;
       dirs?: Float32Array;
+      background?: SkyBackground;
     }>,
   ) => {
     if (event.data.progress !== undefined) {
@@ -48,9 +55,15 @@ function ensureWorker(): Worker {
       watching.get(event.data.seedHex)?.(event.data as unknown as SkyPreview);
       return;
     }
+    // The gas, dust and glow, which the stars have no say in.
+    if (event.data.background) {
+      watchingBackground.get(event.data.seedHex)?.(event.data.background);
+      return;
+    }
     waiting.get(event.data.seedHex)?.(event.data.sky!);
     waiting.delete(event.data.seedHex);
     watching.delete(event.data.seedHex);
+    watchingBackground.delete(event.data.seedHex);
     progress.delete(event.data.seedHex);
   };
   return worker;
@@ -86,6 +99,7 @@ export function cancelSkyBuilds(): void {
   worker.terminate();
   worker = null;
   watching.clear();
+  watchingBackground.clear();
   // A promise whose worker is gone never settles, so it must not be
   // left in the cache for the next caller to await forever.
   for (const seedHex of waiting.keys()) {
@@ -106,8 +120,10 @@ export function cancelSkyBuilds(): void {
 export function watchSkyBuild(
   seedHex: string,
   onPreview: (preview: SkyPreview) => void,
+  onBackground?: (background: SkyBackground) => void,
 ): void {
   watching.set(seedHex, onPreview);
+  if (onBackground) watchingBackground.set(seedHex, onBackground);
 }
 
 export function getSkyField(seedHex: string, viewpoint: GalacticPosition): Promise<SkyField> {

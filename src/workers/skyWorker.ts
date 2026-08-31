@@ -10,11 +10,14 @@ import {
   rowSlabSpan,
   rowStageName,
   sweepRowSlab,
+  type SkyBackground,
+  type SkyBackgroundPreview,
   type SkyPreview,
   type SkyProgress,
   type SweepBounds,
   type SweepSlab,
 } from '../universe/galaxy/skyfield';
+import type { BackgroundResult, BackgroundTask } from './skyBackgroundWorker';
 import type { SweepResult, SweepTask } from './skySweepWorker';
 
 export interface SkyRequest {
@@ -35,7 +38,46 @@ export interface SkyRequest {
  */
 const POOL_SIZE = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
 let pool: Worker[] | null = null;
+let backgroundWorker: Worker | null = null;
+const backgroundWaiting = new Map<string, (background: SkyBackground) => void>();
 let queue: Promise<void> = Promise.resolve();
+
+/**
+ * Start the gas, dust and glow on their own thread and hand back a
+ * promise for them. Kicked off before the sweep so the two run side by
+ * side: the background is a couple of seconds' work and the sweep can
+ * be a minute, so it lands early and the traveler has a Milky Way to
+ * look at while the stars are still coming in.
+ */
+function startBackground(
+  seedHex: string,
+  viewpoint: GalacticPosition,
+  galaxy: string,
+): Promise<SkyBackground> | null {
+  try {
+    backgroundWorker ??= new Worker(new URL('./skyBackgroundWorker.ts', import.meta.url), {
+      type: 'module',
+    });
+  } catch {
+    return null;
+  }
+  const worker = backgroundWorker;
+  // Results are claimed by seed, not by whoever set the handler last.
+  // Builds are serialised today so only one is ever outstanding, but a
+  // single overwritten onmessage is a quiet way for a build to hang
+  // forever the day that stops being true.
+  worker.onmessage = (event: MessageEvent<BackgroundResult>) => {
+    const claim = backgroundWaiting.get(event.data.seedHex);
+    if (!claim) return;
+    backgroundWaiting.delete(event.data.seedHex);
+    claim(event.data.background);
+  };
+  return new Promise((resolve) => {
+    backgroundWaiting.set(seedHex, resolve);
+    const task: BackgroundTask = { seedHex, viewpoint, galaxy };
+    worker.postMessage(task);
+  });
+}
 
 function ensurePool(): Worker[] {
   if (pool) return pool;
@@ -179,6 +221,37 @@ function sendPreview(seedHex: string, slab: SweepSlab): void {
   ]);
 }
 
+/**
+ * Hand the finished background to the main thread so it can be drawn
+ * while the stars are still coming in. A copy, like the star slabs:
+ * the coordinator still needs all of this to assemble the field.
+ */
+function sendBackgroundPreview(seedHex: string, background: SkyBackground): void {
+  const preview: SkyBackgroundPreview = {
+    seedHex,
+    background: {
+      ...background,
+      nebulaAtlas: background.nebulaAtlas.slice(),
+      darkAtlas: background.darkAtlas.slice(),
+      groupStars: background.groupStars,
+      sceneFromGalaxy: background.sceneFromGalaxy.slice(),
+      sectorBounds: background.sectorBounds.slice(),
+      sectorHomeBounds: background.sectorHomeBounds.slice(),
+      glowData: background.glowData.slice(),
+      riftData: background.riftData.slice(),
+    },
+  };
+  (self as unknown as Worker).postMessage(preview, [
+    preview.background.nebulaAtlas.buffer,
+    preview.background.darkAtlas.buffer,
+    preview.background.sceneFromGalaxy.buffer,
+    preview.background.sectorBounds.buffer,
+    preview.background.sectorHomeBounds.buffer,
+    preview.background.glowData.buffer,
+    preview.background.riftData.buffer,
+  ]);
+}
+
 async function runBuild(
   seedHex: string,
   viewpoint: GalacticPosition,
@@ -210,6 +283,18 @@ async function runBuild(
   } catch {
     usePool = false;
   }
+
+  // Started first and awaited last: it runs the whole time the sweep
+  // does, on a thread the sweep is not using.
+  const backgroundPending = startBackground(seedHex, viewpoint, galaxy);
+  let background: SkyBackground | undefined;
+  const backgroundReady = backgroundPending?.then((built) => {
+    background = built;
+    // Ship it the moment it exists — the sky has something in it long
+    // before the stars are finished arriving.
+    sendBackgroundPreview(seedHex, built);
+    return built;
+  });
 
   if (usePool) {
     const workers = pool!;
@@ -257,7 +342,8 @@ async function runBuild(
     }
   }
 
-  const sky = assembleSkyField(viewpoint, seed, slabs, report);
+  if (backgroundReady) await backgroundReady;
+  const sky = assembleSkyField(viewpoint, seed, slabs, report, background);
   (self as unknown as Worker).postMessage({ seedHex, sky }, [
     sky.starDirs.buffer,
     sky.starColors.buffer,

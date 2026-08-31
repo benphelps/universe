@@ -29,7 +29,8 @@ import {
   NEBULA_TILE,
   RIFT_HEIGHT,
   RIFT_WIDTH,
-  type SkyField,
+  type DarkCloudPatch,
+  type NebulaPatch,
 } from '../../universe/galaxy/skyfield';
 
 const MAX_NEBULAE = NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS;
@@ -204,12 +205,38 @@ void main() {
  * radius around the camera (the viewer re-centers the group each frame).
  * uIntensity lets daylight wash the stars out.
  */
+/**
+ * What a backdrop reads: the unresolved sky, and whatever stars it is
+ * asked to draw itself.
+ *
+ * Narrower than a SkyField on purpose. The gas, dust and glow do not
+ * depend on the star sweep, so they arrive well before it finishes,
+ * and a backdrop can be stood up from them alone — which is what it
+ * amounts to anyway wherever the caller draws the stars as 3D content
+ * and hands this a skipStars of all of them.
+ */
+export interface BackdropSource {
+  nebulae: NebulaPatch[];
+  nebulaAtlas: Float32Array;
+  darkClouds: DarkCloudPatch[];
+  darkAtlas: Float32Array;
+  glowWidth: number;
+  glowHeight: number;
+  glowData: Float32Array;
+  riftData: Float32Array;
+  sceneFromGalaxy: Float32Array;
+  starCount: number;
+  starDirs: Float32Array;
+  starColors: Float32Array;
+  starBrightness: Float32Array;
+}
+
 export class StarfieldBackdrop {
   readonly group = new Group();
   private readonly materials: ShaderMaterial[] = [];
 
   /** skipStars omits the first N sky entries (a 3D view of the near field). */
-  constructor(sky: SkyField, radius: number, skipStars = 0) {
+  constructor(sky: BackdropSource, radius: number, skipStars = 0) {
     const orientation = sky.sceneFromGalaxy;
     const count = sky.starCount - skipStars;
     const positions = new Float32Array(count * 3);

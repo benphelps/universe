@@ -142,6 +142,9 @@ const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
 const ORIGIN = new Vector3();
 
+/** A backdrop standing before the sweep has no stars of its own yet. */
+const EMPTY_F32 = new Float32Array(0);
+
 /** Where the camera arrives, in units of the flow's drawn radius. Far
  *  enough to stand outside the flow — from within it, a disc is a floor
  *  and the hole is a bump on it — and close enough that it still
@@ -1237,20 +1240,38 @@ export class UnifiedViewer {
     // Each one is drawn as it arrives, so the sky thickens in front of
     // the traveler instead of a progress bar counting toward a field
     // that appears all at once at the end.
-    watchSkyBuild(system.seedHex, (preview) => {
-      if (this.disposed || this.system !== system) return;
-      this.addSkyPreview(preview);
-    });
+    watchSkyBuild(
+      system.seedHex,
+      (preview) => {
+        if (this.disposed || this.system !== system) return;
+        this.addSkyPreview(preview);
+      },
+      // The gas, dust and glow are built beside the sweep rather than
+      // after it, so they land seconds in. The backdrop draws no stars
+      // — every one of them is 3D content — which means this is the
+      // whole of it and the finished field has nothing to add.
+      (background) => {
+        if (this.disposed || this.system !== system || this.backdrop) return;
+        this.backdrop = new StarfieldBackdrop(
+          { ...background, starCount: 0, starDirs: EMPTY_F32, starColors: EMPTY_F32, starBrightness: EMPTY_F32 },
+          2000,
+        );
+        this.scene.add(this.backdrop.group);
+      },
+    );
 
     getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
       this.clearSkyPreview();
       this.skyData = sky;
-      // Every resolved star is 3D content now (near field above, far
-      // field here); the backdrop keeps only the unresolved sky — glow,
+      // Every resolved star is 3D content (near field above, far field
+      // here); the backdrop keeps only the unresolved sky — glow,
       // rifts, nebulae, dark clouds — which the galaxy volume replaces.
-      this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
-      this.scene.add(this.backdrop.group);
+      // It usually stands already, put up when the background landed.
+      if (!this.backdrop) {
+        this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
+        this.scene.add(this.backdrop.group);
+      }
       this.sectorChart = new SectorChart(sky);
       this.pcGroup.add(this.sectorChart.group);
 
