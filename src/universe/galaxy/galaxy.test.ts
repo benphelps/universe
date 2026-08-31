@@ -11,7 +11,12 @@ import {
   seedForIdentity,
 } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
-import { rowSlabSpan, sweepRowSlab } from './skyfield';
+import {
+  rowSlabPlan,
+  rowSlabSpan,
+  sweepRowSlab,
+  type SweepSlab,
+} from './skyfield';
 import { cloudFieldSmoothAt, expectedCloudField } from './clouds';
 import {
   ARM_BOOST_MAX,
@@ -223,27 +228,57 @@ describe('catalog', () => {
   });
 
   it('a partitioned sweep is byte-identical to the serial sweep', () => {
-    // The sky coordinator splits rows into ix slabs across workers;
+    // The sky coordinator splits rows into slabs across workers;
     // per-cell seeding must make any partition equal to the whole.
     const row = CATALOG_ROWS[3];
     const span = rowSlabSpan(row, HOME_POSITION);
-    const whole = sweepRowSlab(row, HOME_POSITION, span.lo, span.hi);
+    const whole = sweepRowSlab(row, HOME_POSITION, { ixLo: span.lo, ixHi: span.hi });
     const cutA = Math.floor(span.lo + (span.hi - span.lo) / 3);
     const cutB = Math.floor(span.lo + (2 * (span.hi - span.lo)) / 3);
     const parts = [
-      sweepRowSlab(row, HOME_POSITION, span.lo, cutA),
-      sweepRowSlab(row, HOME_POSITION, cutA + 1, cutB),
-      sweepRowSlab(row, HOME_POSITION, cutB + 1, span.hi),
+      sweepRowSlab(row, HOME_POSITION, { ixLo: span.lo, ixHi: cutA }),
+      sweepRowSlab(row, HOME_POSITION, { ixLo: cutA + 1, ixHi: cutB }),
+      sweepRowSlab(row, HOME_POSITION, { ixLo: cutB + 1, ixHi: span.hi }),
     ];
-    for (const field of ['near', 'far'] as const) {
-      const mergedDirs: number[] = [];
-      const mergedSeeds: bigint[] = [];
-      for (const part of parts) {
-        mergedDirs.push(...part[field].dirs);
-        mergedSeeds.push(...part[field].seeds);
+    expectSame(whole, parts);
+  });
+
+  it('a plan cut by row is byte-identical too, however narrow the span', () => {
+    // A coarse-celled row has almost no ix columns to cut, so the plan
+    // gives each column its own iy bands instead. That is the cut most
+    // able to go wrong: the serial sweep runs ix outer and iy inner, so
+    // a band that spanned two columns would reorder the stars even
+    // though every one of them is still there. Row 1 is cut the same
+    // way the heaviest row is and sweeps in a fraction of the time.
+    const row = CATALOG_ROWS[1];
+    const span = rowSlabSpan(row, HOME_POSITION);
+    const whole = sweepRowSlab(row, HOME_POSITION, { ixLo: span.lo, ixHi: span.hi });
+    // A row with stars in it, or the comparison proves nothing.
+    expect(whole.near.seeds.length + whole.far.seeds.length).toBeGreaterThan(100);
+    // Ask for far more slabs than there are columns, which is what
+    // forces the banding.
+    const plan = rowSlabPlan(row, HOME_POSITION, (span.hi - span.lo + 1) * 4);
+    expect(plan.length).toBeGreaterThan(span.hi - span.lo + 1);
+    expect(plan.every((bounds) => bounds.ixLo === bounds.ixHi)).toBe(true);
+    expectSame(
+      whole,
+      plan.map((bounds) => sweepRowSlab(row, HOME_POSITION, bounds)),
+    );
+  }, 30000);
+
+  it('cuts a wide-spanned row by column and a narrow one by band', () => {
+    for (const row of CATALOG_ROWS) {
+      const span = rowSlabSpan(row, HOME_POSITION);
+      const width = span.hi - span.lo + 1;
+      // Every cell of the span is covered exactly once, whichever way
+      // the plan chose to cut it.
+      const plan = rowSlabPlan(row, HOME_POSITION, 12);
+      expect(plan.length).toBeGreaterThanOrEqual(Math.min(12, width));
+      const columns = new Set<number>();
+      for (const bounds of plan) {
+        for (let ix = bounds.ixLo; ix <= bounds.ixHi; ix++) columns.add(ix);
       }
-      expect(Float32Array.from(mergedDirs)).toEqual(whole[field].dirs);
-      expect(BigUint64Array.from(mergedSeeds)).toEqual(whole[field].seeds);
+      expect(columns.size).toBe(width);
     }
   });
 
@@ -548,3 +583,17 @@ describe('gazetteer', () => {
     expect(names.size).toBeGreaterThan(25);
   });
 });
+
+/** Two sweeps hold the same stars, in the same order, to the bit. */
+function expectSame(whole: SweepSlab, parts: SweepSlab[]): void {
+  for (const field of ['near', 'far'] as const) {
+    const mergedDirs: number[] = [];
+    const mergedSeeds: bigint[] = [];
+    for (const part of parts) {
+      mergedDirs.push(...part[field].dirs);
+      mergedSeeds.push(...part[field].seeds);
+    }
+    expect(Float32Array.from(mergedDirs)).toEqual(whole[field].dirs);
+    expect(BigUint64Array.from(mergedSeeds)).toEqual(whole[field].seeds);
+  }
+}

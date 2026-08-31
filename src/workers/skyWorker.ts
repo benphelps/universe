@@ -6,10 +6,12 @@ import { CATALOG_ROWS } from '../universe/galaxy/catalog';
 import {
   assembleSkyField,
   catalogRowWeights,
+  rowSlabPlan,
   rowSlabSpan,
   rowStageName,
   sweepRowSlab,
   type SkyProgress,
+  type SweepBounds,
   type SweepSlab,
 } from '../universe/galaxy/skyfield';
 import type { SweepResult, SweepTask } from './skySweepWorker';
@@ -43,37 +45,72 @@ function ensurePool(): Worker[] {
   return pool;
 }
 
-/** Run one row's sweep across the pool; slabs return in slab order. */
-function sweepRowParallel(
+interface PlannedSlab {
+  row: (typeof CATALOG_ROWS)[number];
+  bounds: SweepBounds;
+  /** Which catalog row this came from — the stage it belongs to. */
+  rowIndex: number;
+}
+
+/**
+ * Every slab of every row, in the order the serial sweep would have
+ * produced them.
+ *
+ * The build used to take one row at a time and wait for it, which put
+ * a barrier at each of the six row boundaries and drained the pool at
+ * every one — twice for nothing, since two of the rows are near-only
+ * slices that finish in a tenth of a second. Planning the whole build
+ * up front means a worker that runs dry on the last slab of one row
+ * starts the next row's first slab instead of idling to the barrier.
+ */
+function planBuild(viewpoint: GalacticPosition, target: number): PlannedSlab[] {
+  const planned: PlannedSlab[] = [];
+  for (let rowIndex = 0; rowIndex < CATALOG_ROWS.length; rowIndex++) {
+    const row = CATALOG_ROWS[rowIndex];
+    for (const bounds of rowSlabPlan(row, viewpoint, target)) {
+      planned.push({ row, bounds, rowIndex });
+    }
+  }
+  return planned;
+}
+
+/**
+ * Run the whole plan across the pool. Slabs come back in whatever
+ * order they finish and are filed by index, so the assembled sky is
+ * the serial sweep's regardless of who got which piece or when.
+ */
+function sweepPlan(
   workers: Worker[],
-  row: (typeof CATALOG_ROWS)[number],
+  planned: PlannedSlab[],
   viewpoint: GalacticPosition,
   galaxy: string,
-  onChunk: (done: number, total: number) => void,
+  onChunk: (done: number, firstUnfinished: number) => void,
 ): Promise<SweepSlab[]> {
-  const span = rowSlabSpan(row, viewpoint);
-  const width = span.hi - span.lo + 1;
-  const chunkCount = Math.max(1, Math.min(workers.length * 3, width));
-  const bounds: Array<{ ixLo: number; ixHi: number }> = [];
-  for (let c = 0; c < chunkCount; c++) {
-    bounds.push({
-      ixLo: span.lo + Math.floor((c * width) / chunkCount),
-      ixHi: span.lo + Math.floor(((c + 1) * width) / chunkCount) - 1,
-    });
-  }
   return new Promise((resolve) => {
-    const slabs: SweepSlab[] = new Array(chunkCount);
+    const slabs: SweepSlab[] = new Array(planned.length);
+    const filled = new Array<boolean>(planned.length).fill(false);
     let next = 0;
     let done = 0;
+    let firstUnfinished = 0;
     const dispatch = (worker: Worker): void => {
-      if (next >= chunkCount) return;
+      if (next >= planned.length) return;
       const taskId = next++;
-      const task: SweepTask = { taskId, row, viewpoint, galaxy, ...bounds[taskId] };
+      const task: SweepTask = {
+        taskId,
+        row: planned[taskId].row,
+        viewpoint,
+        galaxy,
+        bounds: planned[taskId].bounds,
+      };
       worker.onmessage = (event: MessageEvent<SweepResult>) => {
         slabs[event.data.taskId] = event.data.slab;
+        filled[event.data.taskId] = true;
         done++;
-        onChunk(done, chunkCount);
-        if (done === chunkCount) resolve(slabs);
+        // The stage the build is furthest behind on: the row that owns
+        // the earliest slab still outstanding.
+        while (firstUnfinished < planned.length && filled[firstUnfinished]) firstUnfinished++;
+        onChunk(done, Math.min(firstUnfinished, planned.length - 1));
+        if (done === planned.length) resolve(slabs);
         else dispatch(worker);
       };
       worker.postMessage(task);
@@ -107,31 +144,50 @@ async function runBuild(
 
   const weights = catalogRowWeights();
   const slabs: SweepSlab[] = [];
-  let rowsBehind = 0;
   let usePool = true;
   try {
     ensurePool();
   } catch {
     usePool = false;
   }
-  for (let i = 0; i < CATALOG_ROWS.length; i++) {
-    const row = CATALOG_ROWS[i];
-    const stage = rowStageName(row);
-    report(0.84 * rowsBehind, stage, 0);
-    if (usePool) {
-      const rowSlabs = await sweepRowParallel(pool!, row, viewpoint, galaxy, (done, total) =>
-        report(0.84 * (rowsBehind + (weights[i] * done) / total), stage, done / total),
-      );
-      slabs.push(...rowSlabs);
-    } else {
+
+  if (usePool) {
+    const workers = pool!;
+    // Three slabs a worker is enough for the stragglers to be picked
+    // up by whoever finishes first, and it is the whole build's worth
+    // now rather than one row's.
+    const planned = planBuild(viewpoint, workers.length * 3);
+    // Progress is weighted by the rows the slabs belong to, so a row
+    // the catalogue knows is cheap cannot pretend to be a third of the
+    // build just because it holds a third of the slabs.
+    const perSlab = planned.map((slab) => {
+      const inRow = planned.filter((other) => other.rowIndex === slab.rowIndex).length;
+      return weights[slab.rowIndex] / inRow;
+    });
+    const totalWeight = perSlab.reduce((sum, w) => sum + w, 0) || 1;
+    let doneWeight = 0;
+    let lastDone = 0;
+    const built = await sweepPlan(workers, planned, viewpoint, galaxy, (done, firstUnfinished) => {
+      for (let i = lastDone; i < done; i++) doneWeight += perSlab[i] ?? 0;
+      lastDone = done;
+      const stage = rowStageName(planned[firstUnfinished].row);
+      report(0.84 * (doneWeight / totalWeight), stage, done / planned.length);
+    });
+    slabs.push(...built);
+  } else {
+    let rowsBehind = 0;
+    for (let i = 0; i < CATALOG_ROWS.length; i++) {
+      const row = CATALOG_ROWS[i];
+      const stage = rowStageName(row);
+      report(0.84 * rowsBehind, stage, 0);
       const span = rowSlabSpan(row, viewpoint);
       slabs.push(
-        sweepRowSlab(row, viewpoint, span.lo, span.hi, (fraction) =>
+        sweepRowSlab(row, viewpoint, { ixLo: span.lo, ixHi: span.hi }, (fraction) =>
           report(0.84 * (rowsBehind + weights[i] * fraction), stage, fraction),
         ),
       );
+      rowsBehind += weights[i];
     }
-    rowsBehind += weights[i];
   }
 
   const sky = assembleSkyField(viewpoint, seed, slabs, report);

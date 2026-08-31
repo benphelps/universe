@@ -214,7 +214,7 @@ export function buildSkyField(
     onProgress?.(0.84 * rowsBehind, stage, 0);
     const span = rowSlabSpan(row, viewpoint);
     slabs.push(
-      sweepRowSlab(row, viewpoint, span.lo, span.hi, (slabFraction) =>
+      sweepRowSlab(row, viewpoint, { ixLo: span.lo, ixHi: span.hi }, (slabFraction) =>
         onProgress?.(0.84 * (rowsBehind + weight * slabFraction), stage, slabFraction),
       ),
     );
@@ -258,6 +258,68 @@ export function rowSlabSpan(
   };
 }
 
+export interface SweepBounds {
+  ixLo: number;
+  ixHi: number;
+  iyLo?: number;
+  iyHi?: number;
+}
+
+/**
+ * How to cut a row's sweep into pieces a pool can share.
+ *
+ * The obvious cut is by ix, and for a fine-celled row there are plenty
+ * of columns to go round. A coarse one has almost none: the widest row
+ * in the catalogue reaches six hundred parsecs in cells a hundred and
+ * sixty across, which is eight columns for the whole sky — so the
+ * heaviest row of the build was handing four workers two pieces each,
+ * and in the bulge, where density climbs steeply across a sweep, those
+ * two were nothing like equal.
+ *
+ * So a row too narrow to cut by column is cut by row instead: each ix
+ * becomes its own column, banded in iy. Order is what keeps this
+ * lossless — the serial sweep runs ix outer and iy inner, so slabs
+ * concatenated in that same order are byte-identical to it, which is
+ * why an iy band never spans more than one ix.
+ */
+export function rowSlabPlan(
+  row: CatalogRow,
+  viewpoint: GalacticPosition,
+  target: number,
+): SweepBounds[] {
+  const span = rowSlabSpan(row, viewpoint);
+  const width = span.hi - span.lo + 1;
+  if (width >= target) {
+    const count = Math.max(1, Math.min(target, width));
+    const bounds: SweepBounds[] = [];
+    for (let c = 0; c < count; c++) {
+      bounds.push({
+        ixLo: span.lo + Math.floor((c * width) / count),
+        ixHi: span.lo + Math.floor(((c + 1) * width) / count) - 1,
+      });
+    }
+    return bounds;
+  }
+
+  const radius = Math.max(NEAR_RADIUS_PC, row.skyRadiusPc);
+  const iyLo = Math.floor((viewpoint.yPc - radius) / row.cellPc);
+  const iyHi = Math.floor((viewpoint.yPc + radius) / row.cellPc);
+  const height = iyHi - iyLo + 1;
+  const bands = Math.max(1, Math.min(Math.ceil(target / width), height));
+  const bounds: SweepBounds[] = [];
+  for (let ix = span.lo; ix <= span.hi; ix++) {
+    for (let b = 0; b < bands; b++) {
+      bounds.push({
+        ixLo: ix,
+        ixHi: ix,
+        iyLo: iyLo + Math.floor((b * height) / bands),
+        iyHi: iyLo + Math.floor(((b + 1) * height) / bands) - 1,
+      });
+    }
+  }
+  return bounds;
+}
+
 /**
  * Sweep one catalog row over a range of ix slabs into packed star
  * arrays. Cells seed their own generators, so any partition of the
@@ -267,8 +329,7 @@ export function rowSlabSpan(
 export function sweepRowSlab(
   row: CatalogRow,
   viewpoint: GalacticPosition,
-  ixLo: number,
-  ixHi: number,
+  bounds: SweepBounds,
   onProgress?: (fraction: number) => void,
 ): SweepSlab {
   const lut = buildTemperatureLut(96);
@@ -307,7 +368,7 @@ export function sweepRowSlab(
       pushTo(far, lut, dx, dy, dz, luminosity, physical.tEff, starSeed);
     },
     onProgress,
-    { ixLo, ixHi },
+    bounds,
   );
   return { near: packAccum(near), far: packAccum(far) };
 }
