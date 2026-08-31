@@ -78,6 +78,8 @@ export class TerrainChunkManager {
   private nextRequestId = 1;
   private nextWorker = 0;
   private frame = 0;
+  /** Planet chunks wait until every worker has the leader's survey. */
+  private terrainReady = false;
 
   constructor(
     private readonly scene: Scene,
@@ -100,10 +102,13 @@ export class TerrainChunkManager {
       });
       worker.onmessage = (event: MessageEvent<TerrainResponse>) => this.receive(event.data);
       worker.postMessage(
-        i === 0 && this.onSurvey && init.type === 'init' ? { ...init, survey: true } : init,
+        init.type === 'init'
+          ? { ...init, survey: i === 0 ? ('report' as const) : ('defer' as const) }
+          : init,
       );
       this.workers.push(worker);
     }
+    this.terrainReady = init.type === 'init-asteroid';
   }
 
   /** Tiles the current view still wants built (in flight included). */
@@ -171,6 +176,7 @@ export class TerrainChunkManager {
 
   /** Send the nearest-needed tiles to the workers first, up to the budget. */
   private dispatch(): void {
+    if (!this.terrainReady) return;
     this.wanted.sort((a, b) => a.priorityKm - b.priorityKm);
     for (const { record } of this.wanted) {
       if (this.pending.size >= MAX_IN_FLIGHT) break;
@@ -294,7 +300,16 @@ export class TerrainChunkManager {
 
   private receive(response: TerrainResponse): void {
     if (response.type === 'survey') {
-      this.onSurvey?.(response.survey);
+      if (response.survey) {
+        this.onSurvey?.(response.survey);
+        // Structured clone deliberately preserves the coordinator's
+        // arrays while giving each worker its own read-only view.
+        for (let i = 1; i < this.workers.length; i++) {
+          this.workers[i].postMessage({ type: 'install-survey', survey: response.survey });
+        }
+      }
+      this.terrainReady = true;
+      this.dispatch();
       return;
     }
     const key = this.pending.get(response.id);

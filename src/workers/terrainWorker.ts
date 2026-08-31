@@ -13,21 +13,27 @@ let field: SurfaceField | null = null;
 self.onmessage = (event: MessageEvent<TerrainRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
-    field = createSurfaceField(message.seedHex, message.physical);
-    if (message.survey) {
-      // This worker just paid for the grid products the main thread
-      // deferred: ship copies so its field attaches them for free.
+    field = createSurfaceField(message.seedHex, message.physical, {
+      deferGrid: message.survey === 'defer',
+    });
+    if (message.survey === 'report') {
+      // Only the leader pays for the global grid products. Ship copies
+      // to the coordinator; the other workers attach clones of them.
       const survey = surveyOf(field);
-      if (survey) {
-        const response: TerrainResponse = { type: 'survey', survey };
-        (self as unknown as Worker).postMessage(
-          response,
-          Object.values(survey)
-            .filter((value): value is Float32Array => ArrayBuffer.isView(value))
-            .map((array) => array.buffer),
-        );
-      }
+      const response: TerrainResponse = { type: 'survey', survey };
+      (self as unknown as Worker).postMessage(
+        response,
+        survey
+          ? Object.values(survey)
+              .filter((value): value is ArrayBufferView => ArrayBuffer.isView(value))
+              .map((array) => array.buffer)
+          : [],
+      );
     }
+    return;
+  }
+  if (message.type === 'install-survey') {
+    if (message.survey) field?.finishGrid?.(message.survey);
     return;
   }
   if (message.type === 'init-asteroid') {

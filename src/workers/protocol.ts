@@ -3,21 +3,27 @@ import type { GridSurvey } from '../universe/surface/field';
 import type { Asteroid } from '../universe/smallbody/types';
 
 /** Field selection for a terrain worker: a planet or a small body.
- *  With survey set, the worker reports its field's grid products back
- *  once built — the main thread's deferGrid field attaches them. */
+ *  Planet workers either build and report the one shared grid survey,
+ *  or defer that work until the coordinator installs the result. */
 export type TerrainInit =
-  | { type: 'init'; seedHex: string; physical: Characterization; survey?: boolean }
+  | {
+      type: 'init';
+      seedHex: string;
+      physical: Characterization;
+      survey?: 'report' | 'defer';
+    }
   | { type: 'init-asteroid'; asteroid: Asteroid };
 
 /** Main thread → worker. */
 export type TerrainRequest =
   | TerrainInit
+  | { type: 'install-survey'; survey: GridSurvey | null }
   | { type: 'chunk'; id: number; face: number; level: number; x: number; y: number; res: number };
 
 /** Worker → main thread (arrays transferred, not copied). */
 export type TerrainResponse =
   | ChunkResponse
-  | { type: 'survey'; survey: GridSurvey };
+  | { type: 'survey'; survey: GridSurvey | null };
 
 export interface ChunkResponse {
   type: 'chunk';
