@@ -55,6 +55,21 @@ describe('galactic background depth', () => {
     backdrop.dispose();
   });
 
+  it('culls the full-screen backdrop when its contribution is negligible', () => {
+    const backdrop = new StarfieldBackdrop(emptySky(), 2000);
+    backdrop.intensity = 0.002;
+    expect(backdrop.group.visible).toBe(false);
+    backdrop.intensity = 0.003;
+    expect(backdrop.group.visible).toBe(true);
+    for (const child of backdrop.group.children) {
+      expect((child as Mesh | Points).material).toBeInstanceOf(ShaderMaterial);
+      expect(((child as Mesh | Points).material as ShaderMaterial).uniforms.uIntensity.value).toBe(
+        0.003,
+      );
+    }
+    backdrop.dispose();
+  });
+
   it('keeps the volumetric galaxy in the depth-tested background queue', () => {
     const volume = new GalaxyVolume({ xPc: 0, yPc: 0, zPc: 0 }, IDENTITY);
     expectFarBackground(volume.mesh.material as ShaderMaterial);

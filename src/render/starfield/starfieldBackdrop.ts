@@ -235,6 +235,10 @@ export class StarfieldBackdrop {
   readonly group = new Group();
   private readonly materials: ShaderMaterial[] = [];
 
+  /** Match the galaxy layers' draw cutoff: below this the contribution
+   * is visually nil, but the two full-screen domes are still expensive. */
+  private static readonly VISIBILITY_FLOOR = 0.002;
+
   /** skipStars omits the first N sky entries (a 3D view of the near field). */
   constructor(sky: BackdropSource, radius: number, skipStars = 0) {
     const orientation = sky.sceneFromGalaxy;
@@ -417,6 +421,7 @@ export class StarfieldBackdrop {
   /** 1 = full night sky; approaches 0 under bright daylight. */
   set intensity(value: number) {
     for (const material of this.materials) material.uniforms.uIntensity.value = value;
+    this.group.visible = value > StarfieldBackdrop.VISIBILITY_FLOOR;
   }
 
   dispose(): void {

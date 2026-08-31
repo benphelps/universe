@@ -141,6 +141,8 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
  *  breaks down at these heights, the volume takes over. */
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
+/** Layers below the galaxy renderers' existing cutoff are visually nil. */
+const SKY_VISIBILITY_FLOOR = 0.002;
 const ORIGIN = new Vector3();
 
 /** A backdrop standing before the sweep has no stars of its own yet. */
@@ -2896,13 +2898,19 @@ export class UnifiedViewer {
     if (this.backdrop) this.backdrop.intensity = value * (1 - this.galaxyFade);
     if (this.neighborPoints) {
       (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
+      this.neighborPoints.visible = value > SKY_VISIBILITY_FLOOR;
     }
     if (this.farPoints) {
       (this.farPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
+      this.farPoints.visible = value > SKY_VISIBILITY_FLOOR;
     }
     // Nothing at the centre reaches the disk in visible light; only a
     // camera lifted clear of the dust layer ever sees the cluster.
-    if (this.nuclearCluster) this.nuclearCluster.intensity = value * this.coreTransmission;
+    if (this.nuclearCluster) {
+      const clusterIntensity = value * this.coreTransmission;
+      this.nuclearCluster.intensity = clusterIntensity;
+      this.nuclearCluster.group.visible = clusterIntensity > SKY_VISIBILITY_FLOOR;
+    }
   }
 
   /**
@@ -3234,7 +3242,7 @@ export class UnifiedViewer {
       this.updateWalkHint();
       this.updateRecenter();
 
-      if (this.backdrop) {
+      if (this.backdrop?.group.visible) {
         this.backdrop.group.position.copy(this.camera.position);
         const centerDistSq = this.camera.position.lengthSq();
         const tangentKm = Math.sqrt(Math.max(0, centerDistSq - this.radiusKm * this.radiusKm));
@@ -3263,7 +3271,11 @@ export class UnifiedViewer {
           ),
         );
         // Out of the dust at last: now the cluster is worth having.
-        if (!this.nuclearCluster && this.clusterFrame && this.coreTransmission > 1e-3) {
+        if (
+          !this.nuclearCluster &&
+          this.clusterFrame &&
+          this.coreTransmission > SKY_VISIBILITY_FLOOR
+        ) {
           this.nuclearCluster = new NuclearCluster(this.viewpointPc, this.clusterFrame, PC_KM);
           this.pcGroup.add(this.nuclearCluster.group);
         }
