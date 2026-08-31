@@ -35,6 +35,24 @@ const UP = new Vector3(0, 1, 0);
  * Lighting comes from the star direction supplied each frame, so phases,
  * terminators, and eclipse shadows are exact.
  */
+/**
+ * Cube face resolution for a solid body's distant appearance.
+ *
+ * This is the only picture a solid planet has outside its own focus —
+ * focusing one hands over to streamed terrain, so nothing else ever
+ * draws it — and the system view lets a traveler fly right up to a
+ * world without focusing it. A hundred and twenty-eight was chosen
+ * when a bake cost two and three quarter seconds and a whole system
+ * ran through one baker in series; a face now costs a quarter of that
+ * and there are several bakers, so the same system arrives faster at
+ * four times the texels than it used to at one.
+ *
+ * Five hundred and twelve is another four times again and does not pay
+ * for itself: four seconds a world and six megabytes of it, for detail
+ * that only shows closer than the terrain would have taken over.
+ */
+const SURFACE_CUBE_SIZE = 256;
+
 export class PlanetObject {
   readonly group = new Group();
   readonly radiusUnits: number;
@@ -97,7 +115,7 @@ export class PlanetObject {
       // field, baked in the background; the flat mineral placeholder
       // holds only until it lands. Prominent bodies (the deckSize the
       // viewer grants focused and parent objects) jump the queue.
-      requestSurfaceBake(physical.seedHex, physical, 128, deckSize > 256).then((bake) => {
+      requestSurfaceBake(physical.seedHex, physical, SURFACE_CUBE_SIZE, deckSize > 256).then((bake) => {
         this.surfaceFaces = bake.faces;
         this.surfaceSize = bake.size;
       });
