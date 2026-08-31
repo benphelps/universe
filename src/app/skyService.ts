@@ -1,6 +1,12 @@
 import { seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galaxySeed } from '../universe/galaxy/galaxySeed';
+import {
+  scheduleGeneration,
+  type GenerationAcquireMessage,
+  type GenerationGrantMessage,
+  type GenerationReleaseMessage,
+} from './generationScheduler';
 import type {
   SkyBackground,
   SkyField,
@@ -27,11 +33,51 @@ export interface SkyBuildProgress {
 }
 
 const progress = new Map<string, SkyBuildProgress>();
+interface SkyPermit {
+  cancel: (() => void) | null;
+  release: (() => void) | null;
+}
+const skyPermits = new Map<number, SkyPermit>();
+
+function acquireSkyPermit(source: Worker, request: GenerationAcquireMessage): void {
+  const permit: SkyPermit = { cancel: null, release: null };
+  skyPermits.set(request.requestId, permit);
+  permit.cancel = scheduleGeneration(request.priority, (release) => {
+    permit.release = release;
+    if (worker !== source) {
+      skyPermits.delete(request.requestId);
+      release();
+      return;
+    }
+    const grant: GenerationGrantMessage = {
+      type: 'generation-grant',
+      requestId: request.requestId,
+    };
+    source.postMessage(grant);
+  });
+}
+
+function releaseSkyPermit(request: GenerationReleaseMessage): void {
+  const permit = skyPermits.get(request.requestId);
+  if (!permit) return;
+  skyPermits.delete(request.requestId);
+  if (permit.release) permit.release();
+  else permit.cancel?.();
+}
+
+function clearSkyPermits(): void {
+  for (const permit of skyPermits.values()) {
+    if (permit.release) permit.release();
+    else permit.cancel?.();
+  }
+  skyPermits.clear();
+}
 
 function ensureWorker(): Worker {
   if (worker) return worker;
   worker = new Worker(new URL('../workers/skyWorker.ts', import.meta.url), { type: 'module' });
-  worker.onmessage = (
+  const source = worker;
+  source.onmessage = (
     event: MessageEvent<{
       seedHex: string;
       sky?: SkyField;
@@ -40,8 +86,19 @@ function ensureWorker(): Worker {
       stageFraction?: number;
       dirs?: Float32Array;
       background?: SkyBackground;
+      type?: GenerationAcquireMessage['type'] | GenerationReleaseMessage['type'];
+      requestId?: number;
+      priority?: GenerationAcquireMessage['priority'];
     }>,
   ) => {
+    if (event.data.type === 'generation-acquire') {
+      acquireSkyPermit(source, event.data as GenerationAcquireMessage);
+      return;
+    }
+    if (event.data.type === 'generation-release') {
+      releaseSkyPermit(event.data as GenerationReleaseMessage);
+      return;
+    }
     if (event.data.progress !== undefined) {
       progress.set(event.data.seedHex, {
         fraction: event.data.progress,
@@ -66,7 +123,7 @@ function ensureWorker(): Worker {
     watchingBackground.delete(event.data.seedHex);
     progress.delete(event.data.seedHex);
   };
-  return worker;
+  return source;
 }
 
 /** Sky builds still in the worker — the arrival star field's lag. */
@@ -98,6 +155,7 @@ export function cancelSkyBuilds(): void {
   if (!worker) return;
   worker.terminate();
   worker = null;
+  clearSkyPermits();
   watching.clear();
   watchingBackground.clear();
   // A promise whose worker is gone never settles, so it must not be

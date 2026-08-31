@@ -10,6 +10,7 @@ import {
   ShaderMaterial,
   Vector3,
 } from 'three';
+import { scheduleGeneration } from '../../app/generationScheduler';
 import { chunkAngularSize, faceUvToDir } from '../../universe/surface/cubeSphere';
 import type { GridSurvey } from '../../universe/surface/field';
 import { SCATTER_STRIDE } from '../../universe/surface/scatter';
@@ -31,7 +32,6 @@ export const SPLIT_RATIO = 0.45;
 /** Denser tiles cost more each: the cap keeps worst-case GPU memory
  *  in the same envelope it had at the old resolution. */
 const MAX_CHUNKS = 2000;
-const MAX_IN_FLIGHT = 24;
 /** Levels this coarse are never evicted: they cover zoom-out instantly. */
 const PINNED_LEVEL = 3;
 const EVICT_AGE_FRAMES = 600;
@@ -70,16 +70,21 @@ export class TerrainChunkManager {
   private readonly workers: Worker[] = [];
   private readonly chunks = new Map<string, ChunkRecord>();
   private readonly pending = new Map<number, string>();
+  private readonly activeWorkerIds = new Map<Worker, number>();
+  private readonly chunkReleases = new Map<number, () => void>();
   private wanted: WantedChunk[] = [];
   private readonly indexAttribute = new BufferAttribute(buildChunkIndices(RES), 1);
   private readonly rockGeometry = createRockGeometry();
   private readonly shrubGeometry = createShrubGeometry();
   private readonly radiusKm: number;
   private nextRequestId = 1;
-  private nextWorker = 0;
   private frame = 0;
   /** Planet chunks wait until every worker has the leader's survey. */
   private terrainReady = false;
+  private scheduledDispatchCancel: (() => void) | null = null;
+  private surveyInitCancel: (() => void) | null = null;
+  private surveyInitRelease: (() => void) | null = null;
+  private disposed = false;
 
   constructor(
     private readonly scene: Scene,
@@ -100,15 +105,30 @@ export class TerrainChunkManager {
       const worker = new Worker(new URL('../../workers/terrainWorker.ts', import.meta.url), {
         type: 'module',
       });
-      worker.onmessage = (event: MessageEvent<TerrainResponse>) => this.receive(event.data);
-      worker.postMessage(
-        init.type === 'init'
-          ? { ...init, survey: i === 0 ? ('report' as const) : ('defer' as const) }
-          : init,
-      );
+      worker.onmessage = (event: MessageEvent<TerrainResponse>) =>
+        this.receive(worker, event.data);
+      if (init.type === 'init') {
+        if (i > 0) worker.postMessage({ ...init, survey: 'defer' });
+      } else {
+        worker.postMessage(init);
+      }
       this.workers.push(worker);
     }
     this.terrainReady = init.type === 'init-asteroid';
+    if (init.type === 'init') {
+      let started = false;
+      const cancel = scheduleGeneration('visible-terrain', (release) => {
+        started = true;
+        this.surveyInitCancel = null;
+        if (this.disposed) {
+          release();
+          return;
+        }
+        this.surveyInitRelease = release;
+        this.workers[0].postMessage({ ...init, survey: 'report' });
+      });
+      if (!started) this.surveyInitCancel = cancel;
+    }
   }
 
   /** Tiles the current view still wants built (in flight included). */
@@ -174,16 +194,37 @@ export class TerrainChunkManager {
     this.evict();
   }
 
-  /** Send the nearest-needed tiles to the workers first, up to the budget. */
+  /** Send the nearest-needed tile when this pool and the global budget have room. */
   private dispatch(): void {
-    if (!this.terrainReady) return;
-    this.wanted.sort((a, b) => a.priorityKm - b.priorityKm);
-    for (const { record } of this.wanted) {
-      if (this.pending.size >= MAX_IN_FLIGHT) break;
-      if (record.requested || record.mesh) continue;
+    if (
+      !this.terrainReady ||
+      this.disposed ||
+      this.scheduledDispatchCancel ||
+      !this.workers.some((worker) => !this.activeWorkerIds.has(worker)) ||
+      !this.nextWanted()
+    ) {
+      return;
+    }
+    let started = false;
+    const cancel = scheduleGeneration('visible-terrain', (release) => {
+      started = true;
+      this.scheduledDispatchCancel = null;
+      if (this.disposed) {
+        release();
+        return;
+      }
+      const worker = this.workers.find((candidate) => !this.activeWorkerIds.has(candidate));
+      const wanted = this.nextWanted();
+      if (!worker || !wanted) {
+        release();
+        return;
+      }
+      const { record } = wanted;
       record.requested = true;
       const id = this.nextRequestId++;
       this.pending.set(id, record.key);
+      this.activeWorkerIds.set(worker, id);
+      this.chunkReleases.set(id, release);
       const request: TerrainRequest = {
         type: 'chunk',
         id,
@@ -193,9 +234,20 @@ export class TerrainChunkManager {
         y: record.y,
         res: RES,
       };
-      this.workers[this.nextWorker].postMessage(request);
-      this.nextWorker = (this.nextWorker + 1) % this.workers.length;
+      worker.postMessage(request);
+      // Fill another idle terrain worker if the shared budget allows.
+      this.dispatch();
+    });
+    if (!started) this.scheduledDispatchCancel = cancel;
+  }
+
+  private nextWanted(): WantedChunk | null {
+    let best: WantedChunk | null = null;
+    for (const wanted of this.wanted) {
+      if (wanted.record.requested || wanted.record.mesh) continue;
+      if (!best || wanted.priorityKm < best.priorityKm) best = wanted;
     }
+    return best;
   }
 
   private visit(
@@ -298,8 +350,10 @@ export class TerrainChunkManager {
     return record;
   }
 
-  private receive(response: TerrainResponse): void {
+  private receive(worker: Worker, response: TerrainResponse): void {
     if (response.type === 'survey') {
+      this.surveyInitRelease?.();
+      this.surveyInitRelease = null;
       if (response.survey) {
         this.onSurvey?.(response.survey);
         // Structured clone deliberately preserves the coordinator's
@@ -312,62 +366,70 @@ export class TerrainChunkManager {
       this.dispatch();
       return;
     }
-    const key = this.pending.get(response.id);
-    this.pending.delete(response.id);
-    if (!key) return;
-    const record = this.chunks.get(key);
-    if (!record) return;
-    record.requested = false;
+    const release = this.chunkReleases.get(response.id);
+    try {
+      const key = this.pending.get(response.id);
+      this.pending.delete(response.id);
+      if (!key) return;
+      const record = this.chunks.get(key);
+      if (!record) return;
+      record.requested = false;
 
-    const geometry = new BufferGeometry();
-    geometry.setAttribute('position', new BufferAttribute(response.positions, 3));
-    geometry.setAttribute('normal', new BufferAttribute(response.normals, 3));
-    geometry.setAttribute('color', new BufferAttribute(response.colors, 3));
-    // The pinned base has no drawn parent to morph from: beyond its
-    // swap-in distance (all of orbit) it would render one LOD coarser
-    // than the pre-geomorph planet. Zeroed deltas keep orbit exact.
-    if (record.level <= PINNED_LEVEL) {
-      for (let i = 0; i < response.morph.length; i += 2) response.morph[i] = 0;
-    }
-    geometry.setAttribute('aMorph', new BufferAttribute(response.morph, 2));
-    geometry.setIndex(this.indexAttribute);
-    geometry.computeBoundingSphere();
-
-    const mesh = new Mesh(geometry, this.material);
-    mesh.visible = false;
-    mesh.position.set(...response.centerKm);
-    record.centerKm = response.centerKm;
-    record.mesh = mesh;
-    this.scene.add(mesh);
-
-    if (response.waterPositions && response.waterNormals && this.oceanMaterial) {
-      const waterGeometry = new BufferGeometry();
-      waterGeometry.setAttribute('position', new BufferAttribute(response.waterPositions, 3));
-      waterGeometry.setAttribute('normal', new BufferAttribute(response.waterNormals, 3));
-      waterGeometry.setIndex(this.indexAttribute);
-      waterGeometry.computeBoundingSphere();
-      const waterMesh = new Mesh(waterGeometry, this.oceanMaterial);
-      waterMesh.visible = false;
-      waterMesh.position.set(...response.centerKm);
-      record.waterMesh = waterMesh;
-      this.scene.add(waterMesh);
-    }
-
-    if (response.scatter && this.scatterMaterial) {
-      record.scatterMeshes = this.buildScatter(response.scatter, response.centerKm);
-      const data = response.scatter;
-      const count = data.length / SCATTER_STRIDE;
-      const mean: [number, number, number] = [0, 0, 0];
-      for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
-        mean[0] += data[i];
-        mean[1] += data[i + 1];
-        mean[2] += data[i + 2];
+      const geometry = new BufferGeometry();
+      geometry.setAttribute('position', new BufferAttribute(response.positions, 3));
+      geometry.setAttribute('normal', new BufferAttribute(response.normals, 3));
+      geometry.setAttribute('color', new BufferAttribute(response.colors, 3));
+      // The pinned base has no drawn parent to morph from: beyond its
+      // swap-in distance (all of orbit) it would render one LOD coarser
+      // than the pre-geomorph planet. Zeroed deltas keep orbit exact.
+      if (record.level <= PINNED_LEVEL) {
+        for (let i = 0; i < response.morph.length; i += 2) response.morph[i] = 0;
       }
-      record.scatterCenterKm = [
-        response.centerKm[0] + mean[0] / count,
-        response.centerKm[1] + mean[1] / count,
-        response.centerKm[2] + mean[2] / count,
-      ];
+      geometry.setAttribute('aMorph', new BufferAttribute(response.morph, 2));
+      geometry.setIndex(this.indexAttribute);
+      geometry.computeBoundingSphere();
+
+      const mesh = new Mesh(geometry, this.material);
+      mesh.visible = false;
+      mesh.position.set(...response.centerKm);
+      record.centerKm = response.centerKm;
+      record.mesh = mesh;
+      this.scene.add(mesh);
+
+      if (response.waterPositions && response.waterNormals && this.oceanMaterial) {
+        const waterGeometry = new BufferGeometry();
+        waterGeometry.setAttribute('position', new BufferAttribute(response.waterPositions, 3));
+        waterGeometry.setAttribute('normal', new BufferAttribute(response.waterNormals, 3));
+        waterGeometry.setIndex(this.indexAttribute);
+        waterGeometry.computeBoundingSphere();
+        const waterMesh = new Mesh(waterGeometry, this.oceanMaterial);
+        waterMesh.visible = false;
+        waterMesh.position.set(...response.centerKm);
+        record.waterMesh = waterMesh;
+        this.scene.add(waterMesh);
+      }
+
+      if (response.scatter && this.scatterMaterial) {
+        record.scatterMeshes = this.buildScatter(response.scatter, response.centerKm);
+        const data = response.scatter;
+        const count = data.length / SCATTER_STRIDE;
+        const mean: [number, number, number] = [0, 0, 0];
+        for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
+          mean[0] += data[i];
+          mean[1] += data[i + 1];
+          mean[2] += data[i + 2];
+        }
+        record.scatterCenterKm = [
+          response.centerKm[0] + mean[0] / count,
+          response.centerKm[1] + mean[1] / count,
+          response.centerKm[2] + mean[2] / count,
+        ];
+      }
+    } finally {
+      this.activeWorkerIds.delete(worker);
+      this.chunkReleases.delete(response.id);
+      release?.();
+      this.dispatch();
     }
   }
 
@@ -455,7 +517,17 @@ export class TerrainChunkManager {
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const worker of this.workers) worker.terminate();
+    this.surveyInitCancel?.();
+    this.surveyInitRelease?.();
+    this.scheduledDispatchCancel?.();
+    for (const release of this.chunkReleases.values()) release();
+    this.surveyInitCancel = null;
+    this.surveyInitRelease = null;
+    this.scheduledDispatchCancel = null;
+    this.chunkReleases.clear();
+    this.activeWorkerIds.clear();
     for (const record of [...this.chunks.values()]) this.remove(record);
     this.chunks.clear();
     this.rockGeometry.dispose();

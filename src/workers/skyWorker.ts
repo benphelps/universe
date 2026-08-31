@@ -3,6 +3,12 @@ import { PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy/galaxySeed'
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { viewpointForSeed } from '../universe/galaxy/sectors';
 import { CATALOG_ROWS } from '../universe/galaxy/catalog';
+import type {
+  GenerationAcquireMessage,
+  GenerationGrantMessage,
+  GenerationPriority,
+  GenerationReleaseMessage,
+} from '../app/generationScheduler';
 import {
   assembleSkyField,
   catalogRowWeights,
@@ -41,19 +47,42 @@ let pool: Worker[] | null = null;
 let backgroundWorker: Worker | null = null;
 const backgroundWaiting = new Map<string, (background: SkyBackground) => void>();
 let queue: Promise<void> = Promise.resolve();
+let nextGenerationRequestId = 1;
+const generationGrants = new Map<number, () => void>();
+
+/** Ask the main thread's shared scheduler before occupying a CPU core. */
+function acquireGeneration(priority: GenerationPriority): Promise<() => void> {
+  const requestId = nextGenerationRequestId++;
+  return new Promise((resolve) => {
+    generationGrants.set(requestId, () => {
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        const message: GenerationReleaseMessage = { type: 'generation-release', requestId };
+        (self as unknown as Worker).postMessage(message);
+      });
+    });
+    const message: GenerationAcquireMessage = {
+      type: 'generation-acquire',
+      requestId,
+      priority,
+    };
+    (self as unknown as Worker).postMessage(message);
+  });
+}
 
 /**
  * Start the gas, dust and glow on their own thread and hand back a
- * promise for them. Kicked off before the sweep so the two run side by
- * side: the background is a couple of seconds' work and the sweep can
- * be a minute, so it lands early and the traveler has a Milky Way to
- * look at while the stars are still coming in.
+ * promise for them. It is queued just after the visible-star permits,
+ * so spare capacity still runs both side by side without allowing the
+ * background to delay the first preview slabs.
  */
-function startBackground(
+async function startBackground(
   seedHex: string,
   viewpoint: GalacticPosition,
   galaxy: string,
-): Promise<SkyBackground> | null {
+): Promise<SkyBackground | null> {
   try {
     backgroundWorker ??= new Worker(new URL('./skyBackgroundWorker.ts', import.meta.url), {
       type: 'module',
@@ -72,8 +101,12 @@ function startBackground(
     backgroundWaiting.delete(event.data.seedHex);
     claim(event.data.background);
   };
+  const release = await acquireGeneration('background');
   return new Promise((resolve) => {
-    backgroundWaiting.set(seedHex, resolve);
+    backgroundWaiting.set(seedHex, (background) => {
+      release();
+      resolve(background);
+    });
     const task: BackgroundTask = { seedHex, viewpoint, galaxy };
     worker.postMessage(task);
   });
@@ -161,7 +194,7 @@ function sweepPlan(
     let next = 0;
     let done = 0;
     let furthestBehind = 0;
-    const dispatch = (worker: Worker): void => {
+    const dispatch = async (worker: Worker): Promise<void> => {
       if (next >= order.length) return;
       const taskId = order[next++];
       const task: SweepTask = {
@@ -171,7 +204,9 @@ function sweepPlan(
         galaxy,
         bounds: planned[taskId].bounds,
       };
+      const release = await acquireGeneration('sky-preview');
       worker.onmessage = (event: MessageEvent<SweepResult>) => {
+        release();
         slabs[event.data.taskId] = event.data.slab;
         filled[event.data.taskId] = true;
         done++;
@@ -180,11 +215,11 @@ function sweepPlan(
         while (furthestBehind < planned.length && filled[furthestBehind]) furthestBehind++;
         onSlab(done, Math.min(furthestBehind, planned.length - 1), event.data.slab);
         if (done === planned.length) resolve(slabs);
-        else dispatch(worker);
+        else void dispatch(worker);
       };
       worker.postMessage(task);
     };
-    for (const worker of workers) dispatch(worker);
+    for (const worker of workers) void dispatch(worker);
   });
 }
 
@@ -284,17 +319,17 @@ async function runBuild(
     usePool = false;
   }
 
-  // Started first and awaited last: it runs the whole time the sweep
-  // does, on a thread the sweep is not using.
-  const backgroundPending = startBackground(seedHex, viewpoint, galaxy);
   let background: SkyBackground | undefined;
-  const backgroundReady = backgroundPending?.then((built) => {
-    background = built;
-    // Ship it the moment it exists — the sky has something in it long
-    // before the stars are finished arriving.
-    sendBackgroundPreview(seedHex, built);
-    return built;
-  });
+  let backgroundReady: Promise<SkyBackground | undefined> | null = null;
+  const startBackgroundWork = (): Promise<SkyBackground | undefined> =>
+    startBackground(seedHex, viewpoint, galaxy).then((built) => {
+      if (!built) return undefined;
+      background = built;
+      // Ship it the moment it exists — the sky has something in it long
+      // before the stars are finished arriving.
+      sendBackgroundPreview(seedHex, built);
+      return built;
+    });
 
   if (usePool) {
     const workers = pool!;
@@ -312,7 +347,7 @@ async function runBuild(
     const totalWeight = perSlab.reduce((sum, w) => sum + w, 0) || 1;
     let doneWeight = 0;
     let lastDone = 0;
-    const built = await sweepPlan(
+    const builtPending = sweepPlan(
       workers,
       planned,
       viewpoint,
@@ -325,43 +360,66 @@ async function runBuild(
         sendPreview(seedHex, slab);
       },
     );
+    // Preview permits enter the shared queue before the lower-priority
+    // background, while spare capacity can still run both together.
+    backgroundReady = startBackgroundWork();
+    const built = await builtPending;
     slabs.push(...built);
   } else {
-    let rowsBehind = 0;
-    for (let i = 0; i < CATALOG_ROWS.length; i++) {
-      const row = CATALOG_ROWS[i];
-      const stage = rowStageName(row);
-      report(0.84 * rowsBehind, stage, 0);
-      const span = rowSlabSpan(row, viewpoint);
-      slabs.push(
-        sweepRowSlab(row, viewpoint, { ixLo: span.lo, ixHi: span.hi }, (fraction) =>
-          report(0.84 * (rowsBehind + weights[i] * fraction), stage, fraction),
-        ),
-      );
-      rowsBehind += weights[i];
+    const releasePending = acquireGeneration('sky-preview');
+    backgroundReady = startBackgroundWork();
+    const release = await releasePending;
+    try {
+      let rowsBehind = 0;
+      for (let i = 0; i < CATALOG_ROWS.length; i++) {
+        const row = CATALOG_ROWS[i];
+        const stage = rowStageName(row);
+        report(0.84 * rowsBehind, stage, 0);
+        const span = rowSlabSpan(row, viewpoint);
+        slabs.push(
+          sweepRowSlab(row, viewpoint, { ixLo: span.lo, ixHi: span.hi }, (fraction) =>
+            report(0.84 * (rowsBehind + weights[i] * fraction), stage, fraction),
+          ),
+        );
+        rowsBehind += weights[i];
+      }
+    } finally {
+      release();
     }
   }
 
-  if (backgroundReady) await backgroundReady;
-  const sky = assembleSkyField(viewpoint, seed, slabs, report, background);
-  (self as unknown as Worker).postMessage({ seedHex, sky }, [
-    sky.starDirs.buffer,
-    sky.starColors.buffer,
-    sky.starBrightness.buffer,
-    sky.starDistances.buffer,
-    sky.starTeffs.buffer,
-    sky.starSeeds.buffer,
-    sky.sectorBounds.buffer,
-    sky.sectorHomeBounds.buffer,
-    sky.constellationBounds.buffer,
-    sky.nebulaAtlas.buffer,
-    sky.glowData.buffer,
-    sky.riftData.buffer,
-    sky.darkAtlas.buffer,
-  ]);
+  backgroundReady ??= startBackgroundWork();
+  await backgroundReady;
+  const release = await acquireGeneration('background');
+  try {
+    const sky = assembleSkyField(viewpoint, seed, slabs, report, background);
+    (self as unknown as Worker).postMessage({ seedHex, sky }, [
+      sky.starDirs.buffer,
+      sky.starColors.buffer,
+      sky.starBrightness.buffer,
+      sky.starDistances.buffer,
+      sky.starTeffs.buffer,
+      sky.starSeeds.buffer,
+      sky.sectorBounds.buffer,
+      sky.sectorHomeBounds.buffer,
+      sky.constellationBounds.buffer,
+      sky.nebulaAtlas.buffer,
+      sky.glowData.buffer,
+      sky.riftData.buffer,
+      sky.darkAtlas.buffer,
+    ]);
+  } finally {
+    release();
+  }
 }
 
-self.onmessage = (event: MessageEvent<SkyRequest>) => {
+self.onmessage = (event: MessageEvent<SkyRequest | GenerationGrantMessage>) => {
+  if ('type' in event.data) {
+    const grant = generationGrants.get(event.data.requestId);
+    generationGrants.delete(event.data.requestId);
+    grant?.();
+    return;
+  }
   const { seedHex, viewpoint, galaxy } = event.data;
   const seed = seedFromHex(seedHex);
   if (galaxy) setGalaxySeed(seedFromHex(galaxy));

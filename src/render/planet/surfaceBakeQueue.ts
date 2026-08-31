@@ -1,4 +1,8 @@
 import type { Characterization } from '../../universe/planet/types';
+import {
+  scheduleGeneration,
+  type GenerationPriority,
+} from '../../app/generationScheduler';
 import type {
   SurfaceBakeRequest,
   SurfaceBakeResponse,
@@ -7,11 +11,13 @@ import type {
 interface BakeJob {
   request: SurfaceBakeRequest;
   resolve: (result: SurfaceBakeResponse) => void;
+  priority: GenerationPriority;
 }
 
 interface Baker {
   worker: Worker;
   active: BakeJob | null;
+  release: (() => void) | null;
 }
 
 /**
@@ -28,6 +34,8 @@ const POOL_SIZE = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) -
 let pool: Baker[] | null = null;
 let nextId = 1;
 const jobs: BakeJob[] = [];
+let scheduledDispatch: (() => void) | null = null;
+let scheduledPriority: GenerationPriority | null = null;
 
 // Focus rebuilds re-request every body in the system; the cache turns
 // those into instant hits instead of re-baking whole worlds. Budgeted
@@ -53,12 +61,33 @@ export function bakeQueueDepth(): number {
 }
 
 function pump(): void {
-  if (!pool) return;
-  for (const baker of pool) {
-    if (baker.active || jobs.length === 0) continue;
-    baker.active = jobs.shift()!;
-    baker.worker.postMessage(baker.active.request);
+  if (!pool || jobs.length === 0 || !pool.some((baker) => baker.active === null)) return;
+  const priority = jobs[0].priority;
+  if (scheduledDispatch) {
+    if (scheduledPriority === priority) return;
+    scheduledDispatch();
+    scheduledDispatch = null;
   }
+  scheduledPriority = priority;
+  let started = false;
+  const cancel = scheduleGeneration(priority, (release) => {
+    started = true;
+    scheduledDispatch = null;
+    scheduledPriority = null;
+    const baker = pool?.find((candidate) => candidate.active === null);
+    const job = jobs.shift();
+    if (!baker || !job) {
+      release();
+      pump();
+      return;
+    }
+    baker.active = job;
+    baker.release = release;
+    baker.worker.postMessage(job.request);
+    // Fill another idle baker if the global budget has room.
+    pump();
+  });
+  if (!started) scheduledDispatch = cancel;
 }
 
 function startPool(): Baker[] {
@@ -67,10 +96,12 @@ function startPool(): Baker[] {
     const worker = new Worker(new URL('../../workers/surfaceBakeWorker.ts', import.meta.url), {
       type: 'module',
     });
-    const baker: Baker = { worker, active: null };
+    const baker: Baker = { worker, active: null, release: null };
     worker.onmessage = (event: MessageEvent<SurfaceBakeResponse>) => {
       const job = baker.active;
       baker.active = null;
+      const release = baker.release;
+      baker.release = null;
       if (job) {
         const key = `${job.request.seedHex}:${job.request.size}`;
         cache.set(key, event.data);
@@ -83,6 +114,7 @@ function startPool(): Baker[] {
         inFlight.delete(key);
         job.resolve(event.data);
       }
+      release?.();
       pump();
     };
     bakers.push(baker);
@@ -112,7 +144,11 @@ export function requestSurfaceBake(
   pool ??= startPool();
   const request: SurfaceBakeRequest = { id: nextId++, seedHex, physical, size };
   const promise = new Promise<SurfaceBakeResponse>((resolve) => {
-    const job = { request, resolve };
+    const job: BakeJob = {
+      request,
+      resolve,
+      priority: priority ? 'visible-surface' : 'background',
+    };
     if (priority) jobs.unshift(job);
     else jobs.push(job);
     pump();
