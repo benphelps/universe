@@ -64,6 +64,7 @@ import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
 import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
 import { SPLIT_RATIO, TerrainChunkManager } from '../render/terrain/chunkManager';
+import { PointConeIndex } from '../render/picking/pointConeIndex';
 import { createCloudShell } from '../render/terrain/cloudShell';
 import { createMagmaMaterial, createOceanMaterial } from '../render/terrain/oceanSphere';
 import {
@@ -303,11 +304,13 @@ export class UnifiedViewer {
   /** Neighborhood stars (1 unit = 1 pc, already scene-frame) inside it. */
   private readonly pcGroup = new Group();
   private neighborPoints: Points | null = null;
+  private neighborPointIndex: PointConeIndex | null = null;
   /** The far catalog stars as true 3D points (direction × distance in
    *  the neighborhood frame): parallax-correct at any altitude, they
    *  persist through the backdrop→volume crossfade — only the
    *  unresolved-glow representations swap. */
   private farPoints: Points | null = null;
+  private farPointIndex: PointConeIndex | null = null;
   private hostIndex = -1;
   private hostStar: Star | null = null;
   private hostBelts: StarSystem['belts'] = [];
@@ -760,6 +763,15 @@ export class UnifiedViewer {
   private hovered: Pickable | null = null;
   private hoveredKey = '';
   private cursor: [number, number] | null = null;
+  /** Narrow-cone candidates replace projecting every catalog star. */
+  private readonly neighborHoverCandidates: number[] = [];
+  private readonly farHoverCandidates: number[] = [];
+  private readonly hoverRayOrigin = new Vector3();
+  private readonly hoverRayDirection = new Vector3();
+  private readonly hoverPcInverse = new Matrix4();
+  private hoverViewportWidth = 1;
+  private hoverViewportHeight = 1;
+  private tooltipHeight = 0;
   /** Live fingers by pointer id; the two-finger gestures read from here. */
   private readonly touches = new Map<number, { x: number; y: number }>();
   /** Span of the last two-finger frame, for the pinch delta. */
@@ -1078,6 +1090,8 @@ export class UnifiedViewer {
       // leave a phantom cursor naming whatever it ended over.
       if (e.pointerType === 'touch') return;
       const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+      this.hoverViewportWidth = Math.max(rect.width, 1);
+      this.hoverViewportHeight = Math.max(rect.height, 1);
       this.cursor = [e.clientX - rect.left, e.clientY - rect.top];
     });
     this.pipeline.renderer.domElement.addEventListener('pointerleave', () => {
@@ -1100,6 +1114,8 @@ export class UnifiedViewer {
       if (e.pointerType === 'touch') {
         if (this.multiTouched) return;
         const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+        this.hoverViewportWidth = Math.max(rect.width, 1);
+        this.hoverViewportHeight = Math.max(rect.height, 1);
         this.cursor = [e.clientX - rect.left, e.clientY - rect.top];
         this.tapPending = this.cursor;
         return;
@@ -1307,6 +1323,7 @@ export class UnifiedViewer {
         this.farPoints.frustumCulled = false;
         this.farPoints.renderOrder = -2;
         this.pcGroup.add(this.farPoints);
+        this.farPointIndex = new PointConeIndex(positions, farCount);
       }
     });
   }
@@ -1750,17 +1767,28 @@ export class UnifiedViewer {
 
   /** Find the pickable nearest the cursor and drive the tooltip. */
   private updateHover(): void {
+    // No probe means no projection work and, importantly, no layout read.
+    if (!this.cursor || this.dragging || this.flight.active) {
+      this.hovered = null;
+      if (this.hoveredKey) {
+        this.hoveredKey = '';
+        this.tooltip.style.display = 'none';
+        this.tooltipLine.setAttribute('visibility', 'hidden');
+      }
+      return;
+    }
     // Every projection below reads the camera's world matrix, which the
     // renderer only refreshes later in the frame — so without this the
     // scan runs against where the camera was pointing last frame. Still,
     // that is invisible; turning your head, it is the whole hit radius,
     // and nothing in the sky can be reliably aimed at.
     this.camera.updateMatrixWorld();
-    const rect = this.pipeline.renderer.domElement.getBoundingClientRect();
+    const width = this.hoverViewportWidth;
+    const height = this.hoverViewportHeight;
     let best: Pickable | null = null;
     let softStarBest = false;
     // In flight the cursor is the head, not a probe.
-    if (this.cursor && !this.dragging && !this.flight.active) {
+    {
       const [cx, cy] = this.cursor;
       const v = new Vector3();
       // A fingertip covers more sky than a cursor point does.
@@ -1768,8 +1796,8 @@ export class UnifiedViewer {
       const consider = (pickable: Pickable, bias: number): void => {
         v.set(pickable.x, pickable.y, pickable.z).project(this.camera);
         if (v.z > 1 || v.z < -1) return;
-        const sx = (v.x * 0.5 + 0.5) * rect.width;
-        const sy = (-v.y * 0.5 + 0.5) * rect.height;
+        const sx = (v.x * 0.5 + 0.5) * width;
+        const sy = (-v.y * 0.5 + 0.5) * height;
         const d = Math.hypot(sx - cx, sy - cy) * bias;
         if (d >= bestPx) return;
         if (this.occluded(pickable.x, pickable.y, pickable.z)) return;
@@ -1778,13 +1806,40 @@ export class UnifiedViewer {
       };
       for (const pickable of this.pickables) consider(pickable, 1);
 
-      // Neighborhood stars: bulk scan of the 3D point field.
-      if (this.neighborPoints && this.system) {
+      // Neighborhood stars: the point index reduces the full 3D field
+      // to the narrow cone around the cursor before exact projection.
+      if (this.neighborPoints && this.neighborPointIndex && this.system) {
         const positions = this.neighborPoints.geometry.getAttribute('position') as BufferAttribute;
         this.pcGroup.updateWorldMatrix(true, false);
         const matrix = this.pcGroup.matrixWorld;
+        this.hoverPcInverse.copy(matrix).invert();
+        this.hoverRayOrigin.copy(this.camera.position).applyMatrix4(this.hoverPcInverse);
+        this.hoverRayDirection
+          .set((cx / width) * 2 - 1, -(cy / height) * 2 + 1, 0.5)
+          .unproject(this.camera)
+          .sub(this.camera.position)
+          .normalize()
+          .transformDirection(this.hoverPcInverse);
+        // Screen-space angular scale is greatest at the optical axis;
+        // this bound is therefore conservative toward the viewport edge.
+        const coneTangent =
+          (2 * Math.tan((this.camera.fov * Math.PI) / 360) * STAR_SNAP_PX * 1.05) / height;
+        const ray = this.hoverRayDirection;
+        const origin = this.hoverRayOrigin;
+        const nearby = this.neighborHoverCandidates;
+        nearby.length = 0;
+        this.neighborPointIndex.query(
+          origin.x,
+          origin.y,
+          origin.z,
+          ray.x,
+          ray.y,
+          ray.z,
+          coneTangent,
+          nearby,
+        );
         let bestStar = -1;
-        for (let i = 0; i < positions.count; i++) {
+        for (const i of nearby) {
           v.fromBufferAttribute(positions, i).applyMatrix4(matrix);
           const wx = v.x;
           const wy = v.y;
@@ -1792,8 +1847,8 @@ export class UnifiedViewer {
           v.applyMatrix4(this.camera.matrixWorldInverse);
           if (v.z >= 0) continue;
           v.applyMatrix4(this.camera.projectionMatrix);
-          const sx = (v.x * 0.5 + 0.5) * rect.width;
-          const sy = (-v.y * 0.5 + 0.5) * rect.height;
+          const sx = (v.x * 0.5 + 0.5) * width;
+          const sy = (-v.y * 0.5 + 0.5) * height;
           const px = Math.hypot(sx - cx, sy - cy);
           if (px > STAR_SNAP_PX) continue;
           const d = px * 1.5;
@@ -1808,19 +1863,31 @@ export class UnifiedViewer {
         // They are true 3D points, mostly beyond the far plane (the
         // shader clamps their depth so they still draw), so the only
         // valid rejection is behind-the-camera — never the z range.
-        if (this.skyData && this.farPoints) {
+        if (this.skyData && this.farPoints && this.farPointIndex) {
           const sky = this.skyData;
           const farPositions = this.farPoints.geometry.getAttribute(
             'position',
           ) as BufferAttribute;
+          const far = this.farHoverCandidates;
+          far.length = 0;
+          this.farPointIndex.query(
+            origin.x,
+            origin.y,
+            origin.z,
+            ray.x,
+            ray.y,
+            ray.z,
+            coneTangent,
+            far,
+          );
           let bestFar = -1;
-          for (let i = 0; i < farPositions.count; i++) {
+          for (const i of far) {
             v.fromBufferAttribute(farPositions, i).applyMatrix4(matrix);
             v.applyMatrix4(this.camera.matrixWorldInverse);
             if (v.z >= 0) continue;
             v.applyMatrix4(this.camera.projectionMatrix);
-            const sx = (v.x * 0.5 + 0.5) * rect.width;
-            const sy = (-v.y * 0.5 + 0.5) * rect.height;
+            const sx = (v.x * 0.5 + 0.5) * width;
+            const sy = (-v.y * 0.5 + 0.5) * height;
             const px = Math.hypot(sx - cx, sy - cy);
             if (px > STAR_SNAP_PX) continue;
             const d = px * 1.45;
@@ -1926,8 +1993,8 @@ export class UnifiedViewer {
       const [cx, cy] = this.cursor;
       const sky = this.skyData;
       const ray = new Vector3(
-        (cx / rect.width) * 2 - 1,
-        -(cy / rect.height) * 2 + 1,
+        (cx / width) * 2 - 1,
+        -(cy / height) * 2 + 1,
         0.5,
       )
         .unproject(this.camera)
@@ -2012,19 +2079,20 @@ export class UnifiedViewer {
         ${action ? `<div class="tip-action">${action}</div>` : ''}
       `;
       this.tooltip.style.display = 'block';
+      this.tooltipHeight = this.tooltip.offsetHeight;
     }
     const v = new Vector3(best.x, best.y, best.z).project(this.camera);
-    const sx = (v.x * 0.5 + 0.5) * rect.width;
-    const sy = (-v.y * 0.5 + 0.5) * rect.height;
-    const boxX = Math.max(8, Math.min(rect.width - 270, sx + 22));
-    const boxY = Math.max(8, Math.min(rect.height - 90, sy - 48));
+    const sx = (v.x * 0.5 + 0.5) * width;
+    const sy = (-v.y * 0.5 + 0.5) * height;
+    const boxX = Math.max(8, Math.min(width - 270, sx + 22));
+    const boxY = Math.max(8, Math.min(height - 90, sy - 48));
     this.tooltip.style.left = `${boxX}px`;
     this.tooltip.style.top = `${boxY}px`;
     this.tooltipLine.setAttribute('visibility', 'visible');
     this.tooltipLine.setAttribute('x1', String(sx));
     this.tooltipLine.setAttribute('y1', String(sy));
     this.tooltipLine.setAttribute('x2', String(boxX + 4));
-    this.tooltipLine.setAttribute('y2', String(boxY + this.tooltip.offsetHeight - 4));
+    this.tooltipLine.setAttribute('y2', String(boxY + this.tooltipHeight - 4));
   }
 
   /**
@@ -2693,6 +2761,7 @@ export class UnifiedViewer {
       this.neighborPoints.geometry.dispose();
       (this.neighborPoints.material as ShaderMaterial).dispose();
       this.neighborPoints = null;
+      this.neighborPointIndex = null;
     }
     const hood = computeNeighborhood(seedFromHex(this.system.seedHex), this.viewpointPc);
     this.neighbors = hood.neighbors;
@@ -2700,6 +2769,11 @@ export class UnifiedViewer {
     this.neighborPositionsPc = hood.positionsPc;
     this.neighborGalacticPc = hood.galacticPc;
     this.neighborPoints = createNeighborStars(hood, PC_KM);
+    const positions = this.neighborPoints.geometry.getAttribute('position') as BufferAttribute;
+    this.neighborPointIndex = new PointConeIndex(
+      positions.array as ArrayLike<number>,
+      positions.count,
+    );
     this.pcGroup.add(this.neighborPoints);
   }
 
@@ -2742,12 +2816,14 @@ export class UnifiedViewer {
       this.neighborPoints.geometry.dispose();
       (this.neighborPoints.material as ShaderMaterial).dispose();
       this.neighborPoints = null;
+      this.neighborPointIndex = null;
     }
     if (this.farPoints) {
       this.pcGroup.remove(this.farPoints);
       this.farPoints.geometry.dispose();
       (this.farPoints.material as ShaderMaterial).dispose();
       this.farPoints = null;
+      this.farPointIndex = null;
     }
     this.neighbors = [];
     for (const child of [
@@ -2888,6 +2964,8 @@ export class UnifiedViewer {
   private resize(): void {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
+    this.hoverViewportWidth = Math.max(width, 1);
+    this.hoverViewportHeight = Math.max(height, 1);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.pipeline.setSize(width, height);
