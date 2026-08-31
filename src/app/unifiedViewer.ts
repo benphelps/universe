@@ -112,9 +112,13 @@ import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { holeDonors } from '../universe/system/holeDonors';
 import { rotateToScene, sceneFromGalaxy, sceneFromUpAxis } from '../universe/galaxy/orientation';
-import { meanPopulationLuminosity, type SkyField } from '../universe/galaxy/skyfield';
+import {
+  meanPopulationLuminosity,
+  type SkyField,
+  type SkyPreview,
+} from '../universe/galaxy/skyfield';
 import { getGalacticLandmarks } from './landmarkService';
-import { cancelSkyBuilds, getSkyField, skyPending, skyProgress } from './skyService';
+import { cancelSkyBuilds, getSkyField, skyPending, skyProgress, watchSkyBuild } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
 import { fmt } from './ui/format';
@@ -316,6 +320,11 @@ export class UnifiedViewer {
   private beltMaterials: ShaderMaterial[] = [];
   private cometObjects: CometObject[] = [];
   private backdrop: StarfieldBackdrop | null = null;
+  /** Slabs of the sky drawn while the rest of it is still being swept. */
+  private skyPreview: Points[] = [];
+  /** The rotation those slabs are placed with, known before the field
+   *  itself is: the galaxy's frame does not wait on the sweep. */
+  private skyPreviewFrame: Float32Array | null = null;
   private skyData: SkyField | null = null;
   /**
    * Ground frame of the focused body: spin about Y composed with the
@@ -1188,6 +1197,9 @@ export class UnifiedViewer {
     this.buildNeighborhood();
 
     const galaxyOrientation = sceneFromGalaxy(seedFromHex(system.seedHex));
+    // The same rotation the finished field will carry, so a slab drawn
+    // early sits exactly where its star ends up.
+    this.skyPreviewFrame = galaxyOrientation;
     this.galaxyVolume = new GalaxyVolume(viewpoint, galaxyOrientation);
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
     this.scene.add(this.galaxyVolume.mesh);
@@ -1221,8 +1233,18 @@ export class UnifiedViewer {
       this.pcGroup.add(this.landmarkMarkers);
     });
 
+    // Slabs land one at a time over what can be a minute in the bulge.
+    // Each one is drawn as it arrives, so the sky thickens in front of
+    // the traveler instead of a progress bar counting toward a field
+    // that appears all at once at the end.
+    watchSkyBuild(system.seedHex, (preview) => {
+      if (this.disposed || this.system !== system) return;
+      this.addSkyPreview(preview);
+    });
+
     getSkyField(system.seedHex, viewpoint).then((sky) => {
       if (this.disposed || this.system !== system) return;
+      this.clearSkyPreview();
       this.skyData = sky;
       // Every resolved star is 3D content now (near field above, far
       // field here); the backdrop keeps only the unresolved sky — glow,
@@ -1266,6 +1288,57 @@ export class UnifiedViewer {
         this.pcGroup.add(this.farPoints);
       }
     });
+  }
+
+  /**
+   * One slab of the sky, drawn where it will finally sit.
+   *
+   * Its own Points rather than a place in a growing buffer: the final
+   * count is not known until the sweep ends, and a slab is a few
+   * thousand stars that will be thrown away inside a minute. The draw
+   * calls collect — a hundred at the worst — and all of them go the
+   * moment the assembled field arrives to replace them with one.
+   */
+  private addSkyPreview(preview: SkyPreview): void {
+    if (!this.skyPreviewFrame) return;
+    const count = preview.brightness.length;
+    if (count === 0) return;
+    const positions = new Float32Array(count * 3);
+    const luminosities = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      const d = preview.distances[i];
+      const [x, y, z] = rotateToScene(
+        this.skyPreviewFrame,
+        preview.dirs[i * 3] * d,
+        preview.dirs[i * 3 + 1] * d,
+        preview.dirs[i * 3 + 2] * d,
+      );
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = z;
+      luminosities[i] = preview.brightness[i] * d * d;
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(positions, 3));
+    geometry.setAttribute('starColor', new BufferAttribute(preview.colors, 3));
+    geometry.setAttribute('luminosity', new BufferAttribute(luminosities, 1));
+    geometry.setAttribute('aRadiusKm', new BufferAttribute(new Float32Array(count), 1));
+    geometry.boundingSphere = new Sphere(new Vector3(), 1e13);
+    const points = new Points(geometry, createStarPointsMaterial(PC_KM));
+    points.frustumCulled = false;
+    points.renderOrder = -2;
+    this.skyPreview.push(points);
+    this.pcGroup.add(points);
+  }
+
+  /** Drop the slabs: the assembled field draws all of them as one. */
+  private clearSkyPreview(): void {
+    for (const points of this.skyPreview) {
+      this.pcGroup.remove(points);
+      points.geometry.dispose();
+      (points.material as ShaderMaterial).dispose();
+    }
+    this.skyPreview = [];
   }
 
   /**
@@ -2678,6 +2751,9 @@ export class UnifiedViewer {
       this.backdrop.dispose();
       this.backdrop = null;
     }
+    // Slabs of a sky nobody is standing under any more.
+    this.clearSkyPreview();
+    this.skyPreviewFrame = null;
     if (this.galaxyVolume) {
       this.scene.remove(this.galaxyVolume.mesh);
       this.galaxyVolume.dispose();

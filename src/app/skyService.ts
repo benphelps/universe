@@ -1,7 +1,7 @@
 import { seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { galaxySeed } from '../universe/galaxy/galaxySeed';
-import type { SkyField } from '../universe/galaxy/skyfield';
+import type { SkyField, SkyPreview } from '../universe/galaxy/skyfield';
 
 /**
  * One shared sky-building worker with a small per-seed cache, so every
@@ -10,6 +10,8 @@ import type { SkyField } from '../universe/galaxy/skyfield';
 const cache = new Map<string, Promise<SkyField>>();
 let worker: Worker | null = null;
 const waiting = new Map<string, (sky: SkyField) => void>();
+/** Who wants to draw slabs as they land, per seed. */
+const watching = new Map<string, (preview: SkyPreview) => void>();
 
 export interface SkyBuildProgress {
   fraction: number;
@@ -30,6 +32,7 @@ function ensureWorker(): Worker {
       progress?: number;
       stage?: string;
       stageFraction?: number;
+      dirs?: Float32Array;
     }>,
   ) => {
     if (event.data.progress !== undefined) {
@@ -40,8 +43,14 @@ function ensureWorker(): Worker {
       });
       return;
     }
+    // A slab of far stars, on its way to the screen ahead of the rest.
+    if (event.data.dirs) {
+      watching.get(event.data.seedHex)?.(event.data as unknown as SkyPreview);
+      return;
+    }
     waiting.get(event.data.seedHex)?.(event.data.sky!);
     waiting.delete(event.data.seedHex);
+    watching.delete(event.data.seedHex);
     progress.delete(event.data.seedHex);
   };
   return worker;
@@ -76,6 +85,7 @@ export function cancelSkyBuilds(): void {
   if (!worker) return;
   worker.terminate();
   worker = null;
+  watching.clear();
   // A promise whose worker is gone never settles, so it must not be
   // left in the cache for the next caller to await forever.
   for (const seedHex of waiting.keys()) {
@@ -85,6 +95,19 @@ export function cancelSkyBuilds(): void {
   }
   waiting.clear();
   progress.clear();
+}
+
+/**
+ * Draw this build's stars as its slabs land, rather than waiting for
+ * the whole field. Registered before the request so nothing is missed;
+ * dropped when the field arrives, since by then the caller has all of
+ * it. A cached sky never streams — there is nothing to wait through.
+ */
+export function watchSkyBuild(
+  seedHex: string,
+  onPreview: (preview: SkyPreview) => void,
+): void {
+  watching.set(seedHex, onPreview);
 }
 
 export function getSkyField(seedHex: string, viewpoint: GalacticPosition): Promise<SkyField> {

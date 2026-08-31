@@ -10,6 +10,7 @@ import {
   rowSlabSpan,
   rowStageName,
   sweepRowSlab,
+  type SkyPreview,
   type SkyProgress,
   type SweepBounds,
   type SweepSlab,
@@ -75,6 +76,31 @@ function planBuild(viewpoint: GalacticPosition, target: number): PlannedSlab[] {
 }
 
 /**
+ * The order to hand the plan out in, heaviest star first.
+ *
+ * Which slab a worker takes when has nothing to do with the sky that
+ * comes out — results are filed by index, so the assembled field is
+ * the serial sweep's whichever way this sorts. What it decides is the
+ * order the sky arrives in on screen, and the catalogue is banded by
+ * mass: sweeping the giants and the hot stars before the dwarfs puts
+ * the stars a traveler would actually notice up first and thickens the
+ * faint field in behind them, rather than laying down a haze and
+ * hanging the landmarks on it at the end.
+ *
+ * It costs nothing to do this. The pool already runs at its own
+ * makespan on this plan, and the heaviest row is second in the order
+ * either way, so nothing is left waiting on a straggler.
+ */
+function dispatchOrder(planned: PlannedSlab[]): number[] {
+  return planned
+    .map((_, index) => index)
+    .sort((a, b) => {
+      const byMass = planned[b].row.massHi - planned[a].row.massHi;
+      return byMass !== 0 ? byMass : a - b;
+    });
+}
+
+/**
  * Run the whole plan across the pool. Slabs come back in whatever
  * order they finish and are filed by index, so the assembled sky is
  * the serial sweep's regardless of who got which piece or when.
@@ -84,17 +110,18 @@ function sweepPlan(
   planned: PlannedSlab[],
   viewpoint: GalacticPosition,
   galaxy: string,
-  onChunk: (done: number, firstUnfinished: number) => void,
+  onSlab: (done: number, furthestBehind: number, slab: SweepSlab) => void,
 ): Promise<SweepSlab[]> {
+  const order = dispatchOrder(planned);
   return new Promise((resolve) => {
     const slabs: SweepSlab[] = new Array(planned.length);
     const filled = new Array<boolean>(planned.length).fill(false);
     let next = 0;
     let done = 0;
-    let firstUnfinished = 0;
+    let furthestBehind = 0;
     const dispatch = (worker: Worker): void => {
-      if (next >= planned.length) return;
-      const taskId = next++;
+      if (next >= order.length) return;
+      const taskId = order[next++];
       const task: SweepTask = {
         taskId,
         row: planned[taskId].row,
@@ -108,8 +135,8 @@ function sweepPlan(
         done++;
         // The stage the build is furthest behind on: the row that owns
         // the earliest slab still outstanding.
-        while (firstUnfinished < planned.length && filled[firstUnfinished]) firstUnfinished++;
-        onChunk(done, Math.min(firstUnfinished, planned.length - 1));
+        while (furthestBehind < planned.length && filled[furthestBehind]) furthestBehind++;
+        onSlab(done, Math.min(furthestBehind, planned.length - 1), event.data.slab);
         if (done === planned.length) resolve(slabs);
         else dispatch(worker);
       };
@@ -117,6 +144,39 @@ function sweepPlan(
     };
     for (const worker of workers) dispatch(worker);
   });
+}
+
+/**
+ * Ship a finished slab's far stars for the traveler to look at while
+ * the rest is still being swept.
+ *
+ * A copy, not the slab itself: the coordinator still needs these to
+ * assemble the field, and transferring them would leave it holding
+ * detached buffers. Only what a star needs to be drawn goes — where it
+ * is, what colour, how bright, how far — not the seeds and effective
+ * temperatures the finished field carries for everything else.
+ *
+ * Near stars are left out. They are the thirty-parsec neighbourhood,
+ * which is on screen as its own points before the sky build even
+ * starts, and sending them again would only double what is already
+ * there.
+ */
+function sendPreview(seedHex: string, slab: SweepSlab): void {
+  const { far } = slab;
+  if (far.brightness.length === 0) return;
+  const preview: SkyPreview = {
+    seedHex,
+    dirs: far.dirs.slice(),
+    colors: far.colors.slice(),
+    brightness: far.brightness.slice(),
+    distances: far.distances.slice(),
+  };
+  (self as unknown as Worker).postMessage(preview, [
+    preview.dirs.buffer,
+    preview.colors.buffer,
+    preview.brightness.buffer,
+    preview.distances.buffer,
+  ]);
 }
 
 async function runBuild(
@@ -167,12 +227,19 @@ async function runBuild(
     const totalWeight = perSlab.reduce((sum, w) => sum + w, 0) || 1;
     let doneWeight = 0;
     let lastDone = 0;
-    const built = await sweepPlan(workers, planned, viewpoint, galaxy, (done, firstUnfinished) => {
-      for (let i = lastDone; i < done; i++) doneWeight += perSlab[i] ?? 0;
-      lastDone = done;
-      const stage = rowStageName(planned[firstUnfinished].row);
-      report(0.84 * (doneWeight / totalWeight), stage, done / planned.length);
-    });
+    const built = await sweepPlan(
+      workers,
+      planned,
+      viewpoint,
+      galaxy,
+      (done, furthestBehind, slab) => {
+        for (let i = lastDone; i < done; i++) doneWeight += perSlab[i] ?? 0;
+        lastDone = done;
+        const stage = rowStageName(planned[furthestBehind].row);
+        report(0.84 * (doneWeight / totalWeight), stage, done / planned.length);
+        sendPreview(seedHex, slab);
+      },
+    );
     slabs.push(...built);
   } else {
     let rowsBehind = 0;

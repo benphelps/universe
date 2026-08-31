@@ -245,6 +245,19 @@ export interface SweepSlab {
   far: PackedStars;
 }
 
+/**
+ * One slab's worth of far stars, on their way to the screen while the
+ * rest of the sky is still being swept. Enough to draw them and
+ * nothing else.
+ */
+export interface SkyPreview {
+  seedHex: string;
+  dirs: Float32Array;
+  colors: Float32Array;
+  brightness: Float32Array;
+  distances: Float32Array;
+}
+
 /** The ix-slab span a row's sweep covers — how a coordinator splits
  *  the work. Mirrors sweepRowStars' own grid math. */
 export function rowSlabSpan(
