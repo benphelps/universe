@@ -79,7 +79,7 @@ function FocusPlate({ snap }: { snap: AppSnapshot }): ReactNode {
     return <Plate spec={asteroidPlateSpec(snap.system, snap.beltPick, 'belt member')} />;
   }
   const spec = focusSpec(snap);
-  return <Plate spec={spec} mark={markFor(spec.title, spec.subtitle)} />;
+  return <Plate spec={spec} mark={markFor(spec)} />;
 }
 
 function focusSpec(snap: AppSnapshot): PlateSpec {

@@ -1,4 +1,23 @@
+import type { Badge, Figure } from './ui/bodyRow';
 import type { ViewMode } from './ui/sidebar';
+
+/**
+ * How a body's own row read at the moment it was marked.
+ *
+ * A galaxy locks at first use, so a session standing anywhere else can
+ * never regenerate the world a mark points at to measure it — and the
+ * only marks worth travelling to are usually the ones somewhere else.
+ * Without this a saved world came back as a bare name in a list where
+ * everything around it carried its mass and its class. So the row is
+ * kept with the address: the traveler saw those figures when they
+ * marked it, and they are the figures it still has.
+ */
+export interface SavedRow {
+  color?: string;
+  kind?: string;
+  figures?: Figure[];
+  badges?: Badge[];
+}
 
 /**
  * A bookmark is a travel link: everything the URL needs to stand at a
@@ -19,6 +38,9 @@ export interface Bookmark {
   at?: string;
   /** Set for the galaxy's centre — a place with no system in it. */
   core?: boolean;
+  /** The body as it read when it was saved; absent on marks made
+   *  before the survey started keeping them. */
+  row?: SavedRow;
 }
 
 const STORE_KEY = 'universe-bookmarks';

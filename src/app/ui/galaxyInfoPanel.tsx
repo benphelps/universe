@@ -5,6 +5,7 @@ import type { Star } from '../../universe/star/types';
 import { travelTo, type AppSnapshot } from '../store';
 import { fmt } from './format';
 import { CoreDestination } from './nucleusPanel';
+import { BodyRow } from './bodyRow';
 import { cssColor, type PlateSpec } from './plate';
 
 /** Galaxy level's plate: the current star's full galactic address. */
@@ -17,6 +18,12 @@ export function galaxyPlateSpec(
     title: current.designation,
     subtitle: `${current.spectralType} · ${address.sector} Sector`,
     color: cssColor(current.linearRgb),
+    row: {
+      color: cssColor(current.linearRgb),
+      name: current.designation,
+      kind: current.spectralType,
+      figures: [[`${(address.radiusPc / 1000).toFixed(2)}`, 'kpc']],
+    },
     rows: [
       ['Region', address.label.split(' · ')[1]],
       ['Nearest arm', `the ${address.arm} Arm`],
@@ -53,28 +60,21 @@ export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
       <CoreDestination active={snap.coreView} />
       <h2>Landmarks</h2>
       {landmarks ? (
-        <table className="list">
-          <tbody>
-            <tr>
-              <th>complex</th>
-              <th>core</th>
-              <th className="n">kpc</th>
-            </tr>
-            {sorted.map(({ landmark, kpc }) => (
-              <tr
-                key={landmark.seedHex}
-                className="pick poi"
-                onClick={() =>
-                  travelTo({ seedHex: landmark.seedHex, positionPc: landmark.positionPc })
-                }
-              >
-                <td>{landmark.name} Complex</td>
-                <td>{fmt(landmark.radiusPc)} pc</td>
-                <td className="n">{fmt(kpc)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        sorted.map(({ landmark, kpc }) => (
+          <BodyRow
+            key={landmark.seedHex}
+            spec={{
+              name: `${landmark.name} Complex`,
+              kind: 'complex',
+              figures: [
+                [fmt(landmark.radiusPc), 'pc'],
+                [fmt(kpc), 'kpc'],
+              ],
+              onClick: () =>
+                travelTo({ seedHex: landmark.seedHex, positionPc: landmark.positionPc }),
+            }}
+          />
+        ))
       ) : (
         <div className="empty">charting the landmark complexes…</div>
       )}

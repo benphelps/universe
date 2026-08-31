@@ -10,6 +10,7 @@ import { radiativeEfficiency } from '../../core/physics/blackHole';
 import { solarMassesPerYear, type Donor } from '../../universe/star/compactAccretion';
 import { stellarBlackHole } from '../../universe/star/stellarHole';
 import type { StarSystem } from '../../universe/system/types';
+import { BodyRow, type BodyRowSpec } from './bodyRow';
 import { fmt, fmtDays, fmtYears } from './format';
 import { cssColor, type PlateSpec } from './plate';
 
@@ -77,6 +78,15 @@ function holePlateSpec(star: Star, system: StarSystem, index: number): PlateSpec
     title: star.designation,
     subtitle: `${star.spectralType} · black hole`,
     color: 'rgb(90, 96, 120)',
+    row: {
+      color: 'rgb(90, 96, 120)',
+      name: star.designation,
+      kind: 'black hole',
+      figures: [
+        [fmt(star.mass), 'M☉'],
+        [fmt(2 * hole.shadowRadiusM / 1000), 'km'],
+      ],
+    },
     rows,
   };
 }
@@ -151,6 +161,7 @@ export function starPlateSpec(star: Star, system?: StarSystem, index = 0): Plate
     title: star.designation,
     subtitle: `${star.spectralType} · ${STAGE_LABEL[star.stage]}`,
     color: cssColor(star.linearRgb),
+    row: starRowSpec(star),
     rows,
   };
 }
@@ -190,59 +201,47 @@ export function StarLevel({ snap }: { snap: AppSnapshot }): ReactNode {
     index: number,
     orbit: { semiMajorAxisAu: number; periodDays: number; eccentricity: number } | null,
   ): ReactNode => (
-    <tr
+    <BodyRow
       key={index}
-      className={`pick${index === companionIndex ? ' here' : ''}`}
-      onClick={() => selectStar(index)}
-    >
-      <td>
-        <span className="swatch" style={{ background: cssColor(rowStar.linearRgb) }} />{' '}
-        {rowStar.spectralType}
-      </td>
-      <td className="n">{fmt(rowStar.mass)}</td>
-      <td className="n">{orbit ? fmt(orbit.semiMajorAxisAu) : '—'}</td>
-      <td className="n">{orbit ? fmtDays(orbit.periodDays) : '—'}</td>
-      <td className="n">{orbit ? fmt(orbit.eccentricity, 2) : '—'}</td>
-    </tr>
+      spec={starRowSpec(rowStar, {
+        figures: orbit
+          ? [
+              [fmt(rowStar.mass), 'M☉'],
+              [fmt(orbit.semiMajorAxisAu), 'AU'],
+            ]
+          : [[fmt(rowStar.mass), 'M☉']],
+        here: index === companionIndex,
+        onClick: () => selectStar(index),
+      })}
+    />
   );
 
   return (
     <>
       <h2>System stars · {primary.companions.length + 1}</h2>
       {primary.companions.length > 0 ? (
-        <table className="list">
-          <tbody>
-            <tr>
-              <th></th>
-              <th className="n">M☉</th>
-              <th className="n">AU</th>
-              <th className="n">period</th>
-              <th className="n">e</th>
-            </tr>
-            {starRow(primary, 0, null)}
-            {primary.companions.map(({ star: companion, orbit }, i) =>
-              starRow(companion, i + 1, orbit),
-            )}
-          </tbody>
-        </table>
+        <>
+          {starRow(primary, 0, null)}
+          {primary.companions.map(({ star: companion, orbit }, i) =>
+            starRow(companion, i + 1, orbit),
+          )}
+        </>
       ) : (
         <div className="empty">a single star — no companions</div>
       )}
       {neighbors.length > 0 && (
         <>
           <h2>Travel to · within {NEIGHBOR_RADIUS_PC} pc</h2>
-          <table className="list">
-            <tbody>
-              <tr>
-                <th>type</th>
-                <th>system</th>
-                <th className="n">pc</th>
-              </tr>
-              {shown.map((neighbor, i) => (
-                <TravelRow key={neighbor.seedHex} neighbor={neighbor} star={shownStars[i]} />
-              ))}
-            </tbody>
-          </table>
+          {shown.map((neighbor, i) => (
+            <BodyRow
+              key={neighbor.seedHex}
+              spec={starRowSpec(shownStars[i], {
+                name: shortDesignation(shownStars[i].designation),
+                figures: [[fmt(neighbor.distancePc, 3), 'pc']],
+                onClick: () => travelTo(neighbor),
+              })}
+            />
+          ))}
           {neighbors.length > shown.length && (
             <div className="empty">
               nearest {shown.length} of {neighbors.length} — glints in the sky travel too
@@ -254,15 +253,27 @@ export function StarLevel({ snap }: { snap: AppSnapshot }): ReactNode {
   );
 }
 
-function TravelRow({ neighbor, star }: { neighbor: Neighbor; star: Star }): ReactNode {
-  return (
-    <tr className="pick travel" onClick={() => travelTo(neighbor)}>
-      <td>
-        <span className="swatch" style={{ background: cssColor(star.linearRgb) }} />{' '}
-        {star.spectralType}
-      </td>
-      <td>{shortDesignation(star.designation)}</td>
-      <td className="n">{fmt(neighbor.distancePc, 3)}</td>
-    </tr>
-  );
+/**
+ * A star as a row. The mark is the star's own light and the kind is its
+ * spectral type, so the same star reads the same whether it is a
+ * companion here, a neighbour to travel to, or a mark saved in the
+ * points of interest.
+ */
+export function starRowSpec(
+  star: Star,
+  options: {
+    name?: string;
+    figures?: BodyRowSpec['figures'];
+    here?: boolean;
+    onClick?: () => void;
+  } = {},
+): BodyRowSpec {
+  return {
+    color: cssColor(star.linearRgb),
+    name: options.name ?? star.designation,
+    kind: star.spectralType,
+    figures: options.figures ?? [[fmt(star.mass), 'M☉']],
+    here: options.here,
+    onClick: options.onClick,
+  };
 }

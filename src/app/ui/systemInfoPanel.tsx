@@ -1,10 +1,9 @@
 import type { ReactNode } from 'react';
-import { orbitalPeriod } from '../../core/math/orbit';
 import { AU } from '../../core/physics/constants';
-import { companionPlanetMu, planetMu } from '../../universe/system/generate';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { host, selectPlanet, type AppSnapshot } from '../store';
-import { fmt, fmtDays } from './format';
+import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
+import { fmt } from './format';
 import { cssColor, type PlateSpec } from './plate';
 
 const CLASS_LABEL: Record<Planet['class'], string> = {
@@ -22,6 +21,41 @@ export const CLASS_COLOR: Record<Planet['class'], string> = {
   'ice-giant': '#5fb0c9',
   'gas-giant': '#d9b380',
 };
+
+/**
+ * A planet as a row. Exported because a marked planet in the points of
+ * interest is the same planet: it has to arrive with the same mark,
+ * the same kind, the same figures and the same badges it has here, and
+ * the only way to be sure of that is for both to ask this.
+ *
+ * Period and eccentricity are the two the row cannot carry — the name
+ * has to stay whole inside 390 px — and they are on the plate, which
+ * is one click away and has room for everything.
+ */
+export function planetRowSpec(
+  planet: Planet,
+  options: { name?: string; here?: boolean; onClick?: () => void } = {},
+): BodyRowSpec {
+  const badges: Badge[] = [];
+  if (planet.inHabitableZone) badges.push({ tone: 'hz', label: 'HZ' });
+  if (planet.physical.climate.biosphere) badges.push({ tone: 'bio', label: 'biosphere' });
+  if (planet.tidallyLocked) badges.push({ tone: 'lock', label: 'lock' });
+  if (planet.resonanceWithInner) {
+    badges.push({ tone: 'res', label: planet.resonanceWithInner });
+  }
+  return {
+    color: CLASS_COLOR[planet.class],
+    name: options.name ?? planet.name,
+    kind: CLASS_LABEL[planet.class],
+    figures: [
+      [fmt(planet.physical.bulk.massEarth), 'M⊕'],
+      [fmt(planet.elements.semiMajorAxis / AU), 'AU'],
+    ],
+    badges,
+    here: options.here,
+    onClick: options.onClick,
+  };
+}
 
 /** System level's plate: the host star and its formation lines. */
 export function systemPlateSpec(system: StarSystem, hostIndex: number): PlateSpec {
@@ -41,6 +75,15 @@ export function systemPlateSpec(system: StarSystem, hostIndex: number): PlateSpe
     title: star.designation,
     subtitle: `${star.spectralType}${configuration} · ${planets.length} planets`,
     color: cssColor(star.linearRgb),
+    row: {
+      color: cssColor(star.linearRgb),
+      name: star.designation,
+      kind: star.spectralType,
+      figures: [
+        [fmt(star.mass), 'M☉'],
+        [String(planets.length), 'planets'],
+      ],
+    },
     rows: [
       ['Star', `${fmt(star.mass)} M☉ · ${fmt(star.luminosity)} L☉`],
       ['Habitable zone', `${fmt(zones.habitableInnerAu)}–${fmt(zones.habitableOuterAu)} AU`],
@@ -62,51 +105,15 @@ export function SystemLevel({ snap }: { snap: AppSnapshot }): ReactNode {
     <>
       <h2>Planets · {planets.length}</h2>
       {planets.length > 0 ? (
-        <table className="list">
-          <tbody>
-            <tr>
-              <th></th>
-              <th>class</th>
-              <th className="n">M⊕</th>
-              <th className="n">AU</th>
-              <th className="n">period</th>
-              <th className="n">e</th>
-              <th></th>
-            </tr>
-            {planets.map((planet, index) => {
-              const aAu = planet.elements.semiMajorAxis / AU;
-              const periodDays =
-                orbitalPeriod(
-                  companion ? companionPlanetMu(companion, planet) : planetMu(system, planet),
-                  planet.elements.semiMajorAxis,
-                ) / 86400;
-              return (
-                <tr
-                  key={index}
-                  className="pick"
-                  onClick={() => selectPlanet(index, companionIndex)}
-                >
-                  <td>
-                    <span className="swatch" style={{ background: CLASS_COLOR[planet.class] }} />{' '}
-                    {planet.name.split(' ').pop()}
-                  </td>
-                  <td>{CLASS_LABEL[planet.class]}</td>
-                  <td className="n">{fmt(planet.physical.bulk.massEarth)}</td>
-                  <td className="n">{fmt(aAu)}</td>
-                  <td className="n">{fmtDays(periodDays)}</td>
-                  <td className="n">{fmt(planet.elements.eccentricity, 2)}</td>
-                  <td>
-                    {planet.inHabitableZone && <span className="badge hz">HZ</span>}
-                    {planet.tidallyLocked && <span className="badge lock">lock</span>}
-                    {planet.resonanceWithInner && (
-                      <span className="badge res">{planet.resonanceWithInner}</span>
-                    )}
-                  </td>
-                </tr>
-              );
+        planets.map((planet, index) => (
+          <BodyRow
+            key={index}
+            spec={planetRowSpec(planet, {
+              here: snap.planetIndex === index && snap.viewMode === 'planet',
+              onClick: () => selectPlanet(index, companionIndex),
             })}
-          </tbody>
-        </table>
+          />
+        ))
       ) : (
         <div className="empty">
           {companion ? 'no room for planets this close to the primary' : 'no planets formed here'}

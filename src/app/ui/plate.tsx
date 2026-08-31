@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { LinearRgb } from '../../core/color/srgb';
 import { bookmarkKey, isMarked, type Bookmark } from '../bookmarks';
+import type { BodyRowSpec } from './bodyRow';
 import { toggleCurrentMark } from '../store';
 
 /** Display color: gamma-encoded swatch from linear RGB. */
@@ -15,6 +16,10 @@ export interface PlateSpec {
   badges?: ReactNode;
   /** Spectral strip color — the body's own light. Omitted, the strip stays dark. */
   color?: string;
+  /** The focused body as a list row. Carried so that marking it saves
+   *  the row too: a mark in another galaxy can never be regenerated to
+   *  be measured, and this is the only chance to record what it is. */
+  row?: BodyRowSpec;
   rows: Array<[string, ReactNode]>;
   extra?: ReactNode;
   onStep?: (delta: number) => void;

@@ -18,3 +18,13 @@ export function fmtDays(days: number): string {
   if (days >= 1 / 24) return `${fmt(days * 24)} h`;
   return `${fmt(days * 86400)} s`;
 }
+
+/** Solar masses in the units the eye reads fastest: a hole of half a
+ *  million suns is "493k", not "4.93e+5". Shared so the same body
+ *  cannot read one way in the galaxy list and another in the marks. */
+export function fmtSolarMasses(value: number): string {
+  if (value >= 1e8) return `${(value / 1e6).toFixed(0)}M`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(0)}k`;
+  return value.toFixed(0);
+}

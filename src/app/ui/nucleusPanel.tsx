@@ -1,15 +1,48 @@
 import type { ReactNode } from 'react';
 import { AU, SOLAR_LUMINOSITY } from '../../core/physics/constants';
-import { galacticNucleus } from '../../universe/galaxy/nucleus';
+import { blackbodyLinearRgb } from '../../core/color/blackbody';
+import type { FlowRegime } from '../../universe/galaxy/accretionFlow';
+import { galacticNucleus, type GalacticNucleus } from '../../universe/galaxy/nucleus';
 import { centralSpheroid } from '../../universe/galaxy/spheroid';
 import { viewCore } from '../store';
-import { fmt } from './format';
-import type { PlateSpec } from './plate';
+import { BodyRow, type BodyRowSpec } from './bodyRow';
+import { fmt, fmtSolarMasses } from './format';
+import { cssColor, type PlateSpec } from './plate';
 
-const FLOW_LABEL: Record<string, string> = {
+const FLOW_LABEL: Record<FlowRegime, string> = {
   'thin-disc': 'thin accretion disc',
   riaf: 'hot radiatively inefficient flow',
 };
+
+/** The same flow in two words, for a row that has no space for the
+ *  long form. */
+export const FLOW_SHORT: Record<FlowRegime, string> = {
+  'thin-disc': 'thin disc',
+  riaf: 'hot torus',
+};
+
+/** The old-gold of a relaxed stellar cluster — no single body's light,
+ *  so it stands for the whole population rather than measuring one. */
+const CLUSTER_COLOR = 'rgb(201, 185, 138)';
+
+/**
+ * The hole as a row. Its mark is the colour its flow actually is: a
+ * starving torus at three thousand kelvin comes out red and a fed disc
+ * blue-white, off the same blackbody table the stars use.
+ */
+export function nucleusRowSpec(n: GalacticNucleus, here = false): BodyRowSpec {
+  return {
+    color: cssColor(blackbodyLinearRgb(n.flow.innerTemperatureK)),
+    name: 'Galactic Core',
+    kind: FLOW_SHORT[n.flow.regime],
+    figures: [
+      [fmtSolarMasses(n.massSolar), 'M☉'],
+      [fmt(n.flow.innerTemperatureK), 'K'],
+    ],
+    here,
+    onClick: viewCore,
+  };
+}
 
 /** Distance in whatever unit reads plainly at that size. */
 function span(metres: number): string {
@@ -24,6 +57,7 @@ export function nucleusPlateSpec(): PlateSpec {
   return {
     title: 'Galactic Core',
     subtitle: `supermassive black hole · ${FLOW_LABEL[flow.regime]}`,
+    row: nucleusRowSpec(n),
     // A hole has no light of its own; the strip stays dark.
     rows: [
       ['Mass', `${fmt(n.massSolar)} M☉`],
@@ -52,25 +86,20 @@ export function CoreDestination({ active }: { active: boolean }): ReactNode {
   return (
     <>
       <h2>The centre</h2>
-      <table className="list">
-        <tbody>
-          <tr>
-            <th>object</th>
-            <th>mass</th>
-            <th className="n">state</th>
-          </tr>
-          <tr className={`pick poi${active ? ' here' : ''}`} onClick={viewCore}>
-            <td>Galactic Core</td>
-            <td>{fmt(n.massSolar)} M☉</td>
-            <td className="n">{n.flow.regime === 'riaf' ? 'quiescent' : 'accreting'}</td>
-          </tr>
-          <tr className={`pick poi${active ? ' here' : ''}`} onClick={viewCore}>
-            <td>Nuclear cluster</td>
-            <td>{fmt(n.cluster.massSolar)} M☉</td>
-            <td className="n">{fmt(n.cluster.effectiveRadiusPc)} pc</td>
-          </tr>
-        </tbody>
-      </table>
+      <BodyRow spec={nucleusRowSpec(n, active)} />
+      <BodyRow
+        spec={{
+          color: CLUSTER_COLOR,
+          name: 'Nuclear cluster',
+          kind: 'cluster',
+          figures: [
+            [fmtSolarMasses(n.cluster.massSolar), 'M☉'],
+            [fmt(n.cluster.effectiveRadiusPc), 'pc'],
+          ],
+          here: active,
+          onClick: viewCore,
+        }}
+      />
       <div className="empty">
         {spheroid.kind === 'pseudo' ? 'A pseudobulge' : 'A classical bulge'} of{' '}
         {fmt(spheroid.massSolar)} M☉, σ {fmt(spheroid.dispersionKmS)} km/s — and the hole it grew.

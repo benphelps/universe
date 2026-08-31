@@ -170,90 +170,6 @@ body {
   fill: currentColor;
 }
 
-/* POI rows: name up top, its story beneath — captions get the width. */
-.mark {
-  padding: 5px 4px 6px;
-  margin: 0 -4px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.mark:hover {
-  background: var(--accent-soft);
-}
-
-.mark-head {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--ink);
-}
-
-.mark-head .kind {
-  color: var(--faint);
-  font-size: 10.5px;
-  min-width: 38px;
-}
-
-.mark-head .unmark {
-  margin-left: auto;
-}
-
-.mark-note {
-  margin: 1px 0 0 45px;
-  color: var(--dim);
-  font-size: 11.5px;
-  line-height: 1.35;
-}
-
-/* The catalogue's own numbers, set apart from the prose above them. */
-.mark-note.figures {
-  margin-top: 3px;
-  color: var(--faint);
-  letter-spacing: 0.02em;
-}
-
-.mark-note.editable:hover {
-  color: var(--ink);
-  cursor: text;
-}
-
-.mark-note .note-hint {
-  color: var(--faint);
-}
-
-.mark-note .note-edit {
-  width: 100%;
-  background: var(--panel-raised);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  color: var(--ink);
-  font: 11.5px/1.4 var(--mono);
-  padding: 1px 5px;
-}
-
-/* A galaxy is a folder: its centre is the header row, and whatever the
-   traveler marked inside it hangs beneath on a rule. */
-.folder {
-  margin-bottom: 9px;
-}
-
-.folder > .mark .mark-head {
-  color: var(--accent-hi);
-}
-
-.folder-marks {
-  margin: 1px 0 0 6px;
-  padding-left: 9px;
-  border-left: 1px solid var(--line);
-}
-
-.folder-marks .empty {
-  margin: 1px 0 3px;
-  font-size: 11.5px;
-}
-
 .badge.here {
   background: var(--accent-soft);
   color: var(--accent-hi);
@@ -269,6 +185,133 @@ body {
 
 #sidebar button.unmark:hover {
   color: #e8a294;
+}
+
+/* ---- the body row ---- */
+
+/* One element for every list in the sidebar. Five slots on one grid,
+   so a body reads the same wherever it turns up: the planet marked in
+   the points of interest is the row that planet has in the system
+   list, down to the swatch and the badges. */
+.body-row {
+  display: grid;
+  grid-template-columns: 11px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0 8px;
+  padding: 3px 5px;
+  margin: 0 -5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+
+.body-row.pick { cursor: pointer; }
+
+.body-row { position: relative; }
+
+/* The unmark sits over the row's right edge rather than in it. A
+   destructive control does not need to be visible on every mark all
+   the time, and holding a column open for one cost the name the very
+   letter that tells two planets apart. */
+#sidebar .body-row .unmark {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 4px 0 10px;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent, var(--panel) 40%);
+}
+
+#sidebar .body-row:hover .unmark,
+#sidebar .body-row:focus-within .unmark {
+  opacity: 1;
+}
+
+.body-row.pick:hover,
+.body-row:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.body-row:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* The row you are already standing at. */
+.body-row.here { background: rgba(70, 174, 198, 0.07); }
+.body-row.here .body-name { color: var(--accent-hi); }
+
+.body-row .swatch { align-self: center; }
+
+/* A thing with no light of its own — a complex, a mark whose world
+   cannot be reached — keeps the slot rather than closing it up, so
+   every name in every list still starts on the same pixel. */
+.swatch.hollow {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--faint);
+}
+
+.body-name {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Demoted, so scanning the names is unimpeded. */
+.body-name .kind {
+  color: var(--faint);
+  font-size: 10.5px;
+  margin-left: 6px;
+}
+
+.body-figs {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.body-figs .u { color: var(--faint); }
+
+/* A note the traveler wrote: the one thing that makes a row two lines,
+   and only a saved mark ever carries one. */
+.body-note {
+  margin: -1px 0 3px 19px;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.body-note .editable:hover { color: var(--ink); cursor: text; }
+.body-note .note-hint { color: var(--faint); }
+
+.body-note .note-edit {
+  width: 100%;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink);
+  font: 11px/1.4 var(--mono);
+  padding: 1px 5px;
+}
+
+/* Grouping inside a list: a galaxy and the marks saved in it. */
+.body-group { margin-bottom: 9px; }
+
+/* The indent is as narrow as a rule can be and still read as one: a
+   nested row has the same 390 px to hold a name, a kind, two figures
+   and its badges, and every pixel spent here comes off the name. */
+.body-group-marks {
+  margin: 1px 0 0 2px;
+  padding-left: 7px;
+  border-left: 1px solid var(--line);
+}
+
+/* A mark whose galaxy this session cannot generate to measure. */
+.badge.far {
+  background: rgba(150, 140, 200, 0.18);
+  color: #b5aee0;
 }
 
 /* ---- measurements ---- */
@@ -313,67 +356,6 @@ table.props td:first-child {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: var(--faint);
-}
-
-table.list {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 11.5px;
-}
-
-table.list th {
-  text-align: left;
-  color: var(--faint);
-  font-weight: 500;
-  font-size: 10.5px;
-}
-
-table.list td,
-table.list th {
-  padding: 2px 0 2px 9px;
-  white-space: nowrap;
-}
-
-table.list td:first-child,
-table.list th:first-child {
-  padding-left: 0;
-}
-
-/* The last column absorbs leftover width and wraps its annotations,
-   keeping the measurement columns compact. */
-table.list td:last-child,
-table.list th:last-child {
-  width: 100%;
-}
-
-table.list td:last-child {
-  white-space: normal;
-  line-height: 1.35;
-}
-
-table.list th.n,
-table.list td.n {
-  text-align: right;
-}
-
-tr.pick {
-  cursor: pointer;
-}
-
-tr.pick:hover td {
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-/* The row you are already at: its dot wears a ring. */
-tr.here td {
-  color: var(--ink);
-}
-
-tr.here .swatch {
-  box-shadow:
-    0 0 0 2px var(--panel),
-    0 0 0 3.5px var(--accent);
 }
 
 .empty {
@@ -974,7 +956,7 @@ tr.here .swatch {
 
 @media (prefers-reduced-motion: no-preference) {
   #sidebar button,
-  tr.pick td {
+  .body-row.pick {
     transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
 }
@@ -1278,12 +1260,11 @@ tr.here .swatch {
 /* A tap leaves :hover stuck on whatever it touched, so on a touch
    device the hover affordances say nothing true. Actives still speak. */
 @media (hover: none) {
-  tr.pick:hover td,
-  .mark:hover {
+  .body-row.pick:hover {
     background: none;
   }
 
-  .mark-note.editable:hover {
+  .body-note .editable:hover {
     color: var(--dim);
   }
 

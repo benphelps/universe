@@ -6,9 +6,10 @@ import type { Asteroid } from '../../universe/smallbody/types';
 import type { Star } from '../../universe/star/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { host, selectMoon, selectPlanet, stepBody, stepMoon, type AppSnapshot } from '../store';
+import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
 import { fmt, fmtDays } from './format';
 import type { PlateSpec } from './plate';
-import { CLASS_COLOR } from './systemInfoPanel';
+import { CLASS_COLOR, planetRowSpec } from './systemInfoPanel';
 
 const TAXONOMY_LABEL: Record<Asteroid['taxonomy'], string> = {
   S: 'S-type (silicaceous)',
@@ -111,6 +112,7 @@ export function planetPlateSpec(
       </>
     ),
     color: CLASS_COLOR[planet.class],
+    row: planetRowSpec(planet),
     rows,
     extra: planet.rings && (
       <div className="belt-row">
@@ -158,6 +160,7 @@ export function moonPlateSpec(
     title: moon.name,
     subtitle: `moon ${moonIndex + 1} of ${parent.moons.length} · ${parent.name} · ${hostStar.spectralType}`,
     color: CLASS_COLOR[parent.class],
+    row: moonRowSpec(moon),
     rows,
     onStep: stepMoon,
   };
@@ -212,6 +215,45 @@ export function emptyPlateSpec(hostStar: Star): PlateSpec {
  * Planet level: the focused planet's moons listed below the plate, or
  * a focused moon's parent one click up.
  */
+/**
+ * A moon as a row. Its tidal state, its air and any resonance are what
+ * distinguish one from another, so they ride as badges rather than as
+ * a sentence in a trailing column nobody could scan.
+ */
+export function moonRowSpec(
+  moon: Moon,
+  options: { here?: boolean; onClick?: () => void } = {},
+): BodyRowSpec {
+  const badges: Badge[] = [];
+  if (moon.physical.atmosphere.class !== 'none') badges.push({ tone: 'res', label: 'air' });
+  // Tidal heating: the ocean under the ice is the one worth finding, so
+  // it takes the green the biospheres wear; the rest is warmth.
+  if (moon.tidalState === 'subsurface-ocean') badges.push({ tone: 'bio', label: 'ocean' });
+  else if (moon.tidalState !== 'dead') {
+    badges.push({ tone: 'lock', label: TIDAL_LABEL[moon.tidalState] });
+  }
+  if (moon.retrograde) badges.push({ tone: 'lock', label: 'retrograde' });
+  if (moon.resonanceWithInner) {
+    badges.push({ tone: 'res', label: moon.resonanceWithInner });
+  }
+  return {
+    color: MOON_COLOR,
+    name: moon.name,
+    kind: 'moon',
+    figures: [
+      [fmt(moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000), 3), 'km'],
+      [fmt(moon.semiMajorAxisPlanetRadii, 3), 'R_p'],
+    ],
+    badges,
+    here: options.here,
+    onClick: options.onClick,
+  };
+}
+
+/** Moons have no class palette of their own; grey stands for rock and
+ *  ice alike, and the figures carry the difference. */
+const MOON_COLOR = 'rgb(154, 164, 174)';
+
 export function PlanetLevel({ snap }: { snap: AppSnapshot }): ReactNode {
   const { planets } = host(snap);
   if (snap.planetFocus === 'moon') {
@@ -219,14 +261,9 @@ export function PlanetLevel({ snap }: { snap: AppSnapshot }): ReactNode {
     return (
       <>
         <h2>Parent</h2>
-        <table className="list">
-          <tbody>
-            <tr className="pick" onClick={() => selectPlanet(snap.planetIndex)}>
-              <td>{parent.name}</td>
-              <td>{parent.class}</td>
-            </tr>
-          </tbody>
-        </table>
+        <BodyRow
+          spec={planetRowSpec(parent, { onClick: () => selectPlanet(snap.planetIndex) })}
+        />
       </>
     );
   }
@@ -236,39 +273,15 @@ export function PlanetLevel({ snap }: { snap: AppSnapshot }): ReactNode {
     <>
       <h2>Moons · {moons.length}</h2>
       {moons.length > 0 ? (
-        <table className="list">
-          <tbody>
-            <tr>
-              <th></th>
-              <th className="n">km</th>
-              <th className="n">a R_p</th>
-              <th></th>
-            </tr>
-            {moons.map((moon, moonIndex) => {
-              const radiusKm = moon.physical.bulk.radiusEarth * (EARTH_RADIUS / 1000);
-              const notes = [
-                moon.retrograde ? 'retrograde capture' : '',
-                TIDAL_LABEL[moon.tidalState],
-                moon.physical.atmosphere.class !== 'none' ? 'atmosphere' : '',
-                moon.resonanceWithInner ? `${moon.resonanceWithInner} resonance` : '',
-              ]
-                .filter(Boolean)
-                .join(' · ');
-              return (
-                <tr
-                  key={moonIndex}
-                  className="pick"
-                  onClick={() => selectMoon(snap.planetIndex, moonIndex)}
-                >
-                  <td>{moon.name.split(' ').pop()}</td>
-                  <td className="n">{fmt(radiusKm, 3)}</td>
-                  <td className="n">{fmt(moon.semiMajorAxisPlanetRadii, 3)}</td>
-                  <td>{notes}</td>
-                </tr>
-              );
+        moons.map((moon, moonIndex) => (
+          <BodyRow
+            key={moonIndex}
+            spec={moonRowSpec(moon, {
+              here: snap.moonIndex === moonIndex,
+              onClick: () => selectMoon(snap.planetIndex, moonIndex),
             })}
-          </tbody>
-        </table>
+          />
+        ))
       ) : (
         <div className="empty">no moons</div>
       )}

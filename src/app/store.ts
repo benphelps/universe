@@ -18,7 +18,10 @@ import {
   setCaption,
   toggleMark,
   type Bookmark,
+  type SavedRow,
 } from './bookmarks';
+import type { BodyRowSpec } from './ui/bodyRow';
+import type { PlateSpec } from './ui/plate';
 import { getGalacticLandmarks, landmarksNow } from './landmarkService';
 import { UnifiedViewer } from './unifiedViewer';
 import type { DecalState } from './ui/decalToggles';
@@ -537,10 +540,10 @@ export function travelToMark(mark: Bookmark): void {
  * The current focus as a travel link: the plate's designation plus
  * exactly the state the URL carries.
  */
-export function markFor(name: string, caption: string): Bookmark {
+export function markFor(spec: PlateSpec): Bookmark {
   const mark: Bookmark = {
-    name,
-    caption,
+    name: spec.title,
+    caption: spec.subtitle,
     galaxy: seedToHex(galaxySeed()),
     seed: seedHex,
     view: viewMode,
@@ -549,7 +552,24 @@ export function markFor(name: string, caption: string): Bookmark {
   if (viewMode === 'planet') mark.planet = planetIndex;
   if (viewMode === 'planet' && moonIndex >= 0) mark.moon = moonIndex;
   if (companionIndex > 0) mark.companion = companionIndex;
+  if (coreView) mark.core = true;
+  if (spec.row) mark.row = savedRow(spec.row);
   return mark;
+}
+
+/**
+ * The storable half of a row: what the body looks like, with none of
+ * what this session can do about it. Travel is rebuilt from the
+ * address, so a saved click would be a stale closure and a saved
+ * "you are here" would be a lie the moment it was written.
+ */
+function savedRow(row: BodyRowSpec): SavedRow {
+  const saved: SavedRow = {};
+  if (row.color) saved.color = row.color;
+  if (row.kind) saved.kind = row.kind;
+  if (row.figures?.length) saved.figures = [...row.figures];
+  if (row.badges?.length) saved.badges = [...row.badges];
+  return saved;
 }
 
 export function toggleCurrentMark(mark: Bookmark): void {
