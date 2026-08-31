@@ -14,11 +14,13 @@ import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
 import { rowSlabSpan, sweepRowSlab } from './skyfield';
 import { cloudFieldSmoothAt, expectedCloudField } from './clouds';
 import {
-  armBoost,
   ARM_BOOST_MAX,
+  armBoost,
+  armProfile,
   componentDensities,
   dustDensity,
   HOME_POSITION,
+  sightlineDensities,
   stellarDensity,
   stellarDensityCeiling,
   waveParams,
@@ -43,6 +45,39 @@ describe('galactic density', () => {
     expect(stellarDensity({ xPc: 8000, yPc: 0, zPc: 1000 })).toBeLessThan(local * 0.2);
     expect(stellarDensity({ xPc: 16000, yPc: 0, zPc: 20 })).toBeLessThan(local);
     expect(stellarDensity({ xPc: 3000, yPc: 0, zPc: 20 })).toBeGreaterThan(local);
+  });
+
+  it('gives the same enhancement whether or not the dust is asked for', () => {
+    // armBoost skips the dust lane, and the lane is a second inversion
+    // of the orbit family — which is the whole reason it is a separate
+    // entry point rather than a field of armProfile's answer. The two
+    // have to keep agreeing to the last bit, or the star field and the
+    // dust are standing in different galaxies. Exact equality is the
+    // right assertion: the split removed work, it did not approximate.
+    for (let r = 200; r <= 20000; r += 137) {
+      for (let a = 0; a < 6.283; a += 0.41) {
+        expect(armBoost(r, a)).toBe(1 + armProfile(r, a).boost);
+      }
+    }
+  });
+
+  it('reaches the same density by the short path as the long one', () => {
+    // stellarDensity no longer goes through sightlineDensities, which
+    // would have computed a dust lane for it to discard. Same number,
+    // to the bit.
+    for (const p of [
+      HOME_POSITION,
+      { xPc: 300, yPc: 120, zPc: 5 },
+      { xPc: 5200, yPc: -3100, zPc: 240 },
+      { xPc: 16000, yPc: 900, zPc: -1800 },
+    ]) {
+      const parts = sightlineDensities(p);
+      expect(stellarDensity(p)).toBe(parts.thin + parts.thick + parts.halo);
+      const components = componentDensities(p);
+      expect(components.thin).toBe(parts.thin);
+      expect(components.thick).toBe(parts.thick);
+      expect(components.halo).toBe(parts.halo);
+    }
   });
 });
 

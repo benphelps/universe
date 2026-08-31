@@ -208,16 +208,60 @@ export function waveGuidingRadius(radiusPc: number, azimuthRad: number): number 
   return guiding;
 }
 
-/** Crowding of the orbit family at one point: how tightly the nested
- *  ovals pack there (inverse Jacobian of the family map, clamped at
- *  the caustic). 1 where orbits keep their spacing; larger where the
- *  density wave piles them up. */
-function waveCrowding(radiusPc: number, azimuthRad: number): number {
-  const guiding = waveGuidingRadius(radiusPc, azimuthRad);
+/** Crowding of the orbit family at a point whose orbit is already
+ *  known: the inverse Jacobian of the family map, clamped at the
+ *  caustic. 1 where orbits keep their spacing; larger where the
+ *  density wave piles them up. Taking the guiding radius rather than
+ *  solving for it is what lets a caller that has already solved spend
+ *  the answer twice — the solve is the expensive half. */
+function crowdingAt(guidingPc: number, azimuthRad: number): number {
   const h = 40;
   const jacobian =
-    (waveRadius(guiding + h, azimuthRad) - waveRadius(guiding - h, azimuthRad)) / (2 * h);
+    (waveRadius(guidingPc + h, azimuthRad) - waveRadius(guidingPc - h, azimuthRad)) / (2 * h);
   return 1 / Math.max(jacobian, WAVE_J_MIN);
+}
+
+/** Crowding at a point given in world coordinates. */
+function waveCrowding(radiusPc: number, azimuthRad: number): number {
+  return crowdingAt(waveGuidingRadius(radiusPc, azimuthRad), azimuthRad);
+}
+
+/** Inside this the wave has no structure to speak of and the core
+ *  takes over; the orbit family is not solved there at all. */
+const WAVE_MIN_RADIUS_PC = 500;
+
+/**
+ * Star-formation patchiness along the wave: slow stretches of the
+ * orbit family make long beads, fast ones leave gaps. Shared, because
+ * it modulates the stars and their dust alike.
+ */
+function segWeight(u: number, phase: number): number {
+  const p = waveParams();
+  return (
+    0.45 +
+    0.55 *
+      (0.5 + 0.5 * Math.sin(p.segFreq * u + p.segPhase + p.segCouple * Math.cos(phase))) ** 1.2
+  );
+}
+
+/** The stellar enhancement itself, for a point already placed on its
+ *  orbit — crowding, times the patchiness riding on it. */
+function waveBoost(
+  guidingPc: number,
+  azimuthRad: number,
+  u: number,
+  phase: number,
+  seg: number,
+): number {
+  const p = waveParams();
+  const wave = Math.max(0, crowdingAt(guidingPc, azimuthRad) - 1);
+  const knot = Math.max(
+    0,
+    Math.sin(p.knotFreq1 * u + p.knotPhase1 + p.knotCouple * Math.cos(phase)) *
+      Math.sin(p.knotFreq2 * u + p.knotPhase2),
+  );
+  const asym = 1 + p.asymAmp * Math.cos(phase + p.asymPhase);
+  return 0.98 * wave * seg * asym * (1 + 0.8 * knot * knot);
 }
 
 /**
@@ -236,34 +280,37 @@ export function armProfile(
   radiusPc: number,
   azimuthRad: number,
 ): { boost: number; lane: number } {
-  if (radiusPc < 500) return { boost: 0, lane: 0 };
-  const p = waveParams();
+  if (radiusPc < WAVE_MIN_RADIUS_PC) return { boost: 0, lane: 0 };
   const guiding = waveGuidingRadius(radiusPc, azimuthRad);
-  const wave = Math.max(0, waveCrowding(radiusPc, azimuthRad) - 1);
   const u = waveWinding(guiding);
   const phase = azimuthRad - waveTilt(guiding);
-  const seg =
-    0.45 +
-    0.55 *
-      (0.5 + 0.5 * Math.sin(p.segFreq * u + p.segPhase + p.segCouple * Math.cos(phase))) ** 1.2;
-  const knot = Math.max(
-    0,
-    Math.sin(p.knotFreq1 * u + p.knotPhase1 + p.knotCouple * Math.cos(phase)) *
-      Math.sin(p.knotFreq2 * u + p.knotPhase2),
-  );
-  const asym = 1 + p.asymAmp * Math.cos(phase + p.asymPhase);
-  const boost = 0.98 * wave * seg * asym * (1 + 0.8 * knot * knot);
+  const seg = segWeight(u, phase);
+  const boost = waveBoost(guiding, azimuthRad, u, phase, seg);
   // The dust family runs slightly ahead in winding: its caustic sits
-  // on the arms' inner edge.
-  const laneWave = Math.max(0, waveCrowding(radiusPc, azimuthRad + p.laneShift) - 1);
+  // on the arms' inner edge. Its orbit is a different one, so this is
+  // the one solve that cannot be shared.
+  const laneWave = Math.max(0, waveCrowding(radiusPc, azimuthRad + waveParams().laneShift) - 1);
   const lane = Math.min(1.6, 0.5 * laneWave) * (0.4 + 0.6 * seg);
   return { boost, lane };
 }
 
-/** Spiral-arm density enhancement factor (1 between arms, up to
- *  ~ARM_BOOST_MAX in a star-forming bead). */
+/**
+ * Spiral-arm density enhancement factor (1 between arms, up to
+ * ~ARM_BOOST_MAX in a star-forming bead).
+ *
+ * Its own entry point rather than armProfile's first field, because
+ * the caller that asks for it most — the star field, once per
+ * candidate — has no use for the dust lane, and the lane costs a
+ * whole second inversion of the orbit family. Between that and
+ * handing the crowding an orbit already solved, this answers with one
+ * fixed-point solve where the pair costs three.
+ */
 export function armBoost(radiusPc: number, azimuthRad: number): number {
-  return 1 + armProfile(radiusPc, azimuthRad).boost;
+  if (radiusPc < WAVE_MIN_RADIUS_PC) return 1;
+  const guiding = waveGuidingRadius(radiusPc, azimuthRad);
+  const u = waveWinding(guiding);
+  const phase = azimuthRad - waveTilt(guiding);
+  return 1 + waveBoost(guiding, azimuthRad, u, phase, segWeight(u, phase));
 }
 
 /** Which spiral arm a locale is closest to, and how far off its
@@ -283,6 +330,25 @@ export function nearestArm(
     }
   }
   return { index, distancePc: nearest };
+}
+
+/** Thin disk before any arm enhancement, at cylindrical radius and |z|. */
+function thinSmooth(radiusPc: number, absZPc: number): number {
+  return (
+    THIN_NORM * Math.exp(-radiusPc / THIN_SCALE_LENGTH) * Math.exp(-absZPc / THIN_SCALE_HEIGHT)
+  );
+}
+
+/** Thick disk: no wave rides it, so there is only the one form. */
+function thickSmooth(radiusPc: number, absZPc: number): number {
+  return (
+    THICK_NORM * Math.exp(-radiusPc / THICK_SCALE_LENGTH) * Math.exp(-absZPc / THICK_SCALE_HEIGHT)
+  );
+}
+
+/** Halo: spherical, and floored inside the core so it stays finite. */
+function haloSmooth(radiusPc: number, absZPc: number): number {
+  return 0.0008 * (Math.max(Math.hypot(radiusPc, absZPc), 500) / 8000) ** -3.5;
 }
 
 export interface ComponentDensities {
@@ -307,19 +373,14 @@ export function sightlineDensities(position: GalacticPosition): SightlineDensiti
   const azimuth = Math.atan2(position.yPc, position.xPc);
   const absZ = Math.abs(position.zPc);
   const { boost, lane } = armProfile(radius, azimuth);
-
-  const thin =
-    THIN_NORM *
-    Math.exp(-radius / THIN_SCALE_LENGTH) *
-    Math.exp(-absZ / THIN_SCALE_HEIGHT) *
-    (1 + boost);
-  const thick =
-    THICK_NORM * Math.exp(-radius / THICK_SCALE_LENGTH) * Math.exp(-absZ / THICK_SCALE_HEIGHT);
-  const sphericalR = Math.max(Math.hypot(radius, absZ), 500);
-  const halo = 0.0008 * (sphericalR / 8000) ** -3.5;
   const dust = Math.exp(-radius / 2600) * Math.exp(-absZ / 120) * (1 + 1.4 * lane);
-
-  return { thin, thick, halo, dust, armBoost: 1 + boost };
+  return {
+    thin: thinSmooth(radius, absZ) * (1 + boost),
+    thick: thickSmooth(radius, absZ),
+    halo: haloSmooth(radius, absZ),
+    dust,
+    armBoost: 1 + boost,
+  };
 }
 
 /** The smooth components alone — no wave: shared by every galaxy
@@ -328,25 +389,41 @@ export function sightlineDensities(position: GalacticPosition): SightlineDensiti
 export function smoothComponentDensities(position: GalacticPosition): ComponentDensities {
   const radius = Math.hypot(position.xPc, position.yPc);
   const absZ = Math.abs(position.zPc);
-  const thin =
-    THIN_NORM * Math.exp(-radius / THIN_SCALE_LENGTH) * Math.exp(-absZ / THIN_SCALE_HEIGHT);
-  const thick =
-    THICK_NORM * Math.exp(-radius / THICK_SCALE_LENGTH) * Math.exp(-absZ / THICK_SCALE_HEIGHT);
-  const sphericalR = Math.max(Math.hypot(radius, absZ), 500);
-  const halo = 0.0008 * (sphericalR / 8000) ** -3.5;
-  return { thin, thick, halo };
+  return {
+    thin: thinSmooth(radius, absZ),
+    thick: thickSmooth(radius, absZ),
+    halo: haloSmooth(radius, absZ),
+  };
 }
 
 /** Per-component stellar densities, stars per pc³. */
 export function componentDensities(position: GalacticPosition): ComponentDensities {
-  const { thin, thick, halo } = sightlineDensities(position);
-  return { thin, thick, halo };
+  const radius = Math.hypot(position.xPc, position.yPc);
+  const absZ = Math.abs(position.zPc);
+  return {
+    thin: thinSmooth(radius, absZ) * armBoost(radius, Math.atan2(position.yPc, position.xPc)),
+    thick: thickSmooth(radius, absZ),
+    halo: haloSmooth(radius, absZ),
+  };
 }
 
-/** Total stellar density, stars per pc³. */
+/**
+ * Total stellar density, stars per pc³.
+ *
+ * The star field asks this once per candidate — a couple of hundred
+ * thousand times to fill a neighbourhood — and it is the caller with
+ * no use for the dust. Going through sightlineDensities to get here
+ * bought a dust lane and threw it away, and the lane is not a cheap
+ * thing to buy.
+ */
 export function stellarDensity(position: GalacticPosition): number {
-  const { thin, thick, halo } = sightlineDensities(position);
-  return thin + thick + halo;
+  const radius = Math.hypot(position.xPc, position.yPc);
+  const absZ = Math.abs(position.zPc);
+  return (
+    thinSmooth(radius, absZ) * armBoost(radius, Math.atan2(position.yPc, position.xPc)) +
+    thickSmooth(radius, absZ) +
+    haloSmooth(radius, absZ)
+  );
 }
 
 /**
