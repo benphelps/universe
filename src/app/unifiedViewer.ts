@@ -60,6 +60,13 @@ import {
   createStarPointsMaterial,
 } from '../render/starfield/neighborStars';
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
+import {
+  BELT_REGION_POINT_CAPACITY,
+  createBeltRegionPoints,
+  finishBeltRegionPoints,
+  updateBeltRegionPointFrame,
+  writeBeltRegionPoint,
+} from '../render/system/beltRegionPoints';
 import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
 import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
@@ -128,6 +135,9 @@ import type { Planet, StarSystem } from '../universe/system/types';
 const EARTH_RADIUS_KM = EARTH_RADIUS / 1000;
 const SOLAR_RADIUS_KM = SOLAR_RADIUS / 1000;
 const AU_KM = AU / 1000;
+const BELT_REGION_REACH_AU = 0.35;
+/** Rebase GPU orbit phases before float time loses useful precision. */
+const BELT_POINT_REBASE_DAYS = 16_384;
 /** A hole described in scene coordinates needs no rotation into them. */
 const IDENTITY_FRAME = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
 const IDENTITY_MATRIX = new Matrix3();
@@ -202,6 +212,14 @@ interface Pickable {
   info: string;
   action: string | null;
   target: PickTarget | null;
+}
+
+interface BeltCandidate {
+  asteroid: Asteroid;
+  spinAxis: Vector3;
+  radiusKm: number;
+  pseudoLum: number;
+  pickable: Pickable;
 }
 
 export const PRESET_TIME_SCALE: Record<ScenePreset, number> = {
@@ -749,13 +767,14 @@ export class UnifiedViewer {
   private readonly beltRockGeometry = createRockGeometry();
   private beltRockMesh: InstancedMesh | null = null;
   private beltRockPoints: Points | null = null;
-  private beltCandidates: Array<{
-    asteroid: Asteroid;
-    spinAxis: Vector3;
-    radiusKm: number;
-    pseudoLum: number;
-  }> = [];
+  private beltCandidates: BeltCandidate[] = [];
+  /** Only candidates resolved on the last 10 Hz selection pass need
+   * CPU propagation while no hover probe is active. */
+  private beltMeshCandidates: BeltCandidate[] = [];
+  private lastBeltMeshSelectionMs = -Infinity;
   private beltCellSignature = '';
+  private beltPointEpochDays = Number.NaN;
+  private beltPointFocusAsteroid: Asteroid | null = null;
   private pointerDownAt: [number, number] | null = null;
   /** Everything hoverable this frame; nearest to the cursor tooltips. */
   private pickables: Pickable[] = [];
@@ -1011,17 +1030,10 @@ export class UnifiedViewer {
     this.beltRockMesh.count = 0;
     this.beltRockMesh.frustumCulled = false;
     this.scene.add(this.beltRockMesh);
-    const pointGeometry = new BufferGeometry();
-    pointGeometry.setAttribute('position', new BufferAttribute(new Float32Array(900 * 3), 3));
-    pointGeometry.setAttribute('starColor', new BufferAttribute(new Float32Array(900 * 3), 3));
-    pointGeometry.setAttribute('luminosity', new BufferAttribute(new Float32Array(900), 1));
-    pointGeometry.setAttribute('aRadiusKm', new BufferAttribute(new Float32Array(900), 1));
-    pointGeometry.setDrawRange(0, 0);
-    // A permissive bound: positions rewrite every frame and the points
-    // must stay raycastable without per-frame sphere recomputation.
-    pointGeometry.boundingSphere = new Sphere(new Vector3(), 1e13);
-    this.beltRockPoints = new Points(pointGeometry, createStarPointsMaterial(PC_KM));
-    this.beltRockPoints.frustumCulled = false;
+    this.beltRockPoints = createBeltRegionPoints(
+      PC_KM,
+      BELT_REGION_REACH_AU * AU_KM * 1.5,
+    );
     this.scene.add(this.beltRockPoints);
 
     // Hover tooltip: the body nearest the cursor names itself, with a
@@ -1405,7 +1417,11 @@ export class UnifiedViewer {
     this.hostSeedHex = companion ? companion.star.seedHex : system.seedHex;
     this.systemMu = muOf(G * centralMassSolar * SOLAR_MASS);
     this.beltCandidates = [];
+    this.beltMeshCandidates = [];
+    this.lastBeltMeshSelectionMs = -Infinity;
     this.beltCellSignature = '';
+    this.beltPointEpochDays = Number.NaN;
+    this.beltPointFocusAsteroid = null;
 
     const orbitExtent = planets.length
       ? Math.max(...planets.map((p) => p.elements.semiMajorAxis / AU))
@@ -2111,7 +2127,6 @@ export class UnifiedViewer {
     const points = this.beltRockPoints;
     if (!mesh || !points || !this.system) return;
 
-    const REACH_AU = 0.35;
     const frameInv = this.frameQuat.clone().invert();
     // Camera into the host's model frame (undo the ground frame, then
     // measure from the host star).
@@ -2127,14 +2142,23 @@ export class UnifiedViewer {
 
     const cells: Array<{ belt: number; band: number; sector: number }> = [];
     this.hostBelts.forEach((belt, beltIndex) => {
-      if (rAu < belt.innerAu - REACH_AU || rAu > belt.outerAu + REACH_AU) return;
+      if (
+        rAu < belt.innerAu - BELT_REGION_REACH_AU ||
+        rAu > belt.outerAu + BELT_REGION_REACH_AU
+      ) return;
       const bands = beltBandCount(belt);
       const inner2 = belt.innerAu ** 2;
       const outer2 = belt.outerAu ** 2;
       const bandOf = (a: number): number =>
         Math.floor(((a * a - inner2) / (outer2 - inner2)) * bands);
-      const b0 = Math.max(0, bandOf(Math.max(belt.innerAu, rAu - REACH_AU)));
-      const b1 = Math.min(bands - 1, bandOf(Math.min(belt.outerAu, rAu + REACH_AU)));
+      const b0 = Math.max(
+        0,
+        bandOf(Math.max(belt.innerAu, rAu - BELT_REGION_REACH_AU)),
+      );
+      const b1 = Math.min(
+        bands - 1,
+        bandOf(Math.min(belt.outerAu, rAu + BELT_REGION_REACH_AU)),
+      );
       for (let band = b0; band <= b1; band++) {
         // Members now at the camera's azimuth started the epoch back
         // along their mean motion; eccentricity widens the window.
@@ -2143,7 +2167,8 @@ export class UnifiedViewer {
         const margin =
           1 +
           Math.ceil(
-            ((0.3 + REACH_AU / Math.max(rAu, 0.2)) / (2 * Math.PI)) * BELT_SECTORS,
+            ((0.3 + BELT_REGION_REACH_AU / Math.max(rAu, 0.2)) / (2 * Math.PI)) *
+              BELT_SECTORS,
           );
         for (let ds = -margin; ds <= margin; ds++) {
           cells.push({ belt: beltIndex, band, sector: center + ds });
@@ -2152,7 +2177,8 @@ export class UnifiedViewer {
     });
 
     const signature = cells.map((c) => `${c.belt}:${c.band}:${c.sector}`).join('|');
-    if (signature !== this.beltCellSignature) {
+    const cellsChanged = signature !== this.beltCellSignature;
+    if (cellsChanged) {
       this.beltCellSignature = signature;
       // Instantiate the covered cells, then keep the nearest members —
       // a naive cap would truncate the region's far side.
@@ -2168,11 +2194,13 @@ export class UnifiedViewer {
             posKm.y - helio.y,
             posKm.z - helio.z,
           );
-          if (distanceKm < REACH_AU * 1.4 * AU_KM) drawn.push({ asteroid, distanceKm });
+          if (distanceKm < BELT_REGION_REACH_AU * 1.4 * AU_KM) {
+            drawn.push({ asteroid, distanceKm });
+          }
         }
       }
       drawn.sort((a, b) => a.distanceKm - b.distanceKm);
-      this.beltCandidates = drawn.slice(0, 900).map(({ asteroid }) => {
+      this.beltCandidates = drawn.slice(0, BELT_REGION_POINT_CAPACITY).map(({ asteroid }) => {
         const radiusKm = asteroid.diameterKm / 2;
         const axisRng = new Rng(deriveSeed(seedFromHex(asteroid.shape.noiseSeedHex), 'spin-axis'));
         const axisZ = axisRng.range(-1, 1);
@@ -2185,46 +2213,64 @@ export class UnifiedViewer {
           (radiusKm / (2 * starDistanceKm)) ** 2 *
           asteroid.albedo *
           4;
+        const designation = (this.hostStar ?? this.system!.star).designation;
         return {
           asteroid,
           spinAxis: new Vector3(planar * Math.cos(axisAzimuth), axisZ, planar * Math.sin(axisAzimuth)),
           radiusKm,
           pseudoLum,
+          pickable: {
+            x: 0,
+            y: 0,
+            z: 0,
+            name: `${designation} A-${asteroid.shape.noiseSeedHex.slice(-4).toUpperCase()}`,
+            info: `belt member · ${fmt(asteroid.diameterKm)} km · ${asteroid.taxonomy}-type`,
+            action: 'click to visit',
+            target: { kind: 'belt', asteroid },
+          },
         };
       });
     }
 
-    const positionAttr = points.geometry.getAttribute('position') as BufferAttribute;
-    const colorAttr = points.geometry.getAttribute('starColor') as BufferAttribute;
-    const lumAttr = points.geometry.getAttribute('luminosity') as BufferAttribute;
-    const radiusAttr = points.geometry.getAttribute('aRadiusKm') as BufferAttribute;
     const [sr, sg, sb] = (this.hostStar ?? this.system.star).linearRgb;
+    const pointDays = tSeconds / DAY;
+    const beltFocusChanged = this.beltPointFocusAsteroid !== this.focusAsteroid;
+    if (
+      !Number.isFinite(this.beltPointEpochDays) ||
+      beltFocusChanged ||
+      Math.abs(pointDays - this.beltPointEpochDays) > BELT_POINT_REBASE_DAYS ||
+      cellsChanged
+    ) {
+      this.refreshBeltRegionPoints(points, tSeconds);
+    }
+    updateBeltRegionPointFrame(
+      points,
+      pointDays - this.beltPointEpochDays,
+      focusPos,
+      hostPos,
+      this.frameQuat,
+      [sr, sg, sb],
+    );
+
     const matrix = new Matrix4();
     const spinQuat = new Quaternion();
     const scale = new Vector3();
     let meshCount = 0;
-    let pointCount = 0;
+    const picking = this.cursor !== null && !this.dragging && !this.flight.active;
+    const nowMs = performance.now();
+    const refreshMeshSelection =
+      cellsChanged ||
+      beltFocusChanged ||
+      nowMs - this.lastBeltMeshSelectionMs >= 100;
+    const movingCandidates =
+      picking || refreshMeshSelection ? this.beltCandidates : this.beltMeshCandidates;
+    if (refreshMeshSelection) {
+      this.beltMeshCandidates = [];
+      this.lastBeltMeshSelectionMs = nowMs;
+    }
 
-    const writeGlint = (
-      pos: Vector3,
-      distanceKm: number,
-      pseudoLum: number,
-      radiusKm: number,
-    ): void => {
-      if (pointCount >= 900) return;
-      positionAttr.setXYZ(pointCount, pos.x, pos.y, pos.z);
-      colorAttr.setXYZ(pointCount, sr, sg, sb);
-      // Physical reflected light when close; a faint marker floor
-      // otherwise — the moons-and-planets legibility convention, since
-      // a kilometers-scale rock at these ranges is honestly invisible.
-      const dPc = distanceKm / PC_KM;
-      lumAttr.setX(pointCount, Math.max(pseudoLum, 2.5e-5 * dPc * dPc));
-      radiusAttr.setX(pointCount, radiusKm);
-      pointCount++;
-    };
-
-    for (let i = 0; i < this.beltCandidates.length; i++) {
-      const candidate = this.beltCandidates[i];
+    for (const candidate of movingCandidates) {
+      if (candidate.asteroid === this.focusAsteroid) continue;
       const state = elementsToState(candidate.asteroid.elements, this.systemMu, tSeconds);
       const pos = toWorld(state.position)
         .divideScalar(1000)
@@ -2232,19 +2278,16 @@ export class UnifiedViewer {
         .sub(focusPos)
         .applyQuaternion(this.frameQuat);
       const distanceKm = pos.distanceTo(this.camera.position);
-      if (distanceKm > REACH_AU * AU_KM * 1.5) continue;
+      if (distanceKm > BELT_REGION_REACH_AU * AU_KM * 1.5) continue;
 
-      writeGlint(pos, distanceKm, candidate.pseudoLum, candidate.radiusKm);
-      this.pickables.push({
-        x: pos.x,
-        y: pos.y,
-        z: pos.z,
-        name: `${(this.hostStar ?? this.system.star).designation} A-${candidate.asteroid.shape.noiseSeedHex.slice(-4).toUpperCase()}`,
-        info: `belt member · ${fmt(candidate.asteroid.diameterKm)} km · ${candidate.asteroid.taxonomy}-type`,
-        action: 'click to visit',
-        target: { kind: 'belt', asteroid: candidate.asteroid },
-      });
+      if (picking) {
+        candidate.pickable.x = pos.x;
+        candidate.pickable.y = pos.y;
+        candidate.pickable.z = pos.z;
+        this.pickables.push(candidate.pickable);
+      }
       if (meshCount < 320 && candidate.radiusKm / distanceKm > 4e-5) {
+        if (refreshMeshSelection) this.beltMeshCandidates.push(candidate);
         const { shape, spinPeriodHours } = candidate.asteroid;
         const spinAngle = ((tSeconds / (spinPeriodHours * 3600)) * 2 * Math.PI) % (2 * Math.PI);
         spinQuat.setFromAxisAngle(candidate.spinAxis, spinAngle);
@@ -2265,12 +2308,6 @@ export class UnifiedViewer {
         .divideScalar(1000)
         .sub(focusPos)
         .applyQuaternion(this.frameQuat);
-      const distanceKm = pos.distanceTo(this.camera.position);
-      const radiusKm = notable.diameterKm / 2;
-      const starDistanceKm = (notable.elements.semiMajorAxis / AU) * AU_KM;
-      const pseudoLum =
-        this.system.star.luminosity * (radiusKm / (2 * starDistanceKm)) ** 2 * notable.albedo * 4;
-      writeGlint(pos, distanceKm, pseudoLum, radiusKm);
       this.pickables.push({
         x: pos.x,
         y: pos.y,
@@ -2281,13 +2318,50 @@ export class UnifiedViewer {
         target: { kind: 'notable', index: i },
       });
     }
+    if (meshCount > 0 || mesh.count > 0) mesh.instanceMatrix.needsUpdate = true;
     mesh.count = meshCount;
-    mesh.instanceMatrix.needsUpdate = true;
-    points.geometry.setDrawRange(0, pointCount);
-    positionAttr.needsUpdate = true;
-    colorAttr.needsUpdate = true;
-    lumAttr.needsUpdate = true;
-    radiusAttr.needsUpdate = true;
+  }
+
+  /** Rewrite orbit attributes only when the streamed population changes. */
+  private refreshBeltRegionPoints(points: Points, tSeconds: Seconds): void {
+    if (!this.system) return;
+    const epochDays = tSeconds / DAY;
+    let count = 0;
+    for (const candidate of this.beltCandidates) {
+      if (candidate.asteroid === this.focusAsteroid) continue;
+      count = writeBeltRegionPoint(
+        points,
+        count,
+        candidate.asteroid,
+        this.systemMu,
+        epochDays,
+        candidate.pseudoLum,
+        true,
+        true,
+      );
+      if (count >= BELT_REGION_POINT_CAPACITY) break;
+    }
+    for (const notable of this.asteroids) {
+      if (count >= BELT_REGION_POINT_CAPACITY) break;
+      if (notable === this.focusAsteroid) continue;
+      const radiusKm = notable.diameterKm / 2;
+      const starDistanceKm = (notable.elements.semiMajorAxis / AU) * AU_KM;
+      const pseudoLum =
+        this.system.star.luminosity * (radiusKm / (2 * starDistanceKm)) ** 2 * notable.albedo * 4;
+      count = writeBeltRegionPoint(
+        points,
+        count,
+        notable,
+        this.systemMu,
+        epochDays,
+        pseudoLum,
+        false,
+        false,
+      );
+    }
+    finishBeltRegionPoints(points, count);
+    this.beltPointEpochDays = epochDays;
+    this.beltPointFocusAsteroid = this.focusAsteroid;
   }
 
   get exposure(): number {
@@ -2842,7 +2916,11 @@ export class UnifiedViewer {
       });
     }
     this.beltCandidates = [];
+    this.beltMeshCandidates = [];
+    this.lastBeltMeshSelectionMs = -Infinity;
     this.beltCellSignature = '';
+    this.beltPointEpochDays = Number.NaN;
+    this.beltPointFocusAsteroid = null;
     if (this.beltRockMesh) this.beltRockMesh.count = 0;
     this.beltRockPoints?.geometry.setDrawRange(0, 0);
     if (this.backdrop) {
