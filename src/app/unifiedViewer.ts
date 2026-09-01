@@ -90,7 +90,7 @@ import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
-import { requestNebulaVolume } from './nebulaService';
+import { requestNebulaVolume, resetNebulaBakes } from './nebulaService';
 import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
 import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
@@ -3226,6 +3226,8 @@ export class UnifiedViewer {
     this.coarseBakes.clear();
     this.fineBakes.clear();
     this.residencyAt = null;
+    // The next locale's volumes must not wait behind this one's bakes.
+    resetNebulaBakes();
     if (this.galaxyParticles) {
       this.pcGroup.remove(this.galaxyParticles.group);
       this.galaxyParticles.dispose();

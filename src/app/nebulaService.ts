@@ -17,11 +17,20 @@ const queued = new Set<string>();
 const waiting = new Map<string, (bake: NebulaVolumeBake) => void>();
 const cache = new Map<string, NebulaVolumeBake>();
 
-/** Stop caring about volumes nobody is looking at any more. The worker
- *  finishes what it started — a bake is one message, not a loop it can
- *  be asked to leave — but its answer lands in the cache and no stale
- *  install follows it. */
-export function abandonPendingVolumes(): void {
+/**
+ * Drop every bake the old locale was still waiting on, worker and all.
+ *
+ * The worker takes one message at a time and cannot be asked to leave
+ * a bake early, so a travel that merely stopped listening would leave
+ * the new locale's volumes queued behind half a minute of answers for
+ * a sky nobody is under any more — arriving at a nebula and staring at
+ * nothing while the old system's bakes drain. Killing the worker is
+ * the cancellation; what already landed stays cached.
+ */
+export function resetNebulaBakes(): void {
+  worker?.terminate();
+  worker = null;
+  queued.clear();
   waiting.clear();
 }
 
