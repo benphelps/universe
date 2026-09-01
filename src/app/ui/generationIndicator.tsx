@@ -5,6 +5,8 @@ export interface GenerationStatus {
   surveying: boolean;
   terrain: number;
   worlds: number;
+  /** Nebula volume bakes still queued at their worker. */
+  nebulae: number;
   skies: number;
   /** Rough progress of the running sky build, 0..1. */
   skyProgress: number;
@@ -32,7 +34,7 @@ class BurstTrack {
   }
 }
 
-const KEYS = ['survey', 'terrain', 'worlds', 'sky', 'skyStage'] as const;
+const KEYS = ['survey', 'terrain', 'worlds', 'nebulae', 'sky', 'skyStage'] as const;
 type Key = (typeof KEYS)[number];
 
 interface RowView {
@@ -77,20 +79,30 @@ export function GenerationIndicator(): ReactNode {
     survey: FOLDED,
     terrain: FOLDED,
     worlds: FOLDED,
+    nebulae: FOLDED,
     sky: FOLDED,
     skyStage: FOLDED,
   });
-  const tracks = useRef({ terrain: new BurstTrack(), worlds: new BurstTrack() });
+  const tracks = useRef({
+    terrain: new BurstTrack(),
+    worlds: new BurstTrack(),
+    nebulae: new BurstTrack(),
+  });
 
   useEffect(() => {
     const id = window.setInterval(() => {
       const status = generationStatus();
       if (!status) return;
-      const { terrain, worlds } = tracks.current;
+      const { terrain, worlds, nebulae } = tracks.current;
       setRows((prev) => ({
         survey: stepRow(prev.survey, 'climate survey', status.surveying ? -1 : null),
         terrain: stepRow(prev.terrain, `terrain · ${status.terrain}`, terrain.update(status.terrain)),
         worlds: stepRow(prev.worlds, `worlds · ${status.worlds}`, worlds.update(status.worlds)),
+        nebulae: stepRow(
+          prev.nebulae,
+          `nebulae · ${status.nebulae}`,
+          nebulae.update(status.nebulae),
+        ),
         sky: stepRow(prev.sky, 'sky field', status.skies > 0 ? status.skyProgress : null),
         skyStage: stepRow(
           prev.skyStage,

@@ -100,6 +100,12 @@ export function createCloudShell(
     side: DoubleSide,
   });
   const shell = new Mesh(new SphereGeometry(radiusKm + deckKm, 256, 128), material);
-  shell.renderOrder = 2;
+  // The deck stands kilometres up, in front of everything stellar: it
+  // draws after the sky composite, the star points and the haze dome
+  // (reversed-Z: lowest order last). At 2 it drew before them all —
+  // stars shone through an overcast, and a dark nebula's occlusion
+  // multiplied the deck's own light away, cutting black holes into a
+  // lit sky that stands between the cloud and the eye.
+  shell.renderOrder = -2.5;
   return shell;
 }

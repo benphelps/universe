@@ -46,6 +46,7 @@ import { createRingMesh } from '../render/planet/ringMaterial';
 import { applyOccluders } from '../render/planet/shadows';
 import { planetSeedOffset } from '../render/planet/solidPlanetMaterial';
 import { RenderPipeline } from '../render/fx/pipeline';
+import { SKY_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
 import { StarObject } from '../render/star/starObject';
 import { applySecondSun } from '../render/lighting/secondSun';
 import { foldShaderTime } from '../render/shaderTime';
@@ -58,6 +59,8 @@ import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import {
   createNeighborStars,
   createStarPointsMaterial,
+  MAX_STAR_NEBULAE,
+  setStarNebulaExtinction,
 } from '../render/starfield/neighborStars';
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import {
@@ -88,6 +91,12 @@ import { stellarBlackHole } from '../universe/star/stellarHole';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
+import { markAsDiagram } from '../render/fx/diagramLayer';
+import { pendingNebulaBakes, requestNebulaVolume, resetNebulaBakes } from './nebulaService';
+import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
+import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
+import { bubbleNeedsOwnBake, type NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
+import { NebulaVolume } from '../render/galaxy/nebulaVolume';
 import { NuclearCluster } from '../render/galaxy/nuclearCluster';
 import { SectorChart } from '../render/galaxy/sectorChart';
 import {
@@ -142,6 +151,8 @@ const BELT_POINT_REBASE_DAYS = 16_384;
 const IDENTITY_FRAME = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
 const IDENTITY_MATRIX = new Matrix3();
 const PC_KM = PARSEC / 1000;
+/** How long the orbit keeps gliding after the hand comes off, seconds. */
+const ORBIT_EASE_SECONDS = 0.05;
 const GALAXY_ARRIVAL_ALTITUDE_KM = 15 * PC_KM;
 /** High enough to frame the whole galaxy from above the disk. */
 const MAX_ALTITUDE_KM = 45_000 * PC_KM;
@@ -149,10 +160,32 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
 /** Crossfade band (distance from the system, pc) where the sky-sphere
  *  backdrop hands off to the volumetric galaxy — the sphere's parallax
  *  breaks down at these heights, the volume takes over. */
+/** How far out a cloud can still earn a volume. Bounded by the cell
+ *  sweep the residency check pays, not by what deserves one. */
+const NEBULA_VOLUME_REACH_PC = 2000;
+const NEBULA_VOLUME_SIZE = 96;
+/** How many nebulae stand as volumes at once; the rest stay sprites.
+ *  Rendering residents is nearly free — a dome only pays for the
+ *  pixels its box covers — and the GPU bake fills a set this size in
+ *  seconds, so the cap is texture memory, not frame time. */
+const NEBULA_VOLUME_RESIDENTS = 64;
+/** Projected size below which a sprite is enough, radians. Low, so
+ *  the sprite→volume handoff happens while the object is still small
+ *  on screen; the resident cap is what bounds the cost. */
+const NEBULA_VOLUME_MIN_ANGULAR = 0.02;
+/** How long a volume takes to dissolve in against its sprite, or back
+ *  out when residency moves on, seconds. */
+const NEBULA_FADE_SECONDS = 1;
+/** How far the camera travels before residency is asked again, pc. */
+const NEBULA_RESIDENCY_STRIDE_PC = 50;
+/** Within this many cloud reaches, the box holds the whole cloud. */
+const NEBULA_CLOUD_SCALE_RADII = 3;
+/** How far the arrival stands off a cloud it lands inside. */
+const NEBULA_FRAMING_RADII = 2.2;
+/** Only clouds this close can be the one the camera is standing in. */
+const NEBULA_HOME_REACH_PC = 400;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
-/** Layers below the galaxy renderers' existing cutoff are visually nil. */
-const SKY_VISIBILITY_FLOOR = 0.002;
 const ORIGIN = new Vector3();
 
 /** A backdrop standing before the sweep has no stars of its own yet. */
@@ -192,7 +225,13 @@ function orbitDays(mu: Mu, planet: Planet): number {
   return orbitalPeriod(mu, planet.elements.semiMajorAxis) / 86400;
 }
 
-export type FocusTarget = 'star' | number | { planet: number; moon: number };
+export type FocusTarget = 'star' | 'cloud' | number | { planet: number; moon: number };
+
+/** A cloud as a subject: its body, and the group lighting it if any. */
+export interface FocusedCloud {
+  cloud: MolecularCloud;
+  nebula: Nebula | null;
+}
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 /** What a pick resolved to; main decides how to act on it. */
@@ -202,7 +241,8 @@ export type PickTarget =
   | { kind: 'moon'; planet: number; index: number }
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
-  | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition };
+  | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition }
+  | { kind: 'cloud'; seedHex: string; positionPc: GalacticPosition };
 
 interface Pickable {
   x: number;
@@ -376,6 +416,21 @@ export class UnifiedViewer {
    *  the sky integrates; crossfades in as the sky sphere's parallax
    *  breaks down with distance from the system. */
   private galaxyVolume: GalaxyVolume | null = null;
+  /** The nearby nebulae drawn as the volumes they are, keyed by cloud
+   *  seed: the few whose projected size earns them a face. The rest of
+   *  the sky keeps its sprites, and a sprite stands back up whenever
+   *  its volume leaves residency. */
+  private nebulaVolumes = new Map<bigint, NebulaVolume>();
+  /** The clouds residency has asked for — a bake landing for any other
+   *  cloud is kept in the cache but never stood up. */
+  private wantedNebulae = new Set<bigint>();
+  /** Landed bakes by cloud seed: the body, and its ionized region. */
+  private coarseBakes = new Map<bigint, NebulaVolumeBake>();
+  private fineBakes = new Map<bigint, NebulaVolumeBake>();
+  /** Where the camera stood when residency was last decided. */
+  private residencyAt: GalacticPosition | null = null;
+  /** Last frame's clock, for the volume crossfades' rate limit. */
+  private nebulaFadeAtMs = 0;
   private galaxyParticles: GalaxyParticles | null = null;
   /** Set while the camera is at the galactic centre: no system at all,
    *  the galaxy around it, and the hole traced at its own scale. */
@@ -414,6 +469,7 @@ export class UnifiedViewer {
     surveying: boolean;
     terrain: number;
     worlds: number;
+    nebulae: number;
     skies: number;
     skyProgress: number;
     skyStage: string;
@@ -424,6 +480,7 @@ export class UnifiedViewer {
       surveying: this.surveying,
       terrain: this.chunkManager?.outstanding ?? 0,
       worlds: bakeQueueDepth(),
+      nebulae: pendingNebulaBakes(),
       skies: skyPending(),
       skyProgress: sky.fraction,
       skyStage: sky.stage,
@@ -749,6 +806,8 @@ export class UnifiedViewer {
   private surveying = false;
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
+  /** The cloud the camera is standing off, when one is the focus. */
+  private focusCloud: FocusedCloud | null = null;
   private focusMoon: Moon | null = null;
   /** The parent planet hanging in a focused moon's sky. */
   private parentObject: PlanetObject | null = null;
@@ -1198,6 +1257,7 @@ export class UnifiedViewer {
       // planet's — visible whenever the orbit map is.
       addStar(companion.star, c + 1);
       this.stellarOrbits.add(createOrbitLine(companion.elements, 0xa0a0cc, 0.55));
+      this.markDiagrams();
     }
 
     // Photometric glints carry the stars once their discs fall subpixel
@@ -1235,9 +1295,10 @@ export class UnifiedViewer {
     this.skyPreviewFrame = galaxyOrientation;
     this.galaxyVolume = new GalaxyVolume(viewpoint, galaxyOrientation);
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
-    this.scene.add(this.galaxyVolume.mesh);
+    this.pipeline.sky.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
     this.pcGroup.add(this.galaxyParticles.group);
+    this.chooseNebulaVolume(viewpoint, galaxyOrientation);
     // The nuclear cluster waits until something could see it. From
     // anywhere in the disk the centre is a hundred magnitudes of dust
     // away, so surveying tens of thousands of its stars and shipping
@@ -1286,6 +1347,7 @@ export class UnifiedViewer {
           { ...background, starCount: 0, starDirs: EMPTY_F32, starColors: EMPTY_F32, starBrightness: EMPTY_F32 },
           2000,
         );
+        // Sprite fades for standing volumes arrive with the next frame.
         this.scene.add(this.backdrop.group);
       },
     );
@@ -1340,6 +1402,149 @@ export class UnifiedViewer {
         this.farPointIndex = new PointConeIndex(positions, farCount);
       }
     });
+  }
+
+  /**
+   * The nebula worth drawing as a volume: the brightest H II region
+   * near enough to have a face, and far enough that the camera is not
+   * standing inside the box. One for now — the tier that keeps several
+   * resident and hands off to the sprites by projected size comes with
+   * the streaming pass.
+   */
+  private chooseNebulaVolume(viewpoint: GalacticPosition, orientation: Float32Array): void {
+    this.residencyAt = { ...viewpoint };
+    this.updateNebulaResidency(viewpoint, orientation);
+  }
+
+  /**
+   * Which clouds are worth a volume is a question about the screen, not
+   * about distance: radii run from ten parsecs to sixty, so a great
+   * cloud well away can cover more of the sky than a small one nearby.
+   * Every cloud is a candidate, lit or not — the dark rifts are the
+   * same objects and they are bodies too. Asked from wherever the
+   * camera actually stands, because the sprites this tier replaces
+   * fade out with the backdrop as the camera climbs — a nebula must
+   * not vanish for no reason better than a handoff.
+   */
+  private updateNebulaResidency(positionPc: GalacticPosition, orientation: Float32Array): void {
+    const candidates: { cloud: MolecularCloud; angular: number }[] = [];
+    for (const cloud of cloudsNear(positionPc, NEBULA_VOLUME_REACH_PC)) {
+      const dx = cloud.positionPc.xPc - positionPc.xPc;
+      const dy = cloud.positionPc.yPc - positionPc.yPc;
+      const dz = cloud.positionPc.zPc - positionPc.zPc;
+      const angular = cloudReachPc(cloud) / Math.max(1, Math.hypot(dx, dy, dz));
+      if (angular >= NEBULA_VOLUME_MIN_ANGULAR) candidates.push({ cloud, angular });
+    }
+    candidates.sort((a, b) => b.angular - a.angular);
+    const chosen = candidates.slice(0, NEBULA_VOLUME_RESIDENTS);
+    // The focused cloud is the subject: resident whatever its size.
+    const focused = this.focusCloud?.cloud;
+    if (focused && !chosen.some((c) => c.cloud.seed === focused.seed)) {
+      if (chosen.length === NEBULA_VOLUME_RESIDENTS) chosen.pop();
+      chosen.push({ cloud: focused, angular: 1 });
+    }
+    this.wantedNebulae = new Set(chosen.map((c) => c.cloud.seed));
+
+    // Standing volumes are never yanked: one that lost its slot fades
+    // out and is disposed when it reaches zero, and one the camera
+    // swings back to before it is gone simply fades back up — the
+    // hysteresis that keeps a churning ranking from flickering.
+    for (const [seed, volume] of this.nebulaVolumes) {
+      volume.retiring = !this.wantedNebulae.has(seed);
+    }
+
+    for (const { cloud } of chosen) {
+      if (!this.nebulaVolumes.has(cloud.seed)) {
+        this.requestVolumeFor(cloud, this.viewpointPc, orientation);
+      }
+    }
+  }
+
+  /**
+   * The volume for one cloud, at both the scales it needs.
+   *
+   * A cloud is a hundred parsecs and the bubble its newborns blow is a
+   * few. One grid cannot hold both — a box around the cloud puts the
+   * whole ionized region inside a single cell, and the nebula
+   * disappears — so the cloud's dust is baked at cloud scale and the
+   * H II region again at its own, and the march reads whichever it is
+   * passing through.
+   */
+  private requestVolumeFor(
+    cloud: MolecularCloud,
+    viewpoint: GalacticPosition,
+    orientation: Float32Array,
+  ): void {
+    const seed = cloud.seed;
+    const stale = (): boolean => this.disposed || this.viewpointPc !== viewpoint;
+    const nebula = nebulaFor(cloud);
+    const lit = nebula !== null && bubbleNeedsOwnBake(nebula, cloudReachPc(cloud));
+    // Once the standing volume carries every grid it will ever get,
+    // the source bakes have nothing left to serve — the textures hold
+    // the data now, and at a full residency the copies are hundreds of
+    // megabytes of heap.
+    const settled = (): void => {
+      const volume = this.nebulaVolumes.get(seed);
+      if (volume && (!lit || volume.hasFine)) {
+        this.coarseBakes.delete(seed);
+        this.fineBakes.delete(seed);
+      }
+    };
+    const coarse = requestNebulaVolume(
+      cloud,
+      NEBULA_VOLUME_SIZE,
+      cloudReachPc(cloud),
+      (ready) => {
+        if (stale()) return;
+        this.coarseBakes.set(seed, ready);
+        this.installNebulaVolume(seed, viewpoint, orientation);
+        settled();
+      },
+    );
+    if (coarse) this.coarseBakes.set(seed, coarse);
+    if (lit) {
+      const fine = requestNebulaVolume(cloud, NEBULA_VOLUME_SIZE, undefined, (ready) => {
+        if (stale()) return;
+        this.fineBakes.set(seed, ready);
+        this.installNebulaVolume(seed, viewpoint, orientation);
+        settled();
+      });
+      if (fine) this.fineBakes.set(seed, fine);
+    }
+    if (coarse) {
+      this.installNebulaVolume(seed, viewpoint, orientation);
+      settled();
+    }
+  }
+
+  private installNebulaVolume(
+    seed: bigint,
+    viewpoint: GalacticPosition,
+    orientation: Float32Array,
+  ): void {
+    // A bake that lands after its cloud lost residency stays cached
+    // at the service for the next visit, but nothing is stood up for
+    // it and nothing here needs to keep holding it.
+    if (!this.wantedNebulae.has(seed)) {
+      this.coarseBakes.delete(seed);
+      this.fineBakes.delete(seed);
+      return;
+    }
+    const coarse = this.coarseBakes.get(seed);
+    if (!coarse) return;
+    const existing = this.nebulaVolumes.get(seed);
+    if (existing) {
+      this.pipeline.sky.scene.remove(existing.mesh);
+      existing.dispose();
+    }
+    const volume = new NebulaVolume(coarse, this.fineBakes.get(seed) ?? null, viewpoint, orientation);
+    // A fresh volume dissolves in from nothing; a reinstall — the fine
+    // bake landing over the coarse one — picks the fade up where the
+    // volume it replaces stood, so the upgrade is invisible.
+    volume.fade = existing?.fade ?? 0;
+    volume.opacity = volume.fade;
+    this.nebulaVolumes.set(seed, volume);
+    this.pipeline.sky.scene.add(volume.mesh);
   }
 
   /**
@@ -1477,6 +1682,21 @@ export class UnifiedViewer {
         createOrbitLine(planet.elements, planet.inHabitableZone ? 0x5fdf97 : 0x8a97ab, 0.75),
       );
     }
+    this.markDiagrams();
+  }
+
+  /**
+   * The zone and orbit diagrams are annotations, not sky: they come out
+   * of the scene pass and composite onto the finished image, so a
+   * decal's strength is its own rather than borrowed from whatever
+   * happens to lie behind it. Called wherever their contents change,
+   * since the layer belongs to each object rather than to the group.
+   */
+  private markDiagrams(): void {
+    markAsDiagram(this.overlay);
+    markAsDiagram(this.zoneOverlay);
+    markAsDiagram(this.stellarOrbits);
+    if (this.moonOrbits) markAsDiagram(this.moonOrbits);
   }
 
   /** Tear down the host-scoped content (planets, belts, comets, chart lines). */
@@ -1516,6 +1736,33 @@ export class UnifiedViewer {
     // Numeric targets index the host's planets; past them, the notable
     // asteroids (the primary's belts only). Object targets name a moon
     // of one of those planets.
+    // A cloud is a body here, not a place a body happens to sit in: the
+    // camera measures its ride against the cloud's own reach, so
+    // arriving means standing off the cloud rather than standing on a
+    // star that is zoomed out until the cloud fits.
+    if (target === 'cloud') {
+      this.focusCloud = this.localCloud();
+      this.focusPlanet = null;
+      this.focusMoon = null;
+      this.focusAsteroid = null;
+      const reachPc = this.focusCloud ? cloudReachPc(this.focusCloud.cloud) : 40;
+      // The volume follows the subject: whatever residency chose, the
+      // focused cloud is one of the clouds that get drawn.
+      if (this.focusCloud && this.skyPreviewFrame) {
+        this.wantedNebulae.add(this.focusCloud.cloud.seed);
+        this.requestVolumeFor(this.focusCloud.cloud, this.viewpointPc, this.skyPreviewFrame);
+      }
+      this.radiusKm = reachPc * PC_KM;
+      // Distance from the cloud's centre, not height above an edge it
+      // does not have: the ride runs from well outside the body down to
+      // deep inside it without ever hitting a floor it cannot pass.
+      this.minAltitudeKm = this.radiusKm * 0.02;
+      this.altitudeKm = this.radiusKm * 2.2;
+      this.arriveAtFocus(preset);
+      return;
+    }
+    this.focusCloud = null;
+
     const hostPlanets = this.planetNodes.map((node) => node.planet);
     const planetCount = hostPlanets.length;
     const planetIndex =
@@ -1573,11 +1820,49 @@ export class UnifiedViewer {
         preset === 'system'
           ? this.extentKm
           : preset === 'galaxy'
-            ? GALAXY_ARRIVAL_ALTITUDE_KM
+            ? this.galaxyArrivalAltitudeKm()
             : this.radiusKm * 3.2;
     }
 
     this.arriveAtFocus(preset);
+  }
+
+  /**
+   * The cloud the camera is standing in, if any: the nearest whose own
+   * field reaches the viewpoint. Lit or not — a dark rift is the same
+   * kind of object as the nebula beside it, and just as much a place.
+   */
+  private localCloud(): FocusedCloud | null {
+    let best: MolecularCloud | null = null;
+    let bestDistance = Infinity;
+    for (const cloud of cloudsNear(this.viewpointPc, NEBULA_HOME_REACH_PC)) {
+      const dx = cloud.positionPc.xPc - this.viewpointPc.xPc;
+      const dy = cloud.positionPc.yPc - this.viewpointPc.yPc;
+      const dz = cloud.positionPc.zPc - this.viewpointPc.zPc;
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance > cloudReachPc(cloud) || distance >= bestDistance) continue;
+      best = cloud;
+      bestDistance = distance;
+    }
+    return best ? { cloud: best, nebula: nebulaFor(best) } : null;
+  }
+
+  /** The cloud the camera is standing off, for the panels that name it. */
+  get focusedCloud(): FocusedCloud | null {
+    return this.focusCloud;
+  }
+
+  /**
+   * How far out to stand on arrival in the galaxy view. Normally a
+   * neighbourhood hop, but arriving inside a molecular cloud the
+   * subject is the cloud: stand off far enough to see all of it, the
+   * way arriving at a system stands off far enough to see the system.
+   */
+  private galaxyArrivalAltitudeKm(): number {
+    const local = this.localCloud();
+    return local
+      ? Math.max(GALAXY_ARRIVAL_ALTITUDE_KM, NEBULA_FRAMING_RADII * cloudReachPc(local.cloud) * PC_KM)
+      : GALAXY_ARRIVAL_ALTITUDE_KM;
   }
 
   /** Focus-specific content for any solid terrain body — planet or moon:
@@ -1694,7 +1979,9 @@ export class UnifiedViewer {
     // edge-on arrival would collapse the rings to a one-pixel sliver.
     if (this.focusPlanet?.rings) arrival.y += 0.55;
     arrival.normalize();
-    this.camera.position.copy(arrival).multiplyScalar(this.radiusKm + this.altitudeKm);
+    this.camera.position
+      .copy(arrival)
+      .multiplyScalar(this.focus === 'cloud' ? this.altitudeKm : this.radiusKm + this.altitudeKm);
     this.camera.up.set(0, 1, 0);
     // Any free-flight wandering ends here: the orbit re-anchors on the
     // new focus and pending ride input clears.
@@ -2035,6 +2322,7 @@ export class UnifiedViewer {
         distancePc: number,
         kind: string,
         info: string,
+        travelable: boolean,
       ): void => {
         if (angularRadius >= bestAngular) return;
         const [ox, oy, oz] = rotateToScene(sky.sceneFromGalaxy, ...patchDir);
@@ -2042,14 +2330,28 @@ export class UnifiedViewer {
         if (dir.dot(ray) < Math.cos(angularRadius)) return;
         bestAngular = angularRadius;
         const reach = this.camera.far * 0.25;
+        // A cloud is a place, and its own gateway system is how you
+        // stand in it — the same seed the gazetteer names it by, so
+        // arriving somewhere and reading its name agree.
+        const centre: GalacticPosition = {
+          xPc: this.viewpointPc.xPc + patchDir[0] * distancePc,
+          yPc: this.viewpointPc.yPc + patchDir[1] * distancePc,
+          zPc: this.viewpointPc.zPc + patchDir[2] * distancePc,
+        };
         best = {
           x: this.camera.position.x + dir.x * reach,
           y: this.camera.position.y + dir.y * reach,
           z: this.camera.position.z + dir.z * reach,
           name: `the ${sectorNameForSeed(seed)} ${kind}`,
           info: `${info} · ≈${fmt(distancePc, 3)} pc`,
-          action: null,
-          target: null,
+          action: travelable ? 'click to travel' : null,
+          target: travelable
+            ? {
+                kind: 'cloud',
+                seedHex: seedToHex(deriveSeed(seed, 'gateway')),
+                positionPc: centre,
+              }
+            : null,
         };
       };
       for (const nebula of sky.nebulae) {
@@ -2060,6 +2362,7 @@ export class UnifiedViewer {
           nebula.distancePc,
           'Nebula',
           'molecular cloud lit by its newborn stars',
+          true,
         );
       }
       for (const cloud of sky.darkClouds) {
@@ -2070,6 +2373,7 @@ export class UnifiedViewer {
           cloud.distancePc,
           'Rift',
           'dark molecular cloud',
+          true,
         );
       }
       if (!best) best = fallback;
@@ -2480,6 +2784,7 @@ export class UnifiedViewer {
         };
       });
     this.scene.add(this.moonGroup);
+    this.markDiagrams();
   }
 
   /**
@@ -2510,7 +2815,7 @@ export class UnifiedViewer {
 
     this.galaxyVolume = new GalaxyVolume(GALACTIC_CENTRE, frame);
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
-    this.scene.add(this.galaxyVolume.mesh);
+    this.pipeline.sky.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(GALACTIC_CENTRE, frame, PC_KM);
     this.pcGroup.add(this.galaxyParticles.group);
     this.nuclearCluster = new NuclearCluster(GALACTIC_CENTRE, frame, PC_KM);
@@ -2748,7 +3053,12 @@ export class UnifiedViewer {
     const backdrop = this.backdrop?.group;
     const was = backdrop?.position.clone();
     backdrop?.position.copy(atWorldKm);
+    // The volume domes reach the frame as a screen-space composite,
+    // which a cube camera must not photograph: for the capture the
+    // domes themselves stand in, recentred the way the backdrop is.
+    const domes = this.pipeline.sky.lendTo(this.scene, atWorldKm);
     sky.capture(this.pipeline.renderer, this.scene, atWorldKm, hidden);
+    this.pipeline.sky.reclaim(domes);
     if (backdrop && was) backdrop.position.copy(was);
   }
 
@@ -2932,10 +3242,24 @@ export class UnifiedViewer {
     this.clearSkyPreview();
     this.skyPreviewFrame = null;
     if (this.galaxyVolume) {
-      this.scene.remove(this.galaxyVolume.mesh);
+      this.pipeline.sky.scene.remove(this.galaxyVolume.mesh);
       this.galaxyVolume.dispose();
       this.galaxyVolume = null;
     }
+    if (this.nebulaVolumes.size > 0) {
+      for (const volume of this.nebulaVolumes.values()) {
+        this.pipeline.sky.scene.remove(volume.mesh);
+        volume.dispose();
+      }
+      this.nebulaVolumes.clear();
+      setStarNebulaExtinction([]);
+    }
+    this.wantedNebulae.clear();
+    this.coarseBakes.clear();
+    this.fineBakes.clear();
+    this.residencyAt = null;
+    // The next locale's volumes must not wait behind this one's bakes.
+    resetNebulaBakes();
     if (this.galaxyParticles) {
       this.pcGroup.remove(this.galaxyParticles.group);
       this.galaxyParticles.dispose();
@@ -2974,6 +3298,11 @@ export class UnifiedViewer {
     // sky-sphere geometry is wrong once the camera has real parallax.
     // The neighborhood points are true 3D and stay: they simply recede.
     if (this.backdrop) this.backdrop.intensity = value * (1 - this.galaxyFade);
+    // The volume domes — galaxy band and nebulae — are the same sky the
+    // points are, and an atmosphere shining in front of them washes
+    // them out identically: light and occlusion together, or a rift
+    // punches a dark hole through the daytime sky behind it.
+    this.pipeline.sky.intensity = value;
     if (this.neighborPoints) {
       (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
       this.neighborPoints.visible = value > SKY_VISIBILITY_FLOOR;
@@ -3113,6 +3442,14 @@ export class UnifiedViewer {
     const now = performance.now();
     const dtSeconds = Math.min((now - this.lastFrameMs) / 1000, 0.1);
     this.lastFrameMs = now;
+    // OrbitControls decays its leftover motion once per frame, so a
+    // fixed damping factor eases for three times as long at twenty
+    // frames a second as at sixty — the glide outlasts the drag exactly
+    // when the frame rate is already making things feel heavy. Convert
+    // a time constant into this frame's factor instead: the ease lasts
+    // the same fraction of a second whatever the rate, and collapses to
+    // no ease at all once frames are slower than the constant itself.
+    this.controls.dampingFactor = Math.min(1, 1 - Math.exp(-dtSeconds / ORBIT_EASE_SECONDS));
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
     if (this.coreView) {
@@ -3142,7 +3479,12 @@ export class UnifiedViewer {
       const groundKm = this.field ? Math.max(terrainM, waterM) / 1000 : 0;
       // Asteroid shapes legitimately dip far below the datum sphere.
       const floorKm = this.focusAsteroid ? -this.radiusKm * 0.6 : -this.radiusKm * 0.01;
-      const surfaceKm = this.radiusKm + Math.max(groundKm, floorKm);
+      // A cloud has no surface, so the ride measures the distance itself
+    // rather than a height above one: the wheel scales it the whole way
+    // in, from standing off the body to standing inside it, instead of
+    // clamping a parsec-scale floor the camera cannot pass.
+    const surfaceKm =
+      this.focus === 'cloud' ? 0 : this.radiusKm + Math.max(groundKm, floorKm);
       // The wheel rides toward what the camera is anchored on: the focus
       // body's surface when the orbit target sits there (altitude scales,
       // buttery down to the ground), or the panned anchor when free
@@ -3339,9 +3681,88 @@ export class UnifiedViewer {
           this.galaxyFade,
           Math.min(this.camera.far * 0.3, 3e15),
         );
+        // The nebulae are bodies in the same galaxy, marched in the
+        // same frame — they do not fade with the band, because unlike
+        // the band each is an object standing at a place.
+        // Crossfade at a bounded rate: each volume dissolves toward
+        // where residency wants it, its sprite carrying the complement,
+        // and one that finishes fading out is only then let go.
+        const nowMs = performance.now();
+        const fadeStep =
+          Math.min(0.1, (nowMs - (this.nebulaFadeAtMs || nowMs)) / 1000) / NEBULA_FADE_SECONDS;
+        this.nebulaFadeAtMs = nowMs;
+        const byDistance: NebulaVolume[] = [];
+        for (const [seed, volume] of this.nebulaVolumes) {
+          volume.fade = volume.retiring
+            ? Math.max(0, volume.fade - fadeStep)
+            : Math.min(1, volume.fade + fadeStep);
+          if (volume.retiring && volume.fade === 0) {
+            this.pipeline.sky.scene.remove(volume.mesh);
+            volume.dispose();
+            this.nebulaVolumes.delete(seed);
+            this.coarseBakes.delete(seed);
+            this.fineBakes.delete(seed);
+            continue;
+          }
+          volume.opacity = volume.fade;
+          volume.update(
+            this.camera.position,
+            worldToScene,
+            PC_KM,
+            Math.min(this.camera.far * 0.3, 3e15),
+          );
+          byDistance.push(volume);
+        }
+        if (this.backdrop) {
+          const fades = new Map<bigint, number>();
+          for (const [seed, volume] of this.nebulaVolumes) fades.set(seed, volume.fade);
+          this.backdrop.setNebulaVolumeFades(fades);
+        }
+        // Farther volumes draw first so a near cloud composites over a
+        // far one. Reversed-Z inverts renderOrder: lowest draws LAST,
+        // so the nearest takes the lowest slot.
+        byDistance.sort((a, b) => b.cameraDistancePc - a.cameraDistancePc);
+        byDistance.forEach((volume, index) => {
+          volume.mesh.renderOrder = -6 - index;
+        });
+        // Every star behind a cloud dims and reddens through it. The
+        // depth buffer cannot say which stars those are — the points
+        // are additive and write no depth — so each one asks the
+        // volumes its sightline could cross. The shader carries a few
+        // slots; when residents outnumber them, the nearest volumes —
+        // the rifts the eye actually checks stars against — take them.
+        const cameraRotation = new Matrix3().setFromMatrix4(this.camera.matrixWorld);
+        setStarNebulaExtinction(
+          byDistance
+            .slice(-MAX_STAR_NEBULAE)
+            .reverse()
+            .map((volume) => volume.extinctionFor(cameraRotation)),
+        );
         // The nuclear cluster's light comes through the same dust the
         // volume march extinguishes the band with.
         const kpc = this.galaxyVolume.cameraGalacticKpc;
+        // Residency follows the camera, not the origin system: the
+        // sprites this tier replaces fade out with the backdrop as the
+        // camera climbs, and what deserves a volume changes as it
+        // travels. Re-asked once per stride of real movement.
+        if (this.skyPreviewFrame) {
+          const camPc: GalacticPosition = {
+            xPc: kpc.x * 1000,
+            yPc: kpc.y * 1000,
+            zPc: kpc.z * 1000,
+          };
+          const moved = this.residencyAt
+            ? Math.hypot(
+                camPc.xPc - this.residencyAt.xPc,
+                camPc.yPc - this.residencyAt.yPc,
+                camPc.zPc - this.residencyAt.zPc,
+              )
+            : Infinity;
+          if (moved > NEBULA_RESIDENCY_STRIDE_PC) {
+            this.residencyAt = camPc;
+            this.updateNebulaResidency(camPc, this.skyPreviewFrame);
+          }
+        }
         this.coreTransmission = Math.exp(
           -dustOpticalDepth(
             { xPc: kpc.x * 1000, yPc: kpc.y * 1000, zPc: kpc.z * 1000 },

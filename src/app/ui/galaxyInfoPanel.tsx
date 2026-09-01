@@ -2,11 +2,53 @@ import type { ReactNode } from 'react';
 import { NEIGHBOR_RADIUS_PC } from '../../universe/galaxy/neighborhood';
 import type { GalacticAddress } from '../../universe/galaxy/regions';
 import type { Star } from '../../universe/star/types';
-import { travelTo, type AppSnapshot } from '../store';
+import { travelToCloud, type AppSnapshot, type CloudSummary } from '../store';
 import { fmt } from './format';
 import { CoreDestination } from './nucleusPanel';
 import { BodyRow } from './bodyRow';
 import { cssColor, type PlateSpec } from './plate';
+
+/**
+ * A molecular cloud's plate. Travel to a cloud focuses the cloud, not
+ * the star that happens to sit in it, so it introduces itself the way
+ * any other body does — by what it is made of and what is happening
+ * inside it.
+ */
+export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
+  const lit = cloud.kind === 'emission';
+  const color = lit ? '#e08ac0' : cloud.kind === 'reflection' ? '#9fb6e0' : '#7d7a86';
+  const kind =
+    cloud.kind === 'emission'
+      ? 'emission nebula'
+      : cloud.kind === 'reflection'
+        ? 'reflection nebula'
+        : 'dark cloud';
+  return {
+    title: `the ${cloud.name} ${lit || cloud.kind === 'reflection' ? 'Nebula' : 'Rift'}`,
+    subtitle: `${kind} · ${fmt(cloud.spanPc, 3)} pc across`,
+    color,
+    row: {
+      color,
+      name: cloud.name,
+      kind,
+      figures: [[fmt(cloud.radiusPc, 3), 'pc']],
+    },
+    rows: [
+      ['Mass', `${fmt(cloud.massSolar, 3)} M☉`],
+      ['Mean density', `${fmt(cloud.meanDensity, 3)} H/cm³`],
+      ['Metallicity', `${cloud.metallicity >= 0 ? '+' : '−'}${Math.abs(cloud.metallicity).toFixed(2)} dex`],
+      ...(cloud.ionizingStars > 0
+        ? ([
+            ['Ionizing stars', `${cloud.ionizingStars}`],
+            ['Hottest', `${fmt(cloud.hottestTeff, 3)} K`],
+            ['Gas at those stars', `${fmt(cloud.sourceDensity, 3)} H/cm³`],
+            ['Ionized radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
+            ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
+          ] as Array<[string, string]>)
+        : ([['Star formation', 'none lit']] as Array<[string, string]>)),
+    ],
+  };
+}
 
 /** Galaxy level's plate: the current star's full galactic address. */
 export function galaxyPlateSpec(
@@ -71,7 +113,7 @@ export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
                 [fmt(kpc), 'kpc'],
               ],
               onClick: () =>
-                travelTo({ seedHex: landmark.seedHex, positionPc: landmark.positionPc }),
+                travelToCloud({ seedHex: landmark.seedHex, positionPc: landmark.positionPc }),
             }}
           />
         ))

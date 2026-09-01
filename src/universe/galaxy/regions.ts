@@ -2,7 +2,7 @@ import { deriveSeed, mix64, seedToHex } from '../../core/rng/hash';
 import { poisson } from '../../core/rng/distributions';
 import { Rng } from '../../core/rng/rng';
 import { createSimplex3 } from '../../core/noise/simplex3';
-import { cloudsInCell, type MolecularCloud } from './clouds';
+import { CLOUD_DENSITY_GAIN, cloudsInCell, type MolecularCloud } from './clouds';
 import { nearestArm, stellarDensity, type GalacticPosition } from './density';
 import { galaxySeed } from './galaxySeed';
 
@@ -85,12 +85,23 @@ function cloudScore(cloud: MolecularCloud): number {
   return cloud.amplitude * cloud.radiusPc ** 3;
 }
 
+/** A cloud's standing as a landmark: how far its province reaches and
+ *  where it ranks in the gazetteer. One typical cloud is about 1. */
+export function landmarkWeight(cloud: MolecularCloud): number {
+  return Math.min(2.2, Math.max(0.6, (cloudScore(cloud) / SCORE_REF) ** (1 / 3)));
+}
+
 // Border tracing sweeps thousands of lookups over the same few hundred
 // cells; the per-cell derivation is BigInt-priced, so memoize.
 const siteCache = new Map<number, SectorSite[]>();
 
-/** Score of a typical landmark cloud, for weight normalization. */
-const SCORE_REF = 4.5 * 45 ** 3;
+/** Score of a typical landmark cloud, for weight normalization. It
+ *  tracks the population's own density scale: a reference fixed to one
+ *  amplitude would saturate every cloud at the ceiling the moment the
+ *  clouds were recalibrated, and a saturated weight is no weight at all
+ *  — the landmark ranking ties and the provinces stop scaling with the
+ *  prominence they are supposed to be sized by. */
+const SCORE_REF = CLOUD_DENSITY_GAIN * 4.5 * 45 ** 3;
 const CLOUD_CELLS_PER_SPAN = 4;
 
 /**
@@ -142,7 +153,7 @@ function sitesFor(ix: number, iy: number, iz: number): SectorSite[] {
       yPc: cloud.positionPc.yPc,
       zPc: cloud.positionPc.zPc,
       seed: cloud.seed,
-      weight: Math.min(2.2, Math.max(0.6, (cloudScore(cloud) / SCORE_REF) ** (1 / 3))),
+      weight: landmarkWeight(cloud),
       radiusPc: cloud.radiusPc,
     });
   }

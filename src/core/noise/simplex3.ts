@@ -2,7 +2,7 @@ import { Rng } from '../rng/rng';
 
 export type NoiseSampler3 = (x: number, y: number, z: number) => number;
 
-const GRAD3: ReadonlyArray<readonly [number, number, number]> = [
+export const GRAD3: ReadonlyArray<readonly [number, number, number]> = [
   [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
   [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
   [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
@@ -11,12 +11,10 @@ const GRAD3: ReadonlyArray<readonly [number, number, number]> = [
 const F3 = 1 / 3;
 const G3 = 1 / 6;
 
-/**
- * Seeded 3D simplex noise (Gustavson's formulation), output in [-1, 1].
- * The permutation table is a Fisher–Yates shuffle from the seed's stream,
- * so identical seeds sample identically anywhere (main thread or worker).
- */
-export function createSimplex3(seed: bigint): NoiseSampler3 {
+/** The doubled 512-entry permutation a seed shuffles out — the whole
+ *  of the noise's state, so a GPU evaluator can carry it as a texture
+ *  and sample the same field. */
+export function simplexPermutation(seed: bigint): Uint8Array {
   const rng = new Rng(seed);
   const perm = new Uint8Array(512);
   const table = new Uint8Array(256);
@@ -28,6 +26,16 @@ export function createSimplex3(seed: bigint): NoiseSampler3 {
     table[j] = tmp;
   }
   for (let i = 0; i < 512; i++) perm[i] = table[i & 255];
+  return perm;
+}
+
+/**
+ * Seeded 3D simplex noise (Gustavson's formulation), output in [-1, 1].
+ * The permutation table is a Fisher–Yates shuffle from the seed's stream,
+ * so identical seeds sample identically anywhere (main thread or worker).
+ */
+export function createSimplex3(seed: bigint): NoiseSampler3 {
+  const perm = simplexPermutation(seed);
 
   return (x, y, z) => {
     const s = (x + y + z) * F3;

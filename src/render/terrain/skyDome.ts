@@ -21,23 +21,29 @@ uniform vec3 uLight2Color;
 uniform vec3 uUp;
 uniform float uStrength;
 
+// One light's share of the sky: tinted scattering shaped by the slant
+// path, a warm forward glow about the light itself, the whole term
+// weighted by that light's own elevation. Scattering is linear in
+// illumination, so each light carries its own weight — gating the
+// companion's share by the primary's elevation left a moonlit or
+// companion-lit night scattering nothing at all.
+vec3 scattered(vec3 lightDir, vec3 lightColor, float shape, float lift) {
+  float day = clamp(dot(lightDir, uUp) * 2.5 + 0.15, 0.0, 1.0);
+  float glow = pow(max(dot(vDir, lightDir), 0.0), 9.0);
+  return (uSkyColor * lightColor * day * shape + lightColor * glow * day * 0.55)
+    * clamp(uStrength * (day * lift + glow * 0.4), 0.0, 1.0);
+}
+
 void main() {
   float elevation = dot(vDir, uUp);
-  float sunElevation = clamp(dot(uSunDir, uUp) * 2.5 + 0.15, 0.0, 1.0);
-
-  // Denser slant path near the horizon; warm forward glow around the sun.
-  float horizon = pow(1.0 - clamp(elevation, 0.0, 1.0), 1.6);
-  float sunGlow = pow(max(dot(vDir, uSunDir), 0.0), 9.0);
-
-  float sunElevation2 = clamp(dot(uLight2Dir, uUp) * 2.5 + 0.15, 0.0, 1.0);
-  float sunGlow2 = pow(max(dot(vDir, uLight2Dir), 0.0), 9.0);
-  vec3 sky = uSkyColor * (uLightColor * sunElevation + uLight2Color * sunElevation2) * (0.35 + 0.65 * horizon);
-  sky += uLightColor * sunGlow * sunElevation * 0.55 + uLight2Color * sunGlow2 * sunElevation2 * 0.55;
-
+  // Denser slant path near the horizon.
+  float shape = 0.35 + 0.65 * pow(1.0 - clamp(elevation, 0.0, 1.0), 1.6);
+  float lift = clamp(elevation + 0.4, 0.0, 1.0);
   // Scattering adds light; it never occludes, so the sun's disc (and
   // anything else bright enough) blazes through the daytime sky.
-  float weight = uStrength * sunElevation * clamp(elevation + 0.4, 0.0, 1.0);
-  gl_FragColor = vec4(sky * clamp(weight + uStrength * sunGlow * 0.4, 0.0, 1.0), 1.0);
+  vec3 sky = scattered(uSunDir, uLightColor, shape, lift)
+    + scattered(uLight2Dir, uLight2Color, shape, lift);
+  gl_FragColor = vec4(sky, 1.0);
 }
 `;
 
@@ -64,7 +70,13 @@ export function createSkyDome(scatteringColor: [number, number, number]): Mesh {
     depthWrite: false,
   });
   const dome = new Mesh(new SphereGeometry(600, 48, 24), material);
-  dome.renderOrder = -1;
+  // The air shines in front of everything beyond it, so the dome draws
+  // after the sky-layer composite and the star points (reversed-Z:
+  // lowest order last). At -1 it tied the composite and lost: a dark
+  // cloud's occlusion multiplied the twilight haze away, punching a
+  // black patch into an atmosphere that stands between it and the eye.
+  // Additive, so its order against the additive stars is indifferent.
+  dome.renderOrder = -2.25;
   dome.frustumCulled = false;
   return dome;
 }

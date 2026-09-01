@@ -11,6 +11,7 @@ import { evolve } from '../star/evolution';
 import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, sweepRowStars, type CatalogRow } from './catalog';
 import {
+  cloudDustFactor,
   cloudLocalDensity,
   cloudReachPc,
   cloudsNear,
@@ -25,6 +26,14 @@ import {
   stellarDensity,
   type GalacticPosition,
 } from './density';
+import {
+  nebulaEmissionShare,
+  nebulaFor,
+  nebulaIlluminant,
+  nebulaSpectralHardness,
+  type Nebula,
+} from './nebula';
+import { nebulaEmissionColor } from './nebulaLines';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
@@ -592,12 +601,9 @@ export function assembleSkyField(
 
 type PushStar = (dx: number, dy: number, dz: number, luminosity: number, tEff: number) => void;
 
-interface GroupLight {
-  maxTeff: number;
-  totalLuminosity: number;
-}
-
-/** Coeval members around a center; returns what formed, pushing the visible. */
+/** Coeval members around a center, pushing the ones that resolve from
+ *  here. The natal groups come from the nebula model instead; this is
+ *  what is left for clusters that have long since left their gas. */
 function groupMembers(
   rng: Rng,
   push: PushStar,
@@ -608,46 +614,68 @@ function groupMembers(
   tries: number,
   minMass: number,
   ageGyr: number,
-): GroupLight {
-  const light: GroupLight = { maxTeff: 0, totalLuminosity: 0 };
+): void {
   for (let i = 0; i < tries; i++) {
     const mx = dx + rng.normal(0, spreadPc);
     const my = dy + rng.normal(0, spreadPc);
     const mz = dz + rng.normal(0, spreadPc * 0.7);
     const physical = evolve(powerLaw(rng, 2.3, minMass, 60), ageGyr);
-    light.totalLuminosity += physical.luminosity;
-    if (physical.tEff > light.maxTeff) light.maxTeff = physical.tEff;
     const distanceSq = mx * mx + my * my + mz * mz;
     if (physical.luminosity / distanceSq < MIN_FAR_IRRADIANCE) continue;
     push(mx, my, mz, physical.luminosity, physical.tEff);
   }
-  return light;
+}
+
+/** The natal group as sky: each member where it stands in its cloud,
+ *  pushed if it resolves from here. */
+function pushNebulaMembers(
+  nebula: Nebula,
+  push: PushStar,
+  dx: number,
+  dy: number,
+  dz: number,
+): void {
+  for (const member of nebula.members) {
+    const mx = dx + member.dxPc;
+    const my = dy + member.dyPc;
+    const mz = dz + member.dzPc;
+    const distanceSq = mx * mx + my * my + mz * mz;
+    if (member.luminosity / distanceSq < MIN_FAR_IRRADIANCE) continue;
+    push(mx, my, mz, member.luminosity, member.tEff);
+  }
 }
 
 /**
- * Nebular hue from the hottest embedded star: hot enough to ionize the
- * gas and the cloud emits (Hα red, hardening toward O III teal under the
- * hottest stars); otherwise the cloud merely scatters the starlight as
- * a blue-leaning reflection nebula.
+ * The two lights a lit cloud sends out, from the same budgets the
+ * volume bake spends: the line mixture at the group's spectral
+ * hardness, and the illuminant's continuum off the dust. What used to
+ * be a hand-mixed hue ramp now reads the object — a dozen B stars are
+ * a blue reflection complex however big their bubble, because their
+ * lines carry a ten-thousandth of their continuum; an O group's lines
+ * rival its continuum and the pink takes over.
  */
-function nebulaColor(maxTeff: number): [number, number, number] {
-  const ionization = Math.max(0, Math.min(1, (maxTeff - 17000) / 13000));
-  const hardness = Math.max(0, Math.min(1, (maxTeff - 28000) / 17000));
-  const emission: [number, number, number] = [
-    1.0 * (1 - hardness * 0.6) + 0.35 * hardness * 0.6,
-    0.3 * (1 - hardness * 0.6) + 0.9 * hardness * 0.6,
-    0.34 * (1 - hardness * 0.6) + 0.8 * hardness * 0.6,
-  ];
-  const [sr, sg, sb] = blackbodyLinearRgb(Math.max(maxTeff, 3000));
-  const reflection: [number, number, number] = [
-    sr * 0.55 + 0.12,
-    sg * 0.65 + 0.18,
-    sb * 0.75 + 0.35,
-  ];
+function nebulaHues(nebula: Nebula): {
+  emission: [number, number, number];
+  reflection: [number, number, number];
+  share: number;
+} {
+  const [er, eg, eb] = nebulaEmissionColor(nebulaSpectralHardness(nebula.maxTeff));
+  const illuminant = nebulaIlluminant(nebula);
+  const [sr, sg, sb] = blackbodyLinearRgb(Math.max(3000, illuminant?.tEff ?? 4000));
+  return {
+    emission: [er, eg, eb],
+    reflection: [sr, sg, sb],
+    share: nebulaEmissionShare(nebula),
+  };
+}
+
+/** The blended colour of the whole object, for tints and listings. */
+function nebulaDisplayColor(nebula: Nebula): [number, number, number] {
+  const { emission, reflection, share } = nebulaHues(nebula);
   return [
-    reflection[0] + (emission[0] - reflection[0]) * ionization,
-    reflection[1] + (emission[1] - reflection[1]) * ionization,
-    reflection[2] + (emission[2] - reflection[2]) * ionization,
+    reflection[0] + (emission[0] - reflection[0]) * share,
+    reflection[1] + (emission[1] - reflection[1]) * share,
+    reflection[2] + (emission[2] - reflection[2]) * share,
   ];
 }
 
@@ -664,16 +692,14 @@ function renderNebulaTile(
   tile: number,
   cloud: MolecularCloud,
   view: [number, number, number],
-  maxTeff: number,
+  nebula: Nebula,
 ): { right: [number, number, number]; up: [number, number, number]; peak: number } {
   const axis: [number, number, number] =
     Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
   const right = normalize(cross(view, axis));
   const up = cross(view, right);
 
-  const ionization = Math.max(0, Math.min(1, (maxTeff - 17000) / 13000));
-  const emission = nebulaColor(Math.max(maxTeff, 17000));
-  const scattered = nebulaColor(Math.min(maxTeff, 12000));
+  const { emission, reflection: scattered, share } = nebulaHues(nebula);
 
   const extentPc = cloud.radiusPc * 1.6;
   const steps = 16;
@@ -709,7 +735,7 @@ function renderNebulaTile(
         const coreSq = (px * px + py * py + pz * pz) / (0.35 * cloud.radiusPc) ** 2;
         const illumination = 1 / (1 + coreSq);
         const glow = density * illumination * Math.exp(-tau) * dt;
-        const ionLocal = ionization * Math.min(1, illumination * 2.2);
+        const ionLocal = share * Math.min(1, illumination * 2.2);
         r += glow * (scattered[0] + (emission[0] - scattered[0]) * ionLocal);
         g += glow * (scattered[1] + (emission[1] - scattered[1]) * ionLocal);
         b += glow * (scattered[2] + (emission[2] - scattered[2]) * ionLocal);
@@ -751,6 +777,7 @@ function normalize(a: [number, number, number]): [number, number, number] {
 
 interface NebulaCandidate {
   cloud: MolecularCloud;
+  nebula: Nebula;
   view: [number, number, number];
   distancePc: number;
   maxTeff: number;
@@ -773,28 +800,27 @@ function buildGroups(
   const candidates: NebulaCandidate[] = [];
 
   for (const cloud of cloudsNear(viewpoint, 750)) {
-    const rng = new Rng(deriveSeed(cloud.seed, 'formation'));
-    // Bigger clouds are likelier to be forming stars right now.
-    if (rng.float() > 0.1 + cloud.radiusPc / 170) continue;
+    const nebula = nebulaFor(cloud);
+    if (!nebula) continue;
     const dx = cloud.positionPc.xPc - viewpoint.xPc;
     const dy = cloud.positionPc.yPc - viewpoint.yPc;
     const dz = cloud.positionPc.zPc - viewpoint.zPc;
     const distance = Math.hypot(dx, dy, dz);
+    // A sprite is an impostor of a volume, and this close it stands in
+    // for something that would fill the sky. Lifted by the volume tier.
     if (distance < 50) continue;
 
-    const ageGyr = rng.range(0.0015, 0.012);
-    const tries = Math.min(240, Math.round(cloud.radiusPc ** 1.5 * rng.range(0.4, 1.1)));
-    const light = groupMembers(rng, push, dx, dy, dz, cloud.radiusPc * 0.35, tries, 1.0, ageGyr);
-    if (light.maxTeff < 6500) continue;
+    pushNebulaMembers(nebula, push, dx, dy, dz);
+    if (nebula.maxTeff < 6500) continue;
 
-    const ionization = Math.max(0, Math.min(1, (light.maxTeff - 17000) / 13000));
     candidates.push({
       cloud,
+      nebula,
       view: [dx / distance, dy / distance, dz / distance],
       distancePc: distance,
-      maxTeff: light.maxTeff,
+      maxTeff: nebula.maxTeff,
       brightness:
-        ((0.3 + 1.1 * ionization) * 95 * Math.sqrt(light.totalLuminosity)) /
+        ((0.3 + 1.1 * nebulaEmissionShare(nebula)) * 95 * Math.sqrt(nebula.totalLuminosity)) /
         (distance * distance),
     });
   }
@@ -811,14 +837,14 @@ function buildGroups(
       tile,
       candidate.cloud,
       candidate.view,
-      candidate.maxTeff,
+      candidate.nebula,
     );
     return {
       seed: candidate.cloud.seed,
       distancePc: candidate.distancePc,
       dir: candidate.view,
       angularRadius: Math.min(0.35, candidate.cloud.radiusPc / candidate.distancePc),
-      color: nebulaColor(candidate.maxTeff),
+      color: nebulaDisplayColor(candidate.nebula),
       brightness: candidate.brightness,
       right,
       up,
@@ -1413,7 +1439,7 @@ function buildDarkClouds(
     const up = cross(view, right);
 
     const reachPc = cloudReachPc(cloud);
-    const dustFactor = dustDensity(cloud.positionPc) * 1.6 * dustKappa;
+    const dustFactor = cloudDustFactor(cloud) * dustKappa;
     const steps = 12;
     const ds = (2 * reachPc) / steps;
     const tileX = (tile % DARK_ATLAS_COLS) * DARK_TILE;
@@ -1484,7 +1510,7 @@ function buildCloudTransmission(
     const angRad = Math.asin(Math.min(1, reachPc / distance));
     if (angRad > 1.0) continue;
 
-    const dustFactor = dustDensity(cloud.positionPc) * 1.6 * dustKappa;
+    const dustFactor = cloudDustFactor(cloud) * dustKappa;
     const lat0 = Math.asin(dz / distance);
     const lon0 = Math.atan2(dy, dx);
     const row0 = Math.max(0, Math.floor((lat0 - angRad + Math.PI / 2) / rowRad));

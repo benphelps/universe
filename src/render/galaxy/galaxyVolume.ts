@@ -1,20 +1,25 @@
 import {
-  AdditiveBlending,
+  AddEquation,
   BackSide,
+  CustomBlending,
+  GLSL3,
   Matrix3,
   Mesh,
+  OneFactor,
   ShaderMaterial,
   SphereGeometry,
   Vector3,
+  ZeroFactor,
 } from 'three';
-import { waveParams, type GalacticPosition } from '../../universe/galaxy/density';
+import type { GalacticPosition } from '../../universe/galaxy/density';
 import { buildGalaxyRadianceGlsl } from '../glsl/galaxyRadiance';
+import { galaxyLutTextures } from './galaxyLuts';
 
 const VERTEX = /* glsl */ `
 // The dome is a unit sphere centered on the camera and never rotated,
 // so the local vertex position IS the view ray — no planet-scale
 // world coordinates ever enter the varying.
-varying vec3 vRay;
+out vec3 vRay;
 void main() {
   vRay = position;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -24,38 +29,34 @@ void main() {
 }
 `;
 
+// The shader itself no longer belongs to a galaxy — the wave lives in
+// the arm LUT the material binds — so the source can stand at module
+// scope without committing the session to a seed.
+const FRAGMENT = /* glsl */ `
+in vec3 vRay;
+out vec4 fragColor;
+uniform vec3 uCamGalKpc;
+uniform mat3 uWorldToGalaxy;
+uniform float uMeanLum;
+uniform float uOpacity;
+
+${buildGalaxyRadianceGlsl()}
+
+void main() {
+  vec3 dir = normalize(uWorldToGalaxy * vRay);
+  // Added light occludes nothing: zero alpha, so the sky composite the
+  // dome renders into carries only the nebula's occlusion.
+  fragColor = vec4(galaxyRadiance(uCamGalKpc, dir, uMeanLum) * uOpacity, 0.0);
+}
+`;
+
 /**
  * The galaxy as a volume: the shared line-of-sight integral marched
  * per pixel from wherever the camera actually is. From inside it
  * reproduces the band; from outside the spiral, bulge, and dust
  * patchiness emerge from the same model the sky field and the black
  * hole's bent rays read.
- *
- * Built on first use, never at import: the wave belongs to a galaxy,
- * and reading it is what locks the session into one. A module-scope
- * shader would settle that question before the app had read the seed
- * off the URL.
  */
-let fragmentMemo: string | null = null;
-
-function fragment(): string {
-  return (fragmentMemo ??= /* glsl */ `
-varying vec3 vRay;
-uniform vec3 uCamGalKpc;
-uniform mat3 uWorldToGalaxy;
-uniform float uMeanLum;
-uniform float uOpacity;
-
-${buildGalaxyRadianceGlsl(waveParams())}
-
-void main() {
-  vec3 dir = normalize(uWorldToGalaxy * vRay);
-  gl_FragColor = vec4(galaxyRadiance(uCamGalKpc, dir, uMeanLum) * uOpacity, 1.0);
-}
-`);
-}
-
-/** Dome around the camera carrying the volumetric galaxy raymarch. */
 export class GalaxyVolume {
   readonly mesh: Mesh;
   /** Where the camera stands in the galaxy, kpc — computed for the
@@ -76,17 +77,30 @@ export class GalaxyVolume {
       m[1], m[4], m[7],
       m[2], m[5], m[8],
     );
+    const luts = galaxyLutTextures();
     this.material = new ShaderMaterial({
+      glslVersion: GLSL3,
       vertexShader: VERTEX,
-      fragmentShader: fragment(),
+      fragmentShader: FRAGMENT,
       uniforms: {
         uCamGalKpc: { value: new Vector3() },
         uWorldToGalaxy: { value: new Matrix3() },
         uMeanLum: { value: 1.76 },
         uOpacity: { value: 0 },
+        uArmLut: { value: luts.armLut },
+        uClumpNoise: { value: luts.clumpTile },
       },
       side: BackSide,
-      blending: AdditiveBlending,
+      // Pure added light, and only light: colour accumulates, alpha is
+      // left exactly as it stands. AdditiveBlending would scale the
+      // colour by src alpha, and the sky target needs this dome to
+      // leave alpha to the nebula that composites after it.
+      blending: CustomBlending,
+      blendEquation: AddEquation,
+      blendSrc: OneFactor,
+      blendDst: OneFactor,
+      blendSrcAlpha: ZeroFactor,
+      blendDstAlpha: OneFactor,
       // Keep background light in the early queue and let real scene depth
       // occlude it. A transparent, depth-disabled dome renders after opaque
       // planets and visibly lays the galactic band over their discs.

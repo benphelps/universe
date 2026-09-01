@@ -3,18 +3,34 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { DiagramPass } from './diagramLayer';
+import { SkyLayer } from './skyLayer';
 
 /**
  * HDR render pipeline: linear half-float rendering → threshold bloom →
  * ACES tone mapping + sRGB encode in the output pass. Bloom is the only
  * source of glow anywhere; brightness beyond 1.0 blooms naturally.
+ *
+ * Diagrams come last, after the tone map. They are annotations rather
+ * than light: a zone wash blended into the scene takes its appearance
+ * from whatever sky happens to be behind it, which is how an opaque
+ * dark cloud ends up looking like it was painted over a ring drawn
+ * after it. Composited onto the finished image, a decal's strength is
+ * its own wherever it falls.
  */
 export class RenderPipeline {
   readonly renderer: WebGLRenderer;
+  /** Half-resolution home of the volume domes; composited into the
+   *  scene pass as a single depth-tested quad. */
+  readonly sky = new SkyLayer();
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
 
-  constructor(container: HTMLElement, scene: Scene, camera: Camera) {
+  constructor(
+    container: HTMLElement,
+    scene: Scene,
+    private readonly camera: Camera,
+  ) {
     // Reversed-Z: quasi-logarithmic depth precision, so a planet at
     // half a million km and the star behind it stop quantizing to the
     // same far-plane depth and z-fighting in shards. Needs
@@ -29,6 +45,8 @@ export class RenderPipeline {
     this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.45, 0.6, 0.9);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+    this.composer.addPass(new DiagramPass(scene, camera));
+    scene.add(this.sky.quad);
   }
 
   setSize(width: number, height: number): void {
@@ -43,6 +61,7 @@ export class RenderPipeline {
     // a star field that will not come into focus.
     this.composer.setPixelRatio(ratio);
     this.composer.setSize(width, height);
+    this.sky.setSize(width, height, ratio);
   }
 
   set exposure(value: number) {
@@ -54,10 +73,12 @@ export class RenderPipeline {
   }
 
   render(): void {
+    this.sky.render(this.renderer, this.camera);
     this.composer.render();
   }
 
   dispose(): void {
+    this.sky.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

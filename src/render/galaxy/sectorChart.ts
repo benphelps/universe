@@ -76,9 +76,9 @@ function createLabelSprite(label: SectorLabel): Sprite {
   const texture = new CanvasTexture(canvas);
   texture.generateMipmaps = false;
   texture.minFilter = LinearFilter;
-  // Lettering sits at the very back of the draw: depth-tested so any
-  // body occludes it, ordered with the sky domes so stars, borders,
-  // and nebulae all paint over the names, never the reverse.
+  // Lettering draws late in the sky stack (reversed-Z: lowest order
+  // last), so a name stays legible over stars, borders and clouds
+  // alike; depth-testing still lets any body in front occlude it.
   const material = new SpriteMaterial({
     map: texture,
     transparent: true,
@@ -130,6 +130,14 @@ export class SectorChart {
       geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
       const segments = new LineSegments(geometry, material);
       segments.frustumCulled = false;
+      // The map draws over the sky it charts — rifts, star points and
+      // a planet's own overcast included: it is an instrument overlay
+      // like the lettering, drawn just before it, late in the sky
+      // stack (reversed-Z: lowest order last). At the default order
+      // the volume composite painted every opaque rift across the
+      // borders, which erased the map exactly where it had something
+      // to name. Still depth-tested, so bodies in front occlude it.
+      segments.renderOrder = -2.75;
       lines.push(segments);
       this.group.add(segments);
     }

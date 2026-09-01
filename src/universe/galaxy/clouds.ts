@@ -1,4 +1,4 @@
-import { createSimplex3 } from '../../core/noise/simplex3';
+import { createSimplex3, simplexPermutation } from '../../core/noise/simplex3';
 import { poisson } from '../../core/rng/distributions';
 import { deriveSeed, mix64 } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
@@ -23,6 +23,62 @@ export interface MolecularCloud {
 
 const CELL_PC = 250;
 
+/**
+ * What puts the drawn population on the interstellar medium it is
+ * supposed to be. The carve below decides how much column a given
+ * amplitude actually delivers, so this is a Monte Carlo over the
+ * population rather than anything analytic, and it is set by three
+ * measured anchors rather than by eye: a mean visual extinction of
+ * about a magnitude per kiloparsec through the plane, a molecular
+ * surface density of a few solar masses per square parsec, and cloud
+ * masses on the giant-molecular-cloud scale. The diffuse floor
+ * between clouds keeps the medium it was calibrated for; the clouds
+ * ride on top of it. Pinned by a galaxy test.
+ */
+export const CLOUD_DENSITY_GAIN = 132;
+
+/**
+ * The carve. Turbulence below the threshold leaves no gas at all, so
+ * the threshold's own contour is the cloud's boundary — which is what
+ * makes silhouettes ragged instead of round — and the exponent decides
+ * how sharply what survives runs up into filaments. Together they set
+ * the volume filling factor: a real molecular cloud keeps most of its
+ * mass in a few percent of its body, and the stars form in that few
+ * percent. The gain above absorbs whatever mean they leave behind.
+ *
+ * Exported alongside the cascade below because the field has a second
+ * evaluator: the GPU bake renders exactly this function, and it reads
+ * these numbers rather than keeping a copy that could drift.
+ */
+export const CARVE_THRESHOLD = 0.3;
+export const CARVE_EXPONENT = 2.2;
+/** What the carved remainder is scaled by, with the cloud's amplitude. */
+export const CARVE_GAIN = 1.35;
+/** The floor under the turbulence before the carve subtracts. */
+export const TURBULENCE_LIFT = 0.12;
+/** Envelope: exp(−tightness·d²/r²), zero past reach·radius. */
+export const ENVELOPE_TIGHTNESS = 1.8;
+export const ENVELOPE_REACH = 1.6;
+
+/**
+ * The turbulent cascade, (frequency, amplitude) per octave in units of
+ * the cloud radius: the first three are what a cloud-scale sightline
+ * can see, the rest carry the same falloff down to the bubble scale
+ * for the one consumer whose cells resolve them.
+ */
+export const TURBULENCE_OCTAVES: ReadonlyArray<readonly [number, number]> = [
+  [1.6, 0.55],
+  [3.7, 0.3],
+  [8.1, 0.16],
+  [17.8, 0.087],
+  [39.2, 0.047],
+  [86.2, 0.026],
+];
+/** How much of the cascade the cloud-scale field keeps. */
+const CLOUD_OCTAVES = 3;
+/** The cascade's mean: what every octave sums to in expectation. */
+export const TURBULENCE_MEAN = 0.55;
+
 // Galaxy-dependent roots, derived on first use (after the session's
 // galaxy seed settles).
 let cloudRoot: bigint | null = null;
@@ -37,6 +93,10 @@ function dustHomeOf(): number {
 let shapeNoiseFn: ReturnType<typeof createSimplex3> | null = null;
 function shapeNoise(x: number, y: number, z: number): number {
   return (shapeNoiseFn ??= createSimplex3(deriveSeed(rootOf(), 'shape')))(x, y, z);
+}
+/** The shape noise's permutation, for a GPU evaluator of this field. */
+export function cloudShapePermutation(): Uint8Array {
+  return simplexPermutation(deriveSeed(rootOf(), 'shape'));
 }
 /** Kpc-scale complexes: clouds cluster along arm spurs, not uniformly. */
 let complexNoiseFn: ReturnType<typeof createSimplex3> | null = null;
@@ -95,7 +155,7 @@ export function cloudsInCell(ix: number, iy: number, iz: number): MolecularCloud
       seed: deriveSeed(seed, 'cloud', i),
       positionPc,
       radiusPc,
-      amplitude: rng.range(2.5, 7) * (30 / radiusPc) ** 0.4,
+      amplitude: CLOUD_DENSITY_GAIN * rng.range(2.5, 7) * (30 / radiusPc) ** 0.4,
     });
   }
   cellCache.set(key, clouds);
@@ -151,6 +211,77 @@ export function cloudsNear(positionPc: GalacticPosition, radiusPc: number): Mole
   return clouds;
 }
 
+/** The axis the cloud is drawn out along. */
+export function cloudStretchAxis(cloud: MolecularCloud): number {
+  return Number(cloud.seed >> 4n) % 3;
+}
+
+/** Seeded elongation factor, capped so reach stays within a cell. */
+export function cloudStretch(cloud: MolecularCloud): number {
+  return Math.min(
+    1.3 + (Number((cloud.seed >> 6n) & 0x3fn) / 63) * 1.2,
+    200 / (ENVELOPE_REACH * cloud.radiusPc),
+  );
+}
+
+/** Maximum extent of a cloud's density field from its center, pc. */
+export function cloudReachPc(cloud: MolecularCloud): number {
+  return cloud.radiusPc * ENVELOPE_REACH * cloudStretch(cloud);
+}
+
+/** Half-extents of the density field about the cloud's centre, pc: the
+ *  drawn-out axis reaches further, and the field is zero outside the
+ *  box they bound. What a ray has to intersect to find the cloud. */
+export function cloudHalfExtentsPc(cloud: MolecularCloud): [number, number, number] {
+  const reach = cloud.radiusPc * ENVELOPE_REACH;
+  const stretched = reach * cloudStretch(cloud);
+  const axis = cloudStretchAxis(cloud);
+  return [
+    axis === 0 ? stretched : reach,
+    axis === 1 ? stretched : reach,
+    axis === 2 ? stretched : reach,
+  ];
+}
+
+/** The nominal body observations would call the cloud, pc³: the
+ *  radiusPc ellipsoid, drawn out along the stretch axis. */
+export function cloudVolumePc3(cloud: MolecularCloud): number {
+  return (4 / 3) * Math.PI * cloud.radiusPc ** 3 * cloudStretch(cloud);
+}
+
+/** The weight the clumped component carries in the dust the extinction
+ *  integrals read — the same 1.6 the smooth glow gives it. */
+export const CLOUD_DUST_WEIGHT = 1.6;
+
+/** Dust density per unit cloud field where this cloud sits: the cloud's
+ *  overdensity rides on the smooth disk it condensed out of. Constant
+ *  over the cloud, so marches lift it out of their inner loop. */
+export function cloudDustFactor(cloud: MolecularCloud): number {
+  return dustDensity(cloud.positionPc) * CLOUD_DUST_WEIGHT;
+}
+
+/** Dust per unit of stored carve (carvedᵉˣᵖ): the whole per-cloud
+ *  scale, so a GPU field texture can hold the dimensionless carve and
+ *  leave this to a uniform — small numbers, no half-float overflow. */
+export function cloudCarveDustScale(cloud: MolecularCloud): number {
+  return cloudDustFactor(cloud) * cloud.amplitude * CARVE_GAIN;
+}
+
+/**
+ * The cloud's dust density at a point, in the units
+ * DUST_OPACITY_PER_PC turns into optical depth — the one place the
+ * field's own scale is stated, so extinction, the dark-cloud tiles and
+ * the gas behind them cannot drift apart.
+ */
+export function cloudDustDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  return cloudDustFactor(cloud) * cloudLocalDensity(cloud, rxPc, ryPc, rzPc);
+}
+
 /**
  * A single cloud's turbulent density at a point: an elongated envelope
  * (seeded stretch axis) carved by three octaves of seeded noise — the
@@ -159,28 +290,46 @@ export function cloudsNear(positionPc: GalacticPosition, radiusPc: number): Mole
  * sprites both sample exactly this field, so a rift's shadow and its
  * nebula share one structure.
  */
-/** Seeded elongation factor, capped so reach stays within a cell. */
-export function cloudStretch(cloud: MolecularCloud): number {
-  return Math.min(
-    1.3 + (Number((cloud.seed >> 6n) & 0x3fn) / 63) * 1.2,
-    200 / (1.6 * cloud.radiusPc),
-  );
-}
-
-/** Maximum extent of a cloud's density field from its center, pc. */
-export function cloudReachPc(cloud: MolecularCloud): number {
-  return cloud.radiusPc * 1.6 * cloudStretch(cloud);
-}
-
 export function cloudLocalDensity(
   cloud: MolecularCloud,
   rxPc: number,
   ryPc: number,
   rzPc: number,
 ): number {
+  return carvedDensity(cloud, rxPc, ryPc, rzPc, CLOUD_OCTAVES);
+}
+
+/**
+ * The same field with the turbulent cascade carried further down.
+ *
+ * The three cloud octaves are pitched to the cloud: their finest
+ * wavelength is a few parsecs, which is everything a sightline stepping
+ * in tens of parsecs can see, and nothing more. But an ionized bubble
+ * is a few parsecs across, and against a field that smooth its front
+ * comes out a bare sphere — real clouds are structured all the way
+ * down, and it is exactly that structure a front breaks against to
+ * leave trunks and cavities behind. The rest of the cascade continues
+ * at the same falloff, for the one consumer whose cells resolve it.
+ */
+export function cloudFineDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  return carvedDensity(cloud, rxPc, ryPc, rzPc, TURBULENCE_OCTAVES.length);
+}
+
+function carvedDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+  octaves: number,
+): number {
   const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
   if (envelope === 0) return 0;
-  const stretchAxis = Number(cloud.seed >> 4n) % 3;
+  const stretchAxis = cloudStretchAxis(cloud);
   const stretch = cloudStretch(cloud);
   const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
   const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
@@ -189,14 +338,14 @@ export function cloudLocalDensity(
   const x = ax / cloud.radiusPc + offset;
   const y = ay / cloud.radiusPc;
   const z = az / cloud.radiusPc;
-  const turbulence =
-    0.55 +
-    0.55 * shapeNoise(x * 1.6, y * 1.6, z * 1.6) +
-    0.3 * shapeNoise(x * 3.7, y * 3.7, z * 3.7) +
-    0.16 * shapeNoise(x * 8.1, y * 8.1, z * 8.1);
-  const carved = envelope * (Math.max(0, turbulence) + 0.12) - 0.18;
+  let turbulence = TURBULENCE_MEAN;
+  for (let o = 0; o < octaves; o++) {
+    const [frequency, amplitude] = TURBULENCE_OCTAVES[o];
+    turbulence += amplitude * shapeNoise(x * frequency, y * frequency, z * frequency);
+  }
+  const carved = envelope * (Math.max(0, turbulence) + TURBULENCE_LIFT) - CARVE_THRESHOLD;
   if (carved <= 0) return 0;
-  return cloud.amplitude * 1.35 * carved ** 1.4;
+  return cloud.amplitude * CARVE_GAIN * carved ** CARVE_EXPONENT;
 }
 
 /** The stretched gaussian envelope shared by the turbulent and smooth
@@ -207,15 +356,26 @@ function cloudEnvelope(
   ryPc: number,
   rzPc: number,
 ): number {
-  const stretchAxis = Number(cloud.seed >> 4n) % 3;
+  const stretchAxis = cloudStretchAxis(cloud);
   const stretch = cloudStretch(cloud);
   const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
   const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
   const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
   const dSq = ax * ax + ay * ay + az * az;
-  const reach = cloud.radiusPc * 1.6;
+  const reach = cloud.radiusPc * ENVELOPE_REACH;
   if (dSq > reach * reach) return 0;
-  return Math.exp((-1.8 * dSq) / (cloud.radiusPc * cloud.radiusPc));
+  return Math.exp((-ENVELOPE_TIGHTNESS * dSq) / (cloud.radiusPc * cloud.radiusPc));
+}
+
+/** The cloud's dust density with the cascade resolved: what the bake
+ *  reads, in the same units as cloudDustDensity. */
+export function cloudFineDustDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  return cloudDustFactor(cloud) * cloudFineDensity(cloud, rxPc, ryPc, rzPc);
 }
 
 /** A cloud's density with the turbulence at its statistical mean:
@@ -229,9 +389,9 @@ export function cloudSmoothDensity(
 ): number {
   const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
   if (envelope === 0) return 0;
-  const carved = envelope * 0.67 - 0.18;
+  const carved = envelope * 0.67 - CARVE_THRESHOLD;
   if (carved <= 0) return 0;
-  return cloud.amplitude * 1.35 * carved ** 1.4;
+  return cloud.amplitude * CARVE_GAIN * carved ** CARVE_EXPONENT;
 }
 
 /**
@@ -267,7 +427,7 @@ export function cloudFieldAt(positionPc: GalacticPosition): number {
  * shot noise, not structure.
  */
 export function expectedCloudField(dust: number, armBoostValue: number): number {
-  return 0.0092 * (dust / dustHomeOf()) * (0.4 + 0.6 * armBoostValue);
+  return 0.00088 * CLOUD_DENSITY_GAIN * (dust / dustHomeOf()) * (0.4 + 0.6 * armBoostValue);
 }
 
 /** The same summed cloud field with each cloud at its smooth mean:

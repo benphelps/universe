@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { host, markFor, setTab, stepBody, type AppSnapshot } from '../store';
-import { galaxyPlateSpec, GalaxyLevel } from './galaxyInfoPanel';
+import { cloudPlateSpec, galaxyPlateSpec, GalaxyLevel } from './galaxyInfoPanel';
 import { GenerationIndicator } from './generationIndicator';
 import {
   asteroidPlateSpec,
@@ -92,7 +92,10 @@ function focusSpec(snap: AppSnapshot): PlateSpec {
     case 'system':
       return systemPlateSpec(snap.system, snap.companionIndex);
     case 'galaxy':
-      return galaxyPlateSpec(snap.system.star, snap.address, snap.neighbors.length);
+      // Standing off a cloud, the cloud is the subject.
+      return snap.cloud
+        ? cloudPlateSpec(snap.cloud)
+        : galaxyPlateSpec(snap.system.star, snap.address, snap.neighbors.length);
     case 'planet':
       switch (snap.planetFocus) {
         case 'moon':
