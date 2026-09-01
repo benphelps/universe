@@ -95,12 +95,19 @@ export interface CloudSummary {
   metallicity: number;
 }
 
+/** A cloud's figures are pure functions of the cloud, and the mass
+ *  integral behind them costs tens of milliseconds: computed once per
+ *  cloud, not once per snapshot. */
+const cloudSummaryCache = new Map<bigint, CloudSummary>();
+
 function cloudSummary(): CloudSummary | null {
   const focused = viewer?.focusedCloud ?? null;
   if (!focused) return null;
+  const cached = cloudSummaryCache.get(focused.cloud.seed);
+  if (cached) return cached;
   const { cloud, nebula } = focused;
   const metallicity = nebula?.metallicity ?? ismMetallicity(cloud.positionPc);
-  return {
+  const summary: CloudSummary = {
     name: sectorNameForSeed(cloud.seed),
     kind: nebula?.kind ?? 'dark',
     radiusPc: cloud.radiusPc,
@@ -114,6 +121,9 @@ function cloudSummary(): CloudSummary | null {
     ageMyr: (nebula?.ageGyr ?? 0) * 1000,
     metallicity,
   };
+  cloudSummaryCache.set(cloud.seed, summary);
+  if (cloudSummaryCache.size > 64) cloudSummaryCache.clear();
+  return summary;
 }
 
 let viewMode: ViewMode = 'star';
