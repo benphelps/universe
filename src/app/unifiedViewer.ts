@@ -172,10 +172,11 @@ const NEBULA_VOLUME_NEAR_SIZE = 160;
  *  near grid. */
 const NEBULA_NEAR_ANGULAR = 0.6;
 /** How many nebulae stand as volumes at once; the rest stay sprites.
- *  Rendering residents is nearly free — a dome only pays for the
- *  pixels its box covers — and the GPU bake fills a set this size in
- *  seconds, so the cap is texture memory, not frame time. */
-const NEBULA_VOLUME_RESIDENTS = 64;
+ *  A small resident is nearly free — a dome only pays for the pixels
+ *  its box covers — but the near-grade ones (finer grid, deeper march,
+ *  detail octaves) are not, so the cap is set by frame feel with a few
+ *  of those standing, not by texture memory. */
+const NEBULA_VOLUME_RESIDENTS = 32;
 /** Projected size below which a sprite is enough, radians. Low, so
  *  the sprite→volume handoff happens while the object is still small
  *  on screen; the resident cap is what bounds the cost. */
