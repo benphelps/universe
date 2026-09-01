@@ -19,8 +19,11 @@ import { CopyShader } from 'three/addons/shaders/CopyShader.js';
  * finished image instead, where a decal's strength is its own.
  *
  * The sky's own annotations — constellation borders, sector names —
- * stay where they are. They belong to the sky and are deliberately
- * sunk behind it; they are not decals over the system.
+ * stay in the scene rather than joining this layer: they are part of
+ * the sky, and bodies in front of them should still occlude them. But
+ * within the sky stack they draw over the domes and the volume
+ * composite (sectorChart orders them after it), because a map that an
+ * opaque rift can erase fails exactly where it has something to name.
  */
 export const DIAGRAM_LAYER = 1;
 
