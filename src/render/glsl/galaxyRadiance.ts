@@ -1,5 +1,8 @@
-import type { WaveParams } from '../../universe/galaxy/density';
-import { SIMPLEX_NOISE_GLSL } from './simplexNoise';
+import {
+  ARM_LUT_RADIUS_MAX_PC,
+  ARM_LUT_RADIUS_MIN_PC,
+} from '../../universe/galaxy/armLut';
+import { CLUMP_TILE_PERIOD, CLUMP_TILE_RANGE } from '../galaxy/clumpTile';
 
 /** GLSL float literal (a bare integer would type as int). */
 const f = (value: number): string => {
@@ -8,14 +11,20 @@ const f = (value: number): string => {
 };
 
 /**
- * The galaxy as a line-of-sight integral, in GLSL: the same integral
- * the sky field's glow map computes per texel (density model, arm
- * enhancement, dust extinction with clumping, knee, reddening —
+ * The galaxy as a line-of-sight integral, in GLSL: the density model's
+ * components (disks, halo, dust with clumping, knee, reddening —
  * constants mirror density.ts and skyfield.ts), evaluated from any
  * point in any direction. The dome around the camera marches it to
- * paint the band and the spiral; the black hole marches it again along
- * every bent ray, so what wraps around the shadow is the real galaxy
- * and not a backdrop.
+ * paint the band and the spiral.
+ *
+ * The expensive fields come baked, not computed: the march used to
+ * re-solve the orbit family and evaluate simplex per step per pixel,
+ * and that was nearly the whole frame. The emitted code reads two
+ * textures the material must bind — uArmLut from galaxyLuts (the
+ * model's own armProfile on a polar grid, which also ends the shader
+ * mirror that had frozen the prime galaxy's modulation constants into
+ * every derived galaxy) and uClumpNoise (the tiling clump field).
+ * GLSL 3 only, for the sampler3D.
  *
  * All marching runs in kiloparsecs so every intermediate stays within
  * even mediump float range. Densities are per pc³ (scale-free ratios);
@@ -24,71 +33,19 @@ const f = (value: number): string => {
  * molecular-cloud population, the same convention the belt point cloud
  * uses.
  */
-export const buildGalaxyRadianceGlsl = (w: WaveParams): string => /* glsl */ `
-${SIMPLEX_NOISE_GLSL}
+export const buildGalaxyRadianceGlsl = (): string => /* glsl */ `
+precision highp sampler3D;
+uniform sampler2D uArmLut;
+uniform sampler3D uClumpNoise;
 
-// Density-wave orbit family, mirroring density.ts line for line: the
-// arms are the crowding caustics of nested oval orbits, each tilted a
-// little further with size (Lin-Shu; construction after beltoforion's
-// renderer). x = stellar arm boost, y = inner-edge dust-lane weight.
-float waveWinding(float guidingKpc) {
-  return log(max(guidingKpc, 3.0) / 3.0) / ${f(w.pitchTan)};
-}
-
-float waveTilt(float guidingKpc) {
-  float u = waveWinding(guidingKpc);
-  return u + ${f(w.wobble1Amp)} * sin(${f(w.wobble1Freq)} * u + ${f(w.wobble1Phase)})
-    + ${f(w.wobble2Amp)} * sin(${f(w.wobble2Freq)} * u + ${f(w.wobble2Phase)});
-}
-
-float waveAxisRatio(float guidingKpc) {
-  float bump = smoothstep(0.0, 4.2, guidingKpc) *
-    pow(1.0 - smoothstep(4.2, 15.0, guidingKpc), 0.8);
-  return 1.0 - ${f(w.qDepth)} * bump;
-}
-
-float waveRadius(float guidingKpc, float azimuth) {
-  float g = azimuth - waveTilt(guidingKpc);
-  float q = waveAxisRatio(guidingKpc);
-  float c = cos(g);
-  float s = sin(g);
-  return guidingKpc * q / sqrt(q * q * c * c + s * s);
-}
-
-float waveGuidingRadius(float radiusKpc, float azimuth) {
-  float guiding = radiusKpc;
-  for (int i = 0; i < 2; i++) {
-    float g = azimuth - waveTilt(guiding);
-    float q = waveAxisRatio(guiding);
-    float c = cos(g);
-    float s = sin(g);
-    guiding = radiusKpc * sqrt(q * q * c * c + s * s) / q;
-  }
-  return guiding;
-}
-
-// One inversion serves the wave crowding, the lane crowding (its
-// slight azimuth shift barely moves the guiding radius), and the
-// patchiness coordinates — the march-step cost lives here.
+// The density wave, read back off the model's own bake: x = stellar
+// arm boost, y = inner-edge dust-lane weight. Azimuth wraps around
+// the texture; log radius runs down it and clamps onto zero rows.
 vec2 armProfile(float radiusKpc, float azimuth) {
-  if (radiusKpc < 0.5) return vec2(0.0);
-  float guiding = waveGuidingRadius(radiusKpc, azimuth);
-  float h = 0.04;
-  float jacobian = (waveRadius(guiding + h, azimuth) - waveRadius(guiding - h, azimuth)) /
-    (2.0 * h);
-  float wave = max(0.0, 1.0 / max(jacobian, 0.3) - 1.0);
-  float laneJacobian =
-    (waveRadius(guiding + h, azimuth + 0.07) - waveRadius(guiding - h, azimuth + 0.07)) /
-    (2.0 * h);
-  float laneWave = max(0.0, 1.0 / max(laneJacobian, 0.3) - 1.0);
-  float u = waveWinding(guiding);
-  float phase = azimuth - waveTilt(guiding);
-  float seg = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(1.9 * u + 5.1 + 1.7 * cos(phase)), 1.2);
-  float knot = max(0.0, sin(7.0 * u + 1.0 + 2.0 * cos(phase)) * sin(4.3 * u + 0.9));
-  float asym = 1.0 + 0.28 * cos(phase + 0.8);
-  float boost = 0.98 * wave * seg * asym * (1.0 + 0.8 * knot * knot);
-  float lane = min(1.6, 0.5 * laneWave) * (0.4 + 0.6 * seg);
-  return vec2(boost, lane);
+  if (radiusKpc < ${f(ARM_LUT_RADIUS_MIN_PC / 1000)}) return vec2(0.0);
+  float v = log(radiusKpc * ${f(1000 / ARM_LUT_RADIUS_MIN_PC)}) *
+    ${f(1 / Math.log(ARM_LUT_RADIUS_MAX_PC / ARM_LUT_RADIUS_MIN_PC))};
+  return texture(uArmLut, vec2(azimuth * ${f(1 / (2 * Math.PI))}, v)).rg;
 }
 
 // Off-slab light: outside the disk the thin component is negligible
@@ -113,12 +70,20 @@ vec3 swirl(vec3 p, float k) {
   return vec3(c * p.x - s * p.y, s * p.x + c * p.y, p.z * 1.7);
 }
 
+// The tiling noise field, read where shader simplex used to run: the
+// coordinate is in noise wavelengths, the tile spans a period of them.
+float tileNoise(vec3 at) {
+  return texture(uClumpNoise, at * ${f(1 / CLUMP_TILE_PERIOD)}).r *
+    ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
+}
+
 // Clumped ISM overdensity beyond the per-cloud radius: patchiness at
 // the cloud-complex scale, mildly sheared into trailing filaments.
 float cloudClump(vec3 p) {
   vec3 q = swirl(p, 1.1);
-  float n = snoise(q / 0.38) + 0.55 * snoise(q / 0.14 + vec3(37.0, -11.0, 53.0));
-  return 3.2 * pow(max(1.0e-5, n - 0.25), 1.5);
+  float n = tileNoise(q / 0.38) + 0.55 * tileNoise(q / 0.14 + vec3(37.0, -11.0, 53.0));
+  float carved = max(1.0e-5, n - 0.25);
+  return 3.2 * carved * sqrt(carved);
 }
 
 /**
@@ -173,7 +138,7 @@ vec3 galaxyRadiance(vec3 camKpc, vec3 dir, float meanLum) {
   if (diskStep > 0.0005) {
     // The wave profile and the clump noise are smooth at step scale:
     // hold the wave for four steps and the clump for two — the
-    // transcendental budget of the march.
+    // texture-fetch budget of the march.
     vec2 arm = vec2(0.0);
     float clumpNoise = 0.0;
     for (int i = 0; i < 72; i++) {
