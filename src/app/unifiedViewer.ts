@@ -88,6 +88,10 @@ import { stellarBlackHole } from '../universe/star/stellarHole';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
+import { requestNebulaVolume } from './nebulaService';
+import { nebulaeNear } from '../universe/galaxy/nebula';
+import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
+import { NebulaVolume } from '../render/galaxy/nebulaVolume';
 import { NuclearCluster } from '../render/galaxy/nuclearCluster';
 import { SectorChart } from '../render/galaxy/sectorChart';
 import {
@@ -149,6 +153,9 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
 /** Crossfade band (distance from the system, pc) where the sky-sphere
  *  backdrop hands off to the volumetric galaxy — the sphere's parallax
  *  breaks down at these heights, the volume takes over. */
+/** How far out a nebula is still worth a volume of its own. */
+const NEBULA_VOLUME_REACH_PC = 900;
+const NEBULA_VOLUME_SIZE = 64;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
 /** Layers below the galaxy renderers' existing cutoff are visually nil. */
@@ -376,6 +383,10 @@ export class UnifiedViewer {
    *  the sky integrates; crossfades in as the sky sphere's parallax
    *  breaks down with distance from the system. */
   private galaxyVolume: GalaxyVolume | null = null;
+  /** The one nearby nebula drawn as the volume it is, rather than as a
+   *  sprite on the sky. The rest of the sky keeps its sprites. */
+  private nebulaVolume: NebulaVolume | null = null;
+  private volumeSuppressedSeed: bigint | null = null;
   private galaxyParticles: GalaxyParticles | null = null;
   /** Set while the camera is at the galactic centre: no system at all,
    *  the galaxy around it, and the hole traced at its own scale. */
@@ -1238,6 +1249,7 @@ export class UnifiedViewer {
     this.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
     this.pcGroup.add(this.galaxyParticles.group);
+    this.chooseNebulaVolume(viewpoint, galaxyOrientation);
     // The nuclear cluster waits until something could see it. From
     // anywhere in the disk the centre is a hundred magnitudes of dust
     // away, so surveying tens of thousands of its stars and shipping
@@ -1286,6 +1298,9 @@ export class UnifiedViewer {
           { ...background, starCount: 0, starDirs: EMPTY_F32, starColors: EMPTY_F32, starBrightness: EMPTY_F32 },
           2000,
         );
+        if (this.volumeSuppressedSeed !== null) {
+          this.backdrop.suppressNebula(this.volumeSuppressedSeed);
+        }
         this.scene.add(this.backdrop.group);
       },
     );
@@ -1300,6 +1315,9 @@ export class UnifiedViewer {
       // It usually stands already, put up when the background landed.
       if (!this.backdrop) {
         this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
+        if (this.volumeSuppressedSeed !== null) {
+          this.backdrop.suppressNebula(this.volumeSuppressedSeed);
+        }
         this.scene.add(this.backdrop.group);
       }
       this.sectorChart = new SectorChart(sky);
@@ -1340,6 +1358,51 @@ export class UnifiedViewer {
         this.farPointIndex = new PointConeIndex(positions, farCount);
       }
     });
+  }
+
+  /**
+   * The nebula worth drawing as a volume: the brightest H II region
+   * near enough to have a face, and far enough that the camera is not
+   * standing inside the box. One for now — the tier that keeps several
+   * resident and hands off to the sprites by projected size comes with
+   * the streaming pass.
+   */
+  private chooseNebulaVolume(viewpoint: GalacticPosition, orientation: Float32Array): void {
+    const candidates = nebulaeNear(viewpoint, NEBULA_VOLUME_REACH_PC)
+      .filter((nebula) => nebula.kind === 'emission')
+      .map((nebula) => {
+        const dx = nebula.cloud.positionPc.xPc - viewpoint.xPc;
+        const dy = nebula.cloud.positionPc.yPc - viewpoint.yPc;
+        const dz = nebula.cloud.positionPc.zPc - viewpoint.zPc;
+        const distanceSq = Math.max(1, dx * dx + dy * dy + dz * dz);
+        return { nebula, distanceSq, brightness: nebula.photonRate / distanceSq };
+      })
+      .filter((entry) => entry.distanceSq > 60 * 60)
+      .sort((a, b) => b.brightness - a.brightness);
+    const chosen = candidates[0];
+    if (!chosen) return;
+    const bake = requestNebulaVolume(chosen.nebula, NEBULA_VOLUME_SIZE, (ready) => {
+      if (this.disposed || this.viewpointPc !== viewpoint) return;
+      this.installNebulaVolume(ready, viewpoint, orientation);
+    });
+    if (bake) this.installNebulaVolume(bake, viewpoint, orientation);
+  }
+
+  private installNebulaVolume(
+    bake: NebulaVolumeBake,
+    viewpoint: GalacticPosition,
+    orientation: Float32Array,
+  ): void {
+    if (this.nebulaVolume) {
+      this.scene.remove(this.nebulaVolume.mesh);
+      this.nebulaVolume.dispose();
+    }
+    this.nebulaVolume = new NebulaVolume(bake, viewpoint, orientation);
+    this.scene.add(this.nebulaVolume.mesh);
+    // The sprite stands for a volume that is now actually there. The
+    // backdrop may not be up yet, so the seed is kept for it to read.
+    this.volumeSuppressedSeed = bake.seed;
+    this.backdrop?.suppressNebula(bake.seed);
   }
 
   /**
@@ -2936,6 +2999,11 @@ export class UnifiedViewer {
       this.galaxyVolume.dispose();
       this.galaxyVolume = null;
     }
+    if (this.nebulaVolume) {
+      this.scene.remove(this.nebulaVolume.mesh);
+      this.nebulaVolume.dispose();
+      this.nebulaVolume = null;
+    }
     if (this.galaxyParticles) {
       this.pcGroup.remove(this.galaxyParticles.group);
       this.galaxyParticles.dispose();
@@ -3337,6 +3405,15 @@ export class UnifiedViewer {
           worldToScene,
           PC_KM,
           this.galaxyFade,
+          Math.min(this.camera.far * 0.3, 3e15),
+        );
+        // The nebula is a body in the same galaxy, marched in the same
+        // frame — it does not fade with the band, because unlike the
+        // band it is an object standing at a place.
+        this.nebulaVolume?.update(
+          this.camera.position,
+          worldToScene,
+          PC_KM,
           Math.min(this.camera.far * 0.3, 3e15),
         );
         // The nuclear cluster's light comes through the same dust the

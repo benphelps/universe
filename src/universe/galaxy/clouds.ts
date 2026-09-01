@@ -295,6 +295,60 @@ function cloudEnvelope(
   return Math.exp((-1.8 * dSq) / (cloud.radiusPc * cloud.radiusPc));
 }
 
+/**
+ * The same field with the turbulent cascade carried further down.
+ *
+ * The three octaves above are pitched to the cloud: their finest
+ * wavelength is a few parsecs, which is everything a sightline stepping
+ * in tens of parsecs can see, and nothing more. But an ionized bubble
+ * is a few parsecs across, and against a field that smooth its front
+ * comes out a bare sphere — real clouds are structured all the way
+ * down, and it is exactly that structure a front breaks against to
+ * leave trunks and cavities behind. Three more octaves continue the
+ * same cascade at the same falloff, for the one consumer whose cells
+ * are small enough to resolve them.
+ */
+export function cloudFineDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
+  if (envelope === 0) return 0;
+  const stretchAxis = cloudStretchAxis(cloud);
+  const stretch = cloudStretch(cloud);
+  const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
+  const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
+  const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
+  const offset = Number(cloud.seed & 0xffn);
+  const x = ax / cloud.radiusPc + offset;
+  const y = ay / cloud.radiusPc;
+  const z = az / cloud.radiusPc;
+  const turbulence =
+    0.55 +
+    0.55 * shapeNoise(x * 1.6, y * 1.6, z * 1.6) +
+    0.3 * shapeNoise(x * 3.7, y * 3.7, z * 3.7) +
+    0.16 * shapeNoise(x * 8.1, y * 8.1, z * 8.1) +
+    0.087 * shapeNoise(x * 17.8, y * 17.8, z * 17.8) +
+    0.047 * shapeNoise(x * 39.2, y * 39.2, z * 39.2) +
+    0.026 * shapeNoise(x * 86.2, y * 86.2, z * 86.2);
+  const carved = envelope * (Math.max(0, turbulence) + 0.12) - CARVE_THRESHOLD;
+  if (carved <= 0) return 0;
+  return cloud.amplitude * 1.35 * carved ** CARVE_EXPONENT;
+}
+
+/** The cloud's dust density with the cascade resolved: what the bake
+ *  reads, in the same units as cloudDustDensity. */
+export function cloudFineDustDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  return cloudDustFactor(cloud) * cloudFineDensity(cloud, rxPc, ryPc, rzPc);
+}
+
 /** A cloud's density with the turbulence at its statistical mean:
  *  the same object, resolved without sub-cloud texture — for
  *  consumers whose sample spacing can't see that texture anyway. */

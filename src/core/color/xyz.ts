@@ -30,6 +30,25 @@ export function spectrumToXyz(spectrum: (wavelengthNm: number) => number): Xyz {
   return { x: x * STEP_NM, y: y * STEP_NM, z: z * STEP_NM };
 }
 
+/**
+ * Integrate a set of emission lines against the CMFs. Lines are what a
+ * nebula's light actually is — a handful of delta functions, not a
+ * continuum — and a 5 nm grid walks straight past them: Hα at 656.3
+ * falls between two samples of spectrumToXyz and contributes nothing.
+ * The CMFs are analytic, so each line is evaluated where it stands.
+ */
+export function spectralLinesToXyz(lines: ReadonlyArray<readonly [number, number]>): Xyz {
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  for (const [wavelengthNm, intensity] of lines) {
+    x += intensity * xBar(wavelengthNm);
+    y += intensity * yBar(wavelengthNm);
+    z += intensity * zBar(wavelengthNm);
+  }
+  return { x, y, z };
+}
+
 export function xyzToChromaticity(xyz: Xyz): Chromaticity {
   const sum = xyz.x + xyz.y + xyz.z;
   if (sum === 0) return { x: 0.3127, y: 0.329 };

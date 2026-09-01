@@ -108,8 +108,8 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 
 1. `Nebula` model, gas calibration, camera-driven query. No render change; testable alone. **Landed.**
 2. The density pass: cloud gain against the extinction and molecular-mass anchors, carve concentration, members drawn against the field. **Landed** — clouds now hold 3.1 M☉/pc² of molecular gas at 1.0 mag/kpc of extinction, GMC masses run 10⁴–10⁶ M☉, sightlines through a cloud reach several magnitudes, ionizing stars stand in gas at ~160 cm⁻³, and Strömgren radii fall to a few percent of the cloud so there is neutral gas left to shadow.
-3. One bright H II region, 64³ bake, single dominant source, single shadow ray. Carrier dome, premultiplied blending, sprite path untouched so the two sit side by side.
-4. Per-star transmittance and scene-depth clipping.
+3. One bright H II region, 64³ bake, single dominant source, single shadow ray. Carrier dome, premultiplied blending, sprite path untouched so the two sit side by side. **Landed**, with two corrections the bake forced. The box is the ionized bubble, not the cloud: a Strömgren radius of 2.4 pc inside a 200 pc cloud puts the whole nebula inside one cell of any grid that covers the cloud, and the cloud beyond the box is already drawn as the dark rift it is. And the turbulent cascade had to continue: three octaves pitched to the cloud radius are smooth at the bubble's scale, so the first front came out a bare sphere — three more octaves, same falloff, for the one consumer whose cells can resolve them, and the front now runs 2.75/4.50/8.50 pc across directions.
+4. Per-star transmittance and scene-depth clipping. The emission and scattering scales are still set by eye and want anchoring to the sky's photometric zero point, which is also what makes the volume and the sprite agree where they hand off.
 5. Photoevaporative erosion pass and the line-ratio LUT — the step where the picture becomes physics rather than fog.
 6. Multi-volume marching, projected-size LOD, crossfade, streaming and eviction.
 7. Reflection scattering; display modes.
