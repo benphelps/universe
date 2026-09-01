@@ -3,12 +3,7 @@ import {
   ARM_LUT_RADIUS_MIN_PC,
 } from '../../universe/galaxy/armLut';
 import { CLUMP_TILE_PERIOD, CLUMP_TILE_RANGE } from '../galaxy/clumpTile';
-
-/** GLSL float literal (a bare integer would type as int). */
-const f = (value: number): string => {
-  const text = value.toPrecision(9);
-  return text.includes('.') || text.includes('e') ? text : `${text}.0`;
-};
+import { glslFloat as f } from './format';
 
 /**
  * The galaxy as a line-of-sight integral, in GLSL: the density model's

@@ -1,4 +1,4 @@
-import { createSimplex3 } from '../../core/noise/simplex3';
+import { createSimplex3, simplexPermutation } from '../../core/noise/simplex3';
 import { poisson } from '../../core/rng/distributions';
 import { deriveSeed, mix64 } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
@@ -45,9 +45,39 @@ export const CLOUD_DENSITY_GAIN = 132;
  * the volume filling factor: a real molecular cloud keeps most of its
  * mass in a few percent of its body, and the stars form in that few
  * percent. The gain above absorbs whatever mean they leave behind.
+ *
+ * Exported alongside the cascade below because the field has a second
+ * evaluator: the GPU bake renders exactly this function, and it reads
+ * these numbers rather than keeping a copy that could drift.
  */
-const CARVE_THRESHOLD = 0.3;
-const CARVE_EXPONENT = 2.2;
+export const CARVE_THRESHOLD = 0.3;
+export const CARVE_EXPONENT = 2.2;
+/** What the carved remainder is scaled by, with the cloud's amplitude. */
+export const CARVE_GAIN = 1.35;
+/** The floor under the turbulence before the carve subtracts. */
+export const TURBULENCE_LIFT = 0.12;
+/** Envelope: exp(−tightness·d²/r²), zero past reach·radius. */
+export const ENVELOPE_TIGHTNESS = 1.8;
+export const ENVELOPE_REACH = 1.6;
+
+/**
+ * The turbulent cascade, (frequency, amplitude) per octave in units of
+ * the cloud radius: the first three are what a cloud-scale sightline
+ * can see, the rest carry the same falloff down to the bubble scale
+ * for the one consumer whose cells resolve them.
+ */
+export const TURBULENCE_OCTAVES: ReadonlyArray<readonly [number, number]> = [
+  [1.6, 0.55],
+  [3.7, 0.3],
+  [8.1, 0.16],
+  [17.8, 0.087],
+  [39.2, 0.047],
+  [86.2, 0.026],
+];
+/** How much of the cascade the cloud-scale field keeps. */
+const CLOUD_OCTAVES = 3;
+/** The cascade's mean: what every octave sums to in expectation. */
+const TURBULENCE_MEAN = 0.55;
 
 // Galaxy-dependent roots, derived on first use (after the session's
 // galaxy seed settles).
@@ -63,6 +93,10 @@ function dustHomeOf(): number {
 let shapeNoiseFn: ReturnType<typeof createSimplex3> | null = null;
 function shapeNoise(x: number, y: number, z: number): number {
   return (shapeNoiseFn ??= createSimplex3(deriveSeed(rootOf(), 'shape')))(x, y, z);
+}
+/** The shape noise's permutation, for a GPU evaluator of this field. */
+export function cloudShapePermutation(): Uint8Array {
+  return simplexPermutation(deriveSeed(rootOf(), 'shape'));
 }
 /** Kpc-scale complexes: clouds cluster along arm spurs, not uniformly. */
 let complexNoiseFn: ReturnType<typeof createSimplex3> | null = null;
@@ -186,20 +220,20 @@ export function cloudStretchAxis(cloud: MolecularCloud): number {
 export function cloudStretch(cloud: MolecularCloud): number {
   return Math.min(
     1.3 + (Number((cloud.seed >> 6n) & 0x3fn) / 63) * 1.2,
-    200 / (1.6 * cloud.radiusPc),
+    200 / (ENVELOPE_REACH * cloud.radiusPc),
   );
 }
 
 /** Maximum extent of a cloud's density field from its center, pc. */
 export function cloudReachPc(cloud: MolecularCloud): number {
-  return cloud.radiusPc * 1.6 * cloudStretch(cloud);
+  return cloud.radiusPc * ENVELOPE_REACH * cloudStretch(cloud);
 }
 
 /** Half-extents of the density field about the cloud's centre, pc: the
  *  drawn-out axis reaches further, and the field is zero outside the
  *  box they bound. What a ray has to intersect to find the cloud. */
 export function cloudHalfExtentsPc(cloud: MolecularCloud): [number, number, number] {
-  const reach = cloud.radiusPc * 1.6;
+  const reach = cloud.radiusPc * ENVELOPE_REACH;
   const stretched = reach * cloudStretch(cloud);
   const axis = cloudStretchAxis(cloud);
   return [
@@ -255,6 +289,37 @@ export function cloudLocalDensity(
   ryPc: number,
   rzPc: number,
 ): number {
+  return carvedDensity(cloud, rxPc, ryPc, rzPc, CLOUD_OCTAVES);
+}
+
+/**
+ * The same field with the turbulent cascade carried further down.
+ *
+ * The three cloud octaves are pitched to the cloud: their finest
+ * wavelength is a few parsecs, which is everything a sightline stepping
+ * in tens of parsecs can see, and nothing more. But an ionized bubble
+ * is a few parsecs across, and against a field that smooth its front
+ * comes out a bare sphere — real clouds are structured all the way
+ * down, and it is exactly that structure a front breaks against to
+ * leave trunks and cavities behind. The rest of the cascade continues
+ * at the same falloff, for the one consumer whose cells resolve it.
+ */
+export function cloudFineDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  return carvedDensity(cloud, rxPc, ryPc, rzPc, TURBULENCE_OCTAVES.length);
+}
+
+function carvedDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+  octaves: number,
+): number {
   const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
   if (envelope === 0) return 0;
   const stretchAxis = cloudStretchAxis(cloud);
@@ -266,14 +331,14 @@ export function cloudLocalDensity(
   const x = ax / cloud.radiusPc + offset;
   const y = ay / cloud.radiusPc;
   const z = az / cloud.radiusPc;
-  const turbulence =
-    0.55 +
-    0.55 * shapeNoise(x * 1.6, y * 1.6, z * 1.6) +
-    0.3 * shapeNoise(x * 3.7, y * 3.7, z * 3.7) +
-    0.16 * shapeNoise(x * 8.1, y * 8.1, z * 8.1);
-  const carved = envelope * (Math.max(0, turbulence) + 0.12) - CARVE_THRESHOLD;
+  let turbulence = TURBULENCE_MEAN;
+  for (let o = 0; o < octaves; o++) {
+    const [frequency, amplitude] = TURBULENCE_OCTAVES[o];
+    turbulence += amplitude * shapeNoise(x * frequency, y * frequency, z * frequency);
+  }
+  const carved = envelope * (Math.max(0, turbulence) + TURBULENCE_LIFT) - CARVE_THRESHOLD;
   if (carved <= 0) return 0;
-  return cloud.amplitude * 1.35 * carved ** CARVE_EXPONENT;
+  return cloud.amplitude * CARVE_GAIN * carved ** CARVE_EXPONENT;
 }
 
 /** The stretched gaussian envelope shared by the turbulent and smooth
@@ -290,52 +355,9 @@ function cloudEnvelope(
   const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
   const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
   const dSq = ax * ax + ay * ay + az * az;
-  const reach = cloud.radiusPc * 1.6;
+  const reach = cloud.radiusPc * ENVELOPE_REACH;
   if (dSq > reach * reach) return 0;
-  return Math.exp((-1.8 * dSq) / (cloud.radiusPc * cloud.radiusPc));
-}
-
-/**
- * The same field with the turbulent cascade carried further down.
- *
- * The three octaves above are pitched to the cloud: their finest
- * wavelength is a few parsecs, which is everything a sightline stepping
- * in tens of parsecs can see, and nothing more. But an ionized bubble
- * is a few parsecs across, and against a field that smooth its front
- * comes out a bare sphere — real clouds are structured all the way
- * down, and it is exactly that structure a front breaks against to
- * leave trunks and cavities behind. Three more octaves continue the
- * same cascade at the same falloff, for the one consumer whose cells
- * are small enough to resolve them.
- */
-export function cloudFineDensity(
-  cloud: MolecularCloud,
-  rxPc: number,
-  ryPc: number,
-  rzPc: number,
-): number {
-  const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
-  if (envelope === 0) return 0;
-  const stretchAxis = cloudStretchAxis(cloud);
-  const stretch = cloudStretch(cloud);
-  const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
-  const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
-  const az = stretchAxis === 2 ? rzPc / stretch : rzPc;
-  const offset = Number(cloud.seed & 0xffn);
-  const x = ax / cloud.radiusPc + offset;
-  const y = ay / cloud.radiusPc;
-  const z = az / cloud.radiusPc;
-  const turbulence =
-    0.55 +
-    0.55 * shapeNoise(x * 1.6, y * 1.6, z * 1.6) +
-    0.3 * shapeNoise(x * 3.7, y * 3.7, z * 3.7) +
-    0.16 * shapeNoise(x * 8.1, y * 8.1, z * 8.1) +
-    0.087 * shapeNoise(x * 17.8, y * 17.8, z * 17.8) +
-    0.047 * shapeNoise(x * 39.2, y * 39.2, z * 39.2) +
-    0.026 * shapeNoise(x * 86.2, y * 86.2, z * 86.2);
-  const carved = envelope * (Math.max(0, turbulence) + 0.12) - CARVE_THRESHOLD;
-  if (carved <= 0) return 0;
-  return cloud.amplitude * 1.35 * carved ** CARVE_EXPONENT;
+  return Math.exp((-ENVELOPE_TIGHTNESS * dSq) / (cloud.radiusPc * cloud.radiusPc));
 }
 
 /** The cloud's dust density with the cascade resolved: what the bake
@@ -362,7 +384,7 @@ export function cloudSmoothDensity(
   if (envelope === 0) return 0;
   const carved = envelope * 0.67 - CARVE_THRESHOLD;
   if (carved <= 0) return 0;
-  return cloud.amplitude * 1.35 * carved ** CARVE_EXPONENT;
+  return cloud.amplitude * CARVE_GAIN * carved ** CARVE_EXPONENT;
 }
 
 /**
