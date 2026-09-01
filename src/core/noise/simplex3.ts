@@ -2,7 +2,7 @@ import { Rng } from '../rng/rng';
 
 export type NoiseSampler3 = (x: number, y: number, z: number) => number;
 
-const GRAD3: ReadonlyArray<readonly [number, number, number]> = [
+export const GRAD3: ReadonlyArray<readonly [number, number, number]> = [
   [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
   [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
   [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
