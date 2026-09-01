@@ -92,13 +92,16 @@ describe('the region at its age', () => {
     expect(grown).toBeDefined();
     // The bubble-scale box, where the interior is actually resolved —
     // at cloud scale the band is a couple of cells. Raw grids, wind
-    // and venting off: the interior band would otherwise sit partly
-    // inside the cavity with its pockets gated, and bytes would
-    // quantize the diluted interior away under the skin's reference.
+    // and venting disarmed on the plan itself, surgically: the
+    // interior band would otherwise sit partly inside the cavity with
+    // its pockets gated, and bytes would quantize the diluted interior
+    // away under the skin's reference.
     const size = 48;
-    const fields = marchNebulaCpu(
-      planNebulaBake(grown.cloud, { ...grown, windCavityPc: 0, sourceHydrogenDensity: 0 }, size),
-    );
+    const plan = planNebulaBake(grown.cloud, grown, size);
+    plan.windCavityPc = 0;
+    plan.windWallPc = 0;
+    plan.ventConfineDensity = 0;
+    const fields = marchNebulaCpu(plan);
     const growth = Math.max(1, grown.bubbleRadiusPc / grown.stromgrenRadiusPc);
     const halfPc = Math.min(
       Math.max(...grown.halfExtentsPc),
@@ -200,11 +203,12 @@ describe('the region at its age', () => {
     for (const nebula of candidates) {
       if (thinOff > 0 && denseOff > 0) break;
       const vented = marchNebulaCpu(planNebulaBake(nebula.cloud, nebula, size));
-      // Zero source density disarms only the champagne gate (the plan
-      // reads it for nothing else); radii and budget are precomputed.
-      const held = marchNebulaCpu(
-        planNebulaBake(nebula.cloud, { ...nebula, sourceHydrogenDensity: 0 }, size),
-      );
+      // The gate disarmed on the plan itself — erosion keeps its
+      // pivot, so fronted cells stay identical on both sides and only
+      // the champagne gate differs.
+      const heldPlan = planNebulaBake(nebula.cloud, nebula, size);
+      heldPlan.ventConfineDensity = 0;
+      const held = marchNebulaCpu(heldPlan);
       const source = nebula.sources[0];
       const halfPc = Math.min(
         Math.max(...nebula.halfExtentsPc),

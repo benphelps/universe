@@ -15,6 +15,8 @@ import {
 import type { Nebula } from '../../universe/galaxy/nebula';
 import {
   DUST_DEPLETION,
+  EROSION_REACH,
+  EROSION_STALL,
   FRONT_SOFTNESS,
   LOG_U_MAX,
   LOG_U_MIN,
@@ -170,6 +172,7 @@ uniform float uScatterOn;
 uniform float uWindCavityPc;
 uniform float uWindWallPc;
 uniform float uVentConfineCarve;
+uniform float uErosionPivotCarve;
 out vec4 outCell;
 
 float fieldAt(vec3 posPc) {
@@ -223,15 +226,28 @@ void main() {
   }
 
   float spent = reachable ? recombined : 2.0;
-  // The shell's ionized skin, mirroring the CPU march: the rim glows
-  // along the front's own carved shape, fading through the shell.
-  float skin = (frontR >= 0.0 && dist >= frontR)
-    ? exp(-(dist - frontR) / max(1e-6, ${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * frontR))
+  // The eroded front and its ionized skin, mirroring the CPU march:
+  // the mean front modulated by the uncontracted ambient at its own
+  // radius, the rim glowing along the eroded shape, the skin never
+  // thinner than a cell.
+  float frontLoc = frontR;
+  if (frontR >= 0.0 && uErosionPivotCarve > 0.0) {
+    float ambient = fieldAt(uIonizePc + dir * frontR);
+    frontLoc = frontR * clamp(
+      pow(uErosionPivotCarve / max(1e-9, ambient), ${f(1 / 3)}),
+      ${f(EROSION_STALL)}, ${f(EROSION_REACH)});
+  }
+  float skin = frontR >= 0.0
+    ? (dist <= frontLoc
+        ? 1.0
+        : exp(-(dist - frontLoc) /
+            max(uCellPc, ${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * frontLoc)))
     : 0.0;
   float ionized = max(skin, clamp((1.0 - spent) * ${f(1 / FRONT_SOFTNESS)}, 0.0, 1.0));
   float transmittance = exp(-tau);
   bool inBubble = reachable && frontR < 0.0;
-  bool inShell = frontR >= 0.0 && dist <= frontR * ${f(1 + SHELL_WIDTH)};
+  bool inShell =
+    frontR >= 0.0 && dist > frontLoc && dist <= frontLoc * ${f(1 + SHELL_WIDTH)};
   float carveHere = inBubble
     ? fieldAt(uIonizePc + dir * (dist / uGrowth)) * uDilution
     : texelFetch(uField, cell, 0).r * (inShell ? uShellBoost : 1.0);
@@ -409,6 +425,10 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.uniform1f(
       at(marchProgram, 'uVentConfineCarve'),
       plan.ventConfineDensity > 0 ? plan.ventConfineDensity / scales.gasScale : 0,
+    );
+    gl.uniform1f(
+      at(marchProgram, 'uErosionPivotCarve'),
+      plan.erosionPivotDensity > 0 ? plan.erosionPivotDensity / scales.gasScale : 0,
     );
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlasTexture, 0);
     // One draw for the whole atlas. Slicing it per layer with a flush

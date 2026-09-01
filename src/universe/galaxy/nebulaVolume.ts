@@ -143,6 +143,20 @@ export const SHELL_WIDTH = 0.12;
  * wall inside it.
  */
 export const SHELL_SKIN_SHARE = 0.35;
+
+/**
+ * Photoevaporative erosion at the front. The budget march fixes where
+ * the mean front got to; what the front is *eating* there is the
+ * uncontracted cloud at that very radius, and it does not eat evenly —
+ * thin gas evaporates fast and lets the front bulge through, a dense
+ * filament resists and stalls it, which is scalloped rims and trunks
+ * at clump scale and, at cloud scale, a front that finally follows
+ * the cloud's own shape instead of the natal core's smoothness. The
+ * local front is the mean scaled by (pivot / ambient)^⅓, bounded:
+ * quasi-static like every other mechanism here.
+ */
+export const EROSION_STALL = 0.75;
+export const EROSION_REACH = 1.3;
 /** How much budget-overshoot it takes to read fully neutral: the
  *  front's softness, in spent-budget fraction. */
 export const FRONT_SOFTNESS = 0.15;
@@ -223,6 +237,9 @@ export interface NebulaBakePlan {
   /** Natal density, cm⁻³, above which the interior is fully confined
    *  — the champagne gate, scaled to the diluted interior. */
   ventConfineDensity: number;
+  /** The erosion modulation's pivot, cm⁻³ — the same interior scale,
+   *  carried separately so either mechanism can be disarmed alone. */
+  erosionPivotDensity: number;
   stepPc: number;
   /** Beyond this distance from the source a cell is neutral without
    *  the march having to say so. */
@@ -313,6 +330,8 @@ export function planNebulaBake(
     windCavityPc: nebula?.windCavityPc ?? 0,
     windWallPc: (nebula?.windCavityPc ?? 0) * (1 + WIND_WALL_WIDTH),
     ventConfineDensity:
+      VENT_CONFINEMENT * (nebula?.sourceHydrogenDensity ?? 0) * dilution,
+    erosionPivotDensity:
       VENT_CONFINEMENT * (nebula?.sourceHydrogenDensity ?? 0) * dilution,
     stepPc: cellPc * 0.9,
     reachLimitPc: IONIZATION_REACH * Math.max(nebula?.bubbleRadiusPc ?? 0, 0.05),
@@ -453,26 +472,51 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
           }
         }
 
-        // The front: sharp, but not sharper than a cell can carry. Just
-        // past it, the swept shell's inner skin is ionized — the front
-        // is eating into it, and that skin is where the recombinations
-        // concentrate — so the rim glows along the front's own carved
-        // shape, fading through the shell's depth.
+        // The front: sharp, but not sharper than a cell can carry, and
+        // eroded against what it is actually eating — the uncontracted
+        // cloud at the mean front's own radius. Thin ambient lets the
+        // local front bulge past the mean, a dense filament stalls it;
+        // just past it the swept shell's inner skin is ionized, where
+        // the recombinations concentrate, so the rim glows along the
+        // eroded shape. The skin is never baked thinner than a cell,
+        // or a sub-cell shell aliases into stripes.
         const spent = budget > 0 && reachable ? recombined / budget : Infinity;
+        let frontLoc = frontR;
+        if (frontR >= 0 && plan.erosionPivotDensity > 0) {
+          const ambient = sample(
+            gas,
+            size,
+            (ionizePc[0] + ux * frontR + boxPc) / cellPc - 0.5,
+            (ionizePc[1] + uy * frontR + boxPc) / cellPc - 0.5,
+            (ionizePc[2] + uz * frontR + boxPc) / cellPc - 0.5,
+          );
+          frontLoc =
+            frontR *
+            Math.min(
+              EROSION_REACH,
+              Math.max(
+                EROSION_STALL,
+                (plan.erosionPivotDensity / Math.max(1e-6, ambient)) ** (1 / 3),
+              ),
+            );
+        }
         const skin =
-          frontR >= 0 && distancePc >= frontR
-            ? Math.exp(
-                -(distancePc - frontR) /
-                  Math.max(1e-6, SHELL_SKIN_SHARE * SHELL_WIDTH * frontR),
-              )
+          frontR >= 0
+            ? distancePc <= frontLoc
+              ? 1
+              : Math.exp(
+                  -(distancePc - frontLoc) /
+                    Math.max(cellPc, SHELL_SKIN_SHARE * SHELL_WIDTH * frontLoc),
+                )
             : 0;
         const ionized = Math.max(skin, Math.max(0, Math.min(1, (1 - spent) / FRONT_SOFTNESS)));
         const transmittance = Math.exp(-tau);
         // The gas standing at this cell now: the diluted interior read
         // from its natal position, the swept shell just past the
-        // front, or the cloud as it was.
+        // eroded front, or the cloud as it was.
         const inBubble = reachable && frontR < 0;
-        const inShell = frontR >= 0 && distancePc <= frontR * (1 + SHELL_WIDTH);
+        const inShell =
+          frontR >= 0 && distancePc > frontLoc && distancePc <= frontLoc * (1 + SHELL_WIDTH);
         const rn = distancePc / growth;
         // The star's wind has re-plumbed the interior: the cavity holds
         // an optically empty residue, its swept wall the mass the wind
