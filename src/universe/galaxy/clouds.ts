@@ -151,14 +151,11 @@ export function cloudsNear(positionPc: GalacticPosition, radiusPc: number): Mole
   return clouds;
 }
 
-/**
- * A single cloud's turbulent density at a point: an elongated envelope
- * (seeded stretch axis) carved by three octaves of seeded noise — the
- * carve threshold shapes the boundary itself, so silhouettes are ragged
- * filamentary forms, not spheres. The glow's extinction and the nebula
- * sprites both sample exactly this field, so a rift's shadow and its
- * nebula share one structure.
- */
+/** The axis the cloud is drawn out along. */
+export function cloudStretchAxis(cloud: MolecularCloud): number {
+  return Number(cloud.seed >> 4n) % 3;
+}
+
 /** Seeded elongation factor, capped so reach stays within a cell. */
 export function cloudStretch(cloud: MolecularCloud): number {
   return Math.min(
@@ -172,6 +169,60 @@ export function cloudReachPc(cloud: MolecularCloud): number {
   return cloud.radiusPc * 1.6 * cloudStretch(cloud);
 }
 
+/** Half-extents of the density field about the cloud's centre, pc: the
+ *  drawn-out axis reaches further, and the field is zero outside the
+ *  box they bound. What a ray has to intersect to find the cloud. */
+export function cloudHalfExtentsPc(cloud: MolecularCloud): [number, number, number] {
+  const reach = cloud.radiusPc * 1.6;
+  const stretched = reach * cloudStretch(cloud);
+  const axis = cloudStretchAxis(cloud);
+  return [
+    axis === 0 ? stretched : reach,
+    axis === 1 ? stretched : reach,
+    axis === 2 ? stretched : reach,
+  ];
+}
+
+/** The nominal body observations would call the cloud, pc³: the
+ *  radiusPc ellipsoid, drawn out along the stretch axis. */
+export function cloudVolumePc3(cloud: MolecularCloud): number {
+  return (4 / 3) * Math.PI * cloud.radiusPc ** 3 * cloudStretch(cloud);
+}
+
+/** The weight the clumped component carries in the dust the extinction
+ *  integrals read — the same 1.6 the smooth glow gives it. */
+export const CLOUD_DUST_WEIGHT = 1.6;
+
+/** Dust density per unit cloud field where this cloud sits: the cloud's
+ *  overdensity rides on the smooth disk it condensed out of. Constant
+ *  over the cloud, so marches lift it out of their inner loop. */
+export function cloudDustFactor(cloud: MolecularCloud): number {
+  return dustDensity(cloud.positionPc) * CLOUD_DUST_WEIGHT;
+}
+
+/**
+ * The cloud's dust density at a point, in the units
+ * DUST_OPACITY_PER_PC turns into optical depth — the one place the
+ * field's own scale is stated, so extinction, the dark-cloud tiles and
+ * the gas behind them cannot drift apart.
+ */
+export function cloudDustDensity(
+  cloud: MolecularCloud,
+  rxPc: number,
+  ryPc: number,
+  rzPc: number,
+): number {
+  return cloudDustFactor(cloud) * cloudLocalDensity(cloud, rxPc, ryPc, rzPc);
+}
+
+/**
+ * A single cloud's turbulent density at a point: an elongated envelope
+ * (seeded stretch axis) carved by three octaves of seeded noise — the
+ * carve threshold shapes the boundary itself, so silhouettes are ragged
+ * filamentary forms, not spheres. The glow's extinction and the nebula
+ * sprites both sample exactly this field, so a rift's shadow and its
+ * nebula share one structure.
+ */
 export function cloudLocalDensity(
   cloud: MolecularCloud,
   rxPc: number,
@@ -180,7 +231,7 @@ export function cloudLocalDensity(
 ): number {
   const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
   if (envelope === 0) return 0;
-  const stretchAxis = Number(cloud.seed >> 4n) % 3;
+  const stretchAxis = cloudStretchAxis(cloud);
   const stretch = cloudStretch(cloud);
   const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
   const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;
@@ -207,7 +258,7 @@ function cloudEnvelope(
   ryPc: number,
   rzPc: number,
 ): number {
-  const stretchAxis = Number(cloud.seed >> 4n) % 3;
+  const stretchAxis = cloudStretchAxis(cloud);
   const stretch = cloudStretch(cloud);
   const ax = stretchAxis === 0 ? rxPc / stretch : rxPc;
   const ay = stretchAxis === 1 ? ryPc / stretch : ryPc;

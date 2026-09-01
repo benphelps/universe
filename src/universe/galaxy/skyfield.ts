@@ -11,6 +11,7 @@ import { evolve } from '../star/evolution';
 import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, sweepRowStars, type CatalogRow } from './catalog';
 import {
+  cloudDustFactor,
   cloudLocalDensity,
   cloudReachPc,
   cloudsNear,
@@ -25,6 +26,7 @@ import {
   stellarDensity,
   type GalacticPosition,
 } from './density';
+import { nebulaFor, type Nebula } from './nebula';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
@@ -592,12 +594,9 @@ export function assembleSkyField(
 
 type PushStar = (dx: number, dy: number, dz: number, luminosity: number, tEff: number) => void;
 
-interface GroupLight {
-  maxTeff: number;
-  totalLuminosity: number;
-}
-
-/** Coeval members around a center; returns what formed, pushing the visible. */
+/** Coeval members around a center, pushing the ones that resolve from
+ *  here. The natal groups come from the nebula model instead; this is
+ *  what is left for clusters that have long since left their gas. */
 function groupMembers(
   rng: Rng,
   push: PushStar,
@@ -608,20 +607,35 @@ function groupMembers(
   tries: number,
   minMass: number,
   ageGyr: number,
-): GroupLight {
-  const light: GroupLight = { maxTeff: 0, totalLuminosity: 0 };
+): void {
   for (let i = 0; i < tries; i++) {
     const mx = dx + rng.normal(0, spreadPc);
     const my = dy + rng.normal(0, spreadPc);
     const mz = dz + rng.normal(0, spreadPc * 0.7);
     const physical = evolve(powerLaw(rng, 2.3, minMass, 60), ageGyr);
-    light.totalLuminosity += physical.luminosity;
-    if (physical.tEff > light.maxTeff) light.maxTeff = physical.tEff;
     const distanceSq = mx * mx + my * my + mz * mz;
     if (physical.luminosity / distanceSq < MIN_FAR_IRRADIANCE) continue;
     push(mx, my, mz, physical.luminosity, physical.tEff);
   }
-  return light;
+}
+
+/** The natal group as sky: each member where it stands in its cloud,
+ *  pushed if it resolves from here. */
+function pushNebulaMembers(
+  nebula: Nebula,
+  push: PushStar,
+  dx: number,
+  dy: number,
+  dz: number,
+): void {
+  for (const member of nebula.members) {
+    const mx = dx + member.dxPc;
+    const my = dy + member.dyPc;
+    const mz = dz + member.dzPc;
+    const distanceSq = mx * mx + my * my + mz * mz;
+    if (member.luminosity / distanceSq < MIN_FAR_IRRADIANCE) continue;
+    push(mx, my, mz, member.luminosity, member.tEff);
+  }
 }
 
 /**
@@ -773,28 +787,27 @@ function buildGroups(
   const candidates: NebulaCandidate[] = [];
 
   for (const cloud of cloudsNear(viewpoint, 750)) {
-    const rng = new Rng(deriveSeed(cloud.seed, 'formation'));
-    // Bigger clouds are likelier to be forming stars right now.
-    if (rng.float() > 0.1 + cloud.radiusPc / 170) continue;
+    const nebula = nebulaFor(cloud);
+    if (!nebula) continue;
     const dx = cloud.positionPc.xPc - viewpoint.xPc;
     const dy = cloud.positionPc.yPc - viewpoint.yPc;
     const dz = cloud.positionPc.zPc - viewpoint.zPc;
     const distance = Math.hypot(dx, dy, dz);
+    // A sprite is an impostor of a volume, and this close it stands in
+    // for something that would fill the sky. Lifted by the volume tier.
     if (distance < 50) continue;
 
-    const ageGyr = rng.range(0.0015, 0.012);
-    const tries = Math.min(240, Math.round(cloud.radiusPc ** 1.5 * rng.range(0.4, 1.1)));
-    const light = groupMembers(rng, push, dx, dy, dz, cloud.radiusPc * 0.35, tries, 1.0, ageGyr);
-    if (light.maxTeff < 6500) continue;
+    pushNebulaMembers(nebula, push, dx, dy, dz);
+    if (nebula.maxTeff < 6500) continue;
 
-    const ionization = Math.max(0, Math.min(1, (light.maxTeff - 17000) / 13000));
+    const ionization = Math.max(0, Math.min(1, (nebula.maxTeff - 17000) / 13000));
     candidates.push({
       cloud,
       view: [dx / distance, dy / distance, dz / distance],
       distancePc: distance,
-      maxTeff: light.maxTeff,
+      maxTeff: nebula.maxTeff,
       brightness:
-        ((0.3 + 1.1 * ionization) * 95 * Math.sqrt(light.totalLuminosity)) /
+        ((0.3 + 1.1 * ionization) * 95 * Math.sqrt(nebula.totalLuminosity)) /
         (distance * distance),
     });
   }
@@ -1413,7 +1426,7 @@ function buildDarkClouds(
     const up = cross(view, right);
 
     const reachPc = cloudReachPc(cloud);
-    const dustFactor = dustDensity(cloud.positionPc) * 1.6 * dustKappa;
+    const dustFactor = cloudDustFactor(cloud) * dustKappa;
     const steps = 12;
     const ds = (2 * reachPc) / steps;
     const tileX = (tile % DARK_ATLAS_COLS) * DARK_TILE;
@@ -1484,7 +1497,7 @@ function buildCloudTransmission(
     const angRad = Math.asin(Math.min(1, reachPc / distance));
     if (angRad > 1.0) continue;
 
-    const dustFactor = dustDensity(cloud.positionPc) * 1.6 * dustKappa;
+    const dustFactor = cloudDustFactor(cloud) * dustKappa;
     const lat0 = Math.asin(dz / distance);
     const lon0 = Math.atan2(dy, dx);
     const row0 = Math.max(0, Math.floor((lat0 - angRad + Math.PI / 2) / rowRad));

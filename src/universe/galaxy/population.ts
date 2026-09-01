@@ -45,14 +45,23 @@ export function thinUnitForAge(ageGyr: number): number {
   return Math.min(1, Math.max(0, (ageGyr - 0.03) / 9.97)) ** (1 / 1.2);
 }
 
+/**
+ * Metallicity of the interstellar medium where it sits: the disk
+ * gradient alone. A cloud is what stars are drawn from, not a draw
+ * itself, so it takes the mean rather than a scattered sample.
+ */
+export function ismMetallicity(position: GalacticPosition): number {
+  const radius = Math.hypot(position.xPc, position.yPc);
+  return Math.min(0.6, Math.max(-2.5, GRADIENT_DEX_PER_PC * (radius - 8000)));
+}
+
 /** Metallicity for a drawn population member (the stream-random part). */
 export function metallicityFor(
   rng: Rng,
   draw: PopulationDraw,
   position: GalacticPosition,
 ): number {
-  const radius = Math.hypot(position.xPc, position.yPc);
-  const diskFeH = GRADIENT_DEX_PER_PC * (radius - 8000);
+  const diskFeH = ismMetallicity(position);
   const feH =
     draw.component === 'thin-disk'
       ? rng.normal(diskFeH - 0.01 * draw.ageGyr, 0.15)
