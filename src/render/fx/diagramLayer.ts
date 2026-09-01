@@ -58,6 +58,12 @@ export class DiagramPass extends Pass {
     renderer.autoClear = false;
     this.camera.layers.set(DIAGRAM_LAYER);
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    // The copy quad just wrote its own depth over the whole frame, and
+    // under reversed-Z that reads as the nearest thing there is: every
+    // diagram behind it would fail the test. The scene's depth is gone
+    // by this point anyway — diagrams are annotations over the finished
+    // image — so the buffer is cleared and they draw on top.
+    renderer.clearDepth();
     renderer.render(this.scene, this.camera);
     this.camera.layers.mask = layers;
     renderer.autoClear = autoClear;
