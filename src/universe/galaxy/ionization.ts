@@ -11,6 +11,22 @@ import { PARSEC } from '../../core/physics/constants';
 export const ALPHA_B = 2.59e-13;
 
 /**
+ * Hβ luminosity of an ionization-bounded nebula, erg s⁻¹: every
+ * ionizing photon is eventually answered by a recombination, and a
+ * fixed share of those recombinations cascade through Hβ. So a
+ * nebula's brightness is not a free parameter — it is its star's
+ * ionizing output, converted.
+ *
+ * Q × (α_Hβ^eff / α_B) × hν(4861 Å), with α_Hβ^eff = 3.03e-14 cm³ s⁻¹
+ * at 10⁴ K.
+ */
+export const HBETA_PER_IONIZING_PHOTON = (3.03e-14 / ALPHA_B) * 4.09e-12;
+
+export function hydrogenBetaLuminosity(photonRate: number): number {
+  return Math.max(0, photonRate) * HBETA_PER_IONIZING_PHOTON;
+}
+
+/**
  * Strömgren radius, pc: where recombinations inside the sphere exactly
  * consume the source's ionizing photons. Case B — recombinations
  * straight to the ground state emit a photon that ionizes again

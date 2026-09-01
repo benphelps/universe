@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cloudsNear } from './clouds';
 import { HOME_POSITION } from './density';
+import { hydrogenBetaLuminosity } from './ionization';
 import { nebulaFor, type Nebula } from './nebula';
 import { nebulaEmissionColor } from './nebulaLines';
 import { bakeNebulaVolume } from './nebulaVolume';
@@ -39,10 +40,30 @@ describe('nebular colour', () => {
   });
 });
 
+describe('the emission budget', () => {
+  it('takes its brightness from the ionizing budget', () => {
+    // Every ionizing photon is answered by a recombination and a fixed
+    // share of those cascade through Hβ, so a nebula's luminosity is
+    // its star's output converted — not a dial. The standard
+    // conversion is 4.78e-13 erg per ionizing photon per second.
+    expect(hydrogenBetaLuminosity(1e49) / 1e49).toBeGreaterThan(4.5e-13);
+    expect(hydrogenBetaLuminosity(1e49) / 1e49).toBeLessThan(5.1e-13);
+    expect(hydrogenBetaLuminosity(2e49)).toBeCloseTo(2 * hydrogenBetaLuminosity(1e49), 6);
+    expect(hydrogenBetaLuminosity(0)).toBe(0);
+  });
+});
+
 describe('the volume bake', () => {
   const nebula = brightestNebula();
   const size = 32;
   const bake = bakeNebulaVolume(nebula, size);
+
+  it('spreads that budget over the gas by n²', () => {
+    // The coefficient closes the books: total line light divided by the
+    // emission measure that will carry it. A lit nebula has one.
+    expect(bake.emissionCoefficient).toBeGreaterThan(0);
+    expect(Number.isFinite(bake.emissionCoefficient)).toBe(true);
+  });
 
   it('is sized to the ionized region rather than to the cloud', () => {
     // A giant molecular cloud is a hundred parsecs across and the

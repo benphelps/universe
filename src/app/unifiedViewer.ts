@@ -58,6 +58,7 @@ import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import {
   createNeighborStars,
   createStarPointsMaterial,
+  setStarNebulaExtinction,
 } from '../render/starfield/neighborStars';
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import {
@@ -3003,6 +3004,7 @@ export class UnifiedViewer {
       this.scene.remove(this.nebulaVolume.mesh);
       this.nebulaVolume.dispose();
       this.nebulaVolume = null;
+      setStarNebulaExtinction(null);
     }
     if (this.galaxyParticles) {
       this.pcGroup.remove(this.galaxyParticles.group);
@@ -3415,6 +3417,16 @@ export class UnifiedViewer {
           worldToScene,
           PC_KM,
           Math.min(this.camera.far * 0.3, 3e15),
+        );
+        // Every star behind the cloud dims and reddens through it. The
+        // depth buffer cannot say which stars those are — the points
+        // are additive and write no depth — so each one asks the volume.
+        setStarNebulaExtinction(
+          this.nebulaVolume
+            ? this.nebulaVolume.extinctionFor(
+                new Matrix3().setFromMatrix4(this.camera.matrixWorld),
+              )
+            : null,
         );
         // The nuclear cluster's light comes through the same dust the
         // volume march extinguishes the band with.

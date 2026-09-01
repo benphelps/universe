@@ -16,6 +16,7 @@ import {
 import type { GalacticPosition } from '../../universe/galaxy/density';
 import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
 import type { NebulaVolumeBake } from '../../universe/galaxy/nebulaVolume';
+import type { StarNebulaExtinction } from '../starfield/neighborStars';
 
 const VERTEX = /* glsl */ `
 // The dome is a unit sphere centered on the camera and never rotated,
@@ -49,7 +50,7 @@ uniform float uDensityRef;
 uniform vec3 uEmissionHot;
 uniform vec3 uEmissionCool;
 uniform vec3 uReflection;
-uniform float uEmissionScale;
+uniform float uEmissionCoefficient;
 uniform float uScatterScale;
 uniform float uOpacity;
 
@@ -85,7 +86,8 @@ void main() {
     // Recombination lines: optically thin, and going as the square of
     // the density because every emission is an electron meeting a
     // proton. The hue is the line mixture at this cell's hardness.
-    vec3 emission = mix(uEmissionCool, uEmissionHot, cell.b) * ionized * ionized * uEmissionScale;
+    vec3 emission =
+      mix(uEmissionCool, uEmissionHot, cell.b) * ionized * ionized * uEmissionCoefficient;
     // What the dust scatters of the star's own light, dimmed by the
     // dust between it and here (cell.a) and by distance.
     float r2 = max(dot(p, p), 0.05);
@@ -120,6 +122,7 @@ export class NebulaVolume {
   private readonly material: ShaderMaterial;
   private readonly texture: Data3DTexture;
   private readonly sceneToGalaxy: Matrix3;
+  private readonly cameraToGalaxy = new Matrix3();
 
   constructor(
     bake: NebulaVolumeBake,
@@ -155,7 +158,7 @@ export class NebulaVolume {
         uEmissionHot: { value: new Vector3(...bake.emissionHot) },
         uEmissionCool: { value: new Vector3(...bake.emissionCool) },
         uReflection: { value: new Vector3(...bake.reflectionColor) },
-        uEmissionScale: { value: EMISSION_SCALE },
+        uEmissionCoefficient: { value: bake.emissionCoefficient * NEBULA_PIXEL_SCALE },
         uScatterScale: { value: SCATTER_SCALE },
         uOpacity: { value: 1 },
       },
@@ -194,6 +197,22 @@ export class NebulaVolume {
     this.mesh.scale.setScalar(domeRadiusKm);
   }
 
+  /** What the star field needs to dim itself through this cloud. */
+  extinctionFor(cameraRotation: Matrix3): StarNebulaExtinction {
+    const uniforms = this.material.uniforms;
+    return {
+      volume: this.texture,
+      halfPc: uniforms.uHalfPc.value as number,
+      centrePc: uniforms.uCentrePc.value as Vector3,
+      camPc: uniforms.uCamPc.value as Vector3,
+      cameraToGalaxy: this.cameraToGalaxy.multiplyMatrices(
+        uniforms.uWorldToGalaxy.value as Matrix3,
+        cameraRotation,
+      ),
+      dustRef: uniforms.uDustRef.value as number,
+    };
+  }
+
   dispose(): void {
     this.mesh.geometry.dispose();
     this.material.dispose();
@@ -202,13 +221,14 @@ export class NebulaVolume {
 }
 
 /**
- * Emission and scattering scales: the volume's brightness against the
- * pipeline's exposure. Provisional, and the one thing here still set by
- * eye — the emission measure and the line spectrum are physical, but
- * what a magnitude of surface brightness comes to in this renderer is
- * the sky's photometric zero point, and hooking these to it is what
- * will make the volume and the sprite it replaces agree at the distance
- * they hand off.
+ * What a solar luminosity per square parsec per steradian comes to on
+ * screen. The nebula's own brightness is settled in the bake — its
+ * star's ionizing budget fixes the line luminosity and the gas divides
+ * it by n² — so this is the one conversion left, shared by every
+ * nebula: the renderer's photometric zero point for surface
+ * brightness, the counterpart of the one the star sprites carry.
  */
-const EMISSION_SCALE = 4e-4;
+const NEBULA_PIXEL_SCALE = 0.5;
+/** How much of the star's light the dust sends back at us. Provisional
+ *  until the scattering table lands with the reflection pass. */
 const SCATTER_SCALE = 0.6;

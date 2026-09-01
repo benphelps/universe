@@ -4,9 +4,10 @@ import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import { cloudFineDustDensity } from './clouds';
 import { DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
+import { hydrogenBetaLuminosity } from './ionization';
 import { ALPHA_B } from './ionization';
 import type { Nebula } from './nebula';
-import { nebulaEmissionColor } from './nebulaLines';
+import { nebulaEmissionColor, nebulaLineSum } from './nebulaLines';
 
 /**
  * A nebula baked into a volume the renderer can march.
@@ -42,6 +43,14 @@ export interface NebulaVolumeBake {
   data: Uint8Array;
   /** Dust density that R = 255 stands for. */
   dustRef: number;
+  /**
+   * Emission coefficient: L☉ per parsec³ per steradian per cm⁻⁶ of
+   * emission measure. The nebula radiates what its star's ionizing
+   * budget says it radiates, spread over the gas by n² — so brightness
+   * is the physics rather than a dial, and a nebula with ten times the
+   * ionizing output is ten times as bright.
+   */
+  emissionCoefficient: number;
   /** Hydrogen density that G = 255 stands for, cm⁻³. */
   densityRef: number;
   /** Where the box sits in the cloud's own frame, pc — the source is
@@ -55,6 +64,8 @@ export interface NebulaVolumeBake {
 }
 
 const CM_PER_PC = PARSEC * 100;
+/** erg s⁻¹ in one solar luminosity. */
+const ERG_PER_SOLAR_LUMINOSITY = 3.828e33;
 /** Recombinations per steradian carried by one cm⁻⁶ over a pc³ shell. */
 const RECOMBINATION_SCALE = ALPHA_B * CM_PER_PC ** 3;
 /** Where log₁₀ of the ionization parameter runs from and to: the range
@@ -141,6 +152,9 @@ export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
   const stepPc = Math.min(cellPc[0], cellPc[1], cellPc[2]) * 0.9;
 
   const data = new Uint8Array(cells * 4);
+  const cellVolumePc3 = cellPc[0] * cellPc[1] * cellPc[2];
+  let emissionMeasure = 0;
+  let hardnessWeighted = 0;
   for (let k = 0; k < size; k++) {
     const z = at(k, 2);
     for (let j = 0; j < size; j++) {
@@ -183,6 +197,12 @@ export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
         const hardness =
           u > 0 ? (Math.log10(u) - LOG_U_MIN) / (LOG_U_MAX - LOG_U_MIN) : 0;
 
+        // What the gas here contributes to the nebula's total light.
+        const ionizedDensity = n * ionized;
+        const measure = ionizedDensity * ionizedDensity * cellVolumePc3;
+        emissionMeasure += measure;
+        hardnessWeighted += measure * Math.min(1, Math.max(0, hardness));
+
         const out = index * 4;
         data[out] = Math.round(255 * Math.min(1, dust[index] / dustRef));
         data[out + 1] = Math.round(255 * Math.min(1, (n * ionized) / densityRef));
@@ -191,6 +211,16 @@ export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
       }
     }
   }
+
+  // The budget closes here: the star's ionizing output fixes the Hβ
+  // luminosity, the line mixture carries the rest of the optical
+  // spectrum with it, and the gas divides that light by n².
+  const meanHardness = emissionMeasure > 0 ? hardnessWeighted / emissionMeasure : 0;
+  const lineLuminositySolar =
+    (hydrogenBetaLuminosity(source?.photonRate ?? 0) * nebulaLineSum(meanHardness)) /
+    ERG_PER_SOLAR_LUMINOSITY;
+  const emissionCoefficient =
+    emissionMeasure > 0 ? lineLuminositySolar / (4 * Math.PI * emissionMeasure) : 0;
 
   return {
     seed: cloud.seed,
@@ -203,6 +233,7 @@ export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
     halfExtentsPc,
     data,
     dustRef,
+    emissionCoefficient,
     densityRef,
     originPc,
     emissionHot: nebulaEmissionColor(1),

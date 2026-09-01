@@ -33,6 +33,15 @@ const OXYGEN: ReadonlyArray<readonly [number, number]> = [
   [495.9, 1.0], // [O III] — fixed 1:3 by atomic physics
 ];
 
+/** Every optical line the mixture carries, relative to Hβ. What the
+ *  nebula radiates is this times its Hβ luminosity. */
+export function nebulaLineSum(hardness: number): number {
+  const h = Math.min(1, Math.max(0, hardness));
+  const total = (lines: ReadonlyArray<readonly [number, number]>): number =>
+    lines.reduce((sum, [, intensity]) => sum + intensity, 0);
+  return total(HYDROGEN) + total(LOW_IONIZATION) * (1 - 0.7 * h) + total(OXYGEN) * h;
+}
+
 /**
  * The colour of nebular emission at a given ionization hardness, 0 for
  * a barely-ionized skin to 1 under the hottest stars.
