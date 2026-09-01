@@ -326,8 +326,15 @@ function emptyVolume(): Data3DTexture {
  * it by n² — so this is the one conversion left, shared by every
  * nebula: the renderer's photometric zero point for surface
  * brightness, the counterpart of the one the star sprites carry.
+ *
+ * Calibrated against the sky's own sprites, which are the approved
+ * look: the same cloud rendered both ways at the same distance matches
+ * to within the tone map, so a nebula keeps its brightness when the
+ * backdrop hands it off to the volume instead of stepping down by an
+ * order of magnitude. The plan's sprite/volume agreement test is the
+ * finer version of this number, cloud by cloud.
  */
-const NEBULA_PIXEL_SCALE = 0.5;
+const NEBULA_PIXEL_SCALE = 7.5;
 /** Optical albedo of interstellar dust (Draine): the share of what
  *  falls on a grain that leaves it again as scattered light. */
 const DUST_ALBEDO = 0.6;
