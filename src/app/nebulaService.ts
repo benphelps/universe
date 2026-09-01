@@ -34,6 +34,12 @@ export function resetNebulaBakes(): void {
   waiting.clear();
 }
 
+/** How many volumes are still queued at the worker — what the
+ *  generation readout shows while a nebula is being built. */
+export function pendingNebulaBakes(): number {
+  return queued.size;
+}
+
 function ensureWorker(): Worker {
   if (worker) return worker;
   worker = new Worker(new URL('../workers/nebulaWorker.ts', import.meta.url), { type: 'module' });

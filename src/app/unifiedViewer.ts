@@ -58,6 +58,7 @@ import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
 import {
   createNeighborStars,
   createStarPointsMaterial,
+  MAX_STAR_NEBULAE,
   setStarNebulaExtinction,
 } from '../render/starfield/neighborStars';
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
@@ -90,7 +91,7 @@ import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
-import { requestNebulaVolume, resetNebulaBakes } from './nebulaService';
+import { pendingNebulaBakes, requestNebulaVolume, resetNebulaBakes } from './nebulaService';
 import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
 import { bubbleNeedsOwnBake, type NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
@@ -459,6 +460,7 @@ export class UnifiedViewer {
     surveying: boolean;
     terrain: number;
     worlds: number;
+    nebulae: number;
     skies: number;
     skyProgress: number;
     skyStage: string;
@@ -469,6 +471,7 @@ export class UnifiedViewer {
       surveying: this.surveying,
       terrain: this.chunkManager?.outstanding ?? 0,
       worlds: bakeQueueDepth(),
+      nebulae: pendingNebulaBakes(),
       skies: skyPending(),
       skyProgress: sky.fraction,
       skyStage: sky.stage,
@@ -3666,11 +3669,16 @@ export class UnifiedViewer {
         });
         // Every star behind a cloud dims and reddens through it. The
         // depth buffer cannot say which stars those are — the points
-        // are additive and write no depth — so each one asks every
-        // volume its sightline could cross.
+        // are additive and write no depth — so each one asks the
+        // volumes its sightline could cross. The shader carries a few
+        // slots; when residents outnumber them, the nearest volumes —
+        // the rifts the eye actually checks stars against — take them.
         const cameraRotation = new Matrix3().setFromMatrix4(this.camera.matrixWorld);
         setStarNebulaExtinction(
-          byDistance.map((volume) => volume.extinctionFor(cameraRotation)),
+          byDistance
+            .slice(-MAX_STAR_NEBULAE)
+            .reverse()
+            .map((volume) => volume.extinctionFor(cameraRotation)),
         );
         // The nuclear cluster's light comes through the same dust the
         // volume march extinguishes the band with.
