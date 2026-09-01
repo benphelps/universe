@@ -3,7 +3,12 @@ import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { evolve } from '../star/evolution';
 import { ionizingPhotonRate } from '../star/ionizing';
-import { cloudHalfExtentsPc, cloudsNear, type MolecularCloud } from './clouds';
+import {
+  cloudHalfExtentsPc,
+  cloudLocalDensity,
+  cloudsNear,
+  type MolecularCloud,
+} from './clouds';
 import type { GalacticPosition } from './density';
 import { cloudHydrogenDensity } from './gas';
 import { stromgrenRadiusPc } from './ionization';
@@ -70,13 +75,20 @@ export interface Nebula {
   halfExtentsPc: [number, number, number];
 }
 
+/** How many places a member is offered before it settles on the
+ *  densest of them. */
+const MEMBER_PROPOSALS = 6;
+
 /** The lightest star the natal group is drawn down to. */
 const MEMBER_MIN_MASS = 1.0;
 /** Below this nothing in the group shines on the cloud at all. */
 const LUMINOUS_TEFF = 6500;
-/** An ionized region this much of the cloud reads as an emission
- *  nebula; less and the light that escapes is scattered, not emitted. */
-const EMISSION_FRACTION = 0.05;
+/** An ionized region at least this big is an H II region and the cloud
+ *  emits its own lines; below it the group only lights a cocoon, and
+ *  what escapes the cloud is scattered starlight. Absolute, not a
+ *  fraction of the cloud: a compact H II region inside a great cloud
+ *  is still an emission nebula. */
+const EMISSION_RADIUS_PC = 0.5;
 /** A group's ionizing output is the top of its mass function and
  *  nothing else — Q runs eleven decades from a B star to an O star. The
  *  total keeps every contribution; the source list keeps the ones a
@@ -124,9 +136,28 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
   let totalLuminosity = 0;
   let photonRate = 0;
   for (let i = 0; i < tries; i++) {
-    const dxPc = rng.normal(0, spreadPc);
-    const dyPc = rng.normal(0, spreadPc);
-    const dzPc = rng.normal(0, spreadPc * 0.7);
+    // Stars form where the gas is, not on a sphere about the middle:
+    // the densest of a few proposals wins, so the group traces its
+    // cloud's own filaments and its hot stars stand in the gas they go
+    // on to ionize. Ranked rather than accept-or-reject, because a
+    // carved field's densities are a small fraction of its peak and an
+    // acceptance test against that peak would almost never fire.
+    let dxPc = 0;
+    let dyPc = 0;
+    let dzPc = 0;
+    let densest = -1;
+    for (let attempt = 0; attempt < MEMBER_PROPOSALS; attempt++) {
+      const x = rng.normal(0, spreadPc);
+      const y = rng.normal(0, spreadPc);
+      const z = rng.normal(0, spreadPc * 0.7);
+      const density = cloudLocalDensity(cloud, x, y, z);
+      if (density > densest) {
+        densest = density;
+        dxPc = x;
+        dyPc = y;
+        dzPc = z;
+      }
+    }
     const physical = evolve(powerLaw(rng, 2.3, MEMBER_MIN_MASS, 60), ageGyr);
     const member: NebulaMember = {
       dxPc,
@@ -171,7 +202,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     kind:
       maxTeff < LUMINOUS_TEFF
         ? 'dark'
-        : stromgren > EMISSION_FRACTION * cloud.radiusPc
+        : stromgren > EMISSION_RADIUS_PC
           ? 'emission'
           : 'reflection',
     halfExtentsPc: cloudHalfExtentsPc(cloud),

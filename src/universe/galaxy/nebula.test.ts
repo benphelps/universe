@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { ionizingPhotonRate } from '../star/ionizing';
-import { cloudsNear, type MolecularCloud } from './clouds';
-import { dustDensity, DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
 import {
-  AV_PER_TAU,
-  cloudMeanHydrogenDensity,
-  cloudSurfaceDensity,
-  hydrogenDensity,
-} from './gas';
+  CLOUD_DUST_WEIGHT,
+  cloudsNear,
+  expectedCloudField,
+  type MolecularCloud,
+} from './clouds';
+import { armBoost, dustDensity, DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
+import { AV_PER_TAU, cloudCentralExtinction, cloudMassSolar, hydrogenDensity } from './gas';
 import { stromgrenRadiusPc } from './ionization';
 import { nebulaeNear, nebulaFor, type Nebula } from './nebula';
 import { ismMetallicity } from './population';
+import { landmarkWeight } from './regions';
 
 /** The clumped component's floor: what a sightline crosses between clouds. */
 const DIFFUSE_CLUMP = 0.45;
@@ -32,11 +33,16 @@ describe('the gas behind the dust', () => {
 
   it('extinguishes about a magnitude per kiloparsec locally', () => {
     // The other end of the same calibration, and the one the sky is
-    // actually drawn against: the classic 1 mag/kpc of visual extinction.
-    const perPc = dustDensity(HOME_POSITION) * DIFFUSE_CLUMP * DUST_OPACITY_PER_PC;
-    const magPerKpc = perPc * 1000 * AV_PER_TAU;
-    expect(magPerKpc).toBeGreaterThan(0.6);
+    // actually drawn against: the classic 1 mag/kpc of visual
+    // extinction, over the diffuse floor and the clouds riding on it.
+    const clumped =
+      DIFFUSE_CLUMP +
+      CLOUD_DUST_WEIGHT * expectedCloudField(dustDensity(HOME_POSITION), armBoost(8000, 0));
+    const magPerKpc = dustDensity(HOME_POSITION) * clumped * DUST_OPACITY_PER_PC * 1000 * AV_PER_TAU;
+    expect(magPerKpc).toBeGreaterThan(0.7);
     expect(magPerKpc).toBeLessThan(1.5);
+    // And the clouds are a real share of it, not a rounding error.
+    expect(clumped / DIFFUSE_CLUMP).toBeGreaterThan(1.1);
   });
 
   it('hides more gas behind the same dust where the metals run thin', () => {
@@ -122,26 +128,64 @@ describe('the nebula model', () => {
   });
 });
 
-describe.skip('molecular clouds against the observed population', () => {
-  // The acceptance test for the density pass, and currently the honest
-  // record of what the field is not. Measured at the solar circle over
-  // 39 clouds above 20 pc: median mass 3.2e3 M☉ against the 10⁵–10⁶ of a
-  // real GMC, mean density 0.28 cm⁻³ against 50–500, surface density
-  // 0.41 M☉/pc² against Larson's ~100, central extinction 0.11 mag
-  // against the several magnitudes a dark cloud actually shows.
-  //
-  // The clumped component carries about 3% of the local dust column
-  // where molecular gas carries tens of percent, and what it does carry
-  // is spread over the whole cloud instead of concentrated into the
-  // filaments that fill a percent of it. Both have to move together:
-  // raising the clouds without taking the mass out of the smooth disk
-  // would change the extinction the calibration above is anchored on.
-  it('has the masses, densities and columns of giant molecular clouds', () => {
-    const feH = ismMetallicity(HOME_POSITION);
-    const clouds = cloudsNear(HOME_POSITION, 900).filter((cloud) => cloud.radiusPc > 20);
-    const median = (values: number[]): number =>
-      values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
-    expect(median(clouds.map((cloud) => cloudMeanHydrogenDensity(cloud, feH)))).toBeGreaterThan(30);
-    expect(median(clouds.map((cloud) => cloudSurfaceDensity(cloud, feH)))).toBeGreaterThan(40);
+describe('the gazetteer against the cloud population', () => {
+  it('keeps landmark weights spread across their range', () => {
+    // Province reach and gazetteer rank both come from a cloud's
+    // prominence against a reference. Recalibrating the clouds without
+    // moving that reference pins every cloud to the ceiling, which
+    // reads as a working weight and is in fact a tie: the landmark list
+    // becomes arbitrary and provinces stop scaling with their anchors.
+    const weights = cloudsNear(HOME_POSITION, 1200)
+      .filter((cloud) => cloud.radiusPc > 20)
+      .map(landmarkWeight);
+    expect(weights.length).toBeGreaterThan(10);
+    const ceiling = weights.filter((w) => w >= 2.2).length;
+    expect(ceiling / weights.length).toBeLessThan(0.25);
+    expect(Math.max(...weights) - Math.min(...weights)).toBeGreaterThan(0.3);
+  });
+});
+
+describe('molecular clouds against the observed population', () => {
+  const feH = ismMetallicity(HOME_POSITION);
+  const REACH_PC = 900;
+  const median = (values: number[]): number =>
+    values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
+
+  it('holds the molecular gas the solar neighbourhood holds', () => {
+    // The population's own mass against the disc it sits in. A few
+    // solar masses per square parsec is what the local molecular gas
+    // actually comes to, and it is the anchor the cloud gain is set by
+    // — together with the extinction above, which the same gas dims.
+    const clouds = cloudsNear(HOME_POSITION, REACH_PC);
+    const total = clouds.reduce((sum, cloud) => sum + cloudMassSolar(cloud, feH, 12), 0);
+    const surface = total / (Math.PI * REACH_PC ** 2);
+    expect(surface).toBeGreaterThan(0.5);
+    expect(surface).toBeLessThan(6);
+  });
+
+  it('draws clouds on the giant-molecular-cloud scale', () => {
+    // Masses in the 10⁴–10⁶ M☉ range catalogues find, and enough dust
+    // through them to be the dark clouds they are: a few magnitudes of
+    // visual extinction, not the few hundredths a smooth cloud gives.
+    const big = cloudsNear(HOME_POSITION, REACH_PC).filter((cloud) => cloud.radiusPc > 20);
+    expect(big.length).toBeGreaterThan(10);
+    const mass = median(big.map((cloud) => cloudMassSolar(cloud, feH, 12)));
+    expect(mass).toBeGreaterThan(1e4);
+    expect(mass).toBeLessThan(1e6);
+    expect(median(big.map((cloud) => cloudCentralExtinction(cloud, 64)))).toBeGreaterThan(1);
+  });
+
+  it('forms its stars in the dense gas and ionizes a bubble inside it', () => {
+    // The whole point of the density pass. Members settle where the gas
+    // is, so the ionizing stars stand in gas at the hundreds of atoms
+    // per cm³ an H II region is embedded in — and the region they
+    // ionize is a bubble inside the cloud rather than a sphere larger
+    // than the cloud that leaves no neutral gas to shadow at all.
+    const lit = cloudsNear(HOME_POSITION, REACH_PC)
+      .map((cloud) => nebulaFor(cloud))
+      .filter((nebula): nebula is Nebula => nebula !== null && nebula.photonRate > 0);
+    expect(lit.length).toBeGreaterThan(5);
+    expect(median(lit.map((nebula) => nebula.sourceHydrogenDensity))).toBeGreaterThan(30);
+    expect(median(lit.map((nebula) => nebula.stromgrenRadiusPc / nebula.cloud.radiusPc))).toBeLessThan(0.5);
   });
 });

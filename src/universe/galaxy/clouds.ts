@@ -23,6 +23,32 @@ export interface MolecularCloud {
 
 const CELL_PC = 250;
 
+/**
+ * What puts the drawn population on the interstellar medium it is
+ * supposed to be. The carve below decides how much column a given
+ * amplitude actually delivers, so this is a Monte Carlo over the
+ * population rather than anything analytic, and it is set by three
+ * measured anchors rather than by eye: a mean visual extinction of
+ * about a magnitude per kiloparsec through the plane, a molecular
+ * surface density of a few solar masses per square parsec, and cloud
+ * masses on the giant-molecular-cloud scale. The diffuse floor
+ * between clouds keeps the medium it was calibrated for; the clouds
+ * ride on top of it. Pinned by a galaxy test.
+ */
+export const CLOUD_DENSITY_GAIN = 132;
+
+/**
+ * The carve. Turbulence below the threshold leaves no gas at all, so
+ * the threshold's own contour is the cloud's boundary — which is what
+ * makes silhouettes ragged instead of round — and the exponent decides
+ * how sharply what survives runs up into filaments. Together they set
+ * the volume filling factor: a real molecular cloud keeps most of its
+ * mass in a few percent of its body, and the stars form in that few
+ * percent. The gain above absorbs whatever mean they leave behind.
+ */
+const CARVE_THRESHOLD = 0.3;
+const CARVE_EXPONENT = 2.2;
+
 // Galaxy-dependent roots, derived on first use (after the session's
 // galaxy seed settles).
 let cloudRoot: bigint | null = null;
@@ -95,7 +121,7 @@ export function cloudsInCell(ix: number, iy: number, iz: number): MolecularCloud
       seed: deriveSeed(seed, 'cloud', i),
       positionPc,
       radiusPc,
-      amplitude: rng.range(2.5, 7) * (30 / radiusPc) ** 0.4,
+      amplitude: CLOUD_DENSITY_GAIN * rng.range(2.5, 7) * (30 / radiusPc) ** 0.4,
     });
   }
   cellCache.set(key, clouds);
@@ -245,9 +271,9 @@ export function cloudLocalDensity(
     0.55 * shapeNoise(x * 1.6, y * 1.6, z * 1.6) +
     0.3 * shapeNoise(x * 3.7, y * 3.7, z * 3.7) +
     0.16 * shapeNoise(x * 8.1, y * 8.1, z * 8.1);
-  const carved = envelope * (Math.max(0, turbulence) + 0.12) - 0.18;
+  const carved = envelope * (Math.max(0, turbulence) + 0.12) - CARVE_THRESHOLD;
   if (carved <= 0) return 0;
-  return cloud.amplitude * 1.35 * carved ** 1.4;
+  return cloud.amplitude * 1.35 * carved ** CARVE_EXPONENT;
 }
 
 /** The stretched gaussian envelope shared by the turbulent and smooth
@@ -280,9 +306,9 @@ export function cloudSmoothDensity(
 ): number {
   const envelope = cloudEnvelope(cloud, rxPc, ryPc, rzPc);
   if (envelope === 0) return 0;
-  const carved = envelope * 0.67 - 0.18;
+  const carved = envelope * 0.67 - CARVE_THRESHOLD;
   if (carved <= 0) return 0;
-  return cloud.amplitude * 1.35 * carved ** 1.4;
+  return cloud.amplitude * 1.35 * carved ** CARVE_EXPONENT;
 }
 
 /**
@@ -318,7 +344,7 @@ export function cloudFieldAt(positionPc: GalacticPosition): number {
  * shot noise, not structure.
  */
 export function expectedCloudField(dust: number, armBoostValue: number): number {
-  return 0.0092 * (dust / dustHomeOf()) * (0.4 + 0.6 * armBoostValue);
+  return 0.00088 * CLOUD_DENSITY_GAIN * (dust / dustHomeOf()) * (0.4 + 0.6 * armBoostValue);
 }
 
 /** The same summed cloud field with each cloud at its smooth mean:

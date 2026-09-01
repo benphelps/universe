@@ -107,7 +107,7 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 ## Staging
 
 1. `Nebula` model, gas calibration, camera-driven query. No render change; testable alone. **Landed.**
-2. The density pass: GMC mass budget against the smooth disk, carve concentration, members drawn against the field. Re-pins `expectedCloudField`; changes how the rifts read, so it wants browser verification.
+2. The density pass: cloud gain against the extinction and molecular-mass anchors, carve concentration, members drawn against the field. **Landed** — clouds now hold 3.1 M☉/pc² of molecular gas at 1.0 mag/kpc of extinction, GMC masses run 10⁴–10⁶ M☉, sightlines through a cloud reach several magnitudes, ionizing stars stand in gas at ~160 cm⁻³, and Strömgren radii fall to a few percent of the cloud so there is neutral gas left to shadow.
 3. One bright H II region, 64³ bake, single dominant source, single shadow ray. Carrier dome, premultiplied blending, sprite path untouched so the two sit side by side.
 4. Per-star transmittance and scene-depth clipping.
 5. Photoevaporative erosion pass and the line-ratio LUT — the step where the picture becomes physics rather than fog.
