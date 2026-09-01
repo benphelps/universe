@@ -146,12 +146,13 @@ Rough priority order. The residency dials live at the top of
 - **Stage 5 remainder.** Trunk/pillar photoevaporation, winds and supernovae
   past the Spitzer floor (the expansion slice that landed is the floor, not the
   ceiling).
-- **Cluster members are not addressable.** Group members ride their cloud's
-  stream (`starSeed === 0n` in the sky field), so they hover as "cluster member"
-  but cannot be travelled to. They are deterministic per cloud —
-  `deriveSeed(cloud.seed, 'member', i)` could name them — but arrival needs the
-  system generator to honor a member's physical identity (mass, age, tEff)
-  rather than rolling its own star from the seed.
+- **Cluster members are not destinations — settled.** Group members ride their
+  cloud's stream (`starSeed === 0n` in the sky field), so they hover as
+  "cluster member" but offer no travel, and that is by decision, not omission:
+  a member has no identity beyond its group, and the nebula is the shared
+  destination for all of them. If member-click ever wants to do something, the
+  right something is routing to the parent cloud's gateway, not minting
+  per-member systems.
 - **Dead members as ionizers.** A few nebula members report tEff ~10⁶ K —
   `evolve()` returning remnant parameters for massive stars past their
   lifetime, which then ionize as planetary-nebula-nucleus-like sources. Possibly
