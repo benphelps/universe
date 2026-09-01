@@ -150,6 +150,18 @@ const SHELL_COMPRESSION = 3;
  *  at a few, not the near-total removal a clean cavity would imply. */
 export const DUST_DEPLETION = 5;
 
+/** Fraction of the wind cavity's radius its swept wall spans. */
+export const WIND_WALL_WIDTH = 0.15;
+/** What the wind leaves behind it: shocked gas at millions of kelvin
+ *  and a hundredth the density — X-ray bright, optically nothing. */
+export const WIND_CAVITY_RESIDUAL = 0.02;
+/** The cavity's gas piled into its wall, by mass: what turns a filled
+ *  disc into the ring an evolved region actually is — the emission
+ *  goes as n², so the compressed wall is where the light concentrates
+ *  while the total stays pinned to the ionizing budget by the finish. */
+export const WIND_WALL_BOOST =
+  1 + (1 - WIND_CAVITY_RESIDUAL) / ((1 + WIND_WALL_WIDTH) ** 3 - 1);
+
 /** Whether the bubble deserves a bake of its own, or the cloud-scale
  *  grid already resolves it: the two-scale split exists for compact
  *  regions, and an evolved bubble tens of parsecs across is not one. */
@@ -180,6 +192,10 @@ export interface NebulaBakePlan {
   growth: number;
   dilution: number;
   shellBoost: number;
+  /** The wind-blown cavity about the source, pc — zero when no wind. */
+  windCavityPc: number;
+  /** Where the cavity's swept wall ends, pc. */
+  windWallPc: number;
   stepPc: number;
   /** Beyond this distance from the source a cell is neutral without
    *  the march having to say so. */
@@ -267,6 +283,8 @@ export function planNebulaBake(
     // region has barely left its natal radius, the full compression
     // once the interior mass is gone.
     shellBoost: 1 + (SHELL_COMPRESSION - 1) * (1 - dilution),
+    windCavityPc: nebula?.windCavityPc ?? 0,
+    windWallPc: (nebula?.windCavityPc ?? 0) * (1 + WIND_WALL_WIDTH),
     stepPc: cellPc * 0.9,
     reachLimitPc: IONIZATION_REACH * Math.max(nebula?.bubbleRadiusPc ?? 0, 0.05),
     scatterSourcePc,
@@ -416,15 +434,26 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         const inBubble = reachable && frontR < 0;
         const inShell = frontR >= 0 && distancePc <= frontR * (1 + SHELL_WIDTH);
         const rn = distancePc / growth;
-        const n = inBubble
-          ? sample(
-              gas,
-              size,
-              (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5,
-              (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5,
-              (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5,
-            ) * dilution
-          : gas[index] * (inShell ? shellBoost : 1);
+        // The star's wind has re-plumbed the interior: the cavity holds
+        // an optically empty residue, its swept wall the mass the wind
+        // ploughed out of it — a ring in n², a hole inside it.
+        const wind = !inBubble
+          ? 1
+          : distancePc < plan.windCavityPc
+            ? WIND_CAVITY_RESIDUAL
+            : distancePc <= plan.windWallPc
+              ? WIND_WALL_BOOST
+              : 1;
+        const n =
+          (inBubble
+            ? sample(
+                gas,
+                size,
+                (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5,
+                (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5,
+                (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5,
+              ) * dilution
+            : gas[index] * (inShell ? shellBoost : 1)) * wind;
         // Ionization parameter: ionizing flux over gas density, the
         // ratio that decides how far oxygen is taken.
         const flux = budget > 0 ? (budget * transmittance) / (distancePc * distancePc) : 0;
@@ -438,15 +467,16 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         // put H II regions a few times thinner in dust, not twenty, and
         // the dust that remains is what makes them visible in the
         // infrared at all.
-        const cellDust = inBubble
-          ? sample(
-              dust,
-              size,
-              (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5,
-              (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5,
-              (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5,
-            ) * dilution
-          : dust[index] * (inShell ? shellBoost : 1);
+        const cellDust =
+          (inBubble
+            ? sample(
+                dust,
+                size,
+                (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5,
+                (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5,
+                (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5,
+              ) * dilution
+            : dust[index] * (inShell ? shellBoost : 1)) * wind;
         fields.dust[index] = cellDust / (1 + (DUST_DEPLETION - 1) * ionized);
         fields.ionized[index] = n * ionized;
         fields.hardness[index] = Math.min(1, Math.max(0, hardness));

@@ -14,7 +14,7 @@ import {
 } from './clouds';
 import type { GalacticPosition } from './density';
 import { cloudHydrogenDensity } from './gas';
-import { spitzerRadiusPc, stromgrenRadiusPc } from './ionization';
+import { spitzerRadiusPc, stromgrenRadiusPc, windCavityRadiusPc } from './ionization';
 
 /** erg s⁻¹ per L☉ — the constants file carries watts. */
 const ERG_PER_SOLAR_LUMINOSITY = SOLAR_LUMINOSITY * 1e7;
@@ -133,6 +133,10 @@ export interface Nebula {
   /** The ionized region at the group's age, pc: the natal front driven
    *  out by Spitzer expansion, bounded by the cloud that feeds it. */
   bubbleRadiusPc: number;
+  /** The wind-blown cavity inside it, pc — zero for groups whose
+   *  hottest member is too cool to drive a line wind. What makes an
+   *  evolved region a ring rather than a filled disc. */
+  windCavityPc: number;
   kind: NebulaKind;
   /** Half-extents of the density field, pc — the volume's bounds. */
   halfExtentsPc: [number, number, number];
@@ -258,6 +262,18 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     spitzerRadiusPc(stromgren, ageGyr * 1000),
     Math.max(...halfExtentsPc),
   );
+  // The wind ploughs the *diluted* interior the expansion left behind,
+  // and cannot overrun the front that feeds its shell.
+  const growth = stromgren > 0 ? Math.max(1, bubbleRadiusPc / stromgren) : 1;
+  const windCavityPc = Math.min(
+    windCavityRadiusPc(
+      lighting[0]?.luminosity ?? 0,
+      lighting[0]?.tEff ?? 0,
+      ageGyr * 1000,
+      sourceHydrogenDensity * growth ** -1.5,
+    ),
+    0.75 * bubbleRadiusPc,
+  );
   return {
     cloud,
     ageGyr,
@@ -270,6 +286,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     sourceHydrogenDensity,
     stromgrenRadiusPc: stromgren,
     bubbleRadiusPc,
+    windCavityPc,
     kind:
       maxTeff < LUMINOUS_TEFF
         ? 'dark'

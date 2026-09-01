@@ -21,6 +21,8 @@ import {
   SCATTER_MAX_STEPS,
   SCATTER_STEP_FACTOR,
   SHELL_WIDTH,
+  WIND_CAVITY_RESIDUAL,
+  WIND_WALL_BOOST,
   finishNebulaBake,
   nebulaMarchScales,
   planNebulaBake,
@@ -163,6 +165,8 @@ uniform float uDustScale;
 uniform float uFluxScale;
 uniform vec3 uScatterSourcePc;
 uniform float uScatterOn;
+uniform float uWindCavityPc;
+uniform float uWindWallPc;
 out vec4 outCell;
 
 float fieldAt(vec3 posPc) {
@@ -223,6 +227,13 @@ void main() {
   float carveHere = inBubble
     ? fieldAt(uIonizePc + dir * (dist / uGrowth)) * uDilution
     : texelFetch(uField, cell, 0).r * (inShell ? uShellBoost : 1.0);
+  // The wind's re-plumbing, mirroring the CPU march: an optically
+  // empty cavity, its swept wall carrying the ploughed-out mass.
+  if (inBubble) {
+    carveHere *= dist < uWindCavityPc
+      ? ${f(WIND_CAVITY_RESIDUAL)}
+      : (dist <= uWindWallPc ? ${f(WIND_WALL_BOOST)} : 1.0);
+  }
   float n = carveHere * uGasScale;
   float uParam = uBudgetOn > 0.5 && n > 0.0
     ? uFluxScale * transmittance / (dist * dist * n)
@@ -380,6 +391,8 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.uniform1f(at(marchProgram, 'uFluxScale'), scales.fluxScale);
     gl.uniform3fv(at(marchProgram, 'uScatterSourcePc'), plan.scatterSourcePc);
     gl.uniform1f(at(marchProgram, 'uScatterOn'), plan.scatterLuminositySolar > 0 ? 1 : 0);
+    gl.uniform1f(at(marchProgram, 'uWindCavityPc'), plan.windCavityPc);
+    gl.uniform1f(at(marchProgram, 'uWindWallPc'), plan.windWallPc);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlasTexture, 0);
     // One draw for the whole atlas. Slicing it per layer with a flush
     // between — yield points for the frame renderer sharing this GPU —

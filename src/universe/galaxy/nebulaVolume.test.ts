@@ -91,12 +91,62 @@ describe('the region at its age', () => {
       }
       return total * (2 * bake.halfExtentsPc[0]) ** 3;
     };
+    // Wind off on both sides: the invariant here is the Spitzer
+    // dilution, and the cavity is a separate mechanism that
+    // deliberately moves emission measure into its wall (its own test
+    // pins that ring) — frozen at the natal radius the evolved cavity
+    // would swallow the whole bubble and measure nothing.
     const natal = measureOf(
-      bakeNebulaVolume(grown.cloud, { ...grown, bubbleRadiusPc: grown.stromgrenRadiusPc }, size, boxPc),
+      bakeNebulaVolume(
+        grown.cloud,
+        { ...grown, bubbleRadiusPc: grown.stromgrenRadiusPc, windCavityPc: 0 },
+        size,
+        boxPc,
+      ),
     );
-    const evolved = measureOf(bakeNebulaVolume(grown.cloud, grown, size, boxPc));
+    const evolved = measureOf(
+      bakeNebulaVolume(grown.cloud, { ...grown, windCavityPc: 0 }, size, boxPc),
+    );
     expect(evolved).toBeGreaterThan(natal * 0.2);
     expect(evolved).toBeLessThan(natal * 5);
+  });
+
+  it('is hollowed by its star wind into a ring, not a filled disc', () => {
+    // Real evolved regions are limb-brightened shells — the wind
+    // evacuates the interior and piles it into a photoionized wall,
+    // which is where the n² emission concentrates. The bake's cavity
+    // must be dark against its own wall.
+    const nebula = brightestNebula();
+    expect(nebula.windCavityPc).toBeGreaterThan(0);
+    const size = 32;
+    const bake = bakeNebulaVolume(nebula.cloud, nebula, size);
+    const half = bake.halfExtentsPc[0];
+    const cellPc = (2 * half) / size;
+    let cavitySum = 0;
+    let cavityCells = 0;
+    let wallSum = 0;
+    let wallCells = 0;
+    for (let k = 0; k < size; k++) {
+      for (let j = 0; j < size; j++) {
+        for (let i = 0; i < size; i++) {
+          const x = -half + (i + 0.5) * cellPc;
+          const y = -half + (j + 0.5) * cellPc;
+          const z = -half + (k + 0.5) * cellPc;
+          const r = Math.hypot(x, y, z);
+          const g = bake.data[((k * size + j) * size + i) * 4 + 1];
+          if (r < nebula.windCavityPc * 0.6) {
+            cavitySum += g;
+            cavityCells++;
+          } else if (r >= nebula.windCavityPc && r <= nebula.windCavityPc * 1.15) {
+            wallSum += g;
+            wallCells++;
+          }
+        }
+      }
+    }
+    expect(cavityCells).toBeGreaterThan(0);
+    expect(wallCells).toBeGreaterThan(0);
+    expect(wallSum / wallCells).toBeGreaterThan(5 * (cavitySum / Math.max(1, cavityCells)));
   });
 
   it('still carries the bubble at its own scale when one is warranted', () => {

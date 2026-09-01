@@ -61,3 +61,44 @@ export function spitzerRadiusPc(stromgrenPc: number, ageMyr: number): number {
   const driven = (7 * IONIZED_SOUND_SPEED_PC_PER_MYR * ageMyr) / (4 * stromgrenPc);
   return stromgrenPc * (1 + driven) ** (4 / 7);
 }
+
+/** Share of the star's radiative momentum its line-driven wind carries
+ *  (Ṁv∞ ≈ η L/c): about a third for an O star, collapsing through the
+ *  weak-wind regime below ~30 kK — line driving needs the UV. */
+function windMomentumShare(tEff: number): number {
+  return 0.3 * Math.max(0, Math.min(1, (tEff - 18000) / 12000));
+}
+
+/** g cm⁻³ per hydrogen nucleus per cm³, helium included. */
+const GRAMS_PER_HYDROGEN = 1.4 * 1.6726e-24;
+const ERG_PER_SOLAR_LUMINOSITY = 3.828e33;
+const CM_PER_S_LIGHT = 2.998e10;
+const SECONDS_PER_MYR = 3.156e13;
+const CM_PER_PC = PARSEC * 100;
+
+/**
+ * The wind-blown cavity inside the region at its age, pc.
+ *
+ * The star's wind sweeps the ionized interior into a shell around a
+ * near-empty bubble — which is why an evolved H II region is a ring in
+ * Hα, not a filled disc. Weaver's energy-driven solution famously
+ * overruns what is observed (the bubbles leak); the momentum snowplow
+ * is the leaky limit and lands where the surveys put cavities:
+ * momentum ṗ t swept into a shell of the interior density gives
+ * R = (3 ṗ t² / 2π ρ)^¼, with ṗ = η L / c.
+ */
+export function windCavityRadiusPc(
+  luminositySolar: number,
+  tEff: number,
+  ageMyr: number,
+  hydrogenDensity: number,
+): number {
+  const share = windMomentumShare(tEff);
+  if (share <= 0 || luminositySolar <= 0 || ageMyr <= 0 || hydrogenDensity <= 0) return 0;
+  const momentumFlux = (share * luminositySolar * ERG_PER_SOLAR_LUMINOSITY) / CM_PER_S_LIGHT;
+  const seconds = ageMyr * SECONDS_PER_MYR;
+  const density = hydrogenDensity * GRAMS_PER_HYDROGEN;
+  const radiusCm =
+    ((3 * momentumFlux * seconds * seconds) / (2 * Math.PI * density)) ** 0.25;
+  return radiusCm / CM_PER_PC;
+}
