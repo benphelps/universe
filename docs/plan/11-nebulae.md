@@ -169,9 +169,15 @@ Rough priority order. The residency dials live at the top of
   layer by layer into an R16F 3D texture (dimensionless, so half floats never
   overflow — the per-cloud scale rides in a uniform), one march pass over a 2D
   atlas, one float readback into the same `finishNebulaBake` the CPU path uses.
-  Measured on the brightest home-region H II region: 96³ bakes run 40–80 ms
-  against 2.2–4.1 s on the CPU (~50×), with the first bake at ~120 ms including
-  worker boot and shader link. Agreement with the CPU march: dark clouds
+  Measured on the brightest home-region H II region with the tab visible: 96³
+  bakes run 60–180 ms against 2.2–4.1 s on the CPU (~20–50×), the first ~1 s
+  including worker boot and shader link. In a hidden tab Chrome deprioritizes
+  the worker context's GPU submissions and a bake stretches to ~2.5 s — still
+  no worse than the CPU it replaced. A per-layer march with flushes between
+  (yield points for the frame renderer) measured 30× slower and was reverted;
+  if arrivals ever hitch from bake-vs-frame GPU contention, that is the knob
+  that did not work, and splitting the readback or spacing whole bakes is the
+  next thing to try. Agreement with the CPU march: dark clouds
   bit-identical; refs and emission coefficient within 0.1%; ~50 cells in 262k
   differ visibly, all one-step front flips where fp32 and fp64 disagree on the
   exact step the budget runs out. The CPU walk in `nebulaVolume.ts` stays the

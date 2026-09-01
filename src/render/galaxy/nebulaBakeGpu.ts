@@ -381,6 +381,10 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.uniform3fv(at(marchProgram, 'uScatterSourcePc'), plan.scatterSourcePc);
     gl.uniform1f(at(marchProgram, 'uScatterOn'), plan.scatterLuminositySolar > 0 ? 1 : 0);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlasTexture, 0);
+    // One draw for the whole atlas. Slicing it per layer with a flush
+    // between — yield points for the frame renderer sharing this GPU —
+    // was measured at thirty times the cost: each flush is a command
+    // buffer submission, and a worker context's submissions wait.
     gl.viewport(0, 0, cols * size, rows * size);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
