@@ -64,7 +64,6 @@ uniform float uFineEmissionCoefficient;
 uniform vec3 uScatterSourcePc;
 uniform float uScatterLum;
 uniform float uScatterFloorPc2;
-uniform float uFineScatterFloorPc2;
 uniform float uOpacity;
 
 /** Interleaved gradient noise: one cheap dither per pixel, so the
@@ -96,7 +95,6 @@ void main() {
     float dust = cell.r * uDustRef;
     float ionized = cell.g * uDensityRef;
     float coefficient = uEmissionCoefficient;
-    float scatterFloor = uScatterFloorPc2;
 
     // A cloud is a hundred parsecs and the bubble its newborns blow is
     // a few: one grid cannot hold both, and a grid that holds the cloud
@@ -112,7 +110,6 @@ void main() {
         cell.b = fine.b;
         cell.a = fine.a;
         coefficient = uFineEmissionCoefficient;
-        scatterFloor = uFineScatterFloorPc2;
       }
     }
 
@@ -125,7 +122,7 @@ void main() {
     // (cell.a), scattered by this cell's dust. The floor keeps the
     // source's own cell finite rather than singular.
     vec3 shine = p - uScatterSourcePc;
-    float r2 = max(dot(shine, shine), scatterFloor);
+    float r2 = max(dot(shine, shine), uScatterFloorPc2);
     // Henyey–Greenstein phase, forward-peaked the way grains actually
     // throw light: dust between camera and star glows, dust lit from
     // the camera's side stays matte. Single scattering only, until the
@@ -211,10 +208,7 @@ export class NebulaVolume {
         uScatterLum: {
           value: bake.scatterLuminositySolar * SCATTER_EMISSIVITY_PER_LSUN * NEBULA_PIXEL_SCALE,
         },
-        uScatterFloorPc2: { value: (bake.halfExtentsPc[0] / bake.size) ** 2 },
-        uFineScatterFloorPc2: {
-          value: fine ? (fine.halfExtentsPc[0] / fine.size) ** 2 : 1,
-        },
+        uScatterFloorPc2: { value: bake.scatterFloorPc2 },
         uOpacity: { value: 1 },
         uFine: { value: this.fineTexture },
         uFineOffsetPc: {
@@ -322,19 +316,15 @@ function emptyVolume(): Data3DTexture {
 /**
  * What a solar luminosity per square parsec per steradian comes to on
  * screen. The nebula's own brightness is settled in the bake — its
- * star's ionizing budget fixes the line luminosity and the gas divides
- * it by n² — so this is the one conversion left, shared by every
- * nebula: the renderer's photometric zero point for surface
- * brightness, the counterpart of the one the star sprites carry.
- *
- * Calibrated against the sky's own sprites, which are the approved
- * look: the same cloud rendered both ways at the same distance matches
- * to within the tone map, so a nebula keeps its brightness when the
- * backdrop hands it off to the volume instead of stepping down by an
- * order of magnitude. The plan's sprite/volume agreement test is the
- * finer version of this number, cloud by cloud.
+ * star's ionizing budget fixes the line luminosity, the group's light
+ * feeds the scatter, and the gas divides them out — so this is the one
+ * conversion left, shared by every nebula: the renderer's photometric
+ * zero point for surface brightness, the counterpart of the one the
+ * star sprites carry. Order unity by that kinship — the scattered
+ * light is the same starlight the sprites map — held provisionally
+ * until the photometric systems are unified outright.
  */
-const NEBULA_PIXEL_SCALE = 7.5;
+const NEBULA_PIXEL_SCALE = 1.0;
 /** Optical albedo of interstellar dust (Draine): the share of what
  *  falls on a grain that leaves it again as scattered light. */
 const DUST_ALBEDO = 0.6;

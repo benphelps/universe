@@ -38,3 +38,26 @@ export function stromgrenRadiusPc(photonRate: number, hydrogenDensity: number): 
     ((3 * photonRate) / (4 * Math.PI * ALPHA_B * hydrogenDensity * hydrogenDensity)) ** (1 / 3);
   return radiusCm / (PARSEC * 100);
 }
+
+/** Sound speed of 10⁴ K ionized gas, the piston of the expansion:
+ *  ~10 km/s, in the pc/Myr this file thinks in. */
+const IONIZED_SOUND_SPEED_PC_PER_MYR = 10.2;
+
+/**
+ * The region's radius at its age, pc: Spitzer's D-type expansion.
+ *
+ * A front does not sit at its natal Strömgren radius — the ionized gas
+ * is ten thousand kelvin against a cold cloud, overpressured by orders
+ * of magnitude, and it shovels the neutral gas outward behind a shock:
+ * R(t) = R_s (1 + 7 c_i t / 4 R_s)^{4/7}. The interior dilutes as it
+ * grows — ionization balance holds n ∝ R^{-3/2}, so the same photon
+ * budget fills the whole expanded volume exactly — which is why an
+ * evolved region is a great glowing shell and not a pinprick. Winds
+ * and supernovae push harder still past a few Myr; this is the floor.
+ */
+export function spitzerRadiusPc(stromgrenPc: number, ageMyr: number): number {
+  if (stromgrenPc <= 0) return 0;
+  if (ageMyr <= 0) return stromgrenPc;
+  const driven = (7 * IONIZED_SOUND_SPEED_PC_PER_MYR * ageMyr) / (4 * stromgrenPc);
+  return stromgrenPc * (1 + driven) ** (4 / 7);
+}

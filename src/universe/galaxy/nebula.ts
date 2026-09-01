@@ -1,8 +1,11 @@
+import { SOLAR_LUMINOSITY } from '../../core/physics/constants';
 import { powerLaw } from '../../core/rng/distributions';
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { evolve } from '../star/evolution';
 import { ionizingPhotonRate } from '../star/ionizing';
+import { hydrogenBetaLuminosity } from './ionization';
+import { nebulaLineSum } from './nebulaLines';
 import {
   cloudHalfExtentsPc,
   cloudLocalDensity,
@@ -11,7 +14,64 @@ import {
 } from './clouds';
 import type { GalacticPosition } from './density';
 import { cloudHydrogenDensity } from './gas';
-import { stromgrenRadiusPc } from './ionization';
+import { spitzerRadiusPc, stromgrenRadiusPc } from './ionization';
+
+/** erg s⁻¹ per L☉ — the constants file carries watts. */
+const ERG_PER_SOLAR_LUMINOSITY = SOLAR_LUMINOSITY * 1e7;
+
+/** The star whose light the dust scatters: the ionizing star when one
+ *  stands, else the brightest of the natal group — every renderer's
+ *  single illuminant, so the sprite and the volume agree on it. */
+export function nebulaIlluminant(nebula: Nebula): NebulaMember | undefined {
+  return (
+    nebula.sources[0] ??
+    nebula.members.reduce(
+      (best, member) => (member.luminosity > (best?.luminosity ?? 0) ? member : best),
+      undefined as NebulaMember | undefined,
+    )
+  );
+}
+
+/** Where the group's spectrum sits on the line mixture's hardness
+ *  axis, by its hottest star: the whole-object proxy for the
+ *  ionization parameter the volume bake works out cell by cell. */
+export function nebulaSpectralHardness(maxTeff: number): number {
+  return Math.max(0, Math.min(1, (maxTeff - 28000) / 17000));
+}
+
+/** The group's total optical line output, L☉: its ionizing budget
+ *  answered in recombinations, carrying every line the mixture holds. */
+export function nebulaLineLuminositySolar(nebula: Nebula): number {
+  return (
+    (hydrogenBetaLuminosity(nebula.photonRate) *
+      nebulaLineSum(nebulaSpectralHardness(nebula.maxTeff))) /
+    ERG_PER_SOLAR_LUMINOSITY
+  );
+}
+
+/** Fraction of the dust the group's light gets caught by and sent back
+ *  out: optical albedo times an order-unity interception. */
+const SCATTERED_SHARE_OF_CONTINUUM = 0.3;
+
+/**
+ * How much of the light where the object glows is line emission rather
+ * than scattered continuum — what decides whether it reads pink or
+ * blue. The lines concentrate in the bubble while the scattered
+ * continuum spreads over the whole cloud, so the comparison is between
+ * surface brightnesses, not totals. A dozen B stars put out tens of
+ * thousands of solar luminosities of continuum against tens of line
+ * emission and stay a blue reflection complex; an O group's ionizing
+ * budget rivals its continuum and the pink takes over its bubble.
+ */
+export function nebulaEmissionShare(nebula: Nebula): number {
+  const lines = nebulaLineLuminositySolar(nebula);
+  const concentration = Math.min(
+    1,
+    (nebula.bubbleRadiusPc / Math.max(...nebula.halfExtentsPc)) ** 2,
+  );
+  const scattered = SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity * concentration;
+  return lines / (lines + scattered + 1e-12);
+}
 import { ismMetallicity } from './population';
 
 /**
@@ -70,6 +130,9 @@ export interface Nebula {
   sourceHydrogenDensity: number;
   /** The group's Strömgren radius in the core density, pc. */
   stromgrenRadiusPc: number;
+  /** The ionized region at the group's age, pc: the natal front driven
+   *  out by Spitzer expansion, bounded by the cloud that feeds it. */
+  bubbleRadiusPc: number;
   kind: NebulaKind;
   /** Half-extents of the density field, pc — the volume's bounds. */
   halfExtentsPc: [number, number, number];
@@ -188,6 +251,13 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
       ) / lighting.length
     : cloudHydrogenDensity(cloud, 0, 0, 0, metallicity);
   const stromgren = stromgrenRadiusPc(photonRate, sourceHydrogenDensity);
+  const halfExtentsPc = cloudHalfExtentsPc(cloud);
+  // An 11 Myr region is not its natal pinprick: the front has been
+  // driven out for its whole age. The cloud bounds what it can light.
+  const bubbleRadiusPc = Math.min(
+    spitzerRadiusPc(stromgren, ageGyr * 1000),
+    Math.max(...halfExtentsPc),
+  );
   return {
     cloud,
     ageGyr,
@@ -199,12 +269,13 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     metallicity,
     sourceHydrogenDensity,
     stromgrenRadiusPc: stromgren,
+    bubbleRadiusPc,
     kind:
       maxTeff < LUMINOUS_TEFF
         ? 'dark'
-        : stromgren > EMISSION_RADIUS_PC
+        : bubbleRadiusPc > EMISSION_RADIUS_PC
           ? 'emission'
           : 'reflection',
-    halfExtentsPc: cloudHalfExtentsPc(cloud),
+    halfExtentsPc,
   };
 }

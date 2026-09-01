@@ -6,7 +6,7 @@ import { DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity } from './ionization';
 import { ALPHA_B } from './ionization';
-import type { Nebula } from './nebula';
+import { nebulaIlluminant, type Nebula } from './nebula';
 import { ismMetallicity } from './population';
 import { nebulaEmissionColor, nebulaLineSum } from './nebulaLines';
 
@@ -70,6 +70,10 @@ export interface NebulaVolumeBake {
   /** What the group shines on the dust from there, L☉. Zero leaves
    *  the dust dark: a rift with no stars scatters nothing. */
   scatterLuminositySolar: number;
+  /** Floor on r², pc²: the group is not a point but a cluster spread
+   *  over parsecs, and inside that spread the flux flattens instead of
+   *  diverging on whichever cell holds the brightest member. */
+  scatterFloorPc2: number;
 }
 
 const CM_PER_PC = PARSEC * 100;
@@ -109,19 +113,31 @@ const BOX_STROMGREN_RADII = 4;
 /** Even an unlit cocoon gets a body worth looking at. */
 const BOX_MIN_PC = 5;
 /**
- * How far past the uniform-density Strömgren radius the front can
- * possibly reach. Density only rises toward the source, so a ray runs
- * furthest down the thinnest channel it can find — measured at three
- * to four times, and a cell beyond this bound is neutral without
- * needing the march to say so. At cloud scale that is nearly every
- * cell, and it is what keeps a box a hundred parsecs across affordable.
+ * How far past the evolved bubble radius the front can possibly reach.
+ * Density only rises toward the source, so a ray runs furthest down
+ * the thinnest channel it can find — measured at three to four times
+ * the mean front, so five bounds it with margin — and a cell beyond
+ * this is neutral without needing the march to say so, which is what
+ * keeps a box a hundred parsecs across affordable.
  */
-const IONIZATION_REACH = 10;
+const IONIZATION_REACH = 5;
+/** Fraction of the front radius the swept shell spans. */
+const SHELL_WIDTH = 0.12;
+/** Peak overdensity of a fully swept shell: the mass the expansion
+ *  cleared from the bubble, spread over that width — R/(3ΔR) of it. */
+const SHELL_COMPRESSION = 3;
 
 /** How much thinner in dust an ionized region is than the neutral gas
  *  around it. Models and infrared observations of H II regions put this
  *  at a few, not the near-total removal a clean cavity would imply. */
 const DUST_DEPLETION = 5;
+
+/** Whether the bubble deserves a bake of its own, or the cloud-scale
+ *  grid already resolves it: the two-scale split exists for compact
+ *  regions, and an evolved bubble tens of parsecs across is not one. */
+export function bubbleNeedsOwnBake(nebula: Nebula, reachPc: number): boolean {
+  return nebula.photonRate > 0 && BOX_STROMGREN_RADII * nebula.bubbleRadiusPc < reachPc * 0.75;
+}
 
 /**
  * Bake a nebula's volume. `boxPc` chooses the scale: left out, the box
@@ -140,20 +156,29 @@ export function bakeNebulaVolume(
   // centred on itself. Centring a cloud-scale box on the star would
   // shift the box off the body by however far into the cloud the star
   // happens to have formed — tens of parsecs — and clip the far side.
-  const source = boxRequestPc === undefined ? nebula?.sources[0] : undefined;
-  const originPc: [number, number, number] = source
-    ? [source.dxPc, source.dyPc, source.dzPc]
+  // Either way the budget is spent from the star: an evolved bubble is
+  // tens of parsecs and the cloud-scale grid resolves it, so the cloud
+  // bake ionizes too.
+  const source = nebula?.sources[0];
+  const originPc: [number, number, number] =
+    boxRequestPc === undefined && source ? [source.dxPc, source.dyPc, source.dzPc] : [0, 0, 0];
+  /** Where the ionizing budget radiates from, box frame, pc. */
+  const ionizePc: [number, number, number] = source
+    ? [source.dxPc - originPc[0], source.dyPc - originPc[1], source.dzPc - originPc[2]]
     : [0, 0, 0];
-  // What lights the dust: the ionizing star where one stands, else the
-  // brightest of the natal group — a reflection nebula's illuminator.
-  // The whole group's light is assigned to it; the members huddle at
-  // the same clumps, and one origin is what a single shadow ray serves.
-  const scatterStar =
-    nebula?.sources[0] ??
-    nebula?.members.reduce(
-      (best, member) => (member.luminosity > (best?.luminosity ?? 0) ? member : best),
-      undefined as Nebula['members'][number] | undefined,
-    );
+  // Spitzer growth: the front at the group's age is the natal front
+  // scaled by this factor, its interior diluted by growth^{-3/2} —
+  // which conserves the recombination budget exactly (n²V invariant),
+  // so the natal march read in contracted coordinates IS the evolved
+  // region.
+  const stromgren = nebula?.stromgrenRadiusPc ?? 0;
+  const growth =
+    stromgren > 0 ? Math.max(1, (nebula?.bubbleRadiusPc ?? stromgren) / stromgren) : 1;
+  const dilution = growth ** -1.5;
+  // What lights the dust. The whole group's light is assigned to one
+  // star; the members huddle at the same clumps, and one origin is
+  // what a single shadow ray serves.
+  const scatterStar = nebula ? nebulaIlluminant(nebula) : undefined;
   const scatterSourcePc: [number, number, number] = scatterStar
     ? [
         scatterStar.dxPc - originPc[0],
@@ -165,7 +190,7 @@ export function bakeNebulaVolume(
   const reach = Math.max(...cloudHalfExtentsPc(cloud));
   const boxPc = Math.min(
     reach,
-    boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * (nebula?.stromgrenRadiusPc ?? 0)),
+    boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * (nebula?.bubbleRadiusPc ?? 0)),
   );
   const halfExtentsPc: [number, number, number] = [boxPc, boxPc, boxPc];
   const cellPc: [number, number, number] = [
@@ -182,8 +207,6 @@ export function bakeNebulaVolume(
   const cells = size * size * size;
   const dust = new Float32Array(cells);
   const gas = new Float32Array(cells);
-  let dustRef = 1e-6;
-  let densityRef = 1e-6;
   for (let k = 0; k < size; k++) {
     const z = inCloud(at(k, 2), 2);
     for (let j = 0; j < size; j++) {
@@ -192,10 +215,7 @@ export function bakeNebulaVolume(
         const value = cloudFineDustDensity(cloud, inCloud(at(i, 0), 0), y, z);
         const index = (k * size + j) * size + i;
         dust[index] = value;
-        const n = hydrogenDensity(value, metallicity);
-        gas[index] = n;
-        if (value > dustRef) dustRef = value;
-        if (n > densityRef) densityRef = n;
+        gas[index] = hydrogenDensity(value, metallicity);
       }
     }
   }
@@ -205,9 +225,20 @@ export function bakeNebulaVolume(
   // out along that ray, so a clump shadows everything behind it.
   const budget = (source?.photonRate ?? 0) / (4 * Math.PI);
   const stepPc = Math.min(cellPc[0], cellPc[1], cellPc[2]) * 0.9;
+  // How much a swept shell actually piles up: nothing when the region
+  // has barely left its natal radius, the full compression once the
+  // interior mass is gone.
+  const shellBoost = 1 + (SHELL_COMPRESSION - 1) * (1 - dilution);
 
   const data = new Uint8Array(cells * 4);
   const cellVolumePc3 = cellPc[0] * cellPc[1] * cellPc[2];
+  // Quantized in a second pass: the references must be the maxima of
+  // what is actually stored — normalizing the diluted interior by the
+  // natal peak would crush the emission into a few byte levels.
+  const outDust = new Float32Array(cells);
+  const outIonized = new Float32Array(cells);
+  const outHardness = new Float32Array(cells);
+  const outTransmittance = new Float32Array(cells);
   let emissionMeasure = 0;
   let hardnessWeighted = 0;
   for (let k = 0; k < size; k++) {
@@ -217,15 +248,15 @@ export function bakeNebulaVolume(
       for (let i = 0; i < size; i++) {
         const x = at(i, 0);
         const index = (k * size + j) * size + i;
-        const dx = x;
-        const dy = y;
-        const dz = z;
+        const dx = x - ionizePc[0];
+        const dy = y - ionizePc[1];
+        const dz = z - ionizePc[2];
         const distancePc = Math.hypot(dx, dy, dz) || 1e-4;
         // Past the front's furthest possible reach the gas is neutral
         // whatever the march would say, and saying so costs nothing.
         const reachable =
           budget > 0 &&
-          distancePc < IONIZATION_REACH * Math.max(nebula?.stromgrenRadiusPc ?? 0, 0.05);
+          distancePc < IONIZATION_REACH * Math.max(nebula?.bubbleRadiusPc ?? 0, 0.05);
         const steps = reachable ? Math.max(1, Math.ceil(distancePc / stepPc)) : 0;
         const ds = distancePc / steps;
         const ux = dx / distancePc;
@@ -234,18 +265,34 @@ export function bakeNebulaVolume(
 
         let recombined = 0;
         let tau = 0;
+        let frontR = -1;
         if (reachable) {
-          // Inside the front's possible reach both integrals want the
-          // same fine steps, so they share one walk.
+          // One walk in the evolved region's own space. While the
+          // budget lasts, the gas here is the natal field read at
+          // contracted radius r/growth and diluted — the Spitzer
+          // interior — so the budget integral in those coordinates is
+          // exactly the natal one. Where it runs out the front stands,
+          // the swept shell just past it, the untouched cloud beyond.
           for (let s = 0; s < steps; s++) {
             const r = (s + 0.5) * ds;
-            const px = (ux * r + boxPc) / cellPc[0] - 0.5;
-            const py = (uy * r + boxPc) / cellPc[1] - 0.5;
-            const pz = (uz * r + boxPc) / cellPc[2] - 0.5;
-            const n = sample(gas, size, px, py, pz);
-            // Recombinations in this shell of the ray's own solid angle.
-            recombined += n * n * RECOMBINATION_SCALE * r * r * ds;
-            tau += sample(dust, size, px, py, pz) * DUST_OPACITY_PER_PC * ds;
+            if (frontR < 0) {
+              const rn = r / growth;
+              const px = (ionizePc[0] + ux * rn + boxPc) / cellPc[0] - 0.5;
+              const py = (ionizePc[1] + uy * rn + boxPc) / cellPc[1] - 0.5;
+              const pz = (ionizePc[2] + uz * rn + boxPc) / cellPc[2] - 0.5;
+              const n = sample(gas, size, px, py, pz);
+              // Recombinations in this shell of the ray's own solid
+              // angle, in natal coordinates: dr' = dr / growth.
+              recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
+              if (recombined >= budget) frontR = r;
+              tau += sample(dust, size, px, py, pz) * dilution * DUST_OPACITY_PER_PC * ds;
+            } else {
+              const swept = r <= frontR * (1 + SHELL_WIDTH) ? shellBoost : 1;
+              const px = (ionizePc[0] + ux * r + boxPc) / cellPc[0] - 0.5;
+              const py = (ionizePc[1] + uy * r + boxPc) / cellPc[1] - 0.5;
+              const pz = (ionizePc[2] + uz * r + boxPc) / cellPc[2] - 0.5;
+              tau += sample(dust, size, px, py, pz) * swept * DUST_OPACITY_PER_PC * ds;
+            }
           }
         } else if (scatterLuminositySolar > 0) {
           // Beyond it only the dust column is wanted — what the star's
@@ -278,7 +325,21 @@ export function bakeNebulaVolume(
         const spent = budget > 0 && reachable ? recombined / budget : Infinity;
         const ionized = Math.max(0, Math.min(1, (1 - spent) / 0.15));
         const transmittance = Math.exp(-tau);
-        const n = gas[index];
+        // The gas standing at this cell now: the diluted interior read
+        // from its natal position, the swept shell just past the
+        // front, or the cloud as it was.
+        const inBubble = reachable && frontR < 0;
+        const inShell = frontR >= 0 && distancePc <= frontR * (1 + SHELL_WIDTH);
+        const rn = distancePc / growth;
+        const n = inBubble
+          ? sample(
+              gas,
+              size,
+              (ionizePc[0] + ux * rn + boxPc) / cellPc[0] - 0.5,
+              (ionizePc[1] + uy * rn + boxPc) / cellPc[1] - 0.5,
+              (ionizePc[2] + uz * rn + boxPc) / cellPc[2] - 0.5,
+            ) * dilution
+          : gas[index] * (inShell ? shellBoost : 1);
         // Ionization parameter: ionizing flux over gas density, the
         // ratio that decides how far oxygen is taken.
         const flux = budget > 0 ? (budget * transmittance) / (distancePc * distancePc) : 0;
@@ -298,14 +359,40 @@ export function bakeNebulaVolume(
         // put H II regions a few times thinner in dust, not twenty, and
         // the dust that remains is what makes them visible in the
         // infrared at all.
-        const out = index * 4;
-        const thinned = dust[index] / (1 + (DUST_DEPLETION - 1) * ionized);
-        data[out] = Math.round(255 * Math.min(1, thinned / dustRef));
-        data[out + 1] = Math.round(255 * Math.min(1, (n * ionized) / densityRef));
-        data[out + 2] = Math.round(255 * Math.min(1, Math.max(0, hardness)));
-        data[out + 3] = Math.round(255 * transmittance);
+        const cellDust = inBubble
+          ? sample(
+              dust,
+              size,
+              (ionizePc[0] + ux * rn + boxPc) / cellPc[0] - 0.5,
+              (ionizePc[1] + uy * rn + boxPc) / cellPc[1] - 0.5,
+              (ionizePc[2] + uz * rn + boxPc) / cellPc[2] - 0.5,
+            ) * dilution
+          : dust[index] * (inShell ? shellBoost : 1);
+        outDust[index] = cellDust / (1 + (DUST_DEPLETION - 1) * ionized);
+        outIonized[index] = ionizedDensity;
+        outHardness[index] = Math.min(1, Math.max(0, hardness));
+        outTransmittance[index] = transmittance;
       }
     }
+  }
+
+  // Byte-quantize against what the grid actually holds: the diluted
+  // interior of a grown bubble is orders of magnitude below the natal
+  // clump peaks, and a reference taken from those would leave the
+  // emission — the thing the eye looks at, squared — a handful of
+  // levels deep.
+  let dustRef = 1e-6;
+  let densityRef = 1e-6;
+  for (let index = 0; index < cells; index++) {
+    if (outDust[index] > dustRef) dustRef = outDust[index];
+    if (outIonized[index] > densityRef) densityRef = outIonized[index];
+  }
+  for (let index = 0; index < cells; index++) {
+    const out = index * 4;
+    data[out] = Math.round(255 * Math.min(1, outDust[index] / dustRef));
+    data[out + 1] = Math.round(255 * Math.min(1, outIonized[index] / densityRef));
+    data[out + 2] = Math.round(255 * outHardness[index]);
+    data[out + 3] = Math.round(255 * outTransmittance[index]);
   }
 
   // The budget closes here: the star's ionizing output fixes the Hβ
@@ -337,5 +424,7 @@ export function bakeNebulaVolume(
     reflectionColor: blackbodyLinearRgb(Math.max(3000, scatterStar?.tEff ?? 4000)),
     scatterSourcePc,
     scatterLuminositySolar,
+    // The same spread the members were drawn with, squared.
+    scatterFloorPc2: Math.max(cellPc[0] ** 2, (0.35 * cloud.radiusPc) ** 2),
   };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cloudReachPc, cloudsNear } from './clouds';
 import { HOME_POSITION } from './density';
-import { hydrogenBetaLuminosity } from './ionization';
+import { hydrogenBetaLuminosity, spitzerRadiusPc } from './ionization';
 import { nebulaFor, type Nebula } from './nebula';
 import { nebulaEmissionColor } from './nebulaLines';
 import { bakeNebulaVolume } from './nebulaVolume';
@@ -40,24 +40,68 @@ describe('nebular colour', () => {
   });
 });
 
-describe('the two scales a cloud needs', () => {
-  const nebula = brightestNebula();
-  const size = 32;
+describe('the region at its age', () => {
+  it('expands from its natal radius by the Spitzer solution', () => {
+    expect(spitzerRadiusPc(0.73, 0)).toBeCloseTo(0.73, 6);
+    expect(spitzerRadiusPc(0.73, 5)).toBeGreaterThan(spitzerRadiusPc(0.73, 2));
+    // The Suoriloth case that exposed this: a 0.73 pc natal front at
+    // 11 Myr is a region of tens of parsecs, not a pinprick.
+    const evolved = spitzerRadiusPc(0.73, 11);
+    expect(evolved).toBeGreaterThan(14);
+    expect(evolved).toBeLessThan(22);
+  });
 
-  it('loses the ionized region entirely at cloud scale', () => {
-    // Not a defect but the reason the fine volume exists, pinned so it
-    // cannot be quietly dropped: a box that holds the cloud has cells
-    // several parsecs wide, and an H II region a parsec or two across
-    // falls between them. A renderer given only this volume draws a
-    // dark cloud where there is a bright nebula.
+  it('is visible at cloud scale, where its sprite promised it', () => {
+    // The seam this closes: the sky's impostor painted an emission
+    // complex, and the volume that stood in for it carried the region
+    // at its natal radius — under one cell, invisible. The evolved
+    // front is what the cloud-scale grid resolves.
+    const nebula = brightestNebula();
+    const size = 32;
     const cloudScale = bakeNebulaVolume(nebula.cloud, nebula, size, cloudReachPc(nebula.cloud));
     let ionized = 0;
     for (let i = 0; i < size ** 3; i++) if (cloudScale.data[i * 4 + 1] > 8) ionized++;
-    expect(cloudScale.halfExtentsPc[0]).toBeGreaterThan(nebula.stromgrenRadiusPc * 10);
-    expect(ionized).toBe(0);
+    expect(nebula.bubbleRadiusPc).toBeGreaterThan(nebula.stromgrenRadiusPc);
+    expect(ionized).toBeGreaterThan(50);
+    expect(cloudScale.emissionCoefficient).toBeGreaterThan(0);
   });
 
-  it('carries it at the bubble scale the same cloud also bakes', () => {
+  it('conserves the recombination budget through the growth', () => {
+    // Spitzer dilution is n ∝ R^{-3/2}, so n²V is invariant: the grown
+    // region holds the same emission measure the natal one did. Baked
+    // both ways — the same nebula frozen at its natal radius, and at
+    // its age — the totals must agree up to the grid.
+    const grown = cloudsNear(HOME_POSITION, 900)
+      .map((cloud) => nebulaFor(cloud))
+      .filter(
+        (nebula): nebula is Nebula =>
+          nebula !== null &&
+          nebula.photonRate > 0 &&
+          nebula.bubbleRadiusPc < 0.5 * Math.max(...nebula.halfExtentsPc),
+      )
+      .sort((a, b) => b.photonRate - a.photonRate)[0];
+    expect(grown).toBeDefined();
+    const size = 32;
+    const boxPc = cloudReachPc(grown.cloud);
+    const measureOf = (bake: ReturnType<typeof bakeNebulaVolume>): number => {
+      let total = 0;
+      for (let i = 0; i < size ** 3; i++) {
+        const n = (bake.data[i * 4 + 1] / 255) * bake.densityRef;
+        total += n * n;
+      }
+      return total * (2 * bake.halfExtentsPc[0]) ** 3;
+    };
+    const natal = measureOf(
+      bakeNebulaVolume(grown.cloud, { ...grown, bubbleRadiusPc: grown.stromgrenRadiusPc }, size, boxPc),
+    );
+    const evolved = measureOf(bakeNebulaVolume(grown.cloud, grown, size, boxPc));
+    expect(evolved).toBeGreaterThan(natal * 0.2);
+    expect(evolved).toBeLessThan(natal * 5);
+  });
+
+  it('still carries the bubble at its own scale when one is warranted', () => {
+    const nebula = brightestNebula();
+    const size = 32;
     const bubble = bakeNebulaVolume(nebula.cloud, nebula, size);
     let ionized = 0;
     for (let i = 0; i < size ** 3; i++) if (bubble.data[i * 4 + 1] > 8) ionized++;
@@ -115,13 +159,13 @@ describe('the volume bake', () => {
   });
 
   it('is sized to the ionized region rather than to the cloud', () => {
-    // A giant molecular cloud is a hundred parsecs across and the
-    // bubble its newborns blow is a few. Gridding the cloud puts the
-    // whole nebula inside a single cell.
-    expect(bake.halfExtentsPc[0]).toBeLessThan(Math.max(...nebula.halfExtentsPc));
+    // The box follows the region at its age: the bubble and its walls,
+    // never wider than the cloud that bounds it, with cells fine
+    // enough that the front has somewhere to stand.
+    expect(bake.halfExtentsPc[0]).toBeLessThanOrEqual(Math.max(...nebula.halfExtentsPc));
     expect(bake.halfExtentsPc[0]).toBeGreaterThan(nebula.stromgrenRadiusPc);
     const cellPc = (2 * bake.halfExtentsPc[0]) / size;
-    expect(nebula.stromgrenRadiusPc / cellPc).toBeGreaterThan(2);
+    expect(nebula.bubbleRadiusPc / cellPc).toBeGreaterThan(2);
   });
 
   it('leaves both ionized gas and neutral gas', () => {
@@ -135,8 +179,10 @@ describe('the volume bake', () => {
     }
     expect(ionized).toBeGreaterThan(0);
     // If the front swallowed the box there would be nothing left to
-    // shadow with, and no dark structure anywhere in the picture.
-    expect(neutral).toBeGreaterThan(ionized * 0.2);
+    // shadow with, and no dark structure anywhere in the picture. An
+    // evolved region has eaten deeper into its cloud than a natal one,
+    // but the walls that survive are what carve the picture.
+    expect(neutral).toBeGreaterThan(ionized * 0.1);
   });
 
   it('breaks the front against the gas instead of blowing a sphere', () => {

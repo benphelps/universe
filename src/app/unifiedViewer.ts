@@ -93,7 +93,7 @@ import { markAsDiagram } from '../render/fx/diagramLayer';
 import { requestNebulaVolume, resetNebulaBakes } from './nebulaService';
 import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
-import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
+import { bubbleNeedsOwnBake, type NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
 import { NebulaVolume } from '../render/galaxy/nebulaVolume';
 import { NuclearCluster } from '../render/galaxy/nuclearCluster';
 import { SectorChart } from '../render/galaxy/sectorChart';
@@ -1469,7 +1469,7 @@ export class UnifiedViewer {
     const seed = cloud.seed;
     const stale = (): boolean => this.disposed || this.viewpointPc !== viewpoint;
     const nebula = nebulaFor(cloud);
-    const lit = nebula !== null && nebula.photonRate > 0;
+    const lit = nebula !== null && bubbleNeedsOwnBake(nebula, cloudReachPc(cloud));
     const coarse = requestNebulaVolume(
       cloud,
       NEBULA_VOLUME_SIZE,
