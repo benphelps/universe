@@ -10,7 +10,8 @@ import {
   type GalacticLandmark,
 } from '../universe/galaxy/regions';
 import { cloudReachPc } from '../universe/galaxy/clouds';
-import { cloudMassSolar } from '../universe/galaxy/gas';
+import { cloudMassSolar, cloudMeanHydrogenDensity } from '../universe/galaxy/gas';
+import { ismMetallicity } from '../universe/galaxy/population';
 import type { NebulaKind } from '../universe/galaxy/nebula';
 import type { Asteroid } from '../universe/smallbody/types';
 import type { Planet, StarSystem } from '../universe/system/types';
@@ -80,9 +81,13 @@ export interface CloudSummary {
   name: string;
   kind: NebulaKind;
   radiusPc: number;
-  reachPc: number;
+  /** Longest span across the body, pc — twice its reach from centre. */
+  spanPc: number;
   massSolar: number;
-  hydrogenDensity: number;
+  /** Mean hydrogen density over the whole cloud, cm⁻³. */
+  meanDensity: number;
+  /** The denser gas the ionizing stars themselves sit in, cm⁻³. */
+  sourceDensity: number;
   ionizingStars: number;
   hottestTeff: number;
   stromgrenRadiusPc: number;
@@ -91,20 +96,23 @@ export interface CloudSummary {
 }
 
 function cloudSummary(): CloudSummary | null {
-  const nebula = viewer?.focusedCloud ?? null;
-  if (!nebula) return null;
+  const focused = viewer?.focusedCloud ?? null;
+  if (!focused) return null;
+  const { cloud, nebula } = focused;
+  const metallicity = nebula?.metallicity ?? ismMetallicity(cloud.positionPc);
   return {
-    name: sectorNameForSeed(nebula.cloud.seed),
-    kind: nebula.kind,
-    radiusPc: nebula.cloud.radiusPc,
-    reachPc: cloudReachPc(nebula.cloud),
-    massSolar: cloudMassSolar(nebula.cloud, nebula.metallicity, 12),
-    hydrogenDensity: nebula.sourceHydrogenDensity,
-    ionizingStars: nebula.sources.length,
-    hottestTeff: nebula.maxTeff,
-    stromgrenRadiusPc: nebula.stromgrenRadiusPc,
-    ageMyr: nebula.ageGyr * 1000,
-    metallicity: nebula.metallicity,
+    name: sectorNameForSeed(cloud.seed),
+    kind: nebula?.kind ?? 'dark',
+    radiusPc: cloud.radiusPc,
+    spanPc: 2 * cloudReachPc(cloud),
+    massSolar: cloudMassSolar(cloud, metallicity, 12),
+    meanDensity: cloudMeanHydrogenDensity(cloud, metallicity),
+    sourceDensity: nebula?.sourceHydrogenDensity ?? 0,
+    ionizingStars: nebula?.sources.length ?? 0,
+    hottestTeff: nebula?.maxTeff ?? 0,
+    stromgrenRadiusPc: nebula?.stromgrenRadiusPc ?? 0,
+    ageMyr: (nebula?.ageGyr ?? 0) * 1000,
+    metallicity,
   };
 }
 

@@ -91,8 +91,8 @@ import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
 import { requestNebulaVolume } from './nebulaService';
-import { nebulaeNear, type Nebula } from '../universe/galaxy/nebula';
-import { cloudReachPc } from '../universe/galaxy/clouds';
+import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
+import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
 import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
 import { NebulaVolume } from '../render/galaxy/nebulaVolume';
 import { NuclearCluster } from '../render/galaxy/nuclearCluster';
@@ -209,6 +209,12 @@ function orbitDays(mu: Mu, planet: Planet): number {
 }
 
 export type FocusTarget = 'star' | 'cloud' | number | { planet: number; moon: number };
+
+/** A cloud as a subject: its body, and the group lighting it if any. */
+export interface FocusedCloud {
+  cloud: MolecularCloud;
+  nebula: Nebula | null;
+}
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 /** What a pick resolved to; main decides how to act on it. */
@@ -397,6 +403,9 @@ export class UnifiedViewer {
    *  sprite on the sky. The rest of the sky keeps its sprites. */
   private nebulaVolume: NebulaVolume | null = null;
   private volumeSuppressedSeed: bigint | null = null;
+  /** The cloud's own body, and its ionized region at its own scale. */
+  private coarseBake: NebulaVolumeBake | null = null;
+  private fineBake: NebulaVolumeBake | null = null;
   private galaxyParticles: GalaxyParticles | null = null;
   /** Set while the camera is at the galactic centre: no system at all,
    *  the galaxy around it, and the hole traced at its own scale. */
@@ -771,7 +780,7 @@ export class UnifiedViewer {
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
   /** The cloud the camera is standing off, when one is the focus. */
-  private focusCloud: Nebula | null = null;
+  private focusCloud: FocusedCloud | null = null;
   private focusMoon: Moon | null = null;
   /** The parent planet hanging in a focused moon's sky. */
   private parentObject: PlanetObject | null = null;
@@ -1381,49 +1390,81 @@ export class UnifiedViewer {
    * the streaming pass.
    */
   private chooseNebulaVolume(viewpoint: GalacticPosition, orientation: Float32Array): void {
-    // Which nebula is worth a volume is a question about the screen,
-    // not about distance: cloud radii run from ten parsecs to sixty, so
-    // a great cloud well away can cover more of the sky than a small
-    // one nearby. Angular size decides, and it is also what decides how
-    // much of the cloud the box has to hold — stand off and the whole
-    // cloud is the picture, stand in it and the ionized bubble is.
-    const candidates = nebulaeNear(viewpoint, NEBULA_VOLUME_REACH_PC)
-      .map((nebula) => {
-        const dx = nebula.cloud.positionPc.xPc - viewpoint.xPc;
-        const dy = nebula.cloud.positionPc.yPc - viewpoint.yPc;
-        const dz = nebula.cloud.positionPc.zPc - viewpoint.zPc;
-        const distancePc = Math.max(1, Math.hypot(dx, dy, dz));
-        const reachPc = cloudReachPc(nebula.cloud);
-        return { nebula, distancePc, reachPc, angular: reachPc / distancePc };
-      })
-      .sort((a, b) => b.angular - a.angular);
-    const chosen = candidates[0];
-    if (!chosen) return;
-    // Close enough that the cloud itself is the subject: hold all of it.
-    const boxPc =
-      chosen.distancePc < NEBULA_CLOUD_SCALE_RADII * chosen.reachPc ? chosen.reachPc : undefined;
-    const bake = requestNebulaVolume(chosen.nebula, NEBULA_VOLUME_SIZE, boxPc, (ready) => {
-      if (this.disposed || this.viewpointPc !== viewpoint) return;
-      this.installNebulaVolume(ready, viewpoint, orientation);
-    });
-    if (bake) this.installNebulaVolume(bake, viewpoint, orientation);
+    // Which cloud is worth a volume is a question about the screen, not
+    // about distance: radii run from ten parsecs to sixty, so a great
+    // cloud well away can cover more of the sky than a small one
+    // nearby. Every cloud is a candidate, lit or not — the dark rifts
+    // are the same objects and they are bodies too.
+    let chosen: MolecularCloud | null = null;
+    let bestAngular = 0;
+    for (const cloud of cloudsNear(viewpoint, NEBULA_VOLUME_REACH_PC)) {
+      const dx = cloud.positionPc.xPc - viewpoint.xPc;
+      const dy = cloud.positionPc.yPc - viewpoint.yPc;
+      const dz = cloud.positionPc.zPc - viewpoint.zPc;
+      const angular = cloudReachPc(cloud) / Math.max(1, Math.hypot(dx, dy, dz));
+      if (angular <= bestAngular) continue;
+      bestAngular = angular;
+      chosen = cloud;
+    }
+    if (chosen) this.requestVolumeFor(chosen, viewpoint, orientation);
   }
 
-  private installNebulaVolume(
-    bake: NebulaVolumeBake,
+  /**
+   * The volume for one cloud, at both the scales it needs.
+   *
+   * A cloud is a hundred parsecs and the bubble its newborns blow is a
+   * few. One grid cannot hold both — a box around the cloud puts the
+   * whole ionized region inside a single cell, and the nebula
+   * disappears — so the cloud's dust is baked at cloud scale and the
+   * H II region again at its own, and the march reads whichever it is
+   * passing through.
+   */
+  private requestVolumeFor(
+    cloud: MolecularCloud,
     viewpoint: GalacticPosition,
     orientation: Float32Array,
   ): void {
+    const stale = (): boolean => this.disposed || this.viewpointPc !== viewpoint;
+    const nebula = nebulaFor(cloud);
+    const lit = nebula !== null && nebula.photonRate > 0;
+    const coarse = requestNebulaVolume(
+      cloud,
+      NEBULA_VOLUME_SIZE,
+      cloudReachPc(cloud),
+      (ready) => {
+        if (stale()) return;
+        this.coarseBake = ready;
+        this.installNebulaVolume(viewpoint, orientation);
+      },
+    );
+    if (coarse) this.coarseBake = coarse;
+    if (lit) {
+      const fine = requestNebulaVolume(cloud, NEBULA_VOLUME_SIZE, undefined, (ready) => {
+        if (stale()) return;
+        this.fineBake = ready;
+        this.installNebulaVolume(viewpoint, orientation);
+      });
+      this.fineBake = fine;
+    } else {
+      this.fineBake = null;
+    }
+    if (coarse) this.installNebulaVolume(viewpoint, orientation);
+  }
+
+  private installNebulaVolume(viewpoint: GalacticPosition, orientation: Float32Array): void {
+    const coarse = this.coarseBake;
+    if (!coarse) return;
     if (this.nebulaVolume) {
       this.scene.remove(this.nebulaVolume.mesh);
       this.nebulaVolume.dispose();
     }
-    this.nebulaVolume = new NebulaVolume(bake, viewpoint, orientation);
+    const fine = this.fineBake && this.fineBake.seed === coarse.seed ? this.fineBake : null;
+    this.nebulaVolume = new NebulaVolume(coarse, fine, viewpoint, orientation);
     this.scene.add(this.nebulaVolume.mesh);
     // The sprite stands for a volume that is now actually there. The
     // backdrop may not be up yet, so the seed is kept for it to read.
-    this.volumeSuppressedSeed = bake.seed;
-    this.backdrop?.suppressNebula(bake.seed);
+    this.volumeSuppressedSeed = coarse.seed;
+    this.backdrop?.suppressNebula(coarse.seed);
   }
 
   /**
@@ -1625,6 +1666,11 @@ export class UnifiedViewer {
       this.focusMoon = null;
       this.focusAsteroid = null;
       const reachPc = this.focusCloud ? cloudReachPc(this.focusCloud.cloud) : 40;
+      // The volume follows the subject: whatever was chosen on arrival,
+      // the focused cloud is the one that gets drawn.
+      if (this.focusCloud && this.skyPreviewFrame) {
+        this.requestVolumeFor(this.focusCloud.cloud, this.viewpointPc, this.skyPreviewFrame);
+      }
       this.radiusKm = reachPc * PC_KM;
       // A cloud has no surface to stop at, but the ride still measures
       // altitude above its reach: hold just outside for now, since
@@ -1702,25 +1748,26 @@ export class UnifiedViewer {
 
   /**
    * The cloud the camera is standing in, if any: the nearest whose own
-   * field reaches the viewpoint. What "the nebula here" means.
+   * field reaches the viewpoint. Lit or not — a dark rift is the same
+   * kind of object as the nebula beside it, and just as much a place.
    */
-  private localCloud(): Nebula | null {
-    let best: Nebula | null = null;
+  private localCloud(): FocusedCloud | null {
+    let best: MolecularCloud | null = null;
     let bestDistance = Infinity;
-    for (const nebula of nebulaeNear(this.viewpointPc, NEBULA_HOME_REACH_PC)) {
-      const dx = nebula.cloud.positionPc.xPc - this.viewpointPc.xPc;
-      const dy = nebula.cloud.positionPc.yPc - this.viewpointPc.yPc;
-      const dz = nebula.cloud.positionPc.zPc - this.viewpointPc.zPc;
+    for (const cloud of cloudsNear(this.viewpointPc, NEBULA_HOME_REACH_PC)) {
+      const dx = cloud.positionPc.xPc - this.viewpointPc.xPc;
+      const dy = cloud.positionPc.yPc - this.viewpointPc.yPc;
+      const dz = cloud.positionPc.zPc - this.viewpointPc.zPc;
       const distance = Math.hypot(dx, dy, dz);
-      if (distance > cloudReachPc(nebula.cloud) || distance >= bestDistance) continue;
-      best = nebula;
+      if (distance > cloudReachPc(cloud) || distance >= bestDistance) continue;
+      best = cloud;
       bestDistance = distance;
     }
-    return best;
+    return best ? { cloud: best, nebula: nebulaFor(best) } : null;
   }
 
   /** The cloud the camera is standing off, for the panels that name it. */
-  get focusedCloud(): Nebula | null {
+  get focusedCloud(): FocusedCloud | null {
     return this.focusCloud;
   }
 
@@ -1731,9 +1778,9 @@ export class UnifiedViewer {
    * way arriving at a system stands off far enough to see the system.
    */
   private galaxyArrivalAltitudeKm(): number {
-    const cloud = this.localCloud();
-    return cloud
-      ? Math.max(GALAXY_ARRIVAL_ALTITUDE_KM, NEBULA_FRAMING_RADII * cloudReachPc(cloud.cloud) * PC_KM)
+    const local = this.localCloud();
+    return local
+      ? Math.max(GALAXY_ARRIVAL_ALTITUDE_KM, NEBULA_FRAMING_RADII * cloudReachPc(local.cloud) * PC_KM)
       : GALAXY_ARRIVAL_ALTITUDE_KM;
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cloudsNear } from './clouds';
+import { cloudReachPc, cloudsNear } from './clouds';
 import { HOME_POSITION } from './density';
 import { hydrogenBetaLuminosity } from './ionization';
 import { nebulaFor, type Nebula } from './nebula';
@@ -40,6 +40,52 @@ describe('nebular colour', () => {
   });
 });
 
+describe('the two scales a cloud needs', () => {
+  const nebula = brightestNebula();
+  const size = 32;
+
+  it('loses the ionized region entirely at cloud scale', () => {
+    // Not a defect but the reason the fine volume exists, pinned so it
+    // cannot be quietly dropped: a box that holds the cloud has cells
+    // several parsecs wide, and an H II region a parsec or two across
+    // falls between them. A renderer given only this volume draws a
+    // dark cloud where there is a bright nebula.
+    const cloudScale = bakeNebulaVolume(nebula.cloud, nebula, size, cloudReachPc(nebula.cloud));
+    let ionized = 0;
+    for (let i = 0; i < size ** 3; i++) if (cloudScale.data[i * 4 + 1] > 8) ionized++;
+    expect(cloudScale.halfExtentsPc[0]).toBeGreaterThan(nebula.stromgrenRadiusPc * 10);
+    expect(ionized).toBe(0);
+  });
+
+  it('carries it at the bubble scale the same cloud also bakes', () => {
+    const bubble = bakeNebulaVolume(nebula.cloud, nebula, size);
+    let ionized = 0;
+    for (let i = 0; i < size ** 3; i++) if (bubble.data[i * 4 + 1] > 8) ionized++;
+    expect(ionized).toBeGreaterThan(100);
+    expect(bubble.emissionCoefficient).toBeGreaterThan(0);
+  });
+});
+
+describe('clouds that never lit', () => {
+  it('are bodies too', () => {
+    // The dark rifts are the same objects as the nebulae beside them,
+    // and travelling to one has to give something to look at: dust,
+    // with no emission and no source to light it.
+    const dark = cloudsNear(HOME_POSITION, 600).find((cloud) => nebulaFor(cloud) === null);
+    expect(dark).toBeDefined();
+    const bake = bakeNebulaVolume(dark!, null, 24, cloudReachPc(dark!));
+    let dusty = 0;
+    let ionized = 0;
+    for (let i = 0; i < 24 ** 3; i++) {
+      if (bake.data[i * 4] > 8) dusty++;
+      if (bake.data[i * 4 + 1] > 8) ionized++;
+    }
+    expect(dusty).toBeGreaterThan(0);
+    expect(ionized).toBe(0);
+    expect(bake.emissionCoefficient).toBe(0);
+  });
+});
+
 describe('the emission budget', () => {
   it('takes its brightness from the ionizing budget', () => {
     // Every ionizing photon is answered by a recombination and a fixed
@@ -56,7 +102,7 @@ describe('the emission budget', () => {
 describe('the volume bake', () => {
   const nebula = brightestNebula();
   const size = 32;
-  const bake = bakeNebulaVolume(nebula, size);
+  const bake = bakeNebulaVolume(nebula.cloud, nebula, size);
 
   it('spreads that budget over the gas by n²', () => {
     // The coefficient closes the books: total line light divided by the

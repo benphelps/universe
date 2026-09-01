@@ -36,8 +36,10 @@ self.onmessage = (event: MessageEvent<NebulaBakeTask>) => {
   setGalaxySeed(seedFromHex(galaxy));
   const seed = seedFromHex(seedHex);
   const cloud = cloudsNear(positionPc, 1).find((candidate) => candidate.seed === seed);
+  // A cloud that never formed stars is still a body worth drawing: the
+  // dark rifts are the same objects, unlit.
   const nebula = cloud ? nebulaFor(cloud) : null;
-  const bake = nebula ? bakeNebulaVolume(nebula, size, boxPc) : null;
+  const bake = cloud ? bakeNebulaVolume(cloud, nebula, size, boxPc) : null;
   const result: NebulaBakeResult = { key, bake };
   (self as unknown as Worker).postMessage(result, bake ? [bake.data.buffer] : []);
 };

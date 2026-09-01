@@ -51,6 +51,12 @@ uniform vec3 uEmissionHot;
 uniform vec3 uEmissionCool;
 uniform vec3 uReflection;
 uniform float uEmissionCoefficient;
+uniform sampler3D uFine;
+uniform vec3 uFineOffsetPc;
+uniform float uFineHalfPc;
+uniform float uFineDustRef;
+uniform float uFineDensityRef;
+uniform float uFineEmissionCoefficient;
 uniform float uScatterScale;
 uniform float uOpacity;
 
@@ -121,11 +127,13 @@ export class NebulaVolume {
   readonly seed: bigint;
   private readonly material: ShaderMaterial;
   private readonly texture: Data3DTexture;
+  private readonly fineTexture: Data3DTexture;
   private readonly sceneToGalaxy: Matrix3;
   private readonly cameraToGalaxy = new Matrix3();
 
   constructor(
     bake: NebulaVolumeBake,
+    fine: NebulaVolumeBake | null,
     private readonly viewpointPc: GalacticPosition,
     sceneFromGalaxy: Float32Array,
   ) {
@@ -133,6 +141,7 @@ export class NebulaVolume {
     const m = sceneFromGalaxy;
     this.sceneToGalaxy = new Matrix3().set(m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]);
 
+    this.fineTexture = fine ? volumeTexture(fine) : emptyVolume();
     this.texture = new Data3DTexture(bake.data, bake.size, bake.size, bake.size);
     this.texture.format = RGBAFormat;
     this.texture.type = UnsignedByteType;
@@ -161,6 +170,22 @@ export class NebulaVolume {
         uEmissionCoefficient: { value: bake.emissionCoefficient * NEBULA_PIXEL_SCALE },
         uScatterScale: { value: SCATTER_SCALE },
         uOpacity: { value: 1 },
+        uFine: { value: this.fineTexture },
+        uFineOffsetPc: {
+          value: fine
+            ? new Vector3(
+                fine.centrePc[0] - bake.centrePc[0],
+                fine.centrePc[1] - bake.centrePc[1],
+                fine.centrePc[2] - bake.centrePc[2],
+              )
+            : new Vector3(),
+        },
+        uFineHalfPc: { value: fine ? fine.halfExtentsPc[0] : 0 },
+        uFineDustRef: { value: fine?.dustRef ?? 1 },
+        uFineDensityRef: { value: fine?.densityRef ?? 1 },
+        uFineEmissionCoefficient: {
+          value: (fine?.emissionCoefficient ?? 0) * NEBULA_PIXEL_SCALE,
+        },
       },
       side: BackSide,
       // Premultiplied alpha is exactly the volume-rendering composite:
@@ -217,7 +242,34 @@ export class NebulaVolume {
     this.mesh.geometry.dispose();
     this.material.dispose();
     this.texture.dispose();
+    this.fineTexture.dispose();
   }
+}
+
+/** A bake as a sampler-ready 3D texture. */
+function volumeTexture(bake: NebulaVolumeBake): Data3DTexture {
+  const texture = new Data3DTexture(bake.data, bake.size, bake.size, bake.size);
+  texture.format = RGBAFormat;
+  texture.type = UnsignedByteType;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.wrapS = ClampToEdgeWrapping;
+  texture.wrapT = ClampToEdgeWrapping;
+  texture.wrapR = ClampToEdgeWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Something for the sampler to bind to when there is no fine volume:
+ *  an unbound sampler3D is a draw-time error, not an empty read. */
+function emptyVolume(): Data3DTexture {
+  const texture = new Data3DTexture(new Uint8Array(4), 1, 1, 1);
+  texture.format = RGBAFormat;
+  texture.type = UnsignedByteType;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 /**

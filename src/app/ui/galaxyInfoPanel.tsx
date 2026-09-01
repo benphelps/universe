@@ -25,7 +25,7 @@ export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
         : 'dark cloud';
   return {
     title: `the ${cloud.name} ${lit || cloud.kind === 'reflection' ? 'Nebula' : 'Rift'}`,
-    subtitle: `${kind} · ${fmt(cloud.reachPc, 3)} pc across`,
+    subtitle: `${kind} · ${fmt(cloud.spanPc, 3)} pc across`,
     color,
     row: {
       color,
@@ -35,16 +35,17 @@ export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
     },
     rows: [
       ['Mass', `${fmt(cloud.massSolar, 3)} M☉`],
-      ['Density', `${fmt(cloud.hydrogenDensity, 3)} H/cm³`],
+      ['Mean density', `${fmt(cloud.meanDensity, 3)} H/cm³`],
       ['Metallicity', `${cloud.metallicity >= 0 ? '+' : '−'}${Math.abs(cloud.metallicity).toFixed(2)} dex`],
       ...(cloud.ionizingStars > 0
         ? ([
             ['Ionizing stars', `${cloud.ionizingStars}`],
             ['Hottest', `${fmt(cloud.hottestTeff, 3)} K`],
+            ['Gas at those stars', `${fmt(cloud.sourceDensity, 3)} H/cm³`],
             ['Ionized radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
+            ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
           ] as Array<[string, string]>)
         : ([['Star formation', 'none lit']] as Array<[string, string]>)),
-      ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
     ],
   };
 }

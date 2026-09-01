@@ -1,12 +1,13 @@
 import { PARSEC } from '../../core/physics/constants';
 import type { LinearRgb } from '../../core/color/srgb';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
-import { cloudFineDustDensity } from './clouds';
+import { cloudFineDustDensity, cloudHalfExtentsPc, type MolecularCloud } from './clouds';
 import { DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity } from './ionization';
 import { ALPHA_B } from './ionization';
 import type { Nebula } from './nebula';
+import { ismMetallicity } from './population';
 import { nebulaEmissionColor, nebulaLineSum } from './nebulaLines';
 
 /**
@@ -116,20 +117,23 @@ const IONIZATION_REACH = 10;
  * cloud itself gets a volume for the view from outside.
  */
 export function bakeNebulaVolume(
-  nebula: Nebula,
+  cloud: MolecularCloud,
+  nebula: Nebula | null,
   size = 64,
   boxRequestPc?: number,
 ): NebulaVolumeBake {
-  const { cloud, metallicity } = nebula;
-  // The volume is the bubble, centred on the star that blows it.
-  const source = nebula.sources[0];
+  const metallicity = nebula?.metallicity ?? ismMetallicity(cloud.positionPc);
+  // Lit or not, a cloud is a body. Where a group has formed the volume
+  // centres on the star that lights it; where none has, the cloud is
+  // its own subject and the box sits on the cloud.
+  const source = nebula?.sources[0];
   const originPc: [number, number, number] = source
     ? [source.dxPc, source.dyPc, source.dzPc]
     : [0, 0, 0];
-  const reach = Math.max(...nebula.halfExtentsPc);
+  const reach = Math.max(...cloudHalfExtentsPc(cloud));
   const boxPc = Math.min(
     reach,
-    boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * nebula.stromgrenRadiusPc),
+    boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * (nebula?.stromgrenRadiusPc ?? 0)),
   );
   const halfExtentsPc: [number, number, number] = [boxPc, boxPc, boxPc];
   const cellPc: [number, number, number] = [
@@ -187,7 +191,9 @@ export function bakeNebulaVolume(
         const distancePc = Math.hypot(dx, dy, dz) || 1e-4;
         // Past the front's furthest possible reach the gas is neutral
         // whatever the march would say, and saying so costs nothing.
-        const reachable = distancePc < IONIZATION_REACH * Math.max(nebula.stromgrenRadiusPc, 0.05);
+        const reachable =
+          budget > 0 &&
+          distancePc < IONIZATION_REACH * Math.max(nebula?.stromgrenRadiusPc ?? 0, 0.05);
         const steps = reachable ? Math.max(1, Math.ceil(distancePc / stepPc)) : 0;
         const ds = distancePc / steps;
         const ux = dx / distancePc;
@@ -248,8 +254,12 @@ export function bakeNebulaVolume(
         emissionMeasure += measure;
         hardnessWeighted += measure * Math.min(1, Math.max(0, hardness));
 
+        // Ionized gas keeps almost no dust: grains are destroyed in the
+        // radiation field and the rest is swept out with the flow, which
+        // is why an H II region is a cavity in the extinction and not
+        // merely a bright patch behind it.
         const out = index * 4;
-        data[out] = Math.round(255 * Math.min(1, dust[index] / dustRef));
+        data[out] = Math.round(255 * Math.min(1, (dust[index] * (1 - 0.95 * ionized)) / dustRef));
         data[out + 1] = Math.round(255 * Math.min(1, (n * ionized) / densityRef));
         data[out + 2] = Math.round(255 * Math.min(1, Math.max(0, hardness)));
         data[out + 3] = Math.round(255 * transmittance);
@@ -283,6 +293,6 @@ export function bakeNebulaVolume(
     originPc,
     emissionHot: nebulaEmissionColor(1),
     emissionCool: nebulaEmissionColor(0),
-    reflectionColor: blackbodyLinearRgb(Math.max(3000, source?.tEff ?? nebula.maxTeff)),
+    reflectionColor: blackbodyLinearRgb(Math.max(3000, source?.tEff ?? nebula?.maxTeff ?? 4000)),
   };
 }
