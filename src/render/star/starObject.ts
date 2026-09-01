@@ -73,6 +73,13 @@ export class StarObject {
     this.corona = createCoronaMaterial(star);
     const corona = new Mesh(new PlaneGeometry(1, 1), this.corona);
     corona.scale.setScalar(star.radius * CORONA_SIZE_FACTOR);
+    // The glow writes no depth, so only draw order keeps it in front
+    // of the sky: after the volume composite (reversed-Z, lowest order
+    // last) or a dark cloud parsecs behind the sun multiplies its
+    // flares away — and before the weather deck, which may honestly
+    // stand in front of the sun and dim it. Bodies still occlude it by
+    // depth as ever.
+    corona.renderOrder = -2;
     this.group.add(corona);
     this.coronaMesh = corona;
   }
