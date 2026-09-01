@@ -214,12 +214,12 @@ Rough priority order. The residency dials live at the top of
   nebula cutouts punched through it, and stars used to shine through an
   overcast besides — and the sun's corona billboard, whose glow and flares a
   dark cloud parsecs behind it used to eat (bright nebulae hid the same
-  theft inside their own light). Still at the default order and therefore
-  still eatable by a dark cloud behind them: the space-view
-  `atmosphereShell` limb glow, ring meshes, and the aurora shell's limb
-  sliver — all transparent, all depth-mute against sky, and their ordering
-  against *each other* (rings through limb glow) is why they move together
-  or not at all.
+  theft inside their own light) — and finally the limb glow, the rings and
+  the aurora together, seated in the band between the star points and the
+  haze dome. Every transparent layer now has an explicit seat. The one
+  standing compromise a global order forces: a ring's far side just past
+  the limb draws over the limb glow rather than under it, traded knowingly
+  for the prominent near-side crossing.
 - **Kerr shadow test flake** (cross-domain): fails ~1-in-5 full-suite runs,
   never in isolation — suspected cross-file state; background task chip spawned.
 
