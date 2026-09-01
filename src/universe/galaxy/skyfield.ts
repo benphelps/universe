@@ -64,8 +64,12 @@ export interface NebulaPatch {
   tile: number;
 }
 
-/** Nebula sprite atlas layout: NEBULA_TILE² RGBA tiles in a grid. */
-export const NEBULA_TILE = 48;
+/** Nebula sprite atlas layout: NEBULA_TILE² RGBA tiles in a grid.
+ *  Sized for the sprite's worst honest case — a nebula large in frame
+ *  whose volume has not stood up yet — where a coarse tile stretches
+ *  into visible blocks. The whole atlas costs ~1.2 s of background
+ *  bake at this size, against a star sweep that runs far longer. */
+export const NEBULA_TILE = 128;
 export const NEBULA_ATLAS_COLS = 8;
 export const NEBULA_ATLAS_ROWS = 6;
 
@@ -74,7 +78,7 @@ export const RIFT_WIDTH = 768;
 export const RIFT_HEIGHT = 384;
 
 /** Dark-cloud sprite atlas: transmission tiles, one per prominent cloud. */
-export const DARK_TILE = 64;
+export const DARK_TILE = 96;
 export const DARK_ATLAS_COLS = 8;
 export const DARK_ATLAS_ROWS = 8;
 
