@@ -91,7 +91,7 @@ import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
 import { requestNebulaVolume } from './nebulaService';
-import { nebulaeNear } from '../universe/galaxy/nebula';
+import { nebulaeNear, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc } from '../universe/galaxy/clouds';
 import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
 import { NebulaVolume } from '../render/galaxy/nebulaVolume';
@@ -208,7 +208,7 @@ function orbitDays(mu: Mu, planet: Planet): number {
   return orbitalPeriod(mu, planet.elements.semiMajorAxis) / 86400;
 }
 
-export type FocusTarget = 'star' | number | { planet: number; moon: number };
+export type FocusTarget = 'star' | 'cloud' | number | { planet: number; moon: number };
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
 
 /** What a pick resolved to; main decides how to act on it. */
@@ -770,6 +770,8 @@ export class UnifiedViewer {
   private surveying = false;
   private system: StarSystem | null = null;
   private focus: FocusTarget = 'star';
+  /** The cloud the camera is standing off, when one is the focus. */
+  private focusCloud: Nebula | null = null;
   private focusMoon: Moon | null = null;
   /** The parent planet hanging in a focused moon's sky. */
   private parentObject: PlanetObject | null = null;
@@ -1613,6 +1615,27 @@ export class UnifiedViewer {
     // Numeric targets index the host's planets; past them, the notable
     // asteroids (the primary's belts only). Object targets name a moon
     // of one of those planets.
+    // A cloud is a body here, not a place a body happens to sit in: the
+    // camera measures its ride against the cloud's own reach, so
+    // arriving means standing off the cloud rather than standing on a
+    // star that is zoomed out until the cloud fits.
+    if (target === 'cloud') {
+      this.focusCloud = this.localCloud();
+      this.focusPlanet = null;
+      this.focusMoon = null;
+      this.focusAsteroid = null;
+      const reachPc = this.focusCloud ? cloudReachPc(this.focusCloud.cloud) : 40;
+      this.radiusKm = reachPc * PC_KM;
+      // A cloud has no surface to stop at, but the ride still measures
+      // altitude above its reach: hold just outside for now, since
+      // going inside is a different picture and wants its own framing.
+      this.minAltitudeKm = this.radiusKm * 0.02;
+      this.altitudeKm = this.radiusKm * 1.2;
+      this.arriveAtFocus(preset);
+      return;
+    }
+    this.focusCloud = null;
+
     const hostPlanets = this.planetNodes.map((node) => node.planet);
     const planetCount = hostPlanets.length;
     const planetIndex =
@@ -1678,22 +1701,40 @@ export class UnifiedViewer {
   }
 
   /**
+   * The cloud the camera is standing in, if any: the nearest whose own
+   * field reaches the viewpoint. What "the nebula here" means.
+   */
+  private localCloud(): Nebula | null {
+    let best: Nebula | null = null;
+    let bestDistance = Infinity;
+    for (const nebula of nebulaeNear(this.viewpointPc, NEBULA_HOME_REACH_PC)) {
+      const dx = nebula.cloud.positionPc.xPc - this.viewpointPc.xPc;
+      const dy = nebula.cloud.positionPc.yPc - this.viewpointPc.yPc;
+      const dz = nebula.cloud.positionPc.zPc - this.viewpointPc.zPc;
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance > cloudReachPc(nebula.cloud) || distance >= bestDistance) continue;
+      best = nebula;
+      bestDistance = distance;
+    }
+    return best;
+  }
+
+  /** The cloud the camera is standing off, for the panels that name it. */
+  get focusedCloud(): Nebula | null {
+    return this.focusCloud;
+  }
+
+  /**
    * How far out to stand on arrival in the galaxy view. Normally a
    * neighbourhood hop, but arriving inside a molecular cloud the
    * subject is the cloud: stand off far enough to see all of it, the
    * way arriving at a system stands off far enough to see the system.
    */
   private galaxyArrivalAltitudeKm(): number {
-    let framed = GALAXY_ARRIVAL_ALTITUDE_KM;
-    for (const nebula of nebulaeNear(this.viewpointPc, NEBULA_HOME_REACH_PC)) {
-      const reachPc = cloudReachPc(nebula.cloud);
-      const dx = nebula.cloud.positionPc.xPc - this.viewpointPc.xPc;
-      const dy = nebula.cloud.positionPc.yPc - this.viewpointPc.yPc;
-      const dz = nebula.cloud.positionPc.zPc - this.viewpointPc.zPc;
-      if (Math.hypot(dx, dy, dz) > reachPc) continue;
-      framed = Math.max(framed, NEBULA_FRAMING_RADII * reachPc * PC_KM);
-    }
-    return framed;
+    const cloud = this.localCloud();
+    return cloud
+      ? Math.max(GALAXY_ARRIVAL_ALTITUDE_KM, NEBULA_FRAMING_RADII * cloudReachPc(cloud.cloud) * PC_KM)
+      : GALAXY_ARRIVAL_ALTITUDE_KM;
   }
 
   /** Focus-specific content for any solid terrain body — planet or moon:

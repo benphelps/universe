@@ -5,9 +5,13 @@ import { galaxySeed, PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy
 import type { Neighbor } from '../universe/galaxy/neighborhood';
 import {
   galacticAddress,
+  sectorNameForSeed,
   type GalacticAddress,
   type GalacticLandmark,
 } from '../universe/galaxy/regions';
+import { cloudReachPc } from '../universe/galaxy/clouds';
+import { cloudMassSolar } from '../universe/galaxy/gas';
+import type { NebulaKind } from '../universe/galaxy/nebula';
 import type { Asteroid } from '../universe/smallbody/types';
 import type { Planet, StarSystem } from '../universe/system/types';
 import { generateSystem } from '../universe/system/generate';
@@ -58,6 +62,9 @@ export interface AppSnapshot {
   neighbors: Neighbor[];
   asteroids: Asteroid[];
   landmarks: GalacticLandmark[] | null;
+  /** The molecular cloud the camera is standing off, when one is the
+   *  focus rather than a body. */
+  cloud: CloudSummary | null;
   /** The current locale as the URL carries it. */
   at?: string;
   ridingOut: boolean;
@@ -65,6 +72,40 @@ export interface AppSnapshot {
   marksEpoch: number;
   /** Narrow screens fold the console away; this is whether it stands open. */
   consoleOpen: boolean;
+}
+
+/** What the panels need to introduce a cloud, the way a plate
+ *  introduces a planet. */
+export interface CloudSummary {
+  name: string;
+  kind: NebulaKind;
+  radiusPc: number;
+  reachPc: number;
+  massSolar: number;
+  hydrogenDensity: number;
+  ionizingStars: number;
+  hottestTeff: number;
+  stromgrenRadiusPc: number;
+  ageMyr: number;
+  metallicity: number;
+}
+
+function cloudSummary(): CloudSummary | null {
+  const nebula = viewer?.focusedCloud ?? null;
+  if (!nebula) return null;
+  return {
+    name: sectorNameForSeed(nebula.cloud.seed),
+    kind: nebula.kind,
+    radiusPc: nebula.cloud.radiusPc,
+    reachPc: cloudReachPc(nebula.cloud),
+    massSolar: cloudMassSolar(nebula.cloud, nebula.metallicity, 12),
+    hydrogenDensity: nebula.sourceHydrogenDensity,
+    ionizingStars: nebula.sources.length,
+    hottestTeff: nebula.maxTeff,
+    stromgrenRadiusPc: nebula.stromgrenRadiusPc,
+    ageMyr: nebula.ageGyr * 1000,
+    metallicity: nebula.metallicity,
+  };
 }
 
 let viewMode: ViewMode = 'star';
@@ -85,6 +126,9 @@ let poiOpen = false;
 let planetFocus: PlanetFocus = 'planet';
 let beltPick: Asteroid | null = null;
 let coreView = false;
+/** True while the thing being looked at is a molecular cloud rather
+ *  than a body — travel to one focuses the cloud itself. */
+let cloudFocus = false;
 let ridingOut = false;
 let marksEpoch = 0;
 let consoleOpen = false;
@@ -110,6 +154,7 @@ function notify(): void {
           neighbors: viewer.neighbors,
           asteroids: viewer.asteroids,
           landmarks: landmarksNow(),
+          cloud: cloudFocus ? cloudSummary() : null,
           at: localePc ? localeParam(localePc) : undefined,
           ridingOut,
           marksEpoch,
@@ -210,7 +255,9 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   const hostPlanets =
     companionIndex === 0 ? system.planets : system.companions[companionIndex - 1].planets;
   viewer.setHost(companionIndex);
-  if (viewMode === 'star') {
+  if (cloudFocus) {
+    viewer.setFocus('cloud', 'galaxy');
+  } else if (viewMode === 'star') {
     viewer.setFocus('star', 'star');
   } else if (viewMode === 'system') {
     viewer.setFocus('star', 'system');
@@ -360,6 +407,7 @@ export function boot(viewElement: HTMLElement): void {
       beltPick = target.asteroid;
       notify();
     } else if (target.kind === 'cloud') {
+      cloudFocus = true;
       // A cloud is not a system and standing on its gateway star is not
       // looking at it. Arrive on the galaxy map, where the camera
       // orbits the locale itself — which the arrival framing has
@@ -369,6 +417,7 @@ export function boot(viewElement: HTMLElement): void {
       moonIndex = -1;
       load(target.seedHex, target.positionPc);
     } else if (target.kind === 'neighbor') {
+      cloudFocus = false;
       // Travel arrives at the destination star, not at whatever the
       // previous system had focused; the galaxy map keeps its own
       // framing so neighbor-hopping stays on the map.
@@ -410,6 +459,8 @@ function acted(): void {
 }
 
 export function setTab(tab: Tab): void {
+  // Picking a level is asking about the system again.
+  if (tab !== 'poi') cloudFocus = false;
   if (tab === 'poi') {
     poiOpen = true;
     notify();
@@ -479,6 +530,7 @@ export function selectStar(index: number): void {
 /** Travel to a neighbor star or landmark at its true galactic position. */
 export function travelTo(destination: { seedHex: string; positionPc: GalacticPosition }): void {
   acted();
+  cloudFocus = false;
   load(destination.seedHex, destination.positionPc);
 }
 
@@ -495,6 +547,7 @@ export function travelToCloud(destination: {
   viewMode = 'galaxy';
   planetIndex = 0;
   moonIndex = -1;
+  cloudFocus = true;
   load(destination.seedHex, destination.positionPc);
 }
 
