@@ -18,6 +18,10 @@ import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
 import type { NebulaVolumeBake } from '../../universe/galaxy/nebulaVolume';
 import type { StarNebulaExtinction } from '../starfield/neighborStars';
 
+/** Henyey–Greenstein asymmetry of interstellar grains in the optical:
+ *  strongly forward-scattering. */
+const HG_G = 0.6;
+
 const VERTEX = /* glsl */ `
 // The dome is a unit sphere centered on the camera and never rotated,
 // so the local vertex position IS the view ray.
@@ -118,12 +122,18 @@ void main() {
     vec3 emission = mix(uEmissionCool, uEmissionHot, cell.b) * ionized * ionized * coefficient;
     // What the dust scatters of the group's light: the flux arriving
     // from the star it actually comes from, dimmed by the dust between
-    // (cell.a), scattered by this cell's dust. Isotropic phase until
-    // the scattering table lands. The floor keeps the source's own
-    // cell finite rather than singular.
+    // (cell.a), scattered by this cell's dust. The floor keeps the
+    // source's own cell finite rather than singular.
     vec3 shine = p - uScatterSourcePc;
     float r2 = max(dot(shine, shine), scatterFloor);
-    vec3 scattered = uReflection * uScatterLum * dust * cell.a / r2;
+    // Henyey–Greenstein phase, forward-peaked the way grains actually
+    // throw light: dust between camera and star glows, dust lit from
+    // the camera's side stays matte. Single scattering only, until the
+    // multiple-scattering table lands with the reflection pass.
+    float mu = -dot(shine, dir) * inversesqrt(r2);
+    float phase = ${(1 - HG_G * HG_G).toFixed(4)} *
+      pow(1.0 + ${(HG_G * HG_G).toFixed(4)} - ${(2 * HG_G).toFixed(4)} * mu, -1.5);
+    vec3 scattered = uReflection * uScatterLum * phase * dust * cell.a / r2;
 
     float extinction = dust * ${DUST_OPACITY_PER_PC.toFixed(4)};
     light += transmittance * (emission + scattered) * ds;
