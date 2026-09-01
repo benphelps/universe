@@ -11,6 +11,7 @@ import {
   seedForIdentity,
 } from '../star/identity';
 import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
+import { radianceFromDisplay } from './displayLaw';
 import {
   rowSlabPlan,
   rowSlabSpan,
@@ -536,9 +537,12 @@ describe('sky field', () => {
   });
 
   it('the glow map is brightest toward the midplane band', () => {
+    // The map stores display energies, compressed by the shared law;
+    // the physical contrast is what the pin means, so decode first.
     const rowMean = (row: number): number => {
       let sum = 0;
-      for (let c = 0; c < sky.glowWidth; c++) sum += sky.glowData[(row * sky.glowWidth + c) * 4];
+      for (let c = 0; c < sky.glowWidth; c++)
+        sum += Math.max(0, radianceFromDisplay(sky.glowData[(row * sky.glowWidth + c) * 4]));
       return sum / sky.glowWidth;
     };
     const equator = rowMean(Math.floor(sky.glowHeight / 2));

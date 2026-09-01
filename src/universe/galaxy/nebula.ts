@@ -47,6 +47,15 @@ export function nebulaLineLuminositySolar(nebula: Nebula): number {
  *  out: optical albedo times an order-unity interception. */
 const SCATTERED_SHARE_OF_CONTINUUM = 0.3;
 
+/** Everything a lit cloud sends out, L☉: its lines plus the share of
+ *  the group's continuum the dust catches and rescatters. The budget
+ *  every rendering of the object spends — the sprite's flux closure
+ *  and the volume's emission and scatter books draw on the same two
+ *  terms. */
+export function nebulaLightSolar(nebula: Nebula): number {
+  return nebulaLineLuminositySolar(nebula) + SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity;
+}
+
 /**
  * How much of the light where the object glows is line emission rather
  * than scattered continuum — what decides whether it reads pink or

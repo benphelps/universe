@@ -14,16 +14,27 @@ import {
   Vector3,
 } from 'three';
 import type { GalacticPosition } from '../../universe/galaxy/density';
-import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
-import type { NebulaVolumeBake } from '../../universe/galaxy/nebulaVolume';
+import { DUST_OPACITY_PER_PC, HG_G } from '../../universe/galaxy/density';
+import {
+  BEAM_SR,
+  DISPLAY_CEIL,
+  DISPLAY_GAIN,
+  DISPLAY_GAMMA,
+  DISPLAY_PIVOT_LSUN_PC2,
+  SKY_PEDESTAL_LSUN_PC2_SR,
+} from '../../universe/galaxy/displayLaw';
+
+/** The subtracted sky pedestal in the law's own pivot units. */
+const PEDESTAL_BEAM =
+  (4 * Math.PI * BEAM_SR * SKY_PEDESTAL_LSUN_PC2_SR) / DISPLAY_PIVOT_LSUN_PC2;
+import {
+  SCATTER_EMISSIVITY_PER_LSUN,
+  type NebulaVolumeBake,
+} from '../../universe/galaxy/nebulaVolume';
 import { glslFloat as f } from '../glsl/format';
 import { galaxyLutTextures } from './galaxyLuts';
 import { CLUMP_TILE_PERIOD, CLUMP_TILE_RANGE } from './clumpTile';
 import type { StarNebulaExtinction } from '../starfield/neighborStars';
-
-/** Henyey–Greenstein asymmetry of interstellar grains in the optical:
- *  strongly forward-scattering. */
-const HG_G = 0.6;
 
 const VERTEX = /* glsl */ `
 // The dome is a unit sphere centered on the camera and never rotated,
@@ -189,11 +200,32 @@ void main() {
     float extinction = dust * ${DUST_OPACITY_PER_PC.toFixed(4)};
     light += transmittance * (emission + scattered) * ds;
     transmittance *= exp(-extinction * ds);
-    if (transmittance < 0.004) break;
+    // The march may stop once even the display-space transmittance —
+    // the physical one raised to the law's exponent — is invisible.
+    if (transmittance < 2e-7) {
+      transmittance = 0.0;
+      break;
+    }
   }
 
-  // Premultiplied: what the nebula emits, over what it lets past.
-  fragColor = vec4(light * uOpacity, (1.0 - transmittance) * uOpacity);
+  // The march integrated physical radiance, L☉ pc⁻² sr⁻¹. What the
+  // pixel shows for it is the sky's shared photometric law
+  // (universe/galaxy/displayLaw): the marginal display energy above
+  // the sky's subtracted pedestal, compressed on luminance so the
+  // line mixture keeps its hue — a skirt far below the smooth sky
+  // vanishes into it instead of being stretched into fog. The
+  // backdrop it covers holds display energies already, so its dimming
+  // rides the law's point form, transmittance to the gamma.
+  float lum = dot(light, vec3(0.2126, 0.7152, 0.0722));
+  float beam = lum * ${f((4 * Math.PI * BEAM_SR) / DISPLAY_PIVOT_LSUN_PC2)};
+  float shown = min(${f(DISPLAY_CEIL)},
+    ${f(DISPLAY_GAIN)} * pow(${f(PEDESTAL_BEAM)} + beam, ${f(DISPLAY_GAMMA)}) -
+      ${f(DISPLAY_GAIN * PEDESTAL_BEAM ** DISPLAY_GAMMA)});
+  vec3 display = lum > 1e-9 ? light * (shown / lum) : vec3(0.0);
+  float cover = 1.0 - pow(transmittance, ${f(DISPLAY_GAMMA)});
+
+  // Premultiplied: what the nebula shows, over what it lets past.
+  fragColor = vec4(display * uOpacity, cover * uOpacity);
 }
 `;
 
@@ -259,10 +291,10 @@ export class NebulaVolume {
         uEmissionHot: { value: new Vector3(...bake.emissionHot) },
         uEmissionCool: { value: new Vector3(...bake.emissionCool) },
         uReflection: { value: new Vector3(...bake.reflectionColor) },
-        uEmissionCoefficient: { value: bake.emissionCoefficient * NEBULA_PIXEL_SCALE },
+        uEmissionCoefficient: { value: bake.emissionCoefficient },
         uScatterSourcePc: { value: new Vector3(...bake.scatterSourcePc) },
         uScatterLum: {
-          value: bake.scatterLuminositySolar * SCATTER_EMISSIVITY_PER_LSUN * NEBULA_PIXEL_SCALE,
+          value: bake.scatterLuminositySolar * SCATTER_EMISSIVITY_PER_LSUN,
         },
         uScatterFloorPc2: { value: bake.scatterFloorPc2 },
         uOpacity: { value: 1 },
@@ -288,9 +320,7 @@ export class NebulaVolume {
         uFineHalfPc: { value: fine ? fine.halfExtentsPc[0] : 0 },
         uFineDustRef: { value: fine?.dustRef ?? 1 },
         uFineDensityRef: { value: fine?.densityRef ?? 1 },
-        uFineEmissionCoefficient: {
-          value: (fine?.emissionCoefficient ?? 0) * NEBULA_PIXEL_SCALE,
-        },
+        uFineEmissionCoefficient: { value: fine?.emissionCoefficient ?? 0 },
       },
       side: BackSide,
       // Premultiplied alpha is exactly the volume-rendering composite:
@@ -404,23 +434,3 @@ function emptyVolume(): Data3DTexture {
   return texture;
 }
 
-/**
- * What a solar luminosity per square parsec per steradian comes to on
- * screen. The nebula's own brightness is settled in the bake — its
- * star's ionizing budget fixes the line luminosity, the group's light
- * feeds the scatter, and the gas divides them out — so this is the one
- * conversion left, shared by every nebula: the renderer's photometric
- * zero point for surface brightness, the counterpart of the one the
- * star sprites carry. Order unity by that kinship — the scattered
- * light is the same starlight the sprites map — held provisionally
- * until the photometric systems are unified outright.
- */
-const NEBULA_PIXEL_SCALE = 1.0;
-/** Optical albedo of interstellar dust (Draine): the share of what
- *  falls on a grain that leaves it again as scattered light. */
-const DUST_ALBEDO = 0.6;
-/** Scattered emissivity per L☉ per unit dust at unit distance,
- *  L☉ pc⁻³ sr⁻¹: the flux L/(4πr²) times the dust's opacity per
- *  parsec, times albedo over the 4π sr it rescatters into — isotropic
- *  until the phase-function table lands with the reflection pass. */
-const SCATTER_EMISSIVITY_PER_LSUN = (DUST_OPACITY_PER_PC * DUST_ALBEDO) / (16 * Math.PI ** 2);

@@ -21,6 +21,14 @@ import {
 } from 'three';
 import { rotateToScene } from '../../universe/galaxy/orientation';
 import {
+  DISPLAY_CEIL,
+  DISPLAY_FLOOR,
+  DISPLAY_GAIN,
+  DISPLAY_GAMMA,
+  DISPLAY_PIVOT_LSUN_PC2,
+} from '../../universe/galaxy/displayLaw';
+import { glslFloat as f } from '../glsl/format';
+import {
   DARK_ATLAS_COLS,
   DARK_ATLAS_ROWS,
   DARK_TILE,
@@ -78,11 +86,13 @@ varying vec3 vColor;
 varying float vAlpha;
 
 void main() {
-  // Photometric mapping: size and energy follow log irradiance,
-  // compressed so only the very nearest stars blaze.
-  float logE = log2(max(brightness, 1e-12));
-  float size = clamp(1.5 + 0.45 * (logE + 17.0), 1.0, 6.5);
-  float energy = clamp(0.055 * exp2(0.36 * (logE + 17.0)), 0.012, 1.7) * uIntensity;
+  // The sky's shared photometric law (universe/galaxy/displayLaw):
+  // size and energy follow log irradiance, compressed so only the
+  // very nearest stars blaze.
+  float logE = log2(max(brightness, 1e-12)) + ${f(-Math.log2(DISPLAY_PIVOT_LSUN_PC2))};
+  float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
+  float energy = clamp(${f(DISPLAY_GAIN)} * exp2(${f(DISPLAY_GAMMA)} * logE),
+    ${f(DISPLAY_FLOOR)}, ${f(DISPLAY_CEIL)}) * uIntensity;
   vColor = starColor * energy;
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
@@ -195,7 +205,12 @@ void main() {
     vec2 tuv = (tileOrigin + vec2(u, v)) / vec2(${DARK_ATLAS_COLS}.0, ${DARK_ATLAS_ROWS}.0);
     transmission *= texture2D(uDarkAtlas, tuv).r;
   }
-  gl_FragColor = vec4(textureBicubic(uGlow, uv, uGlowSize).rgb * transmission * uIntensity, 1.0);
+  // The glow map holds display energies and the transmission is
+  // physical; the shared law is a pure power, so dimming in display
+  // space is exact with the transmittance raised to the same exponent.
+  gl_FragColor = vec4(
+    textureBicubic(uGlow, uv, uGlowSize).rgb * pow(transmission, ${f(DISPLAY_GAMMA)}) * uIntensity,
+    1.0);
 }
 `;
 

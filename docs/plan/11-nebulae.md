@@ -157,13 +157,41 @@ Rough priority order. The residency dials live at the top of
   around you; optionally veto catalog systems where the smooth cloud density
   is high (an envelope-level check — the full turbulent field is too dear per
   star). Both change which seeds exist and where some travel URLs land.
-- **Photometric unification.** The sprite's brightness law is still the impostor
-  (`95·√L/d²`, peak-normalized tiles); the volume's zero point is order-unity
-  provisional. Build the sprite/volume agreement harness and tie both to the
-  star sprites' photometric system. Hue already unified via `nebulaEmissionShare`.
+- **Photometric unification — landed.** One law for the whole sky, in
+  `universe/galaxy/displayLaw.ts`: the star points' own curve (display energy
+  `0.055·(B/2⁻¹⁷)^0.36`, B in L☉/pc²) extracted as the shared transfer, with
+  extended light entering as radiance through a reference beam and displayed as
+  the law's *marginal response above a subtracted sky pedestal* —
+  `D(P+R) − D(P)`, P ≈ 1 L☉ pc⁻² sr⁻¹, the integrated starlight of a dark
+  column — exactly what a sky-subtracted deep exposure shows. The pure power
+  applied to extended light directly was measured first and stretched the
+  diffuse floor into fog across the whole display (thirty-two volume skirts
+  plus the band, each lifted by `x^0.36`); the marginal form kills the fog
+  while keeping every structure's stature. What moved: the volume's
+  `NEBULA_PIXEL_SCALE` is gone (the march's radiance is displayed by the law);
+  the sprite's `95·√L/d²` impostor law is gone — the tile's peak radiance now
+  follows from exact flux closure (the cloud's line + scattered budget over
+  the tile's own luminance integral, distance cancelling as surface brightness
+  demands) and the tile is baked in display space with its peak riding in
+  `brightness`; the glow map joined the same law (its own darkest column is
+  its pedestal, self-calibrated per viewpoint) and dark-cloud transmission
+  dims it as `T^γ` in-shader; the bake's emission books now close on the
+  *quantized* grid, the thing the renderer actually integrates. The harness
+  (`displayLaw.test.ts`) pins the law against the star shader exactly, pins
+  real-sky anchors (pole sky black, band ~0.05, Orion-core ~0.37), closes the
+  sprite tile's flux books to ±10%, and pins volume-vs-sprite total flux at
+  the measured ~0.12 — the gap is mostly the impostor's 0.3 continuum
+  interception standing for scattering the volume only single-scatters, and
+  the pin tightens when the reflection pass's multiple-scattering table lands.
+  Residual refinements: the volumes and sprites use the constant pedestal
+  where the glow uses its own local minimum (plumbing the sky field's floor
+  through to them is a small follow-up); rift and dark-tile dimming of the
+  glow is display-space `T^γ`, exact for the pure law and ~1.5× steep at
+  mid-transmittance against the marginal form.
 - **Display modes.** Bright bubble cores tone-map to white at close range — the
   natural-vision / camera / narrowband instrument split (§Colour) is where that
-  judgment belongs, not the physics.
+  judgment belongs, not the physics. The shared law is now the single dial
+  such a split would swap.
 - **Stage 5 remainder.** Trunk/pillar photoevaporation, winds and supernovae
   past the Spitzer floor (the expansion slice that landed is the floor, not the
   ceiling).

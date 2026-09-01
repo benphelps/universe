@@ -458,6 +458,14 @@ export function dustDensity(position: GalacticPosition): number {
  *  kpc the glow map and the volume march accumulate. */
 export const DUST_OPACITY_PER_PC = 0.045;
 
+/** Optical albedo of interstellar dust (Draine): the share of what
+ *  falls on a grain that leaves it again as scattered light. */
+export const DUST_ALBEDO = 0.6;
+
+/** Henyey–Greenstein asymmetry of interstellar grains in the optical:
+ *  strongly forward-scattering. */
+export const HG_G = 0.6;
+
 /**
  * Optical depth between two points, integrating the dust layer along
  * the straight path. Nothing at the galactic centre is visible from

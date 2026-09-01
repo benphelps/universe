@@ -7,7 +7,7 @@ import {
   cloudHalfExtentsPc,
   type MolecularCloud,
 } from './clouds';
-import { DUST_OPACITY_PER_PC } from './density';
+import { DUST_ALBEDO, DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity } from './ionization';
 import { ALPHA_B } from './ionization';
@@ -90,6 +90,12 @@ export interface NebulaVolumeBake {
 const CM_PER_PC = PARSEC * 100;
 /** erg s⁻¹ in one solar luminosity. */
 const ERG_PER_SOLAR_LUMINOSITY = 3.828e33;
+/** Scattered emissivity per L☉ per unit dust at unit distance,
+ *  L☉ pc⁻³ sr⁻¹: the flux L/(4πr²) times the dust's opacity per
+ *  parsec, times albedo over the 4π sr it rescatters into — isotropic
+ *  until the phase-function table lands with the reflection pass. */
+export const SCATTER_EMISSIVITY_PER_LSUN = (DUST_OPACITY_PER_PC * DUST_ALBEDO) / (16 * Math.PI ** 2);
+
 /** Recombinations per steradian carried by one cm⁻⁶ over a pc³ shell. */
 const RECOMBINATION_SCALE = ALPHA_B * CM_PER_PC ** 3;
 /** Where log₁₀ of the ionization parameter runs from and to: the range
@@ -600,23 +606,29 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
   // levels deep.
   let dustRef = 1e-6;
   let densityRef = 1e-6;
-  let emissionMeasure = 0;
-  let hardnessWeighted = 0;
   for (let index = 0; index < cells; index++) {
     if (fields.dust[index] > dustRef) dustRef = fields.dust[index];
     if (fields.ionized[index] > densityRef) densityRef = fields.ionized[index];
-    // What the gas here contributes to the nebula's total light.
-    const measure = fields.ionized[index] * fields.ionized[index] * cellVolumePc3;
-    emissionMeasure += measure;
-    hardnessWeighted += measure * fields.hardness[index];
   }
+  // The books close on the quantized grid, not the float fields: the
+  // byte crush zeroes the dilute interior and rounds the rest, and
+  // what it keeps is what the renderer integrates — measured against
+  // the floats it can be half the light. The budget belongs to the
+  // grid as drawn.
   const data = new Uint8Array(cells * 4);
+  let emissionMeasure = 0;
+  let hardnessWeighted = 0;
   for (let index = 0; index < cells; index++) {
     const out = index * 4;
     data[out] = Math.round(255 * Math.min(1, fields.dust[index] / dustRef));
     data[out + 1] = Math.round(255 * Math.min(1, fields.ionized[index] / densityRef));
     data[out + 2] = Math.round(255 * fields.hardness[index]);
     data[out + 3] = Math.round(255 * fields.transmittance[index]);
+    const ionized = (data[out + 1] / 255) * densityRef;
+    // What the gas here contributes to the nebula's total light.
+    const measure = ionized * ionized * cellVolumePc3;
+    emissionMeasure += measure;
+    hardnessWeighted += measure * fields.hardness[index];
   }
 
   // The budget closes here: the star's ionizing output fixes the Hβ
