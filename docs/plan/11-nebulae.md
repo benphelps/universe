@@ -128,10 +128,15 @@ Rough priority order. The residency dials live at the top of
 
 - **Multi-box march.** Each resident volume is its own full-screen dome; several
   *enclosing* volumes at a gateway complex each march the whole sky (~45 ms GPU
-  measured with four). The carrier should march all resident boxes in one pass,
-  sorted front-to-back (§render pass). Per-axis box extents (the bake already
-  stores a vec3; the shader assumes cubic) would also shrink footprints for
-  stretched clouds.
+  measured with four). Non-enclosing residents are nearly free — Ben ran the cap
+  at 64 with no meaningful frame cost, since a dome only pays for the pixels its
+  box covers — so what a big cap really costs is the serial bake queue (minutes
+  to populate) and texture memory, not the march. The carrier should still march
+  all resident boxes in one pass, sorted front-to-back (§render pass), to tame
+  the enclosing-overlap case. Per-axis box extents (the bake already stores a
+  vec3; the shader assumes cubic) would also shrink footprints for stretched
+  clouds. The star-extinction shader carries `MAX_STAR_NEBULAE` slots, filled
+  nearest-first when residents outnumber them.
 - **Residency ranking.** Admission is by projected size alone, so a bright
   emission complex can lose its slot to four bigger dark rifts. Weight by the
   object's light budgets, and consider admitting more small-footprint volumes
