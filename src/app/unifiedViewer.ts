@@ -1270,7 +1270,7 @@ export class UnifiedViewer {
     this.skyPreviewFrame = galaxyOrientation;
     this.galaxyVolume = new GalaxyVolume(viewpoint, galaxyOrientation);
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
-    this.scene.add(this.galaxyVolume.mesh);
+    this.pipeline.sky.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
     this.pcGroup.add(this.galaxyParticles.group);
     this.chooseNebulaVolume(viewpoint, galaxyOrientation);
@@ -1457,12 +1457,12 @@ export class UnifiedViewer {
     const coarse = this.coarseBake;
     if (!coarse) return;
     if (this.nebulaVolume) {
-      this.scene.remove(this.nebulaVolume.mesh);
+      this.pipeline.sky.scene.remove(this.nebulaVolume.mesh);
       this.nebulaVolume.dispose();
     }
     const fine = this.fineBake && this.fineBake.seed === coarse.seed ? this.fineBake : null;
     this.nebulaVolume = new NebulaVolume(coarse, fine, viewpoint, orientation);
-    this.scene.add(this.nebulaVolume.mesh);
+    this.pipeline.sky.scene.add(this.nebulaVolume.mesh);
     // The sprite stands for a volume that is now actually there. The
     // backdrop may not be up yet, so the seed is kept for it to read.
     this.volumeSuppressedSeed = coarse.seed;
@@ -2736,7 +2736,7 @@ export class UnifiedViewer {
 
     this.galaxyVolume = new GalaxyVolume(GALACTIC_CENTRE, frame);
     this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
-    this.scene.add(this.galaxyVolume.mesh);
+    this.pipeline.sky.scene.add(this.galaxyVolume.mesh);
     this.galaxyParticles = new GalaxyParticles(GALACTIC_CENTRE, frame, PC_KM);
     this.pcGroup.add(this.galaxyParticles.group);
     this.nuclearCluster = new NuclearCluster(GALACTIC_CENTRE, frame, PC_KM);
@@ -2974,7 +2974,12 @@ export class UnifiedViewer {
     const backdrop = this.backdrop?.group;
     const was = backdrop?.position.clone();
     backdrop?.position.copy(atWorldKm);
+    // The volume domes reach the frame as a screen-space composite,
+    // which a cube camera must not photograph: for the capture the
+    // domes themselves stand in, recentred the way the backdrop is.
+    const domes = this.pipeline.sky.lendTo(this.scene, atWorldKm);
     sky.capture(this.pipeline.renderer, this.scene, atWorldKm, hidden);
+    this.pipeline.sky.reclaim(domes);
     if (backdrop && was) backdrop.position.copy(was);
   }
 
@@ -3158,12 +3163,12 @@ export class UnifiedViewer {
     this.clearSkyPreview();
     this.skyPreviewFrame = null;
     if (this.galaxyVolume) {
-      this.scene.remove(this.galaxyVolume.mesh);
+      this.pipeline.sky.scene.remove(this.galaxyVolume.mesh);
       this.galaxyVolume.dispose();
       this.galaxyVolume = null;
     }
     if (this.nebulaVolume) {
-      this.scene.remove(this.nebulaVolume.mesh);
+      this.pipeline.sky.scene.remove(this.nebulaVolume.mesh);
       this.nebulaVolume.dispose();
       this.nebulaVolume = null;
       setStarNebulaExtinction(null);

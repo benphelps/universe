@@ -4,6 +4,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { DiagramPass } from './diagramLayer';
+import { SkyLayer } from './skyLayer';
 
 /**
  * HDR render pipeline: linear half-float rendering → threshold bloom →
@@ -19,10 +20,17 @@ import { DiagramPass } from './diagramLayer';
  */
 export class RenderPipeline {
   readonly renderer: WebGLRenderer;
+  /** Half-resolution home of the volume domes; composited into the
+   *  scene pass as a single depth-tested quad. */
+  readonly sky = new SkyLayer();
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
 
-  constructor(container: HTMLElement, scene: Scene, camera: Camera) {
+  constructor(
+    container: HTMLElement,
+    scene: Scene,
+    private readonly camera: Camera,
+  ) {
     // Reversed-Z: quasi-logarithmic depth precision, so a planet at
     // half a million km and the star behind it stop quantizing to the
     // same far-plane depth and z-fighting in shards. Needs
@@ -38,6 +46,7 @@ export class RenderPipeline {
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new DiagramPass(scene, camera));
+    scene.add(this.sky.quad);
   }
 
   setSize(width: number, height: number): void {
@@ -52,6 +61,7 @@ export class RenderPipeline {
     // a star field that will not come into focus.
     this.composer.setPixelRatio(ratio);
     this.composer.setSize(width, height);
+    this.sky.setSize(width, height, ratio);
   }
 
   set exposure(value: number) {
@@ -63,10 +73,12 @@ export class RenderPipeline {
   }
 
   render(): void {
+    this.sky.render(this.renderer, this.camera);
     this.composer.render();
   }
 
   dispose(): void {
+    this.sky.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

@@ -1,12 +1,15 @@
 import {
-  AdditiveBlending,
+  AddEquation,
   BackSide,
+  CustomBlending,
   GLSL3,
   Matrix3,
   Mesh,
+  OneFactor,
   ShaderMaterial,
   SphereGeometry,
   Vector3,
+  ZeroFactor,
 } from 'three';
 import type { GalacticPosition } from '../../universe/galaxy/density';
 import { buildGalaxyRadianceGlsl } from '../glsl/galaxyRadiance';
@@ -41,7 +44,9 @@ ${buildGalaxyRadianceGlsl()}
 
 void main() {
   vec3 dir = normalize(uWorldToGalaxy * vRay);
-  fragColor = vec4(galaxyRadiance(uCamGalKpc, dir, uMeanLum) * uOpacity, 1.0);
+  // Added light occludes nothing: zero alpha, so the sky composite the
+  // dome renders into carries only the nebula's occlusion.
+  fragColor = vec4(galaxyRadiance(uCamGalKpc, dir, uMeanLum) * uOpacity, 0.0);
 }
 `;
 
@@ -86,7 +91,16 @@ export class GalaxyVolume {
         uClumpNoise: { value: luts.clumpTile },
       },
       side: BackSide,
-      blending: AdditiveBlending,
+      // Pure added light, and only light: colour accumulates, alpha is
+      // left exactly as it stands. AdditiveBlending would scale the
+      // colour by src alpha, and the sky target needs this dome to
+      // leave alpha to the nebula that composites after it.
+      blending: CustomBlending,
+      blendEquation: AddEquation,
+      blendSrc: OneFactor,
+      blendDst: OneFactor,
+      blendSrcAlpha: ZeroFactor,
+      blendDstAlpha: OneFactor,
       // Keep background light in the early queue and let real scene depth
       // occlude it. A transparent, depth-disabled dome renders after opaque
       // planets and visibly lays the galactic band over their discs.
