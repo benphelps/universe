@@ -22,18 +22,8 @@ import {
   SCATTER_TABLE_MUS,
 } from '../../universe/galaxy/dustScattering';
 import { scatterTableTexture } from './scatterTable';
-import {
-  BEAM_SR,
-  DISPLAY_CEIL,
-  DISPLAY_GAIN,
-  DISPLAY_GAMMA,
-  DISPLAY_PIVOT_LSUN_PC2,
-  SKY_PEDESTAL_LSUN_PC2_SR,
-} from '../../universe/galaxy/displayLaw';
-
-/** The subtracted sky pedestal in the law's own pivot units. */
-const PEDESTAL_BEAM =
-  (4 * Math.PI * BEAM_SR * SKY_PEDESTAL_LSUN_PC2_SR) / DISPLAY_PIVOT_LSUN_PC2;
+import { DISPLAY_GAMMA, SKY_PEDESTAL_LSUN_PC2_SR } from '../../universe/galaxy/displayLaw';
+import { TRANSFER_GLSL, transferUniforms } from '../displayTransfer';
 import {
   SCATTER_EMISSIVITY_PER_LSUN,
   type NebulaVolumeBake,
@@ -96,6 +86,7 @@ uniform float uDetailFreq;
 uniform float uFineDetailFreq;
 uniform int uSteps;
 uniform sampler2D uScatterTable;
+${TRANSFER_GLSL}
 
 /** The multiple-scattering table: what a voxel at optical depth tau
  *  from its source sends toward a viewer at scattering-angle cosine
@@ -242,20 +233,17 @@ void main() {
   }
 
   // The march integrated physical radiance, L☉ pc⁻² sr⁻¹. What the
-  // pixel shows for it is the sky's shared photometric law
-  // (universe/galaxy/displayLaw): the marginal display energy above
-  // the sky's subtracted pedestal, compressed on luminance so the
-  // line mixture keeps its hue — a skirt far below the smooth sky
-  // vanishes into it instead of being stretched into fog. The
-  // backdrop it covers holds display energies already, so its dimming
-  // rides the law's point form, transmittance to the gamma.
+  // pixel shows for it is the sky's shared photometric law: the
+  // marginal display energy above the sky's subtracted pedestal,
+  // compressed on luminance so the line mixture keeps its hue — a
+  // skirt far below the smooth sky vanishes into it instead of being
+  // stretched into fog. The backdrop it covers holds display energies
+  // already, so its dimming rides the law's point form, transmittance
+  // to the gamma.
   float lum = dot(light, vec3(0.2126, 0.7152, 0.0722));
-  float beam = lum * ${f((4 * Math.PI * BEAM_SR) / DISPLAY_PIVOT_LSUN_PC2)};
-  float shown = min(${f(DISPLAY_CEIL)},
-    ${f(DISPLAY_GAIN)} * pow(${f(PEDESTAL_BEAM)} + beam, ${f(DISPLAY_GAMMA)}) -
-      ${f(DISPLAY_GAIN * PEDESTAL_BEAM ** DISPLAY_GAMMA)});
+  float shown = displayRadiance(lum);
   vec3 display = lum > 1e-9 ? light * (shown / lum) : vec3(0.0);
-  float cover = 1.0 - pow(transmittance.g, ${f(DISPLAY_GAMMA)});
+  float cover = 1.0 - pow(transmittance.g, uGamma);
 
   // Premultiplied: what the nebula shows, over what it lets past.
   fragColor = vec4(display * uOpacity, cover * uOpacity);
@@ -291,6 +279,7 @@ export class NebulaVolume {
     fine: NebulaVolumeBake | null,
     private readonly viewpointPc: GalacticPosition,
     sceneFromGalaxy: Float32Array,
+    skyFloorRadiance = SKY_PEDESTAL_LSUN_PC2_SR,
   ) {
     this.seed = bake.seed;
     this.hasFine = fine !== null;
@@ -355,6 +344,7 @@ export class NebulaVolume {
         uFineDustRef: { value: fine?.dustRef ?? 1 },
         uFineDensityRef: { value: fine?.densityRef ?? 1 },
         uFineEmissionCoefficient: { value: fine?.emissionCoefficient ?? 0 },
+        ...transferUniforms(skyFloorRadiance),
       },
       side: BackSide,
       // Premultiplied alpha is exactly the volume-rendering composite:

@@ -75,24 +75,31 @@ export function displayEnergy(brightnessLsunPc2: number): number {
 /** Display energy for a surface brightness, L☉ pc⁻² sr⁻¹, above the
  *  smooth sky: the law's marginal response over the pedestal, at what
  *  one reference beam collects, in the point convention's 4π units,
- *  ceiling applied. */
-export function displaySurfaceBrightness(radianceLsunPc2Sr: number): number {
+ *  ceiling applied. The pedestal defaults to the typical dark column;
+ *  a sky that has measured its own floor passes it. */
+export function displaySurfaceBrightness(
+  radianceLsunPc2Sr: number,
+  pedestalLsunPc2Sr = SKY_PEDESTAL_LSUN_PC2_SR,
+): number {
   const beam = 4 * Math.PI * BEAM_SR;
   return Math.min(
     DISPLAY_CEIL,
-    displayEnergy(beam * (SKY_PEDESTAL_LSUN_PC2_SR + Math.max(0, radianceLsunPc2Sr))) -
-      displayEnergy(beam * SKY_PEDESTAL_LSUN_PC2_SR),
+    displayEnergy(beam * (pedestalLsunPc2Sr + Math.max(0, radianceLsunPc2Sr))) -
+      displayEnergy(beam * pedestalLsunPc2Sr),
   );
 }
 
 /** The radiance above the sky a display energy stands for — the
  *  marginal law inverted, for tests and probes that decode a map. */
-export function radianceFromDisplay(display: number): number {
+export function radianceFromDisplay(
+  display: number,
+  pedestalLsunPc2Sr = SKY_PEDESTAL_LSUN_PC2_SR,
+): number {
   const beam = 4 * Math.PI * BEAM_SR;
-  const pedestal = displayEnergy(beam * SKY_PEDESTAL_LSUN_PC2_SR);
+  const pedestal = displayEnergy(beam * pedestalLsunPc2Sr);
   return (
     (((display + pedestal) / DISPLAY_GAIN) ** (1 / DISPLAY_GAMMA) * DISPLAY_PIVOT_LSUN_PC2) /
       beam -
-    SKY_PEDESTAL_LSUN_PC2_SR
+    pedestalLsunPc2Sr
   );
 }

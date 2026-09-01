@@ -17,6 +17,7 @@ import {
   ShaderMaterial,
   SphereGeometry,
   Vector2,
+  Vector3,
   Vector4,
 } from 'three';
 import { rotateToScene } from '../../universe/galaxy/orientation';
@@ -27,7 +28,7 @@ import {
   DISPLAY_GAMMA,
   DISPLAY_PIVOT_LSUN_PC2,
 } from '../../universe/galaxy/displayLaw';
-import { glslFloat as f } from '../glsl/format';
+import { TRANSFER_GLSL, transferUniforms } from '../displayTransfer';
 import {
   DARK_ATLAS_COLS,
   DARK_ATLAS_ROWS,
@@ -49,10 +50,14 @@ varying vec3 vDir;
 
 uniform sampler2D uNebulaAtlas;
 uniform vec4 uNebulaA[${MAX_NEBULAE}]; // dir.xyz, tangent half-extent
-uniform vec4 uNebulaB[${MAX_NEBULAE}]; // right.xyz, brightness
+uniform vec4 uNebulaB[${MAX_NEBULAE}]; // right.xyz, peak radiance
 uniform vec4 uNebulaC[${MAX_NEBULAE}]; // up.xyz, tile index
+uniform vec3 uNebulaHueE[${MAX_NEBULAE}];
+uniform vec3 uNebulaHueR[${MAX_NEBULAE}];
+uniform float uNebulaFade[${MAX_NEBULAE}];
 uniform int uNebulaCount;
 uniform float uIntensity;
+${TRANSFER_GLSL}
 
 void main() {
   vec3 dir = normalize(vDir);
@@ -70,7 +75,13 @@ void main() {
     float tile = uNebulaC[i].w;
     vec2 tileOrigin = vec2(mod(tile, ${NEBULA_ATLAS_COLS}.0), floor(tile / ${NEBULA_ATLAS_COLS}.0));
     vec2 uv = (tileOrigin + vec2(u, v)) / vec2(${NEBULA_ATLAS_COLS}.0, ${NEBULA_ATLAS_ROWS}.0);
-    sum += texture2D(uNebulaAtlas, uv).rgb * uNebulaB[i].w;
+    // The tile carries physics — relative luminance and the local
+    // line-vs-continuum mix — and here it meets the instrument: the
+    // calibrated peak radiance, the law, the hue pair, and the
+    // crossfade against the standing volume, all uniforms.
+    vec2 cell = texture2D(uNebulaAtlas, uv).rg;
+    vec3 hue = mix(uNebulaHueR[i], uNebulaHueE[i], cell.g);
+    sum += hue * (displayRadiance(cell.r * uNebulaB[i].w) * uNebulaFade[i]);
   }
   gl_FragColor = vec4(sum * uIntensity, 1.0);
 }
@@ -81,6 +92,11 @@ attribute vec3 starColor;
 attribute float brightness;
 
 uniform float uIntensity;
+uniform float uGamma;
+uniform float uGain;
+uniform float uFloor;
+uniform float uCeil;
+uniform float uLogPivot;
 
 varying vec3 vColor;
 varying float vAlpha;
@@ -88,11 +104,12 @@ varying float vAlpha;
 void main() {
   // The sky's shared photometric law (universe/galaxy/displayLaw):
   // size and energy follow log irradiance, compressed so only the
-  // very nearest stars blaze.
-  float logE = log2(max(brightness, 1e-12)) + ${f(-Math.log2(DISPLAY_PIVOT_LSUN_PC2))};
+  // very nearest stars blaze. Points take the law whole — PSF
+  // photometry stands a star's flux above any background — with their
+  // own floor and ceiling as uniforms, so the instrument can change.
+  float logE = log2(max(brightness, 1e-12)) - uLogPivot;
   float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
-  float energy = clamp(${f(DISPLAY_GAIN)} * exp2(${f(DISPLAY_GAMMA)} * logE),
-    ${f(DISPLAY_FLOOR)}, ${f(DISPLAY_CEIL)}) * uIntensity;
+  float energy = clamp(uGain * exp2(uGamma * logE), uFloor, uCeil) * uIntensity;
   vColor = starColor * energy;
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
@@ -142,6 +159,8 @@ uniform vec4 uDarkB[${MAX_DARK}]; // right.xyz, tile index
 uniform vec4 uDarkC[${MAX_DARK}]; // up.xyz, unused
 uniform int uDarkCount;
 uniform float uIntensity;
+uniform float uPedestalRadiance;
+${TRANSFER_GLSL}
 
 // B-spline weights for one axis of the bicubic fetch.
 vec4 cubicWeights(float t) {
@@ -205,12 +224,18 @@ void main() {
     vec2 tuv = (tileOrigin + vec2(u, v)) / vec2(${DARK_ATLAS_COLS}.0, ${DARK_ATLAS_ROWS}.0);
     transmission *= texture2D(uDarkAtlas, tuv).r;
   }
-  // The glow map holds display energies and the transmission is
-  // physical; the shared law is a pure power, so dimming in display
-  // space is exact with the transmittance raised to the same exponent.
-  gl_FragColor = vec4(
-    textureBicubic(uGlow, uv, uGlowSize).rgb * pow(transmission, ${f(DISPLAY_GAMMA)}) * uIntensity,
-    1.0);
+  // The map holds the column's physics — radiance and reddening — so
+  // the cloud shadowing dims the light itself, exactly, before the
+  // instrument ever sees it; a rift can carve the column below the
+  // sky's own pedestal and show honestly black. Hue is the warm
+  // population reddened by the dust along the way.
+  vec4 column = textureBicubic(uGlow, uv, uGlowSize);
+  float shown = displayRadiance(column.r * transmission - uPedestalRadiance);
+  vec3 hue = vec3(
+    1.0,
+    0.93 * (0.75 + 0.25 * column.g),
+    0.85 * (0.55 + 0.45 * column.g));
+  gl_FragColor = vec4(hue * shown * uIntensity, 1.0);
 }
 `;
 
@@ -238,6 +263,7 @@ export interface BackdropSource {
   glowWidth: number;
   glowHeight: number;
   glowData: Float32Array;
+  skyFloorRadiance: number;
   riftData: Float32Array;
   sceneFromGalaxy: Float32Array;
   starCount: number;
@@ -246,16 +272,16 @@ export interface BackdropSource {
   starBrightness: Float32Array;
 }
 
+
 export class StarfieldBackdrop {
   readonly group = new Group();
   private readonly materials: ShaderMaterial[] = [];
-  /** Which cloud each nebula sprite stands for, and the uniform
-   *  carrying its brightness — so a sprite can stand down while the
+  /** Which cloud each nebula sprite stands for, and the fade uniform
+   *  it dissolves through — so a sprite can stand down while the
    *  cloud it stands for is drawn as the volume it really is, and
-   *  stand back up at its baked brightness when the volume leaves. */
+   *  stand back up when the volume leaves. */
   private nebulaSeeds: bigint[] = [];
-  private nebulaBrightness: Vector4[] = [];
-  private nebulaBaseBrightness: number[] = [];
+  private nebulaFades: number[] = [];
   private volumeFades: ReadonlyMap<bigint, number> = new Map();
 
   /** Match the galaxy layers' draw cutoff: below this the contribution
@@ -297,7 +323,14 @@ export class StarfieldBackdrop {
     const pointsMaterial = new ShaderMaterial({
       vertexShader: POINTS_VERTEX,
       fragmentShader: POINTS_FRAGMENT,
-      uniforms: { uIntensity: { value: 1 } },
+      uniforms: {
+        uIntensity: { value: 1 },
+        uGamma: { value: DISPLAY_GAMMA },
+        uGain: { value: DISPLAY_GAIN },
+        uFloor: { value: DISPLAY_FLOOR },
+        uCeil: { value: DISPLAY_CEIL },
+        uLogPivot: { value: Math.log2(DISPLAY_PIVOT_LSUN_PC2) },
+      },
       blending: AdditiveBlending,
       transparent: false,
       depthWrite: false,
@@ -379,6 +412,8 @@ export class StarfieldBackdrop {
         uDarkC: { value: darkC },
         uDarkCount: { value: sky.darkClouds.length },
         uIntensity: { value: 1 },
+        uPedestalRadiance: { value: sky.skyFloorRadiance },
+        ...transferUniforms(sky.skyFloorRadiance),
       },
       blending: AdditiveBlending,
       transparent: false,
@@ -399,11 +434,19 @@ export class StarfieldBackdrop {
       });
       const nebulaB = Array.from({ length: MAX_NEBULAE }, (_, i) => {
         const patch = patches[i];
-        return patch ? toScene(patch.right, patch.brightness) : new Vector4(1, 0, 0, 0);
+        return patch ? toScene(patch.right, patch.peakRadiance) : new Vector4(1, 0, 0, 0);
       });
       const nebulaC = Array.from({ length: MAX_NEBULAE }, (_, i) => {
         const patch = patches[i];
         return patch ? toScene(patch.up, patch.tile) : new Vector4(0, 0, 1, 0);
+      });
+      const hueE = Array.from({ length: MAX_NEBULAE }, (_, i) => {
+        const patch = patches[i];
+        return new Vector3(...(patch?.emissionHue ?? [1, 1, 1]));
+      });
+      const hueR = Array.from({ length: MAX_NEBULAE }, (_, i) => {
+        const patch = patches[i];
+        return new Vector3(...(patch?.reflectionHue ?? [1, 1, 1]));
       });
       const atlas = new DataTexture(
         sky.nebulaAtlas,
@@ -417,6 +460,7 @@ export class StarfieldBackdrop {
       atlas.wrapS = ClampToEdgeWrapping;
       atlas.wrapT = ClampToEdgeWrapping;
       atlas.needsUpdate = true;
+      const fades = Array.from({ length: MAX_NEBULAE }, () => 1);
       const nebulaMaterial = new ShaderMaterial({
         vertexShader: GLOW_VERTEX,
         fragmentShader: NEBULA_FRAGMENT,
@@ -425,8 +469,12 @@ export class StarfieldBackdrop {
           uNebulaA: { value: nebulaA },
           uNebulaB: { value: nebulaB },
           uNebulaC: { value: nebulaC },
+          uNebulaHueE: { value: hueE },
+          uNebulaHueR: { value: hueR },
+          uNebulaFade: { value: fades },
           uNebulaCount: { value: patches.length },
           uIntensity: { value: 1 },
+          ...transferUniforms(sky.skyFloorRadiance),
         },
         blending: AdditiveBlending,
         transparent: false,
@@ -435,8 +483,7 @@ export class StarfieldBackdrop {
       });
       this.materials.push(nebulaMaterial);
       this.nebulaSeeds = patches.map((patch) => patch.seed);
-      this.nebulaBrightness = nebulaB;
-      this.nebulaBaseBrightness = nebulaB.map((brightness) => brightness.w);
+      this.nebulaFades = fades;
       this.applyNebulaSuppression();
       const nebulaDome = new Mesh(new SphereGeometry(radius * 1.02, 48, 24), nebulaMaterial);
       nebulaDome.frustumCulled = false;
@@ -455,8 +502,7 @@ export class StarfieldBackdrop {
 
   private applyNebulaSuppression(): void {
     for (let i = 0; i < this.nebulaSeeds.length; i++) {
-      this.nebulaBrightness[i].w =
-        this.nebulaBaseBrightness[i] * (1 - (this.volumeFades.get(this.nebulaSeeds[i]) ?? 0));
+      this.nebulaFades[i] = 1 - (this.volumeFades.get(this.nebulaSeeds[i]) ?? 0);
     }
   }
 

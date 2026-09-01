@@ -89,22 +89,18 @@ describe('the display law', () => {
 describe('sprite photometry', () => {
   it('closes the flux books over the tile', () => {
     // The impostor's shape is heuristic but its scale is a closure:
-    // decode the γ-pressed tile back to radiance and integrate it over
-    // the sprite's solid angle — the cloud's whole light budget must
-    // come back out, at any distance.
+    // the tile's radiance channel times its calibrated peak, summed
+    // over the sprite's solid angle, must return the cloud's whole
+    // light budget — at any distance, and to numerical precision now
+    // that the tile carries linear physics.
     const atlas = new Float32Array(
       NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4,
     );
-    const subjects = litNebulae();
-    let checked = 0;
-    for (const nebula of subjects.slice(0, 8)) {
+    for (const nebula of litNebulae().slice(0, 8)) {
       const view: [number, number, number] = [0.6, 0.48, 0.64];
       const norm = Math.hypot(...view);
       const unit: [number, number, number] = [view[0] / norm, view[1] / norm, view[2] / norm];
-      const { brightness } = renderNebulaTile(atlas, 0, nebula.cloud, unit, nebula);
-      // A peak at the ceiling cannot be inverted; the closure is
-      // checked on the tiles the clamp leaves honest.
-      if (brightness >= DISPLAY_CEIL * 0.999) continue;
+      const { peakRadiance } = renderNebulaTile(atlas, 0, nebula.cloud, unit, nebula);
 
       const distance = nebula.cloud.radiusPc * 12;
       const extentPc = nebula.cloud.radiusPc * 1.6;
@@ -113,17 +109,13 @@ describe('sprite photometry', () => {
       for (let j = 0; j < NEBULA_TILE; j++) {
         for (let i = 0; i < NEBULA_TILE; i++) {
           const at = (j * (NEBULA_ATLAS_COLS * NEBULA_TILE) + i) * 4;
-          const shown = luminance(atlas[at], atlas[at + 1], atlas[at + 2]) * brightness;
-          if (shown <= 0) continue;
-          flux += Math.max(0, radianceFromDisplay(shown)) * pixelSr * pixelSr;
+          flux += atlas[at] * peakRadiance * pixelSr * pixelSr;
         }
       }
       const budget = nebulaLightSolar(nebula) / (4 * Math.PI * distance * distance);
-      expect(flux / budget).toBeGreaterThan(0.9);
-      expect(flux / budget).toBeLessThan(1.1);
-      checked += 1;
+      expect(flux / budget).toBeGreaterThan(0.995);
+      expect(flux / budget).toBeLessThan(1.005);
     }
-    expect(checked).toBeGreaterThan(2);
   });
 
   it('agrees with the volume it stands in for', () => {

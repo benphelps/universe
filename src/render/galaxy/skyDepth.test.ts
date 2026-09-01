@@ -25,6 +25,7 @@ function emptySky(): SkyField {
     glowWidth: 1,
     glowHeight: 1,
     glowData: new Float32Array([0, 0, 0, 0]),
+    skyFloorRadiance: 0,
     riftData: new Float32Array([1]),
     darkClouds: [],
     darkAtlas: new Float32Array(),

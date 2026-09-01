@@ -134,6 +134,7 @@ import {
   type SkyField,
   type SkyPreview,
 } from '../universe/galaxy/skyfield';
+import { SKY_PEDESTAL_LSUN_PC2_SR } from '../universe/galaxy/displayLaw';
 import { getGalacticLandmarks } from './landmarkService';
 import { cancelSkyBuilds, getSkyField, skyPending, skyProgress, watchSkyBuild } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
@@ -400,6 +401,11 @@ export class UnifiedViewer {
    *  itself is: the galaxy's frame does not wait on the sweep. */
   private skyPreviewFrame: Float32Array | null = null;
   private skyData: SkyField | null = null;
+  /** The standing sky's measured pedestal — the darkest column's
+   *  radiance, which every extended tier's display subtracts. Set as
+   *  soon as the background lands; volumes installed before that use
+   *  the typical dark column. */
+  private skyFloorRadiance = SKY_PEDESTAL_LSUN_PC2_SR;
   /**
    * Ground frame of the focused body: spin about Y composed with the
    * axial tilt. The terrain never moves (static vertices stay jitter-free
@@ -1351,6 +1357,7 @@ export class UnifiedViewer {
       // whole of it and the finished field has nothing to add.
       (background) => {
         if (this.disposed || this.system !== system || this.backdrop) return;
+        this.skyFloorRadiance = background.skyFloorRadiance;
         this.backdrop = new StarfieldBackdrop(
           { ...background, starCount: 0, starDirs: EMPTY_F32, starColors: EMPTY_F32, starBrightness: EMPTY_F32 },
           2000,
@@ -1364,6 +1371,7 @@ export class UnifiedViewer {
       if (this.disposed || this.system !== system) return;
       this.clearSkyPreview();
       this.skyData = sky;
+      this.skyFloorRadiance = sky.skyFloorRadiance;
       // Every resolved star is 3D content (near field above, far field
       // here); the backdrop keeps only the unresolved sky — glow,
       // rifts, nebulae, dark clouds — which the galaxy volume replaces.
@@ -1552,7 +1560,13 @@ export class UnifiedViewer {
       this.pipeline.sky.scene.remove(existing.mesh);
       existing.dispose();
     }
-    const volume = new NebulaVolume(coarse, this.fineBakes.get(seed) ?? null, viewpoint, orientation);
+    const volume = new NebulaVolume(
+      coarse,
+      this.fineBakes.get(seed) ?? null,
+      viewpoint,
+      orientation,
+      this.skyFloorRadiance,
+    );
     // A fresh volume dissolves in from nothing; a reinstall — the fine
     // bake landing over the coarse one — picks the fade up where the
     // volume it replaces stood, so the upgrade is invisible.

@@ -57,9 +57,17 @@ export interface NebulaPatch {
   angularRadius: number;
   /** Linear sRGB emission hue (tile pixels carry the per-pixel mix). */
   color: [number, number, number];
-  /** Display energy at the tile's peak, from the shared photometric
-   *  law — the sky shader multiplies the tile by it directly. */
+  /** Display energy at the tile's peak under the camera transfer —
+   *  what ranks salience and pick priority, viewpoint-stable. */
   brightness: number;
+  /** Radiance at the tile's unit relative luminance, L☉ pc⁻² sr⁻¹ —
+   *  the physics the sky shader exposes under whatever instrument is
+   *  standing. */
+  peakRadiance: number;
+  /** Unit-luminance line and scattered-continuum hues; the tile's
+   *  green channel mixes between them per pixel. */
+  emissionHue: [number, number, number];
+  reflectionHue: [number, number, number];
   /** Tangent-plane basis (galactic frame) matching the sprite tile. */
   right: [number, number, number];
   up: [number, number, number];
@@ -123,8 +131,13 @@ export interface SkyField {
   nebulaAtlas: Float32Array;
   glowWidth: number;
   glowHeight: number;
-  /** RGBA float lat-long map of unresolved background light. */
+  /** Lat-long map of the unresolved background: column radiance in R
+   *  (L☉ pc⁻² sr⁻¹), dust reddening in G — physics, displayed by the
+   *  glow shader under the standing instrument. */
   glowData: Float32Array;
+  /** The darkest column's radiance — the sky's own measured pedestal,
+   *  which every extended tier's display subtracts. */
+  skyFloorRadiance: number;
   /** Lat-long transmission through small distant clouds (RIFT_WIDTH ×
    *  HEIGHT, one float per texel); the prominent ones ride as sprites. */
   riftData: Float32Array;
@@ -283,6 +296,9 @@ export interface SkyBackground {
   glowWidth: number;
   glowHeight: number;
   glowData: Float32Array;
+  /** The darkest column's radiance — the sky's own measured pedestal,
+   *  which every extended tier's display subtracts. */
+  skyFloorRadiance: number;
   riftData: Float32Array;
 }
 
@@ -601,6 +617,7 @@ export function assembleSkyField(
     glowWidth: built.glowWidth,
     glowHeight: built.glowHeight,
     glowData: built.glowData,
+    skyFloorRadiance: built.skyFloorRadiance,
     riftData: built.riftData,
     ...constellations,
   };
@@ -670,17 +687,20 @@ function nebulaHues(nebula: Nebula): {
   // hottest star and its own gas, at the representative U a whole
   // object stands for — and its scattered continuum wears the blue
   // tilt of the dust's opacity curve, standing in for the per-λ
-  // march only the volume runs.
+  // march only the volume runs. Both hues at unit luminance, so the
+  // tile's radiance channel carries all of the brightness.
   const [er, eg, eb] = nebulaEmissionColor(NEBULA_MEAN_U, nebula.maxTeff, nebula.metallicity);
   const illuminant = nebulaIlluminant(nebula);
-  const [sr, sg, sb] = blackbodyLinearRgb(Math.max(3000, illuminant?.tEff ?? 4000));
+  const [br, bg, bb] = blackbodyLinearRgb(Math.max(3000, illuminant?.tEff ?? 4000));
+  const [sr, sg, sb] = [
+    br * SCATTER_TINT_RGB[0],
+    bg * SCATTER_TINT_RGB[1],
+    bb * SCATTER_TINT_RGB[2],
+  ];
+  const scatterLum = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
   return {
     emission: [er, eg, eb],
-    reflection: [
-      sr * SCATTER_TINT_RGB[0],
-      sg * SCATTER_TINT_RGB[1],
-      sb * SCATTER_TINT_RGB[2],
-    ],
+    reflection: [sr / scatterLum, sg / scatterLum, sb / scatterLum],
     share: nebulaEmissionShare(nebula),
   };
 }
@@ -709,13 +729,13 @@ export function renderNebulaTile(
   cloud: MolecularCloud,
   view: [number, number, number],
   nebula: Nebula,
-): { right: [number, number, number]; up: [number, number, number]; brightness: number } {
+): { right: [number, number, number]; up: [number, number, number]; peakRadiance: number } {
   const axis: [number, number, number] =
     Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
   const right = normalize(cross(view, axis));
   const up = cross(view, right);
 
-  const { emission, reflection: scattered, share } = nebulaHues(nebula);
+  const share = nebulaEmissionShare(nebula);
 
   const extentPc = cloud.radiusPc * 1.6;
   const steps = 16;
@@ -725,8 +745,14 @@ export function renderNebulaTile(
   const tileX = (tile % NEBULA_ATLAS_COLS) * NEBULA_TILE;
   const tileY = Math.floor(tile / NEBULA_ATLAS_COLS) * NEBULA_TILE;
 
+  // The tile carries physics, not pixels: relative luminance and the
+  // local emission-vs-scattered mix, and the sky shader colours and
+  // exposes them under whatever instrument is standing — so a mode
+  // change never re-bakes a sky.
   let peak = 1e-6;
-  const rgb = new Float32Array(NEBULA_TILE * NEBULA_TILE * 3);
+  let integral = 0;
+  const lum = new Float32Array(NEBULA_TILE * NEBULA_TILE);
+  const mix = new Float32Array(NEBULA_TILE * NEBULA_TILE);
   for (let j = 0; j < NEBULA_TILE; j++) {
     for (let i = 0; i < NEBULA_TILE; i++) {
       // Border stays empty so the atlas samples to zero at tile edges.
@@ -738,9 +764,8 @@ export function renderNebulaTile(
       const oz = (right[2] * u + up[2] * v) * extentPc;
 
       let tau = 0;
-      let r = 0;
-      let g = 0;
-      let b = 0;
+      let y = 0;
+      let ion = 0;
       for (let s = 0; s < steps; s++) {
         const t = -extentPc + (s + 0.5) * dt;
         const px = ox + view[0] * t;
@@ -751,17 +776,15 @@ export function renderNebulaTile(
         const coreSq = (px * px + py * py + pz * pz) / (0.35 * cloud.radiusPc) ** 2;
         const illumination = 1 / (1 + coreSq);
         const glow = density * illumination * Math.exp(-tau) * dt;
-        const ionLocal = share * Math.min(1, illumination * 2.2);
-        r += glow * (scattered[0] + (emission[0] - scattered[0]) * ionLocal);
-        g += glow * (scattered[1] + (emission[1] - scattered[1]) * ionLocal);
-        b += glow * (scattered[2] + (emission[2] - scattered[2]) * ionLocal);
+        y += glow;
+        ion += glow * share * Math.min(1, illumination * 2.2);
         tau += density * extinction * dt;
       }
-      const out = (j * NEBULA_TILE + i) * 3;
-      rgb[out] = r;
-      rgb[out + 1] = g;
-      rgb[out + 2] = b;
-      peak = Math.max(peak, Math.max(r, g, b));
+      const at = j * NEBULA_TILE + i;
+      lum[at] = y;
+      mix[at] = y > 0 ? ion / y : 0;
+      integral += y;
+      if (y > peak) peak = y;
     }
   }
 
@@ -771,45 +794,21 @@ export function renderNebulaTile(
   // luminosity over 4πd² spread by the tile's own luminance integral —
   // and the distance cancels, as it must: surface brightness carries
   // none.
-  let integral = 0;
-  for (let index = 0; index < NEBULA_TILE * NEBULA_TILE; index++) {
-    const src = index * 3;
-    integral += 0.2126 * rgb[src] + 0.7152 * rgb[src + 1] + 0.0722 * rgb[src + 2];
-  }
   const peakRadiance =
     (nebulaLightSolar(nebula) * NEBULA_TILE ** 2 * peak) /
     (16 * Math.PI * extentPc ** 2 * Math.max(integral, 1e-9));
 
-  // Every pixel through the shared law's marginal form, on luminance
-  // so the hue survives; the atlas holds the tile normalized by its
-  // own peak display energy, and that peak rides in brightness for
-  // the sky shader to multiply back — so a skirt far below the sky's
-  // pedestal vanishes into it on the sprite exactly as it does on the
-  // volume.
-  const display = new Float32Array(NEBULA_TILE * NEBULA_TILE * 3);
-  let peakDisplay = 1e-9;
-  for (let index = 0; index < NEBULA_TILE * NEBULA_TILE; index++) {
-    const src = index * 3;
-    const y = (0.2126 * rgb[src] + 0.7152 * rgb[src + 1] + 0.0722 * rgb[src + 2]) / peak;
-    if (y <= 0) continue;
-    const shown = displaySurfaceBrightness(peakRadiance * y) / (y * peak);
-    display[src] = rgb[src] * shown;
-    display[src + 1] = rgb[src + 1] * shown;
-    display[src + 2] = rgb[src + 2] * shown;
-    const lum = y * peak * shown;
-    if (lum > peakDisplay) peakDisplay = lum;
-  }
   for (let j = 0; j < NEBULA_TILE; j++) {
     for (let i = 0; i < NEBULA_TILE; i++) {
-      const src = (j * NEBULA_TILE + i) * 3;
+      const at = j * NEBULA_TILE + i;
       const dst = ((tileY + j) * atlasWidth + tileX + i) * 4;
-      atlas[dst] = display[src] / peakDisplay;
-      atlas[dst + 1] = display[src + 1] / peakDisplay;
-      atlas[dst + 2] = display[src + 2] / peakDisplay;
+      atlas[dst] = lum[at] / peak;
+      atlas[dst + 1] = mix[at];
+      atlas[dst + 2] = 0;
       atlas[dst + 3] = 1;
     }
   }
-  return { right, up, brightness: peakDisplay };
+  return { right, up, peakRadiance };
 }
 
 function cross(
@@ -881,20 +880,24 @@ function buildGroups(
     NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4,
   );
   const nebulae: NebulaPatch[] = kept.map((candidate, tile) => {
-    const { right, up, brightness } = renderNebulaTile(
+    const { right, up, peakRadiance } = renderNebulaTile(
       nebulaAtlas,
       tile,
       candidate.cloud,
       candidate.view,
       candidate.nebula,
     );
+    const { emission, reflection } = nebulaHues(candidate.nebula);
     return {
       seed: candidate.cloud.seed,
       distancePc: candidate.distancePc,
       dir: candidate.view,
       angularRadius: Math.min(0.35, candidate.cloud.radiusPc / candidate.distancePc),
       color: nebulaDisplayColor(candidate.nebula),
-      brightness,
+      brightness: displaySurfaceBrightness(peakRadiance),
+      peakRadiance,
+      emissionHue: emission,
+      reflectionHue: reflection,
       right,
       up,
       tile,
@@ -1621,6 +1624,7 @@ function buildGlow(
   glowWidth: number;
   glowHeight: number;
   glowData: Float32Array;
+  skyFloorRadiance: number;
   riftData: Float32Array;
 } {
   const width = 256;
@@ -1679,32 +1683,29 @@ function buildGlow(
     }
   }
 
-  // Sky subtraction, as every deep exposure performs it: the smooth
-  // sky has a floor in every direction — here about a solar luminosity
-  // per pc² per steradian toward the poles, the integrated starlight
-  // of the whole column — and a stretch deep enough for the shared law
-  // would show that floor as fog across the entire sky. A real
-  // instrument nulls its own darkest column and shows structure as
-  // contrast above it, so the map's own minimum is the black point:
-  // self-calibrated at every viewpoint, no dial. The structured tiers
-  // — nebulae, their sprites, the star points — ride on top of this
-  // map and keep the pure law.
+  // The map carries the physics — column radiance and reddening — and
+  // the display law is the shader's, where the instrument can change.
+  // What is measured here is the sky's own floor: the darkest column,
+  // about a solar luminosity per pc² per steradian toward the poles
+  // (the integrated starlight of the whole ray), which every deep
+  // exposure subtracts before showing structure as contrast above it.
+  // Self-calibrated at every viewpoint, no dial; the nebula tiers
+  // subtract the same floor.
   let floor = Infinity;
   for (let index = 0; index < width * height; index++) {
     if (radiance[index] < floor) floor = radiance[index];
   }
   for (let index = 0; index < width * height; index++) {
-    const reddening = reddenings[index];
-    const scale = displaySurfaceBrightness(radiance[index] - floor);
-    data[index * 4] = scale * 1.0;
-    data[index * 4 + 1] = scale * 0.93 * (0.75 + 0.25 * reddening);
-    data[index * 4 + 2] = scale * 0.85 * (0.55 + 0.45 * reddening);
+    data[index * 4] = radiance[index];
+    data[index * 4 + 1] = reddenings[index];
+    data[index * 4 + 2] = 0;
     data[index * 4 + 3] = 1;
   }
   return {
     glowWidth: width,
     glowHeight: height,
     glowData: data,
+    skyFloorRadiance: floor,
     riftData: buildCloudTransmission(viewpoint, dustKappa, spriteSeeds),
   };
 }
