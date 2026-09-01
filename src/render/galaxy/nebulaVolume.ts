@@ -16,6 +16,9 @@ import {
 import type { GalacticPosition } from '../../universe/galaxy/density';
 import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
 import type { NebulaVolumeBake } from '../../universe/galaxy/nebulaVolume';
+import { glslFloat as f } from '../glsl/format';
+import { galaxyLutTextures } from './galaxyLuts';
+import { CLUMP_TILE_PERIOD, CLUMP_TILE_RANGE } from './clumpTile';
 import type { StarNebulaExtinction } from '../starfield/neighborStars';
 
 /** Henyey–Greenstein asymmetry of interstellar grains in the optical:
@@ -36,7 +39,11 @@ void main() {
 }
 `;
 
-const STEPS = 96;
+/** March budget: the base for a volume as an object in frame, the
+ *  ceiling for one filling the sky, whose rays are longest and whose
+ *  sub-cell detail is finest against them. */
+const BASE_STEPS = 96;
+const MAX_STEPS = 160;
 
 export const NEBULA_FRAGMENT = /* glsl */ `
 precision highp sampler3D;
@@ -65,11 +72,35 @@ uniform vec3 uScatterSourcePc;
 uniform float uScatterLum;
 uniform float uScatterFloorPc2;
 uniform float uOpacity;
+uniform sampler3D uDetailNoise;
+uniform float uDetailAmp;
+uniform float uDetailFreq;
+uniform float uFineDetailFreq;
+uniform int uSteps;
 
 /** Interleaved gradient noise: one cheap dither per pixel, so the
  *  march's step boundaries never line up into shells. */
 float dither(vec2 p) {
   return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+/**
+ * The turbulent cascade continued below the grid. A cell of a
+ * cloud-sized box spans degrees of sky from within, and trilinear
+ * filtering renders it as featureless mush; real clouds are structured
+ * all the way down. Two octaves of the galaxy's tiling noise, pitched
+ * just under the cell and world-anchored in the box's own frame,
+ * modulate the sampled density — statistical detail, deliberately
+ * unseeded, the same line the terrain draws below its tiles. The amps
+ * echo the model's own cascade and the clamp is its carve: a deep
+ * trough goes to nothing, which is where the filaments come from.
+ */
+float subCellDetail(vec3 p, float freq) {
+  float n1 = texture(uDetailNoise, p * (freq * ${f(1 / CLUMP_TILE_PERIOD)})).r *
+    ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
+  float n2 = texture(uDetailNoise, p * (freq * ${f(2.26 / CLUMP_TILE_PERIOD)}) + 0.37).r *
+    ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
+  return max(0.0, 1.0 + uDetailAmp * (0.55 * n1 + 0.3 * n2));
 }
 
 void main() {
@@ -85,16 +116,18 @@ void main() {
   float far = min(min(hi.x, hi.y), hi.z);
   if (far <= near) discard;
 
-  float ds = (far - near) / float(${STEPS});
+  float ds = (far - near) / float(uSteps);
   float jitter = dither(gl_FragCoord.xy);
   vec3 light = vec3(0.0);
   float transmittance = 1.0;
-  for (int i = 0; i < ${STEPS}; i++) {
+  for (int i = 0; i < ${MAX_STEPS}; i++) {
+    if (i >= uSteps) break;
     vec3 p = rel + dir * (near + (float(i) + jitter) * ds);
     vec4 cell = texture(uVolume, p / (2.0 * uHalfPc) + 0.5);
     float dust = cell.r * uDustRef;
     float ionized = cell.g * uDensityRef;
     float coefficient = uEmissionCoefficient;
+    float detailFreq = uDetailFreq;
 
     // A cloud is a hundred parsecs and the bubble its newborns blow is
     // a few: one grid cannot hold both, and a grid that holds the cloud
@@ -110,7 +143,16 @@ void main() {
         cell.b = fine.b;
         cell.a = fine.a;
         coefficient = uFineEmissionCoefficient;
+        detailFreq = uFineDetailFreq;
       }
+    }
+
+    // Sub-cell structure, paid for only when the volume is large in
+    // frame — the amp is zero otherwise and the fetches are skipped.
+    if (uDetailAmp > 0.001) {
+      float detail = subCellDetail(p, detailFreq);
+      dust *= detail;
+      ionized *= detail;
     }
 
     // Recombination lines: optically thin, and going as the square of
@@ -211,6 +253,15 @@ export class NebulaVolume {
         },
         uScatterFloorPc2: { value: bake.scatterFloorPc2 },
         uOpacity: { value: 1 },
+        // The galaxy's tiling clump field, reused as the sub-cell
+        // texture: zeros until its worker bake lands, which reads as
+        // detail 1 — the plain grid, nothing false.
+        uDetailNoise: { value: galaxyLutTextures().clumpTile },
+        uDetailAmp: { value: 0 },
+        // First sub-cell octave at half the cell of each grid.
+        uDetailFreq: { value: bake.size / bake.halfExtentsPc[0] },
+        uFineDetailFreq: { value: fine ? fine.size / fine.halfExtentsPc[0] : 1 },
+        uSteps: { value: BASE_STEPS },
         uFine: { value: this.fineTexture },
         uFineOffsetPc: {
           value: fine
@@ -272,6 +323,17 @@ export class NebulaVolume {
       cam.z + this.viewpointPc.zPc,
     );
     this.cameraDistancePc = cam.distanceTo(this.material.uniforms.uCentrePc.value as Vector3);
+    // Sub-cell detail is bought by apparent size: a volume filling the
+    // sky shows its cells as degrees of mush and pays for the octaves
+    // and the deeper march; one standing small in frame renders its
+    // grid as-is at the base step count.
+    const apparent =
+      (this.material.uniforms.uHalfPc.value as number) / Math.max(1e-3, this.cameraDistancePc);
+    const gate = Math.min(1, Math.max(0, (apparent - 0.35) / 0.85));
+    const eased = gate * gate * (3 - 2 * gate);
+    this.material.uniforms.uDetailAmp.value = eased;
+    this.material.uniforms.uSteps.value =
+      BASE_STEPS + Math.round((MAX_STEPS - BASE_STEPS) * eased);
     this.mesh.position.copy(cameraWorldKm);
     this.mesh.scale.setScalar(domeRadiusKm);
   }
