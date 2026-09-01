@@ -12,11 +12,16 @@ export interface NebulaBakeTask {
    *  population is a pure function of the galaxy seed. */
   positionPc: GalacticPosition;
   seedHex: string;
+  /** Identifies the request — a cloud can be asked for at more than
+   *  one scale, and the answers are different volumes. */
+  key: string;
   size: number;
+  /** Half-extent of the box, pc; absent bakes the ionized bubble. */
+  boxPc?: number;
 }
 
 export interface NebulaBakeResult {
-  seedHex: string;
+  key: string;
   bake: NebulaVolumeBake | null;
 }
 
@@ -27,12 +32,12 @@ export interface NebulaBakeResult {
  * stands in front of the sky, and one bake at a time.
  */
 self.onmessage = (event: MessageEvent<NebulaBakeTask>) => {
-  const { galaxy, positionPc, seedHex, size } = event.data;
+  const { galaxy, positionPc, seedHex, key, size, boxPc } = event.data;
   setGalaxySeed(seedFromHex(galaxy));
   const seed = seedFromHex(seedHex);
   const cloud = cloudsNear(positionPc, 1).find((candidate) => candidate.seed === seed);
   const nebula = cloud ? nebulaFor(cloud) : null;
-  const bake = nebula ? bakeNebulaVolume(nebula, size) : null;
-  const result: NebulaBakeResult = { seedHex, bake };
+  const bake = nebula ? bakeNebulaVolume(nebula, size, boxPc) : null;
+  const result: NebulaBakeResult = { key, bake };
   (self as unknown as Worker).postMessage(result, bake ? [bake.data.buffer] : []);
 };

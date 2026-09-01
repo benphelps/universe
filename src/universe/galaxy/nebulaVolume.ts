@@ -99,8 +99,27 @@ function sample(grid: Float32Array, size: number, x: number, y: number, z: numbe
 const BOX_STROMGREN_RADII = 4;
 /** Even an unlit cocoon gets a body worth looking at. */
 const BOX_MIN_PC = 5;
+/**
+ * How far past the uniform-density Strömgren radius the front can
+ * possibly reach. Density only rises toward the source, so a ray runs
+ * furthest down the thinnest channel it can find — measured at three
+ * to four times, and a cell beyond this bound is neutral without
+ * needing the march to say so. At cloud scale that is nearly every
+ * cell, and it is what keeps a box a hundred parsecs across affordable.
+ */
+const IONIZATION_REACH = 10;
 
-export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
+/**
+ * Bake a nebula's volume. `boxPc` chooses the scale: left out, the box
+ * is the ionized bubble and its walls — what you look at from close
+ * to. Given, it is whatever the caller wants covered, which is how the
+ * cloud itself gets a volume for the view from outside.
+ */
+export function bakeNebulaVolume(
+  nebula: Nebula,
+  size = 64,
+  boxRequestPc?: number,
+): NebulaVolumeBake {
   const { cloud, metallicity } = nebula;
   // The volume is the bubble, centred on the star that blows it.
   const source = nebula.sources[0];
@@ -110,7 +129,7 @@ export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
   const reach = Math.max(...nebula.halfExtentsPc);
   const boxPc = Math.min(
     reach,
-    Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * nebula.stromgrenRadiusPc),
+    boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * nebula.stromgrenRadiusPc),
   );
   const halfExtentsPc: [number, number, number] = [boxPc, boxPc, boxPc];
   const cellPc: [number, number, number] = [
@@ -166,7 +185,10 @@ export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
         const dy = y;
         const dz = z;
         const distancePc = Math.hypot(dx, dy, dz) || 1e-4;
-        const steps = Math.max(1, Math.ceil(distancePc / stepPc));
+        // Past the front's furthest possible reach the gas is neutral
+        // whatever the march would say, and saying so costs nothing.
+        const reachable = distancePc < IONIZATION_REACH * Math.max(nebula.stromgrenRadiusPc, 0.05);
+        const steps = reachable ? Math.max(1, Math.ceil(distancePc / stepPc)) : 0;
         const ds = distancePc / steps;
         const ux = dx / distancePc;
         const uy = dy / distancePc;
@@ -174,19 +196,42 @@ export function bakeNebulaVolume(nebula: Nebula, size = 64): NebulaVolumeBake {
 
         let recombined = 0;
         let tau = 0;
-        for (let s = 0; s < steps; s++) {
-          const r = (s + 0.5) * ds;
-          const px = (ux * r + boxPc) / cellPc[0] - 0.5;
-          const py = (uy * r + boxPc) / cellPc[1] - 0.5;
-          const pz = (uz * r + boxPc) / cellPc[2] - 0.5;
-          const n = sample(gas, size, px, py, pz);
-          // Recombinations in this shell of the ray's own solid angle.
-          recombined += n * n * RECOMBINATION_SCALE * r * r * ds;
-          tau += sample(dust, size, px, py, pz) * DUST_OPACITY_PER_PC * ds;
+        if (reachable) {
+          // Inside the front's possible reach both integrals want the
+          // same fine steps, so they share one walk.
+          for (let s = 0; s < steps; s++) {
+            const r = (s + 0.5) * ds;
+            const px = (ux * r + boxPc) / cellPc[0] - 0.5;
+            const py = (uy * r + boxPc) / cellPc[1] - 0.5;
+            const pz = (uz * r + boxPc) / cellPc[2] - 0.5;
+            const n = sample(gas, size, px, py, pz);
+            // Recombinations in this shell of the ray's own solid angle.
+            recombined += n * n * RECOMBINATION_SCALE * r * r * ds;
+            tau += sample(dust, size, px, py, pz) * DUST_OPACITY_PER_PC * ds;
+          }
+        } else {
+          // Beyond it only the dust column is wanted — what the star's
+          // light is dimmed and reddened by — and it is smooth enough
+          // at this range to take in far coarser steps.
+          const coarse = Math.min(24, Math.max(1, Math.ceil(distancePc / (4 * stepPc))));
+          const coarseDs = distancePc / coarse;
+          for (let s = 0; s < coarse; s++) {
+            const r = (s + 0.5) * coarseDs;
+            tau +=
+              sample(
+                dust,
+                size,
+                (ux * r + boxPc) / cellPc[0] - 0.5,
+                (uy * r + boxPc) / cellPc[1] - 0.5,
+                (uz * r + boxPc) / cellPc[2] - 0.5,
+              ) *
+              DUST_OPACITY_PER_PC *
+              coarseDs;
+          }
         }
 
         // The front: sharp, but not sharper than a cell can carry.
-        const spent = budget > 0 ? recombined / budget : Infinity;
+        const spent = budget > 0 && reachable ? recombined / budget : Infinity;
         const ionized = Math.max(0, Math.min(1, (1 - spent) / 0.15));
         const transmittance = Math.exp(-tau);
         const n = gas[index];

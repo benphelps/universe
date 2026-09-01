@@ -91,6 +91,7 @@ import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { requestNebulaVolume } from './nebulaService';
 import { nebulaeNear } from '../universe/galaxy/nebula';
+import { cloudReachPc } from '../universe/galaxy/clouds';
 import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
 import { NebulaVolume } from '../render/galaxy/nebulaVolume';
 import { NuclearCluster } from '../render/galaxy/nuclearCluster';
@@ -156,7 +157,13 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
  *  breaks down at these heights, the volume takes over. */
 /** How far out a nebula is still worth a volume of its own. */
 const NEBULA_VOLUME_REACH_PC = 900;
-const NEBULA_VOLUME_SIZE = 64;
+const NEBULA_VOLUME_SIZE = 96;
+/** Within this many cloud reaches, the box holds the whole cloud. */
+const NEBULA_CLOUD_SCALE_RADII = 3;
+/** How far the arrival stands off a cloud it lands inside. */
+const NEBULA_FRAMING_RADII = 2.2;
+/** Only clouds this close can be the one the camera is standing in. */
+const NEBULA_HOME_REACH_PC = 400;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
 /** Layers below the galaxy renderers' existing cutoff are visually nil. */
@@ -1369,20 +1376,28 @@ export class UnifiedViewer {
    * the streaming pass.
    */
   private chooseNebulaVolume(viewpoint: GalacticPosition, orientation: Float32Array): void {
+    // Which nebula is worth a volume is a question about the screen,
+    // not about distance: cloud radii run from ten parsecs to sixty, so
+    // a great cloud well away can cover more of the sky than a small
+    // one nearby. Angular size decides, and it is also what decides how
+    // much of the cloud the box has to hold — stand off and the whole
+    // cloud is the picture, stand in it and the ionized bubble is.
     const candidates = nebulaeNear(viewpoint, NEBULA_VOLUME_REACH_PC)
-      .filter((nebula) => nebula.kind === 'emission')
       .map((nebula) => {
         const dx = nebula.cloud.positionPc.xPc - viewpoint.xPc;
         const dy = nebula.cloud.positionPc.yPc - viewpoint.yPc;
         const dz = nebula.cloud.positionPc.zPc - viewpoint.zPc;
-        const distanceSq = Math.max(1, dx * dx + dy * dy + dz * dz);
-        return { nebula, distanceSq, brightness: nebula.photonRate / distanceSq };
+        const distancePc = Math.max(1, Math.hypot(dx, dy, dz));
+        const reachPc = cloudReachPc(nebula.cloud);
+        return { nebula, distancePc, reachPc, angular: reachPc / distancePc };
       })
-      .filter((entry) => entry.distanceSq > 60 * 60)
-      .sort((a, b) => b.brightness - a.brightness);
+      .sort((a, b) => b.angular - a.angular);
     const chosen = candidates[0];
     if (!chosen) return;
-    const bake = requestNebulaVolume(chosen.nebula, NEBULA_VOLUME_SIZE, (ready) => {
+    // Close enough that the cloud itself is the subject: hold all of it.
+    const boxPc =
+      chosen.distancePc < NEBULA_CLOUD_SCALE_RADII * chosen.reachPc ? chosen.reachPc : undefined;
+    const bake = requestNebulaVolume(chosen.nebula, NEBULA_VOLUME_SIZE, boxPc, (ready) => {
       if (this.disposed || this.viewpointPc !== viewpoint) return;
       this.installNebulaVolume(ready, viewpoint, orientation);
     });
@@ -1637,11 +1652,30 @@ export class UnifiedViewer {
         preset === 'system'
           ? this.extentKm
           : preset === 'galaxy'
-            ? GALAXY_ARRIVAL_ALTITUDE_KM
+            ? this.galaxyArrivalAltitudeKm()
             : this.radiusKm * 3.2;
     }
 
     this.arriveAtFocus(preset);
+  }
+
+  /**
+   * How far out to stand on arrival in the galaxy view. Normally a
+   * neighbourhood hop, but arriving inside a molecular cloud the
+   * subject is the cloud: stand off far enough to see all of it, the
+   * way arriving at a system stands off far enough to see the system.
+   */
+  private galaxyArrivalAltitudeKm(): number {
+    let framed = GALAXY_ARRIVAL_ALTITUDE_KM;
+    for (const nebula of nebulaeNear(this.viewpointPc, NEBULA_HOME_REACH_PC)) {
+      const reachPc = cloudReachPc(nebula.cloud);
+      const dx = nebula.cloud.positionPc.xPc - this.viewpointPc.xPc;
+      const dy = nebula.cloud.positionPc.yPc - this.viewpointPc.yPc;
+      const dz = nebula.cloud.positionPc.zPc - this.viewpointPc.zPc;
+      if (Math.hypot(dx, dy, dz) > reachPc) continue;
+      framed = Math.max(framed, NEBULA_FRAMING_RADII * reachPc * PC_KM);
+    }
+    return framed;
   }
 
   /** Focus-specific content for any solid terrain body — planet or moon:
@@ -2099,6 +2133,7 @@ export class UnifiedViewer {
         distancePc: number,
         kind: string,
         info: string,
+        travelable: boolean,
       ): void => {
         if (angularRadius >= bestAngular) return;
         const [ox, oy, oz] = rotateToScene(sky.sceneFromGalaxy, ...patchDir);
@@ -2106,14 +2141,28 @@ export class UnifiedViewer {
         if (dir.dot(ray) < Math.cos(angularRadius)) return;
         bestAngular = angularRadius;
         const reach = this.camera.far * 0.25;
+        // A cloud is a place, and its own gateway system is how you
+        // stand in it — the same seed the gazetteer names it by, so
+        // arriving somewhere and reading its name agree.
+        const centre: GalacticPosition = {
+          xPc: this.viewpointPc.xPc + patchDir[0] * distancePc,
+          yPc: this.viewpointPc.yPc + patchDir[1] * distancePc,
+          zPc: this.viewpointPc.zPc + patchDir[2] * distancePc,
+        };
         best = {
           x: this.camera.position.x + dir.x * reach,
           y: this.camera.position.y + dir.y * reach,
           z: this.camera.position.z + dir.z * reach,
           name: `the ${sectorNameForSeed(seed)} ${kind}`,
           info: `${info} · ≈${fmt(distancePc, 3)} pc`,
-          action: null,
-          target: null,
+          action: travelable ? 'click to travel' : null,
+          target: travelable
+            ? {
+                kind: 'neighbor',
+                seedHex: seedToHex(deriveSeed(seed, 'gateway')),
+                positionPc: centre,
+              }
+            : null,
         };
       };
       for (const nebula of sky.nebulae) {
@@ -2124,6 +2173,7 @@ export class UnifiedViewer {
           nebula.distancePc,
           'Nebula',
           'molecular cloud lit by its newborn stars',
+          true,
         );
       }
       for (const cloud of sky.darkClouds) {
@@ -2134,6 +2184,7 @@ export class UnifiedViewer {
           cloud.distancePc,
           'Rift',
           'dark molecular cloud',
+          true,
         );
       }
       if (!best) best = fallback;

@@ -28,28 +28,34 @@ function ensureWorker(): Worker {
 export function requestNebulaVolume(
   nebula: Nebula,
   size: number,
+  boxPc: number | undefined,
   onReady: (bake: NebulaVolumeBake) => void,
 ): NebulaVolumeBake | null {
-  const seedHex = seedToHex(nebula.cloud.seed);
-  const cached = cache.get(seedHex);
+  // A cloud can be wanted at more than one scale — its whole body from
+  // outside, its ionized bubble from within — so the scale is part of
+  // what is being asked for, not just the cloud.
+  const key = `${seedToHex(nebula.cloud.seed)}@${boxPc ? boxPc.toFixed(1) : 'bubble'}`;
+  const cached = cache.get(key);
   if (cached) return cached;
-  if (pending === seedHex) return null;
+  if (pending === key) return null;
 
-  pending = seedHex;
+  pending = key;
   const active = ensureWorker();
   active.onmessage = (event: MessageEvent<NebulaBakeResult>) => {
-    if (event.data.seedHex !== pending) return;
+    if (event.data.key !== pending) return;
     pending = null;
     if (!event.data.bake) return;
-    cache.set(event.data.seedHex, event.data.bake);
-    if (cache.size > 8) cache.delete(cache.keys().next().value as string);
+    cache.set(event.data.key, event.data.bake);
+    if (cache.size > 6) cache.delete(cache.keys().next().value as string);
     onReady(event.data.bake);
   };
   const task: NebulaBakeTask = {
     galaxy: seedToHex(galaxySeed()),
     positionPc: nebula.cloud.positionPc,
-    seedHex,
+    seedHex: seedToHex(nebula.cloud.seed),
+    key,
     size,
+    boxPc,
   };
   active.postMessage(task);
   return null;
