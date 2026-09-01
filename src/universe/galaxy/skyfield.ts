@@ -26,7 +26,14 @@ import {
   stellarDensity,
   type GalacticPosition,
 } from './density';
-import { nebulaFor, type Nebula } from './nebula';
+import {
+  nebulaEmissionShare,
+  nebulaFor,
+  nebulaIlluminant,
+  nebulaSpectralHardness,
+  type Nebula,
+} from './nebula';
+import { nebulaEmissionColor } from './nebulaLines';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
@@ -639,29 +646,36 @@ function pushNebulaMembers(
 }
 
 /**
- * Nebular hue from the hottest embedded star: hot enough to ionize the
- * gas and the cloud emits (Hα red, hardening toward O III teal under the
- * hottest stars); otherwise the cloud merely scatters the starlight as
- * a blue-leaning reflection nebula.
+ * The two lights a lit cloud sends out, from the same budgets the
+ * volume bake spends: the line mixture at the group's spectral
+ * hardness, and the illuminant's continuum off the dust. What used to
+ * be a hand-mixed hue ramp now reads the object — a dozen B stars are
+ * a blue reflection complex however big their bubble, because their
+ * lines carry a ten-thousandth of their continuum; an O group's lines
+ * rival its continuum and the pink takes over.
  */
-function nebulaColor(maxTeff: number): [number, number, number] {
-  const ionization = Math.max(0, Math.min(1, (maxTeff - 17000) / 13000));
-  const hardness = Math.max(0, Math.min(1, (maxTeff - 28000) / 17000));
-  const emission: [number, number, number] = [
-    1.0 * (1 - hardness * 0.6) + 0.35 * hardness * 0.6,
-    0.3 * (1 - hardness * 0.6) + 0.9 * hardness * 0.6,
-    0.34 * (1 - hardness * 0.6) + 0.8 * hardness * 0.6,
-  ];
-  const [sr, sg, sb] = blackbodyLinearRgb(Math.max(maxTeff, 3000));
-  const reflection: [number, number, number] = [
-    sr * 0.55 + 0.12,
-    sg * 0.65 + 0.18,
-    sb * 0.75 + 0.35,
-  ];
+function nebulaHues(nebula: Nebula): {
+  emission: [number, number, number];
+  reflection: [number, number, number];
+  share: number;
+} {
+  const [er, eg, eb] = nebulaEmissionColor(nebulaSpectralHardness(nebula.maxTeff));
+  const illuminant = nebulaIlluminant(nebula);
+  const [sr, sg, sb] = blackbodyLinearRgb(Math.max(3000, illuminant?.tEff ?? 4000));
+  return {
+    emission: [er, eg, eb],
+    reflection: [sr, sg, sb],
+    share: nebulaEmissionShare(nebula),
+  };
+}
+
+/** The blended colour of the whole object, for tints and listings. */
+function nebulaDisplayColor(nebula: Nebula): [number, number, number] {
+  const { emission, reflection, share } = nebulaHues(nebula);
   return [
-    reflection[0] + (emission[0] - reflection[0]) * ionization,
-    reflection[1] + (emission[1] - reflection[1]) * ionization,
-    reflection[2] + (emission[2] - reflection[2]) * ionization,
+    reflection[0] + (emission[0] - reflection[0]) * share,
+    reflection[1] + (emission[1] - reflection[1]) * share,
+    reflection[2] + (emission[2] - reflection[2]) * share,
   ];
 }
 
@@ -678,16 +692,14 @@ function renderNebulaTile(
   tile: number,
   cloud: MolecularCloud,
   view: [number, number, number],
-  maxTeff: number,
+  nebula: Nebula,
 ): { right: [number, number, number]; up: [number, number, number]; peak: number } {
   const axis: [number, number, number] =
     Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
   const right = normalize(cross(view, axis));
   const up = cross(view, right);
 
-  const ionization = Math.max(0, Math.min(1, (maxTeff - 17000) / 13000));
-  const emission = nebulaColor(Math.max(maxTeff, 17000));
-  const scattered = nebulaColor(Math.min(maxTeff, 12000));
+  const { emission, reflection: scattered, share } = nebulaHues(nebula);
 
   const extentPc = cloud.radiusPc * 1.6;
   const steps = 16;
@@ -723,7 +735,7 @@ function renderNebulaTile(
         const coreSq = (px * px + py * py + pz * pz) / (0.35 * cloud.radiusPc) ** 2;
         const illumination = 1 / (1 + coreSq);
         const glow = density * illumination * Math.exp(-tau) * dt;
-        const ionLocal = ionization * Math.min(1, illumination * 2.2);
+        const ionLocal = share * Math.min(1, illumination * 2.2);
         r += glow * (scattered[0] + (emission[0] - scattered[0]) * ionLocal);
         g += glow * (scattered[1] + (emission[1] - scattered[1]) * ionLocal);
         b += glow * (scattered[2] + (emission[2] - scattered[2]) * ionLocal);
@@ -765,6 +777,7 @@ function normalize(a: [number, number, number]): [number, number, number] {
 
 interface NebulaCandidate {
   cloud: MolecularCloud;
+  nebula: Nebula;
   view: [number, number, number];
   distancePc: number;
   maxTeff: number;
@@ -800,14 +813,14 @@ function buildGroups(
     pushNebulaMembers(nebula, push, dx, dy, dz);
     if (nebula.maxTeff < 6500) continue;
 
-    const ionization = Math.max(0, Math.min(1, (nebula.maxTeff - 17000) / 13000));
     candidates.push({
       cloud,
+      nebula,
       view: [dx / distance, dy / distance, dz / distance],
       distancePc: distance,
       maxTeff: nebula.maxTeff,
       brightness:
-        ((0.3 + 1.1 * ionization) * 95 * Math.sqrt(nebula.totalLuminosity)) /
+        ((0.3 + 1.1 * nebulaEmissionShare(nebula)) * 95 * Math.sqrt(nebula.totalLuminosity)) /
         (distance * distance),
     });
   }
@@ -824,14 +837,14 @@ function buildGroups(
       tile,
       candidate.cloud,
       candidate.view,
-      candidate.maxTeff,
+      candidate.nebula,
     );
     return {
       seed: candidate.cloud.seed,
       distancePc: candidate.distancePc,
       dir: candidate.view,
       angularRadius: Math.min(0.35, candidate.cloud.radiusPc / candidate.distancePc),
-      color: nebulaColor(candidate.maxTeff),
+      color: nebulaDisplayColor(candidate.nebula),
       brightness: candidate.brightness,
       right,
       up,
