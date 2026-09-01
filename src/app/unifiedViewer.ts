@@ -1672,11 +1672,11 @@ export class UnifiedViewer {
         this.requestVolumeFor(this.focusCloud.cloud, this.viewpointPc, this.skyPreviewFrame);
       }
       this.radiusKm = reachPc * PC_KM;
-      // A cloud has no surface to stop at, but the ride still measures
-      // altitude above its reach: hold just outside for now, since
-      // going inside is a different picture and wants its own framing.
+      // Distance from the cloud's centre, not height above an edge it
+      // does not have: the ride runs from well outside the body down to
+      // deep inside it without ever hitting a floor it cannot pass.
       this.minAltitudeKm = this.radiusKm * 0.02;
-      this.altitudeKm = this.radiusKm * 1.2;
+      this.altitudeKm = this.radiusKm * 2.2;
       this.arriveAtFocus(preset);
       return;
     }
@@ -1898,7 +1898,9 @@ export class UnifiedViewer {
     // edge-on arrival would collapse the rings to a one-pixel sliver.
     if (this.focusPlanet?.rings) arrival.y += 0.55;
     arrival.normalize();
-    this.camera.position.copy(arrival).multiplyScalar(this.radiusKm + this.altitudeKm);
+    this.camera.position
+      .copy(arrival)
+      .multiplyScalar(this.focus === 'cloud' ? this.altitudeKm : this.radiusKm + this.altitudeKm);
     this.camera.up.set(0, 1, 0);
     // Any free-flight wandering ends here: the orbit re-anchors on the
     // new focus and pending ride input clears.
@@ -3370,7 +3372,12 @@ export class UnifiedViewer {
       const groundKm = this.field ? Math.max(terrainM, waterM) / 1000 : 0;
       // Asteroid shapes legitimately dip far below the datum sphere.
       const floorKm = this.focusAsteroid ? -this.radiusKm * 0.6 : -this.radiusKm * 0.01;
-      const surfaceKm = this.radiusKm + Math.max(groundKm, floorKm);
+      // A cloud has no surface, so the ride measures the distance itself
+    // rather than a height above one: the wheel scales it the whole way
+    // in, from standing off the body to standing inside it, instead of
+    // clamping a parsec-scale floor the camera cannot pass.
+    const surfaceKm =
+      this.focus === 'cloud' ? 0 : this.radiusKm + Math.max(groundKm, floorKm);
       // The wheel rides toward what the camera is anchored on: the focus
       // body's surface when the orbit target sits there (altitude scales,
       // buttery down to the ground), or the panned anchor when free
