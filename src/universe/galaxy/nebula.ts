@@ -14,7 +14,7 @@ import {
 } from './clouds';
 import type { GalacticPosition } from './density';
 import { cloudHydrogenDensity } from './gas';
-import { spitzerRadiusPc, stromgrenRadiusPc, windCavityRadiusPc } from './ionization';
+import { spitzerRadiusPc, stromgrenRadiusPc, sweptCavityRadiusPc } from './ionization';
 
 /** erg s⁻¹ per L☉ — the constants file carries watts. */
 const ERG_PER_SOLAR_LUMINOSITY = SOLAR_LUMINOSITY * 1e7;
@@ -133,10 +133,14 @@ export interface Nebula {
   /** The ionized region at the group's age, pc: the natal front driven
    *  out by Spitzer expansion, bounded by the cloud that feeds it. */
   bubbleRadiusPc: number;
-  /** The wind-blown cavity inside it, pc — zero for groups whose
-   *  hottest member is too cool to drive a line wind. What makes an
-   *  evolved region a ring rather than a filled disc. */
+  /** The swept cavity inside it, pc — the wind's work plus every
+   *  supernova's, zero only for groups with neither. What makes an
+   *  evolved region a ring rather than a filled disc, and an old one
+   *  a blown shell. */
   windCavityPc: number;
+  /** Core-collapse deaths the group has already had: members drawn
+   *  past their lifetime, struck from the light and counted here. */
+  supernovae: number;
   kind: NebulaKind;
   /** Half-extents of the density field, pc — the volume's bounds. */
   halfExtentsPc: [number, number, number];
@@ -202,6 +206,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
   let maxTeff = 0;
   let totalLuminosity = 0;
   let photonRate = 0;
+  let supernovae = 0;
   for (let i = 0; i < tries; i++) {
     // Stars form where the gas is, not on a sphere about the middle:
     // the densest of a few proposals wins, so the group traces its
@@ -226,6 +231,14 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
       }
     }
     const physical = evolve(powerLaw(rng, 2.3, MEMBER_MIN_MASS, 60), ageGyr);
+    // A member that has already died is not a member any more: a
+    // remnant is dark at these scales and its million-kelvin cooling
+    // track has no business setting the group's hue or its ionizing
+    // budget. What it leaves the region is its supernova.
+    if (physical.stage === 'neutron-star' || physical.stage === 'black-hole') {
+      supernovae++;
+      continue;
+    }
     const member: NebulaMember = {
       dxPc,
       dyPc,
@@ -262,17 +275,21 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     spitzerRadiusPc(stromgren, ageGyr * 1000),
     Math.max(...halfExtentsPc),
   );
-  // The wind ploughs the *diluted* interior the expansion left behind,
-  // and cannot overrun the front that feeds its shell.
+  // The wind — and every supernova the group has had — ploughs the
+  // *diluted* interior the expansion left behind. Capped just inside
+  // the front: a supernova-driven shell catches the ionization front
+  // and merges with it, leaving the thin bright shell a superbubble
+  // actually shows rather than overrunning the region outright.
   const growth = stromgren > 0 ? Math.max(1, bubbleRadiusPc / stromgren) : 1;
   const windCavityPc = Math.min(
-    windCavityRadiusPc(
+    sweptCavityRadiusPc(
       lighting[0]?.luminosity ?? 0,
       lighting[0]?.tEff ?? 0,
       ageGyr * 1000,
       sourceHydrogenDensity * growth ** -1.5,
+      supernovae,
     ),
-    0.75 * bubbleRadiusPc,
+    0.9 * bubbleRadiusPc,
   );
   return {
     cloud,
@@ -287,6 +304,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     stromgrenRadiusPc: stromgren,
     bubbleRadiusPc,
     windCavityPc,
+    supernovae,
     kind:
       maxTeff < LUMINOUS_TEFF
         ? 'dark'

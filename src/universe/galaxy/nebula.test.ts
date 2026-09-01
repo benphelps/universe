@@ -126,6 +126,25 @@ describe('the nebula model', () => {
       if (nebula.kind === 'dark') expect(nebula.maxTeff).toBeLessThan(6500);
     }
   });
+
+  it('buries its dead and lets their supernovae blow the region open', () => {
+    const nebulae = formingClouds().map((cloud) => nebulaFor(cloud)!);
+    // A remnant's million-kelvin cooling track must not set the hue or
+    // sit in the source list: the hottest living star tops out below
+    // the O-star ceiling, dead members are counted instead of listed.
+    for (const nebula of nebulae) {
+      expect(nebula.maxTeff).toBeLessThan(120000);
+      for (const source of nebula.sources) expect(source.tEff).toBeLessThan(120000);
+    }
+    // Groups old enough have had deaths, and one supernova outweighs
+    // the whole wind: their cavities crowd the cap just inside the
+    // front, the blown-shell look of a superbubble.
+    const blown = nebulae.filter((n) => n.supernovae > 0 && n.photonRate > 0);
+    expect(blown.length).toBeGreaterThan(0);
+    for (const nebula of blown) {
+      expect(nebula.windCavityPc).toBeGreaterThan(0.5 * nebula.bubbleRadiusPc);
+    }
+  });
 });
 
 describe('the gazetteer against the cloud population', () => {

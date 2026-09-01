@@ -20,6 +20,7 @@ import {
   LOG_U_MIN,
   SCATTER_MAX_STEPS,
   SCATTER_STEP_FACTOR,
+  SHELL_SKIN_SHARE,
   SHELL_WIDTH,
   VENT_RESIDUAL,
   WIND_CAVITY_RESIDUAL,
@@ -222,7 +223,12 @@ void main() {
   }
 
   float spent = reachable ? recombined : 2.0;
-  float ionized = clamp((1.0 - spent) * ${f(1 / FRONT_SOFTNESS)}, 0.0, 1.0);
+  // The shell's ionized skin, mirroring the CPU march: the rim glows
+  // along the front's own carved shape, fading through the shell.
+  float skin = (frontR >= 0.0 && dist >= frontR)
+    ? exp(-(dist - frontR) / max(1e-6, ${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * frontR))
+    : 0.0;
+  float ionized = max(skin, clamp((1.0 - spent) * ${f(1 / FRONT_SOFTNESS)}, 0.0, 1.0));
   float transmittance = exp(-tau);
   bool inBubble = reachable && frontR < 0.0;
   bool inShell = frontR >= 0.0 && dist <= frontR * ${f(1 + SHELL_WIDTH)};

@@ -134,6 +134,15 @@ const BOX_MIN_PC = 5;
 const IONIZATION_REACH = 5;
 /** Fraction of the front radius the swept shell spans. */
 export const SHELL_WIDTH = 0.12;
+/**
+ * How deep the ionization front eats into its swept shell, as a share
+ * of the shell's own width. The skin is where most recombinations
+ * actually happen — the bright rim of every real region — and it is
+ * what puts the glow on the *directional* front the budget march
+ * carves, rather than leaving all the light to the spherical wind
+ * wall inside it.
+ */
+export const SHELL_SKIN_SHARE = 0.35;
 /** How much budget-overshoot it takes to read fully neutral: the
  *  front's softness, in spent-budget fraction. */
 export const FRONT_SOFTNESS = 0.15;
@@ -444,9 +453,20 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
           }
         }
 
-        // The front: sharp, but not sharper than a cell can carry.
+        // The front: sharp, but not sharper than a cell can carry. Just
+        // past it, the swept shell's inner skin is ionized — the front
+        // is eating into it, and that skin is where the recombinations
+        // concentrate — so the rim glows along the front's own carved
+        // shape, fading through the shell's depth.
         const spent = budget > 0 && reachable ? recombined / budget : Infinity;
-        const ionized = Math.max(0, Math.min(1, (1 - spent) / FRONT_SOFTNESS));
+        const skin =
+          frontR >= 0 && distancePc >= frontR
+            ? Math.exp(
+                -(distancePc - frontR) /
+                  Math.max(1e-6, SHELL_SKIN_SHARE * SHELL_WIDTH * frontR),
+              )
+            : 0;
+        const ionized = Math.max(skin, Math.max(0, Math.min(1, (1 - spent) / FRONT_SOFTNESS)));
         const transmittance = Math.exp(-tau);
         // The gas standing at this cell now: the diluted interior read
         // from its natal position, the swept shell just past the

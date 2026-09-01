@@ -76,29 +76,43 @@ const CM_PER_S_LIGHT = 2.998e10;
 const SECONDS_PER_MYR = 3.156e13;
 const CM_PER_PC = PARSEC * 100;
 
+/** Terminal momentum one core-collapse supernova hands its
+ *  surroundings once the remnant goes radiative, g cm s⁻¹ — nearly
+ *  independent of the density it happens in, which is what makes it
+ *  the honest currency of supernova feedback. */
+export const SUPERNOVA_MOMENTUM = 3e43;
+
 /**
- * The wind-blown cavity inside the region at its age, pc.
+ * The swept cavity inside the region at its age, pc.
  *
- * The star's wind sweeps the ionized interior into a shell around a
- * near-empty bubble — which is why an evolved H II region is a ring in
- * Hα, not a filled disc. Weaver's energy-driven solution famously
- * overruns what is observed (the bubbles leak); the momentum snowplow
- * is the leaky limit and lands where the surveys put cavities:
- * momentum ṗ t swept into a shell of the interior density gives
- * R = (3 ṗ t² / 2π ρ)^¼, with ṗ = η L / c.
+ * The star's wind — and every supernova the group has already had —
+ * sweeps the ionized interior into a shell around a near-empty bubble,
+ * which is why an evolved H II region is a ring in Hα, not a filled
+ * disc, and an old one a blown shell. Weaver's energy-driven solution
+ * famously overruns what is observed (the bubbles leak); the momentum
+ * snowplow is the leaky limit and lands where the surveys put
+ * cavities. Total momentum P = ṗ t + N · p_SN with ṗ = η L / c swept
+ * into a shell of the interior density gives R = (3 P t / 2π ρ)^¼.
+ * A single supernova outweighs the whole wind's ṗ t sixtyfold, so a
+ * group's first death is what blows its region open.
  */
-export function windCavityRadiusPc(
+export function sweptCavityRadiusPc(
   luminositySolar: number,
   tEff: number,
   ageMyr: number,
   hydrogenDensity: number,
+  supernovae = 0,
 ): number {
+  if (ageMyr <= 0 || hydrogenDensity <= 0) return 0;
   const share = windMomentumShare(tEff);
-  if (share <= 0 || luminositySolar <= 0 || ageMyr <= 0 || hydrogenDensity <= 0) return 0;
-  const momentumFlux = (share * luminositySolar * ERG_PER_SOLAR_LUMINOSITY) / CM_PER_S_LIGHT;
+  const windFlux =
+    share > 0 && luminositySolar > 0
+      ? (share * luminositySolar * ERG_PER_SOLAR_LUMINOSITY) / CM_PER_S_LIGHT
+      : 0;
   const seconds = ageMyr * SECONDS_PER_MYR;
+  const momentum = windFlux * seconds + supernovae * SUPERNOVA_MOMENTUM;
+  if (momentum <= 0) return 0;
   const density = hydrogenDensity * GRAMS_PER_HYDROGEN;
-  const radiusCm =
-    ((3 * momentumFlux * seconds * seconds) / (2 * Math.PI * density)) ** 0.25;
+  const radiusCm = ((3 * momentum * seconds) / (2 * Math.PI * density)) ** 0.25;
   return radiusCm / CM_PER_PC;
 }

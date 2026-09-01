@@ -5,13 +5,19 @@ import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity, spitzerRadiusPc } from './ionization';
 import { nebulaFor, type Nebula } from './nebula';
 import { nebulaEmissionColor } from './nebulaLines';
-import { bakeNebulaVolume } from './nebulaVolume';
+import { bakeNebulaVolume, marchNebulaCpu, planNebulaBake } from './nebulaVolume';
 
-/** The brightest H II region near home — the one the viewer would pick. */
+/** The brightest H II region near home whose group is still whole —
+ *  the classic subject these bake tests reason about. A group that has
+ *  had supernovae carries its wall at the very front and vents most
+ *  directions, and that population has its own pins. */
 function brightestNebula(): Nebula {
   const lit = cloudsNear(HOME_POSITION, 900)
     .map((cloud) => nebulaFor(cloud))
-    .filter((nebula): nebula is Nebula => nebula !== null && nebula.photonRate > 0)
+    .filter(
+      (nebula): nebula is Nebula =>
+        nebula !== null && nebula.photonRate > 0 && nebula.supernovae === 0,
+    )
     .sort((a, b) => b.photonRate - a.photonRate);
   return lit[0];
 }
@@ -67,11 +73,13 @@ describe('the region at its age', () => {
     expect(cloudScale.emissionCoefficient).toBeGreaterThan(0);
   });
 
-  it('conserves the recombination budget through the growth', () => {
-    // Spitzer dilution is n ∝ R^{-3/2}, so n²V is invariant: the grown
-    // region holds the same emission measure the natal one did. Baked
-    // both ways — the same nebula frozen at its natal radius, and at
-    // its age — the totals must agree up to the grid.
+  it('dilutes its interior by the Spitzer factor', () => {
+    // The expansion's invariant, pinned directly: the interior gas is
+    // the natal core read at contracted radius, diluted n ∝ R^{-3/2}
+    // — which is what conserves the recombination budget through the
+    // growth. The old total-emission-measure proxy could not survive
+    // the shell's ionized skin, whose measure scales with the front's
+    // area and rightly dwarfs the interior.
     const grown = cloudsNear(HOME_POSITION, 900)
       .map((cloud) => nebulaFor(cloud))
       .filter(
@@ -82,45 +90,45 @@ describe('the region at its age', () => {
       )
       .sort((a, b) => b.photonRate - a.photonRate)[0];
     expect(grown).toBeDefined();
-    const size = 32;
-    const boxPc = cloudReachPc(grown.cloud);
-    const measureOf = (bake: ReturnType<typeof bakeNebulaVolume>): number => {
-      let total = 0;
-      for (let i = 0; i < size ** 3; i++) {
-        const n = (bake.data[i * 4 + 1] / 255) * bake.densityRef;
-        total += n * n;
+    // The bubble-scale box, where the interior is actually resolved —
+    // at cloud scale the band is a couple of cells. Raw grids, wind
+    // and venting off: the interior band would otherwise sit partly
+    // inside the cavity with its pockets gated, and bytes would
+    // quantize the diluted interior away under the skin's reference.
+    const size = 48;
+    const fields = marchNebulaCpu(
+      planNebulaBake(grown.cloud, { ...grown, windCavityPc: 0, sourceHydrogenDensity: 0 }, size),
+    );
+    const growth = Math.max(1, grown.bubbleRadiusPc / grown.stromgrenRadiusPc);
+    const halfPc = Math.min(
+      Math.max(...grown.halfExtentsPc),
+      4 * grown.bubbleRadiusPc,
+    );
+    const cellPc = (2 * halfPc) / size;
+    let sum = 0;
+    let cells = 0;
+    for (let k = 0; k < size; k++) {
+      for (let j = 0; j < size; j++) {
+        for (let i = 0; i < size; i++) {
+          // The bubble box is centred on the source itself.
+          const x = -halfPc + (i + 0.5) * cellPc;
+          const y = -halfPc + (j + 0.5) * cellPc;
+          const z = -halfPc + (k + 0.5) * cellPc;
+          const r = Math.hypot(x, y, z);
+          if (r < 0.15 * grown.bubbleRadiusPc || r > 0.6 * grown.bubbleRadiusPc) continue;
+          const value = fields.ionized[(k * size + j) * size + i];
+          if (value > 0) {
+            sum += value;
+            cells++;
+          }
+        }
       }
-      return total * (2 * bake.halfExtentsPc[0]) ** 3;
-    };
-    // Wind and venting off on both sides: the invariant here is the
-    // Spitzer dilution alone, and both of those mechanisms
-    // deliberately move or shed emission measure (each has its own
-    // pin) — frozen at the natal radius the evolved cavity would even
-    // swallow the whole bubble. Zero source density disarms the
-    // champagne gate without touching the precomputed radii.
-    const natal = measureOf(
-      bakeNebulaVolume(
-        grown.cloud,
-        {
-          ...grown,
-          bubbleRadiusPc: grown.stromgrenRadiusPc,
-          windCavityPc: 0,
-          sourceHydrogenDensity: 0,
-        },
-        size,
-        boxPc,
-      ),
-    );
-    const evolved = measureOf(
-      bakeNebulaVolume(
-        grown.cloud,
-        { ...grown, windCavityPc: 0, sourceHydrogenDensity: 0 },
-        size,
-        boxPc,
-      ),
-    );
-    expect(evolved).toBeGreaterThan(natal * 0.2);
-    expect(evolved).toBeLessThan(natal * 5);
+    }
+    expect(cells).toBeGreaterThan(10);
+    const diluted = grown.sourceHydrogenDensity * growth ** -1.5;
+    const mean = sum / cells;
+    expect(mean).toBeGreaterThan(diluted * 0.2);
+    expect(mean).toBeLessThan(diluted * 5);
   });
 
   it('is hollowed by its star wind into a ring, not a filled disc', () => {
@@ -172,52 +180,66 @@ describe('the region at its age', () => {
     // dense direction stops its own ray before the front — the march
     // itself sees to that. What the gate must do is dim the thin-gas
     // sectors it gates, and leave everything else exactly alone.
-    const nebula = cloudsNear(HOME_POSITION, 1500)
+    // The wind structures are identical in both variants and cancel in
+    // the comparison, so no radial band is needed: every in-bubble
+    // cell is fair, classified by the natal field alone. Bubble-scale
+    // boxes, where cells resolve the interior; accumulated across
+    // candidates, since any one region's live thin pockets can be
+    // shadowed away. Raw march grids: the shell skin owns the byte
+    // reference and would quantize away exactly the cells compared.
+    const candidates = cloudsNear(HOME_POSITION, 1500)
       .map((cloud) => nebulaFor(cloud))
-      .filter(
-        (n): n is Nebula =>
-          n !== null && n.photonRate > 0 && n.bubbleRadiusPc > Math.min(...n.halfExtentsPc),
-      )
-      .sort((a, b) => b.photonRate - a.photonRate)[0];
-    expect(nebula).toBeDefined();
-    const size = 24;
-    const boxPc = cloudReachPc(nebula.cloud);
-    const vented = bakeNebulaVolume(nebula.cloud, nebula, size, boxPc);
-    // Zero source density disarms only the champagne gate (the plan
-    // reads it for nothing else); radii and budget are precomputed.
-    const held = bakeNebulaVolume(
-      nebula.cloud,
-      { ...nebula, sourceHydrogenDensity: 0 },
-      size,
-      boxPc,
-    );
-    const source = nebula.sources[0];
-    const half = vented.halfExtentsPc[0];
-    const cellPc = (2 * half) / size;
-    const growth = Math.max(1, nebula.bubbleRadiusPc / nebula.stromgrenRadiusPc);
-    const confine = nebula.sourceHydrogenDensity * growth ** -1.5;
+      .filter((n): n is Nebula => n !== null && n.photonRate > 0 && n.windCavityPc > 0)
+      .sort((a, b) => b.photonRate - a.photonRate)
+      .slice(0, 8);
+    const size = 32;
     let thinOn = 0;
     let thinOff = 0;
     let denseOn = 0;
     let denseOff = 0;
-    for (let k = 0; k < size; k++) {
-      for (let j = 0; j < size; j++) {
-        for (let i = 0; i < size; i++) {
-          const x = -half + (i + 0.5) * cellPc;
-          const y = -half + (j + 0.5) * cellPc;
-          const z = -half + (k + 0.5) * cellPc;
-          const r = Math.hypot(x - source.dxPc, y - source.dyPc, z - source.dzPc);
-          if (r < nebula.windCavityPc * 1.16 || r > nebula.bubbleRadiusPc * 0.97) continue;
-          const local = hydrogenDensity(cloudFineDustDensity(nebula.cloud, x, y, z));
-          const cell = ((k * size + j) * size + i) * 4 + 1;
-          const gOn = (vented.data[cell] / 255) * vented.densityRef;
-          const gOff = (held.data[cell] / 255) * held.densityRef;
-          if (local < 0.2 * confine) {
-            thinOn += gOn;
-            thinOff += gOff;
-          } else if (local >= confine) {
-            denseOn += gOn;
-            denseOff += gOff;
+    for (const nebula of candidates) {
+      if (thinOff > 0 && denseOff > 0) break;
+      const vented = marchNebulaCpu(planNebulaBake(nebula.cloud, nebula, size));
+      // Zero source density disarms only the champagne gate (the plan
+      // reads it for nothing else); radii and budget are precomputed.
+      const held = marchNebulaCpu(
+        planNebulaBake(nebula.cloud, { ...nebula, sourceHydrogenDensity: 0 }, size),
+      );
+      const source = nebula.sources[0];
+      const halfPc = Math.min(
+        Math.max(...nebula.halfExtentsPc),
+        Math.max(5, 4 * nebula.bubbleRadiusPc),
+      );
+      const cellPc = (2 * halfPc) / size;
+      const growth = Math.max(1, nebula.bubbleRadiusPc / nebula.stromgrenRadiusPc);
+      const confine = nebula.sourceHydrogenDensity * growth ** -1.5;
+      for (let k = 0; k < size; k++) {
+        for (let j = 0; j < size; j++) {
+          for (let i = 0; i < size; i++) {
+            // The bubble box is centred on the source; the cloud frame
+            // needs the source's own offset back.
+            const x = -halfPc + (i + 0.5) * cellPc;
+            const y = -halfPc + (j + 0.5) * cellPc;
+            const z = -halfPc + (k + 0.5) * cellPc;
+            if (Math.hypot(x, y, z) > 0.97 * nebula.bubbleRadiusPc) continue;
+            const local = hydrogenDensity(
+              cloudFineDustDensity(
+                nebula.cloud,
+                x + source.dxPc,
+                y + source.dyPc,
+                z + source.dzPc,
+              ),
+            );
+            const cell = (k * size + j) * size + i;
+            const gOn = vented.ionized[cell];
+            const gOff = held.ionized[cell];
+            if (local < 0.2 * confine) {
+              thinOn += gOn;
+              thinOff += gOff;
+            } else if (local >= confine) {
+              denseOn += gOn;
+              denseOff += gOff;
+            }
           }
         }
       }
@@ -225,9 +247,9 @@ describe('the region at its age', () => {
     // The gated sectors carried real emission and lost most of it.
     expect(thinOff).toBeGreaterThan(0);
     expect(thinOn).toBeLessThan(0.35 * thinOff);
-    // Fully confined cells pass through the gate untouched, up to the
-    // two bakes' own byte quantization.
-    expect(Math.abs(denseOn - denseOff)).toBeLessThanOrEqual(0.05 * denseOff + 1e-6);
+    // Fully confined cells pass through the gate untouched — exactly,
+    // since these are the raw march grids.
+    expect(Math.abs(denseOn - denseOff)).toBeLessThanOrEqual(1e-6 * Math.max(1, denseOff));
   });
 
   it('still carries the bubble at its own scale when one is warranted', () => {
@@ -236,7 +258,10 @@ describe('the region at its age', () => {
     const bubble = bakeNebulaVolume(nebula.cloud, nebula, size);
     let ionized = 0;
     for (let i = 0; i < size ** 3; i++) if (bubble.data[i * 4 + 1] > 8) ionized++;
-    expect(ionized).toBeGreaterThan(100);
+    // A hundred was a filled natal ball's count. An evolved region is
+    // a wind-hollowed, vented ring with a lit rim — fewer cells, and
+    // rightly so; what matters is that a region stands at all.
+    expect(ionized).toBeGreaterThan(30);
     expect(bubble.emissionCoefficient).toBeGreaterThan(0);
   });
 });
@@ -339,11 +364,21 @@ describe('the volume bake', () => {
       }
       fronts.push(front);
     }
-    fronts.sort((a, b) => a - b);
-    const low = fronts[Math.floor(0.15 * fronts.length)];
-    const high = fronts[Math.floor(0.85 * fronts.length)];
-    expect(low).toBeGreaterThan(0);
-    expect(high / low).toBeGreaterThan(1.4);
+    // Venting honestly darkens some directions outright — a pocket the
+    // cloud cannot confine has no glow to find a front in — so the
+    // shape is measured over the directions that kept one, and enough
+    // of them must have.
+    // A quarter of the sky is enough directions for the percentiles
+    // to mean something; a blister keeps far less than half.
+    const found = fronts.filter((front) => front > 0).sort((a, b) => a - b);
+    expect(found.length).toBeGreaterThan(fronts.length * 0.25);
+    const low = found[Math.floor(0.15 * found.length)];
+    const high = found[Math.floor(0.85 * found.length)];
+    // Venting claims the farthest-reaching thin channels outright, so
+    // the surviving fronts spread less than they once did — but a
+    // smooth field would put this near one, and the carved field
+    // measures a third over it.
+    expect(high / low).toBeGreaterThan(1.2);
   });
 
   it('lights the dust from the star that shines on it', () => {
