@@ -77,7 +77,7 @@ export const TURBULENCE_OCTAVES: ReadonlyArray<readonly [number, number]> = [
 /** How much of the cascade the cloud-scale field keeps. */
 const CLOUD_OCTAVES = 3;
 /** The cascade's mean: what every octave sums to in expectation. */
-const TURBULENCE_MEAN = 0.55;
+export const TURBULENCE_MEAN = 0.55;
 
 // Galaxy-dependent roots, derived on first use (after the session's
 // galaxy seed settles).
@@ -258,6 +258,13 @@ export const CLOUD_DUST_WEIGHT = 1.6;
  *  over the cloud, so marches lift it out of their inner loop. */
 export function cloudDustFactor(cloud: MolecularCloud): number {
   return dustDensity(cloud.positionPc) * CLOUD_DUST_WEIGHT;
+}
+
+/** Dust per unit of stored carve (carvedᵉˣᵖ): the whole per-cloud
+ *  scale, so a GPU field texture can hold the dimensionless carve and
+ *  leave this to a uniform — small numbers, no half-float overflow. */
+export function cloudCarveDustScale(cloud: MolecularCloud): number {
+  return cloudDustFactor(cloud) * cloud.amplitude * CARVE_GAIN;
 }
 
 /**

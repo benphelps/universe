@@ -10,11 +10,11 @@ import type { NebulaBakeResult, NebulaBakeTask } from '../workers/nebulaWorker';
  * before it lands and the answer for a cloud nobody is looking at any
  * more is simply dropped.
  */
-/** A few workers rather than one: an arrival wants half a dozen
- *  volumes and each bake is seconds of field evaluation, so the pool
- *  is what keeps the later residents from queueing behind the first.
- *  Small, because the sky and terrain workers share the same cores —
- *  and the real fix is the GPU bake the plan's ledger carries. */
+/** A few workers rather than one. With the GPU bake a volume is tens
+ *  of milliseconds and the pool barely matters; where a worker cannot
+ *  reach a GPU it falls back to seconds of CPU march, and the pool is
+ *  what keeps an arrival's later residents from queueing behind the
+ *  first. Small, because the sky and terrain workers share the cores. */
 const POOL_SIZE = 3;
 let workers: Worker[] = [];
 let nextWorker = 0;

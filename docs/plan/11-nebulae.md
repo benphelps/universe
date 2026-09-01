@@ -163,19 +163,24 @@ Rough priority order. The residency dials live at the top of
   lifetime, which then ionize as planetary-nebula-nucleus-like sources. Possibly
   physics, never reviewed: decide what a dead member should contribute to Q,
   luminosity, and the illuminant choice.
-- **Bake on the GPU.** A 96³ bake is ~2–4 s of worker CPU — measured: ~1.7 s of
-  field evaluation (octave count barely matters; the envelope/carve dominates)
-  plus 0.5–2.4 s of per-cell ray marching — and it is exactly
-  fragment-shader-shaped work: independent cells, a smooth field, texture-like
-  sampling. On the GPU it is milliseconds. Design: (1) port the *seeded* simplex
-  to GLSL with the cloud's permutation table as a small texture — near-equal is
-  enough, the CPU field stays the physics authority and the bake is only a
-  render of it; (2) fill dust+gas into an RG float 3D texture layer by layer via
-  `framebufferTextureLayer`; (3) a march pass reading that texture and writing
-  the RGBA8 volume; (4) read back once for the byte references and the
-  emission-measure reduction (or reduce on GPU). Can run on the main renderer
-  between frames or on an OffscreenCanvas in the worker. Until then a pool of
-  three CPU workers overlaps an arrival's bakes.
+- **Bake on the GPU — landed.** The worker now bakes on an OffscreenCanvas
+  WebGL2 context (`render/galaxy/nebulaBakeGpu.ts`): the seeded simplex ported
+  to GLSL with the galaxy's permutation as an R8UI texture, the carve filled
+  layer by layer into an R16F 3D texture (dimensionless, so half floats never
+  overflow — the per-cloud scale rides in a uniform), one march pass over a 2D
+  atlas, one float readback into the same `finishNebulaBake` the CPU path uses.
+  Measured on the brightest home-region H II region: 96³ bakes run 40–80 ms
+  against 2.2–4.1 s on the CPU (~50×), with the first bake at ~120 ms including
+  worker boot and shader link. Agreement with the CPU march: dark clouds
+  bit-identical; refs and emission coefficient within 0.1%; ~50 cells in 262k
+  differ visibly, all one-step front flips where fp32 and fp64 disagree on the
+  exact step the budget runs out. The CPU walk in `nebulaVolume.ts` stays the
+  physics authority and the fallback (no OffscreenCanvas, no float render
+  targets, or a mid-bake GL failure demotes the worker to it); the pool of
+  three workers remains for that path. No automated CPU-vs-GPU test exists —
+  vitest has no WebGL — so any change to the CPU march must re-run the
+  in-browser A/B (bake both paths on one cloud from a page console, diff the
+  byte volumes) before trusting the GPU mirror.
 - **Reach cap.** Residency searches 2 kpc of clouds; complexes beyond that lose
   their volumes once the backdrop fades (sub-6° at that range, so quiet — but it
   is a dial, not a law).

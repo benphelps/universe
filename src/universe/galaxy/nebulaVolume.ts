@@ -1,7 +1,12 @@
 import { PARSEC } from '../../core/physics/constants';
 import type { LinearRgb } from '../../core/color/srgb';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
-import { cloudFineDustDensity, cloudHalfExtentsPc, type MolecularCloud } from './clouds';
+import {
+  cloudCarveDustScale,
+  cloudFineDustDensity,
+  cloudHalfExtentsPc,
+  type MolecularCloud,
+} from './clouds';
 import { DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity } from './ionization';
@@ -129,6 +134,13 @@ const BOX_MIN_PC = 5;
 const IONIZATION_REACH = 5;
 /** Fraction of the front radius the swept shell spans. */
 export const SHELL_WIDTH = 0.12;
+/** How much budget-overshoot it takes to read fully neutral: the
+ *  front's softness, in spent-budget fraction. */
+export const FRONT_SOFTNESS = 0.15;
+/** The unreachable-cell scatter column: how much coarser than the
+ *  march's own step it may walk, and the most steps it ever takes. */
+export const SCATTER_STEP_FACTOR = 4;
+export const SCATTER_MAX_STEPS = 24;
 /** Peak overdensity of a fully swept shell: the mass the expansion
  *  cleared from the bubble, spread over that width — R/(3ΔR) of it. */
 const SHELL_COMPRESSION = 3;
@@ -374,7 +386,10 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
           const sy = y - scatterSourcePc[1];
           const sz = z - scatterSourcePc[2];
           const shinePc = Math.hypot(sx, sy, sz) || 1e-4;
-          const coarse = Math.min(24, Math.max(1, Math.ceil(shinePc / (4 * stepPc))));
+          const coarse = Math.min(
+            SCATTER_MAX_STEPS,
+            Math.max(1, Math.ceil(shinePc / (SCATTER_STEP_FACTOR * stepPc))),
+          );
           const coarseDs = shinePc / coarse;
           for (let s = 0; s < coarse; s++) {
             const r = (s + 0.5) * coarseDs / shinePc;
@@ -393,7 +408,7 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
 
         // The front: sharp, but not sharper than a cell can carry.
         const spent = budget > 0 && reachable ? recombined / budget : Infinity;
-        const ionized = Math.max(0, Math.min(1, (1 - spent) / 0.15));
+        const ionized = Math.max(0, Math.min(1, (1 - spent) / FRONT_SOFTNESS));
         const transmittance = Math.exp(-tau);
         // The gas standing at this cell now: the diluted interior read
         // from its natal position, the swept shell just past the
@@ -508,6 +523,35 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
     scatterLuminositySolar: plan.scatterLuminositySolar,
     // The same spread the members were drawn with, squared.
     scatterFloorPc2: Math.max(cellPc ** 2, (0.35 * cloud.radiusPc) ** 2),
+  };
+}
+
+/**
+ * The march's scales for an evaluator that carries the dimensionless
+ * carve and works in single precision: dust and gas per unit of stored
+ * carve, optical depth per carve·pc, recombined budget *fraction* per
+ * carve²·pc of contracted path, and the ionization-parameter flux
+ * factor. The raw factors overflow a 32-bit float — RECOMBINATION_SCALE
+ * alone is 10⁴³ — so they are folded here, in doubles, into ratios of
+ * order unity.
+ */
+export interface NebulaMarchScales {
+  dustScale: number;
+  gasScale: number;
+  tauScale: number;
+  recombFrac: number;
+  fluxScale: number;
+}
+
+export function nebulaMarchScales(plan: NebulaBakePlan): NebulaMarchScales {
+  const dustScale = cloudCarveDustScale(plan.cloud);
+  const gasScale = hydrogenDensity(dustScale, plan.metallicity);
+  return {
+    dustScale,
+    gasScale,
+    tauScale: dustScale * DUST_OPACITY_PER_PC,
+    recombFrac: plan.budget > 0 ? (gasScale * gasScale * RECOMBINATION_SCALE) / plan.budget : 0,
+    fluxScale: plan.budget / (2.998e10 * CM_PER_PC * CM_PER_PC),
   };
 }
 
