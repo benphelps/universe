@@ -14,7 +14,14 @@ import {
   Vector3,
 } from 'three';
 import type { GalacticPosition } from '../../universe/galaxy/density';
-import { DUST_OPACITY_PER_PC, HG_G } from '../../universe/galaxy/density';
+import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
+import {
+  SCATTER_OPACITY_RGB,
+  SCATTER_TABLE_TAU_MAX,
+  SCATTER_TABLE_TAUS,
+  SCATTER_TABLE_MUS,
+} from '../../universe/galaxy/dustScattering';
+import { scatterTableTexture } from './scatterTable';
 import {
   BEAM_SR,
   DISPLAY_CEIL,
@@ -88,6 +95,19 @@ uniform float uDetailAmp;
 uniform float uDetailFreq;
 uniform float uFineDetailFreq;
 uniform int uSteps;
+uniform sampler2D uScatterTable;
+
+/** The multiple-scattering table: what a voxel at optical depth tau
+ *  from its source sends toward a viewer at scattering-angle cosine
+ *  already folded into the y coordinate — every order of scattering,
+ *  solved once (universe/galaxy/dustScattering). */
+float scatterM(float tau, float muCoord) {
+  float u = log(1.0 + min(tau, ${f(SCATTER_TABLE_TAU_MAX)})) *
+    ${f(1 / Math.log1p(SCATTER_TABLE_TAU_MAX))};
+  return texture(uScatterTable,
+    vec2(u * ${f((SCATTER_TABLE_TAUS - 1) / SCATTER_TABLE_TAUS)} + ${f(0.5 / SCATTER_TABLE_TAUS)},
+      muCoord)).r;
+}
 
 /** Interleaved gradient noise: one cheap dither per pixel, so the
  *  march's step boundaries never line up into shells. */
@@ -139,7 +159,11 @@ void main() {
   float ds = (far - near) / float(uSteps);
   float jitter = dither(gl_FragCoord.xy);
   vec3 light = vec3(0.0);
-  float transmittance = 1.0;
+  // Per-channel: dust takes more blue than red out of everything the
+  // march accumulates, so the nebula's own deep light reddens exactly
+  // as transmitted starlight does. Green rides the V curve and is the
+  // scalar the cover and the early-out read.
+  vec3 transmittance = vec3(1.0);
   for (int i = 0; i < ${MAX_STEPS}; i++) {
     if (i >= uSteps) break;
     vec3 p = rel + dir * (near + (float(i) + jitter) * ds);
@@ -183,27 +207,36 @@ void main() {
     // proton. The hue is the line mixture at this cell's hardness.
     vec3 emission = mix(uEmissionCool, uEmissionHot, cell.b) * ionized * ionized * coefficient;
     // What the dust scatters of the group's light: the flux arriving
-    // from the star it actually comes from, dimmed by the dust between
-    // (cell.a), scattered by this cell's dust. The floor keeps the
-    // source's own cell finite rather than singular.
+    // from the star it actually comes from, scattered by this cell's
+    // dust through every order at once — the table carries the beam's
+    // attenuation, the phase, and the diffuse field that seeps around
+    // clumps, indexed by the optical depth the bake actually marched
+    // (cell.a) and the scattering angle. Per channel, because the
+    // opacity that drives it rises to the blue: the reason reflection
+    // nebulae are blue at all. The floor keeps the source's own cell
+    // finite rather than singular.
     vec3 shine = p - uScatterSourcePc;
     float r2 = max(dot(shine, shine), uScatterFloorPc2);
-    // Henyey–Greenstein phase, forward-peaked the way grains actually
-    // throw light: dust between camera and star glows, dust lit from
-    // the camera's side stays matte. Single scattering only, until the
-    // multiple-scattering table lands with the reflection pass.
     float mu = -dot(shine, dir) * inversesqrt(r2);
-    float phase = ${(1 - HG_G * HG_G).toFixed(4)} *
-      pow(1.0 + ${(HG_G * HG_G).toFixed(4)} - ${(2 * HG_G).toFixed(4)} * mu, -1.5);
-    vec3 scattered = uReflection * uScatterLum * phase * dust * cell.a / r2;
+    float muCoord = (clamp(mu, -1.0, 1.0) * 0.5 + 0.5) *
+      ${f((SCATTER_TABLE_MUS - 1) / SCATTER_TABLE_MUS)} + ${f(0.5 / SCATTER_TABLE_MUS)};
+    float tau = -log(max(cell.a, 0.0038));
+    vec3 m = vec3(
+      scatterM(tau * ${f(SCATTER_OPACITY_RGB[0])}, muCoord),
+      scatterM(tau, muCoord),
+      scatterM(tau * ${f(SCATTER_OPACITY_RGB[2])}, muCoord));
+    vec3 scattered = uReflection *
+      vec3(${f(SCATTER_OPACITY_RGB[0])} * m.r, m.g, ${f(SCATTER_OPACITY_RGB[2])} * m.b) *
+      (uScatterLum * dust / r2);
 
     float extinction = dust * ${DUST_OPACITY_PER_PC.toFixed(4)};
     light += transmittance * (emission + scattered) * ds;
-    transmittance *= exp(-extinction * ds);
+    transmittance *= exp(-extinction * ds *
+      vec3(${f(SCATTER_OPACITY_RGB[0])}, 1.0, ${f(SCATTER_OPACITY_RGB[2])}));
     // The march may stop once even the display-space transmittance —
     // the physical one raised to the law's exponent — is invisible.
-    if (transmittance < 2e-7) {
-      transmittance = 0.0;
+    if (transmittance.g < 2e-7) {
+      transmittance = vec3(0.0);
       break;
     }
   }
@@ -222,7 +255,7 @@ void main() {
     ${f(DISPLAY_GAIN)} * pow(${f(PEDESTAL_BEAM)} + beam, ${f(DISPLAY_GAMMA)}) -
       ${f(DISPLAY_GAIN * PEDESTAL_BEAM ** DISPLAY_GAMMA)});
   vec3 display = lum > 1e-9 ? light * (shown / lum) : vec3(0.0);
-  float cover = 1.0 - pow(transmittance, ${f(DISPLAY_GAMMA)});
+  float cover = 1.0 - pow(transmittance.g, ${f(DISPLAY_GAMMA)});
 
   // Premultiplied: what the nebula shows, over what it lets past.
   fragColor = vec4(display * uOpacity, cover * uOpacity);
@@ -307,6 +340,7 @@ export class NebulaVolume {
         uDetailFreq: { value: bake.size / bake.halfExtentsPc[0] },
         uFineDetailFreq: { value: fine ? fine.size / fine.halfExtentsPc[0] : 1 },
         uSteps: { value: BASE_STEPS },
+        uScatterTable: { value: scatterTableTexture() },
         uFine: { value: this.fineTexture },
         uFineOffsetPc: {
           value: fine

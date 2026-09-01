@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cloudsNear } from './clouds';
-import { DUST_OPACITY_PER_PC, HG_G, HOME_POSITION } from './density';
+import { DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
+import { dustScatterTable, sampleScatterTable, SCATTER_OPACITY_RGB } from './dustScattering';
 import {
   DISPLAY_CEIL,
   DISPLAY_GAIN,
@@ -10,7 +11,7 @@ import {
   displaySurfaceBrightness,
   radianceFromDisplay,
 } from './displayLaw';
-import { nebulaFor, nebulaLightSolar, type Nebula } from './nebula';
+import { nebulaEmissionShare, nebulaFor, nebulaLightSolar, type Nebula } from './nebula';
 import {
   bakeNebulaVolume,
   SCATTER_EMISSIVITY_PER_LSUN,
@@ -130,43 +131,68 @@ describe('sprite photometry', () => {
     // gap between what leaves the marched volume and the sprite's flux
     // closure is made of known physics: the impostor's fixed U reads
     // the line grid a factor from the marched grid's own hardness mix,
-    // dust inside the box eats part of the lines, and above all the
-    // impostor's 0.3 continuum interception stands for scattering the
-    // volume only single-scatters inside one box — the share the
-    // reflection pass's multiple-scattering table will move. Measured
-    // today at ~0.12 on the brightest whole subject; the pin holds the
-    // tiers within sight of each other and tightens when that pass
-    // lands.
+    // dust inside the box eats part of the lines, and the impostor's
+    // 0.3 continuum interception is a whole-cloud number while the
+    // bubble-scale box holds only part of the cloud's dust to scatter
+    // with — even carrying every order of the table. Measured at ~0.14
+    // on the brightest whole subject with multiple scattering in; the
+    // pin holds the tiers within sight of each other.
     const nebula = litNebulae().find((candidate) => candidate.supernovae === 0);
     expect(nebula).toBeDefined();
     if (!nebula) return;
     const bake = bakeNebulaVolume(nebula.cloud, nebula, 64);
 
     const distance = bake.halfExtentsPc[0] * 8;
-    const marched = marchedFlux(bake, distance);
+    const [r, g, b] = marchedFlux(bake, distance, dustScatterTable());
+    const marched = luminance(r, g, b);
     const budget = nebulaLightSolar(nebula) / (4 * Math.PI * distance * distance);
     const ratio = marched / budget;
-    expect(ratio).toBeGreaterThan(0.05);
-    expect(ratio).toBeLessThan(0.6);
+    expect(ratio).toBeGreaterThan(0.07);
+    expect(ratio).toBeLessThan(0.4);
+  });
+
+  it('colours scattered light by the dust, not by paint', () => {
+    // Reflection blue is a mechanism, not a palette entry: opacity
+    // rises to the blue, so at the columns these clouds carry, more
+    // blue than red is turned toward the camera — measured here as
+    // the scattered light alone marching bluer than its grey twin,
+    // over an illuminant that is already blue. (The same physics
+    // reddens a source buried deep enough; the direction belongs to
+    // the column.)
+    const nebula = litNebulae().find((candidate) => candidate.supernovae === 0);
+    expect(nebula).toBeDefined();
+    if (!nebula) return;
+    const bake = bakeNebulaVolume(nebula.cloud, nebula, 64);
+    const table = dustScatterTable();
+    const distance = bake.halfExtentsPc[0] * 8;
+    const [greyR, , greyB] = marchedFlux(bake, distance, table, [1, 1, 1], false);
+    const [r, , b] = marchedFlux(bake, distance, table, SCATTER_OPACITY_RGB, false);
+    expect(greyB / greyR).toBeGreaterThan(2);
+    expect(b / r).toBeGreaterThan((greyB / greyR) * 1.03);
   });
 });
 
 /**
- * The view march of render/galaxy/nebulaVolume's shader, in TypeScript
- * and in luminance alone: rays over a tangent grid from a viewpoint on
- * the box's +x side, emission and scattered light accumulating under
- * dust, summed to the flux the whole volume sends the camera.
+ * The view march of render/galaxy/nebulaVolume's shader, in
+ * TypeScript: rays over a tangent grid from a viewpoint on the box's
+ * +x side, line emission and table-scattered starlight accumulating
+ * under per-channel dust, summed to the flux the whole volume sends
+ * the camera.
  */
-function marchedFlux(bake: NebulaVolumeBake, distancePc: number): number {
+function marchedFlux(
+  bake: NebulaVolumeBake,
+  distancePc: number,
+  table: Float32Array,
+  opacityRgb: readonly [number, number, number] = SCATTER_OPACITY_RGB,
+  withEmission = true,
+): [number, number, number] {
   const half = bake.halfExtentsPc[0];
-  const scatterLum =
-    luminance(...bake.reflectionColor) *
-    bake.scatterLuminositySolar *
-    SCATTER_EMISSIVITY_PER_LSUN;
+  const scatterLum = bake.scatterLuminositySolar * SCATTER_EMISSIVITY_PER_LSUN;
+  const [ratioR, , ratioB] = opacityRgb;
   const grid = 48;
   const span = half * 1.15;
   const cell = (2 * span) / grid;
-  let flux = 0;
+  const flux: [number, number, number] = [0, 0, 0];
   for (let j = 0; j < grid; j++) {
     for (let i = 0; i < grid; i++) {
       const y = -span + (i + 0.5) * cell;
@@ -187,8 +213,8 @@ function marchedFlux(bake: NebulaVolumeBake, distancePc: number): number {
       if (far <= near) continue;
       const steps = 128;
       const ds = (far - near) / steps;
-      let radiance = 0;
-      let transmittance = 1;
+      const radiance = [0, 0, 0];
+      const transmittance = [1, 1, 1];
       for (let s = 0; s < steps; s++) {
         const t = near + (s + 0.5) * ds;
         const p = [origin[0] + dir[0] * t, origin[1] + dir[1] * t, origin[2] + dir[2] * t];
@@ -196,8 +222,9 @@ function marchedFlux(bake: NebulaVolumeBake, distancePc: number): number {
         if (index < 0) continue;
         const dust = (bake.data[index * 4] / 255) * bake.dustRef;
         const ionized = (bake.data[index * 4 + 1] / 255) * bake.densityRef;
+        const hardness = bake.data[index * 4 + 2] / 255;
         const shadow = bake.data[index * 4 + 3] / 255;
-        const emission = ionized * ionized * bake.emissionCoefficient;
+        const measure = withEmission ? ionized * ionized * bake.emissionCoefficient : 0;
         const shine = [
           p[0] - bake.scatterSourcePc[0],
           p[1] - bake.scatterSourcePc[1],
@@ -208,14 +235,28 @@ function marchedFlux(bake: NebulaVolumeBake, distancePc: number): number {
           bake.scatterFloorPc2,
         );
         const mu = -(shine[0] * dir[0] + shine[1] * dir[1] + shine[2] * dir[2]) / Math.sqrt(r2);
-        const phase = (1 - HG_G * HG_G) * (1 + HG_G * HG_G - 2 * HG_G * mu) ** -1.5;
-        const scattered = (scatterLum * phase * dust * shadow) / r2;
-        radiance += transmittance * (emission + scattered) * ds;
-        transmittance *= Math.exp(-dust * DUST_OPACITY_PER_PC * ds);
-        if (transmittance < 2e-7) break;
+        const tau = -Math.log(Math.max(shadow, 0.0038));
+        const m = [
+          ratioR * sampleScatterTable(table, tau * ratioR, mu),
+          sampleScatterTable(table, tau, mu),
+          ratioB * sampleScatterTable(table, tau * ratioB, mu),
+        ];
+        const scatter = (scatterLum * dust) / r2;
+        for (let c = 0; c < 3; c++) {
+          const emission =
+            (bake.emissionCool[c] + (bake.emissionHot[c] - bake.emissionCool[c]) * hardness) *
+            measure;
+          radiance[c] += transmittance[c] * (emission + bake.reflectionColor[c] * m[c] * scatter) * ds;
+        }
+        const depth = dust * DUST_OPACITY_PER_PC * ds;
+        transmittance[0] *= Math.exp(-depth * ratioR);
+        transmittance[1] *= Math.exp(-depth);
+        transmittance[2] *= Math.exp(-depth * ratioB);
+        if (transmittance[1] < 2e-7) break;
       }
       // The tangent-plane pixel's solid angle from the viewpoint.
-      flux += radiance * ((cell * cell * distancePc) / reach ** 3);
+      const beam = (cell * cell * distancePc) / reach ** 3;
+      for (let c = 0; c < 3; c++) flux[c] += radiance[c] * beam;
     }
   }
   return flux;

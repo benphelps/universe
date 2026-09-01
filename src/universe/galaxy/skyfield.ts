@@ -35,6 +35,7 @@ import {
 } from './nebula';
 import { NEBULA_MEAN_U, nebulaEmissionColor } from './nebulaLines';
 import { displaySurfaceBrightness } from './displayLaw';
+import { SCATTER_TINT_RGB } from './dustScattering';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
@@ -667,13 +668,19 @@ function nebulaHues(nebula: Nebula): {
 } {
   // The sprite reads the same line grid the volume does — the group's
   // hottest star and its own gas, at the representative U a whole
-  // object stands for.
+  // object stands for — and its scattered continuum wears the blue
+  // tilt of the dust's opacity curve, standing in for the per-λ
+  // march only the volume runs.
   const [er, eg, eb] = nebulaEmissionColor(NEBULA_MEAN_U, nebula.maxTeff, nebula.metallicity);
   const illuminant = nebulaIlluminant(nebula);
   const [sr, sg, sb] = blackbodyLinearRgb(Math.max(3000, illuminant?.tEff ?? 4000));
   return {
     emission: [er, eg, eb],
-    reflection: [sr, sg, sb],
+    reflection: [
+      sr * SCATTER_TINT_RGB[0],
+      sg * SCATTER_TINT_RGB[1],
+      sb * SCATTER_TINT_RGB[2],
+    ],
     share: nebulaEmissionShare(nebula),
   };
 }

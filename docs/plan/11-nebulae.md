@@ -98,7 +98,29 @@ Three display modes, all honest, differing only in the instrument:
 
 ## Reflection
 
-After emission works. Inverse-square irradiance from channel A, dust albedo a ≈ 0.6, Henyey–Greenstein g ≈ 0.6, with wavelength-dependent extinction A_B/A_V = 1.324 and A_R/A_V = 0.748 at R_V = 3.1 (≈1.2 / 0.8 in dense cores at R_V ≈ 5) — that ratio is why reflection nebulae are blue while transmitted light reddens. Upgrade to Magnor's precomputed multiple-scattering table P(τ_sct, θ), 1000 optical depths × 72 angles, a single 2D LUT fetch, rather than secondary light marches in the frame shader.
+**Landed.** The table is `universe/galaxy/dustScattering.ts`: successive orders of
+scattering around a point source in an infinite homogeneous medium of the
+model's own albedo and asymmetry (both now constants in `density.ts`),
+deterministic, ~33 ms solved once per session, 96 log-spaced optical depths ×
+64 angles. Normalized so first order alone is `e^(−τ)·Φ_HG(μ)` — the exact
+factor the frame shader used when it was single-scatter — so the table dropped
+into its place: the shader indexes it by the depth the bake actually marched
+(channel A) and the scattering angle, which keeps clump shadows carved at
+first order and fills them with softly diffused light at the higher ones.
+Measured against single scattering: ×1.1 at τ = 0.1, ×3 at τ = 2, ×14 at
+τ = 10, with the forward peak washing out as depth grows — pinned structurally
+in `dustScattering.test.ts`. The chromatic piece rides the same fetch:
+A_B/A_V = 1.324 and A_R/A_V = 0.748 (R_V = 3.1, V on green) scale both the
+scattering coefficient and the per-channel depths, and the march's
+transmittance went vec3, so the nebula's own deep light reddens exactly as
+transmitted starlight does while thin columns scatter blue out. The blue of a
+reflection complex is now an emergent flux ratio, pinned against a grey twin
+march (scattered-only B/R runs ~3.3–4.4 against ~3.05 grey on the dusty
+subjects; a source buried deep enough reddens instead, and the direction
+belongs to the column). The sprite tier's scattered continuum wears the
+luminance-normalized ratio tilt (`SCATTER_TINT_RGB`), standing in for the
+per-λ march only the volume runs. The dense-core R_V ≈ 5 variant remains
+unmodelled.
 
 ## Not in scope
 
@@ -118,7 +140,8 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
    Open: the pick priority — seeded stars win the cursor over an extended object by design, which was right when nebulae were background decals and now makes a nebula hard to click in a dense field. The landmark list travels to the same clouds meanwhile. (In-shader detail octaves below cell size landed: two octaves of the tiling clump noise continue the cascade under whichever grid the ray reads, gated by apparent size so only a sky-filling volume pays.)
 
 7. Multi-volume marching, crossfade, streaming and eviction. **Landed** — sixty-four residents chosen by projected size, baked on the GPU in seconds, each dissolving in against its sprite (which carries the complement) and fading back out when residency moves on, with disposal only at zero and a swing-back simply fading up again. What remains of this stage is the one-pass multi-box march in the ledger.
-8. Reflection scattering; display modes.
+8. Reflection scattering (**landed** — the multiple-scattering table and the
+   chromatic march, §Reflection); display modes remain.
 
 ## Ledger — open items as of the galaxy-march branch (Sep 2026)
 
@@ -180,9 +203,10 @@ Rough priority order. The residency dials live at the top of
   (`displayLaw.test.ts`) pins the law against the star shader exactly, pins
   real-sky anchors (pole sky black, band ~0.05, Orion-core ~0.37), closes the
   sprite tile's flux books to ±10%, and pins volume-vs-sprite total flux at
-  the measured ~0.12 — the gap is mostly the impostor's 0.3 continuum
-  interception standing for scattering the volume only single-scatters, and
-  the pin tightens when the reflection pass's multiple-scattering table lands.
+  the measured ~0.14 with the multiple-scattering table in — the remaining gap
+  is the impostor's 0.3 continuum interception being a whole-cloud number
+  while the bubble-scale box holds only part of the cloud's dust to scatter
+  with, plus the impostor's fixed U against each grid's own hardness mix.
   Residual refinements: the volumes and sprites use the constant pedestal
   where the glow uses its own local minimum (plumbing the sky field's floor
   through to them is a small follow-up); rift and dark-tile dimming of the
