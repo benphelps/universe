@@ -13,7 +13,7 @@ import { hydrogenBetaLuminosity } from './ionization';
 import { ALPHA_B } from './ionization';
 import { nebulaIlluminant, type Nebula } from './nebula';
 import { ismMetallicity } from './population';
-import { nebulaEmissionColor, nebulaLineSum } from './nebulaLines';
+import { nebulaEmissionColor, nebulaLineSum, nebulaNarrowbandColor } from './nebulaLines';
 
 /**
  * A nebula baked into a volume the renderer can march.
@@ -72,6 +72,10 @@ export interface NebulaVolumeBake {
   /** Emission colour at full hardness and at none, linear RGB. */
   emissionHot: LinearRgb;
   emissionCool: LinearRgb;
+  /** The same endpoints through the mapped-narrowband palette, so an
+   *  instrument switch is a uniform swap, never a re-bake. */
+  emissionHotNarrow: LinearRgb;
+  emissionCoolNarrow: LinearRgb;
   /** The source's own light, for what the dust scatters. */
   reflectionColor: LinearRgb;
   /** Where what shines on the dust stands, box frame, pc: the ionizing
@@ -663,6 +667,8 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
     // rim of the disc.
     emissionHot: nebulaEmissionColor(1, plan.sourceTeff, plan.metallicity),
     emissionCool: nebulaEmissionColor(0, plan.sourceTeff, plan.metallicity),
+    emissionHotNarrow: nebulaNarrowbandColor(1, plan.sourceTeff, plan.metallicity),
+    emissionCoolNarrow: nebulaNarrowbandColor(0, plan.sourceTeff, plan.metallicity),
     reflectionColor: blackbodyLinearRgb(plan.reflectionTeff),
     scatterSourcePc: plan.scatterSourcePc,
     scatterLuminositySolar: plan.scatterLuminositySolar,

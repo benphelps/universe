@@ -22,8 +22,11 @@ import {
   SCATTER_TABLE_MUS,
 } from '../../universe/galaxy/dustScattering';
 import { scatterTableTexture } from './scatterTable';
-import { DISPLAY_GAMMA, SKY_PEDESTAL_LSUN_PC2_SR } from '../../universe/galaxy/displayLaw';
-import { TRANSFER_GLSL, transferUniforms } from '../displayTransfer';
+import {
+  SKY_PEDESTAL_LSUN_PC2_SR,
+  type DisplayInstrument,
+} from '../../universe/galaxy/displayLaw';
+import { seatExtendedInstrument, TRANSFER_GLSL, transferUniforms } from '../displayTransfer';
 import {
   SCATTER_EMISSIVITY_PER_LSUN,
   type NebulaVolumeBake,
@@ -218,7 +221,7 @@ void main() {
       scatterM(tau * ${f(SCATTER_OPACITY_RGB[2])}, muCoord));
     vec3 scattered = uReflection *
       vec3(${f(SCATTER_OPACITY_RGB[0])} * m.r, m.g, ${f(SCATTER_OPACITY_RGB[2])} * m.b) *
-      (uScatterLum * dust / r2);
+      (uScatterLum * uContinuumShare * dust / r2);
 
     float extinction = dust * ${DUST_OPACITY_PER_PC.toFixed(4)};
     light += transmittance * (emission + scattered) * ds;
@@ -242,7 +245,7 @@ void main() {
   // to the gamma.
   float lum = dot(light, vec3(0.2126, 0.7152, 0.0722));
   float shown = displayRadiance(lum);
-  vec3 display = lum > 1e-9 ? light * (shown / lum) : vec3(0.0);
+  vec3 display = lum > 1e-9 ? scotopic(light * (shown / lum), lum) : vec3(0.0);
   float cover = 1.0 - pow(transmittance.g, uGamma);
 
   // Premultiplied: what the nebula shows, over what it lets past.
@@ -279,8 +282,12 @@ export class NebulaVolume {
     fine: NebulaVolumeBake | null,
     private readonly viewpointPc: GalacticPosition,
     sceneFromGalaxy: Float32Array,
-    skyFloorRadiance = SKY_PEDESTAL_LSUN_PC2_SR,
+    private readonly skyFloorRadiance = SKY_PEDESTAL_LSUN_PC2_SR,
   ) {
+    this.palettes = {
+      line: [bake.emissionHot, bake.emissionCool],
+      narrowband: [bake.emissionHotNarrow, bake.emissionCoolNarrow],
+    };
     this.seed = bake.seed;
     this.hasFine = fine !== null;
     this.bakedSize = bake.size;
@@ -375,6 +382,21 @@ export class NebulaVolume {
   /** Standing down: fading toward removal — until residency wants the
    *  cloud again, which simply fades it back. */
   retiring = false;
+  /** The bake's emission endpoints under each palette, so a mode
+   *  switch is a uniform swap. */
+  private readonly palettes: Record<
+    'line' | 'narrowband',
+    [readonly number[], readonly number[]]
+  >;
+
+  /** Seat an instrument: the shared transfer over this sky's pedestal,
+   *  and the line palette the mode asks for. */
+  setInstrument(instrument: DisplayInstrument, exposure: number): void {
+    seatExtendedInstrument(this.material.uniforms, this.skyFloorRadiance, instrument, exposure);
+    const [hot, cool] = this.palettes[instrument.palette];
+    (this.material.uniforms.uEmissionHot.value as Vector3).set(hot[0], hot[1], hot[2]);
+    (this.material.uniforms.uEmissionCool.value as Vector3).set(cool[0], cool[1], cool[2]);
+  }
 
   set opacity(value: number) {
     this.material.uniforms.uOpacity.value = value;

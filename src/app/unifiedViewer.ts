@@ -134,7 +134,12 @@ import {
   type SkyField,
   type SkyPreview,
 } from '../universe/galaxy/skyfield';
-import { SKY_PEDESTAL_LSUN_PC2_SR } from '../universe/galaxy/displayLaw';
+import {
+  CAMERA_INSTRUMENT,
+  SKY_PEDESTAL_LSUN_PC2_SR,
+  type DisplayInstrument,
+} from '../universe/galaxy/displayLaw';
+import { seatFieldPointInstrument } from '../render/displayTransfer';
 import { getGalacticLandmarks } from './landmarkService';
 import { cancelSkyBuilds, getSkyField, skyPending, skyProgress, watchSkyBuild } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
@@ -406,6 +411,10 @@ export class UnifiedViewer {
    *  soon as the background lands; volumes installed before that use
    *  the typical dark column. */
   private skyFloorRadiance = SKY_PEDESTAL_LSUN_PC2_SR;
+  /** The instrument the whole sky answers to, and its exposure — one
+   *  uniform seating shared by points, glow, sprites and volumes. */
+  private skyInstrument: DisplayInstrument = CAMERA_INSTRUMENT;
+  private skyExposure = 1;
   /**
    * Ground frame of the focused body: spin about Y composed with the
    * axial tilt. The terrain never moves (static vertices stay jitter-free
@@ -1363,6 +1372,7 @@ export class UnifiedViewer {
           2000,
         );
         // Sprite fades for standing volumes arrive with the next frame.
+        this.backdrop.setInstrument(this.skyInstrument, this.skyExposure);
         this.scene.add(this.backdrop.group);
       },
     );
@@ -1378,6 +1388,7 @@ export class UnifiedViewer {
       // It usually stands already, put up when the background landed.
       if (!this.backdrop) {
         this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
+        this.backdrop.setInstrument(this.skyInstrument, this.skyExposure);
         this.scene.add(this.backdrop.group);
       }
       this.sectorChart = new SectorChart(sky);
@@ -1412,6 +1423,11 @@ export class UnifiedViewer {
         geometry.setAttribute('aRadiusKm', new BufferAttribute(radii, 1));
         geometry.boundingSphere = new Sphere(new Vector3(), 1e13);
         this.farPoints = new Points(geometry, createStarPointsMaterial(PC_KM));
+        seatFieldPointInstrument(
+          (this.farPoints.material as ShaderMaterial).uniforms,
+          this.skyInstrument,
+          this.skyExposure,
+        );
         this.farPoints.frustumCulled = false;
         this.farPoints.renderOrder = -2;
         this.pcGroup.add(this.farPoints);
@@ -1567,6 +1583,7 @@ export class UnifiedViewer {
       orientation,
       this.skyFloorRadiance,
     );
+    volume.setInstrument(this.skyInstrument, this.skyExposure);
     // A fresh volume dissolves in from nothing; a reinstall — the fine
     // bake landing over the coarse one — picks the fade up where the
     // volume it replaces stood, so the upgrade is invisible.
@@ -1611,6 +1628,11 @@ export class UnifiedViewer {
     geometry.setAttribute('aRadiusKm', new BufferAttribute(new Float32Array(count), 1));
     geometry.boundingSphere = new Sphere(new Vector3(), 1e13);
     const points = new Points(geometry, createStarPointsMaterial(PC_KM));
+    seatFieldPointInstrument(
+      (points.material as ShaderMaterial).uniforms,
+      this.skyInstrument,
+      this.skyExposure,
+    );
     points.frustumCulled = false;
     points.renderOrder = -2;
     this.skyPreview.push(points);
@@ -3190,6 +3212,11 @@ export class UnifiedViewer {
     this.neighborPositionsPc = hood.positionsPc;
     this.neighborGalacticPc = hood.galacticPc;
     this.neighborPoints = createNeighborStars(hood, PC_KM);
+    seatFieldPointInstrument(
+      (this.neighborPoints.material as ShaderMaterial).uniforms,
+      this.skyInstrument,
+      this.skyExposure,
+    );
     const positions = this.neighborPoints.geometry.getAttribute('position') as BufferAttribute;
     this.neighborPointIndex = new PointConeIndex(
       positions.array as ArrayLike<number>,
@@ -3321,6 +3348,31 @@ export class UnifiedViewer {
     }
     this.skyData = null;
     this.system = null;
+  }
+
+  /** Seat an instrument on the whole sky — backdrop tiers, the 3D
+   *  star points, and every standing nebula volume — and remember it
+   *  for whatever stands up next. Exposure is one dial: >1 digs
+   *  deeper, <1 pulls back. */
+  setSkyInstrument(instrument: DisplayInstrument, exposure = 1): void {
+    this.skyInstrument = instrument;
+    this.skyExposure = exposure;
+    this.backdrop?.setInstrument(instrument, exposure);
+    for (const volume of this.nebulaVolumes.values()) volume.setInstrument(instrument, exposure);
+    for (const points of [
+      this.starSprites,
+      this.farPoints,
+      this.neighborPoints,
+      ...this.skyPreview,
+    ]) {
+      if (points) {
+        seatFieldPointInstrument(
+          (points.material as ShaderMaterial).uniforms,
+          instrument,
+          exposure,
+        );
+      }
+    }
   }
 
   /**

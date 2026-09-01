@@ -141,7 +141,8 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 
 7. Multi-volume marching, crossfade, streaming and eviction. **Landed** — sixty-four residents chosen by projected size, baked on the GPU in seconds, each dissolving in against its sprite (which carries the complement) and fading back out when residency moves on, with disposal only at zero and a swing-back simply fading up again. What remains of this stage is the one-pass multi-box march in the ledger.
 8. Reflection scattering (**landed** — the multiple-scattering table and the
-   chromatic march, §Reflection); display modes remain.
+   chromatic march, §Reflection); display modes (**landed** — camera / eye /
+   SHO as instrument seatings over one law, with an exposure dial).
 
 ## Ledger — open items as of the galaxy-march branch (Sep 2026)
 
@@ -212,10 +213,26 @@ Rough priority order. The residency dials live at the top of
   through to them is a small follow-up); rift and dark-tile dimming of the
   glow is display-space `T^γ`, exact for the pure law and ~1.5× steep at
   mid-transmittance against the marginal form.
-- **Display modes.** Bright bubble cores tone-map to white at close range — the
-  natural-vision / camera / narrowband instrument split (§Colour) is where that
-  judgment belongs, not the physics. The shared law is now the single dial
-  such a split would swap.
+- **Display modes — landed.** The §Colour instrument split, as
+  `DisplayInstrument` presets in `displayLaw.ts` seated onto the whole sky's
+  uniforms (`render/displayTransfer.ts`, `viewer.setSkyInstrument`): **camera**
+  is the sky-subtracted deep exposure everything was calibrated under; **eye**
+  anchors the same law at the dark-adapted naked eye — points cut off at sixth
+  magnitude and the brightest near unit display, extended light landing where
+  it really does (the band a barely-there grey at ~0.02, an Orion-class core a
+  dim smudge), colour draining below a mesopic knee into the rods' blue-green
+  cast on every tier; **SHO** swaps the emission endpoints to the mapped
+  [S II]/Hα/[O III] palette — computed from the same line grid, carried on
+  every bake and patch so the switch never re-bakes — and cuts continuum to
+  the sliver narrowband filters pass. One exposure dial (sky depth) slides
+  pivot, cutoff and knee together, so it reads as integration time on the
+  camera and dark adaptation on the eye. The 3D star tiers (neighbor, far,
+  preview points) take the same seating as the backdrop points, so the two
+  star systems stay one photometric system under any mode. Not seated, by
+  choice: the system's belt points (system-local content, not sky) and the
+  nuclear-cluster swarm's custom zero point. Verified live: eye mode makes
+  the brightest home H II complex vanish outright — the honest answer to why
+  nowhere in the galaxy mirrors an Earth dark-sky night.
 - **Stage 5 remainder.** Trunk/pillar photoevaporation, winds and supernovae
   past the Spitzer floor (the expansion slice that landed is the floor, not the
   ceiling).

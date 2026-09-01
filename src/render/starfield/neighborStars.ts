@@ -16,6 +16,7 @@ import {
 } from 'three';
 import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
 import type { Neighborhood } from '../../universe/galaxy/neighborhood';
+import { fieldPointUniforms } from '../displayTransfer';
 
 /**
  * A resident nebula extinguishes the star field behind it.
@@ -107,6 +108,13 @@ in float aRadiusKm;
 uniform float uKmPerPc;
 uniform float uIntensity;
 uniform float uZeroPoint;
+uniform float uZeroShift;
+uniform float uGamma;
+uniform float uGain;
+uniform float uFloor;
+uniform float uCeil;
+uniform float uCutoff;
+uniform float uPointColorKnee;
 uniform float uSizeScale;
 uniform sampler3D uNebulaVolume0;
 uniform sampler3D uNebulaVolume1;
@@ -165,7 +173,8 @@ void main() {
   // that zero point every one of its stars pins to the largest dot the
   // material draws — which reads as a field of blurred blobs rather
   // than as stars of different brightness.
-  float logE = log2(max(luminosity / (distancePc * distancePc), 1e-12)) + uZeroPoint;
+  float irradiance = max(luminosity / (distancePc * distancePc), 1e-12);
+  float logE = log2(irradiance) + uZeroPoint + uZeroShift;
   float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
   // Sprite sizes are in pixels, so the same star drawn into a coarser
   // buffer covers a wider angle. Rendering into one — the black hole's
@@ -177,7 +186,11 @@ void main() {
   // the energy, and the star keeps its brightness at its true size.
   float drawn = max(size * uSizeScale, 1.0);
   float restored = (size * size) / (drawn * drawn);
-  float energy = clamp(0.055 * exp2(0.36 * logE), 0.012, 1.7) * uIntensity * restored;
+  float energy = clamp(uGain * exp2(uGamma * logE), uFloor, uCeil) * uIntensity * restored;
+  // An instrument with a real limit drops the points below it — the
+  // same seating the backdrop's stars take, so the two star tiers
+  // stay one photometric system under any mode.
+  if (uCutoff > 0.0) energy *= smoothstep(uCutoff * 0.6, uCutoff * 1.6, irradiance);
   // Once the star's actual disc resolves, the photosphere carries it.
   energy *= 1.0 - smoothstep(0.002, 0.004, aRadiusKm / distanceKm);
   // Dust reddens as it dims: the blue band loses about a third more
@@ -189,7 +202,11 @@ void main() {
     + nebulaOpticalDepth(uNebulaVolume2, uNebulaBoxes[2], uNebulaDustRefs[2], relPc)
     + nebulaOpticalDepth(uNebulaVolume3, uNebulaBoxes[3], uNebulaDustRefs[3], relPc);
   vec3 extinction = exp(-tauV * vec3(0.748, 1.0, 1.324));
-  vColor = starColor * energy * extinction;
+  float sat = uPointColorKnee > 0.0 ? clamp(energy / uPointColorKnee, 0.0, 1.0) : 1.0;
+  vec3 hue = mix(
+    vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
+    starColor, sat);
+  vColor = hue * energy * extinction;
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   gl_PointSize = drawn;
   gl_Position = projectionMatrix * mvPosition;
@@ -232,6 +249,7 @@ export function createStarPointsMaterial(kmPerPc: number, zeroPoint = 17): Shade
       uIntensity: { value: 1 },
       uZeroPoint: { value: zeroPoint },
       uSizeScale: { value: 1 },
+      ...fieldPointUniforms(),
       ...nebulaUniforms,
     },
     blending: AdditiveBlending,

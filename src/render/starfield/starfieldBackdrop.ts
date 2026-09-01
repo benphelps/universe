@@ -21,14 +21,14 @@ import {
   Vector4,
 } from 'three';
 import { rotateToScene } from '../../universe/galaxy/orientation';
+import type { DisplayInstrument } from '../../universe/galaxy/displayLaw';
 import {
-  DISPLAY_CEIL,
-  DISPLAY_FLOOR,
-  DISPLAY_GAIN,
-  DISPLAY_GAMMA,
-  DISPLAY_PIVOT_LSUN_PC2,
-} from '../../universe/galaxy/displayLaw';
-import { TRANSFER_GLSL, transferUniforms } from '../displayTransfer';
+  pointUniforms,
+  seatExtendedInstrument,
+  seatPointInstrument,
+  TRANSFER_GLSL,
+  transferUniforms,
+} from '../displayTransfer';
 import {
   DARK_ATLAS_COLS,
   DARK_ATLAS_ROWS,
@@ -53,10 +53,12 @@ uniform vec4 uNebulaA[${MAX_NEBULAE}]; // dir.xyz, tangent half-extent
 uniform vec4 uNebulaB[${MAX_NEBULAE}]; // right.xyz, peak radiance
 uniform vec4 uNebulaC[${MAX_NEBULAE}]; // up.xyz, tile index
 uniform vec3 uNebulaHueE[${MAX_NEBULAE}];
+uniform vec3 uNebulaHueEN[${MAX_NEBULAE}];
 uniform vec3 uNebulaHueR[${MAX_NEBULAE}];
 uniform float uNebulaFade[${MAX_NEBULAE}];
 uniform int uNebulaCount;
 uniform float uIntensity;
+uniform float uNarrowband;
 ${TRANSFER_GLSL}
 
 void main() {
@@ -77,11 +79,16 @@ void main() {
     vec2 uv = (tileOrigin + vec2(u, v)) / vec2(${NEBULA_ATLAS_COLS}.0, ${NEBULA_ATLAS_ROWS}.0);
     // The tile carries physics — relative luminance and the local
     // line-vs-continuum mix — and here it meets the instrument: the
-    // calibrated peak radiance, the law, the hue pair, and the
-    // crossfade against the standing volume, all uniforms.
+    // calibrated peak radiance, the law, the hue pair, what share of
+    // continuum the filters pass, and the crossfade against the
+    // standing volume, all uniforms.
     vec2 cell = texture2D(uNebulaAtlas, uv).rg;
-    vec3 hue = mix(uNebulaHueR[i], uNebulaHueE[i], cell.g);
-    sum += hue * (displayRadiance(cell.r * uNebulaB[i].w) * uNebulaFade[i]);
+    float pass = mix(uContinuumShare, 1.0, cell.g);
+    float radiance = cell.r * uNebulaB[i].w * pass;
+    float lineShare = cell.g / max(pass, 1e-6);
+    vec3 hue = mix(uNebulaHueR[i],
+      mix(uNebulaHueE[i], uNebulaHueEN[i], uNarrowband), lineShare);
+    sum += scotopic(hue * displayRadiance(radiance), radiance) * uNebulaFade[i];
   }
   gl_FragColor = vec4(sum * uIntensity, 1.0);
 }
@@ -97,6 +104,8 @@ uniform float uGain;
 uniform float uFloor;
 uniform float uCeil;
 uniform float uLogPivot;
+uniform float uCutoff;
+uniform float uPointColorKnee;
 
 varying vec3 vColor;
 varying float vAlpha;
@@ -110,7 +119,15 @@ void main() {
   float logE = log2(max(brightness, 1e-12)) - uLogPivot;
   float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
   float energy = clamp(uGain * exp2(uGamma * logE), uFloor, uCeil) * uIntensity;
-  vColor = starColor * energy;
+  // An instrument with a real limit: points below it vanish outright
+  // (half a magnitude of softness so the sky never pops), and colour
+  // drains from the faint ones the way it does at the eyepiece.
+  if (uCutoff > 0.0) energy *= smoothstep(uCutoff * 0.6, uCutoff * 1.6, brightness);
+  float sat = uPointColorKnee > 0.0 ? clamp(energy / uPointColorKnee, 0.0, 1.0) : 1.0;
+  vec3 hue = mix(
+    vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
+    starColor, sat);
+  vColor = hue * energy;
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = size;
@@ -230,12 +247,12 @@ void main() {
   // sky's own pedestal and show honestly black. Hue is the warm
   // population reddened by the dust along the way.
   vec4 column = textureBicubic(uGlow, uv, uGlowSize);
-  float shown = displayRadiance(column.r * transmission - uPedestalRadiance);
+  float radiance = (column.r * transmission - uPedestalRadiance) * uContinuumShare;
   vec3 hue = vec3(
     1.0,
     0.93 * (0.75 + 0.25 * column.g),
     0.85 * (0.55 + 0.45 * column.g));
-  gl_FragColor = vec4(hue * shown * uIntensity, 1.0);
+  gl_FragColor = vec4(scotopic(hue * displayRadiance(radiance), radiance) * uIntensity, 1.0);
 }
 `;
 
@@ -283,6 +300,10 @@ export class StarfieldBackdrop {
   private nebulaSeeds: bigint[] = [];
   private nebulaFades: number[] = [];
   private volumeFades: ReadonlyMap<bigint, number> = new Map();
+  private readonly pedestalRadiance: number;
+  private pointsMaterial!: ShaderMaterial;
+  private glowMaterial!: ShaderMaterial;
+  private nebulaMaterial: ShaderMaterial | null = null;
 
   /** Match the galaxy layers' draw cutoff: below this the contribution
    * is visually nil, but the two full-screen domes are still expensive. */
@@ -290,6 +311,7 @@ export class StarfieldBackdrop {
 
   /** skipStars omits the first N sky entries (a 3D view of the near field). */
   constructor(sky: BackdropSource, radius: number, skipStars = 0) {
+    this.pedestalRadiance = sky.skyFloorRadiance;
     const orientation = sky.sceneFromGalaxy;
     const count = sky.starCount - skipStars;
     const positions = new Float32Array(count * 3);
@@ -325,17 +347,14 @@ export class StarfieldBackdrop {
       fragmentShader: POINTS_FRAGMENT,
       uniforms: {
         uIntensity: { value: 1 },
-        uGamma: { value: DISPLAY_GAMMA },
-        uGain: { value: DISPLAY_GAIN },
-        uFloor: { value: DISPLAY_FLOOR },
-        uCeil: { value: DISPLAY_CEIL },
-        uLogPivot: { value: Math.log2(DISPLAY_PIVOT_LSUN_PC2) },
+        ...pointUniforms(),
       },
       blending: AdditiveBlending,
       transparent: false,
       depthWrite: false,
     });
     this.materials.push(pointsMaterial);
+    this.pointsMaterial = pointsMaterial;
     const points = new Points(geometry, pointsMaterial);
     points.frustumCulled = false;
     points.renderOrder = -2;
@@ -421,6 +440,7 @@ export class StarfieldBackdrop {
       side: BackSide,
     });
     this.materials.push(glowMaterial);
+    this.glowMaterial = glowMaterial;
     const dome = new Mesh(new SphereGeometry(radius * 1.01, 48, 24), glowMaterial);
     dome.frustumCulled = false;
     dome.renderOrder = -3;
@@ -443,6 +463,10 @@ export class StarfieldBackdrop {
       const hueE = Array.from({ length: MAX_NEBULAE }, (_, i) => {
         const patch = patches[i];
         return new Vector3(...(patch?.emissionHue ?? [1, 1, 1]));
+      });
+      const hueEN = Array.from({ length: MAX_NEBULAE }, (_, i) => {
+        const patch = patches[i];
+        return new Vector3(...(patch?.emissionHueNarrow ?? [1, 1, 1]));
       });
       const hueR = Array.from({ length: MAX_NEBULAE }, (_, i) => {
         const patch = patches[i];
@@ -470,10 +494,12 @@ export class StarfieldBackdrop {
           uNebulaB: { value: nebulaB },
           uNebulaC: { value: nebulaC },
           uNebulaHueE: { value: hueE },
+          uNebulaHueEN: { value: hueEN },
           uNebulaHueR: { value: hueR },
           uNebulaFade: { value: fades },
           uNebulaCount: { value: patches.length },
           uIntensity: { value: 1 },
+          uNarrowband: { value: 0 },
           ...transferUniforms(sky.skyFloorRadiance),
         },
         blending: AdditiveBlending,
@@ -482,6 +508,7 @@ export class StarfieldBackdrop {
         side: BackSide,
       });
       this.materials.push(nebulaMaterial);
+      this.nebulaMaterial = nebulaMaterial;
       this.nebulaSeeds = patches.map((patch) => patch.seed);
       this.nebulaFades = fades;
       this.applyNebulaSuppression();
@@ -503,6 +530,22 @@ export class StarfieldBackdrop {
   private applyNebulaSuppression(): void {
     for (let i = 0; i < this.nebulaSeeds.length; i++) {
       this.nebulaFades[i] = 1 - (this.volumeFades.get(this.nebulaSeeds[i]) ?? 0);
+    }
+  }
+
+  /** Seat an instrument on every tier of the backdrop — points, glow,
+   *  sprites — over this sky's own measured pedestal. */
+  setInstrument(instrument: DisplayInstrument, exposure: number): void {
+    seatPointInstrument(this.pointsMaterial.uniforms, instrument, exposure);
+    seatExtendedInstrument(this.glowMaterial.uniforms, this.pedestalRadiance, instrument, exposure);
+    if (this.nebulaMaterial) {
+      seatExtendedInstrument(
+        this.nebulaMaterial.uniforms,
+        this.pedestalRadiance,
+        instrument,
+        exposure,
+      );
+      this.nebulaMaterial.uniforms.uNarrowband.value = instrument.palette === 'narrowband' ? 1 : 0;
     }
   }
 

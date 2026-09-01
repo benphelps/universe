@@ -1,5 +1,20 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { setExposure } from '../store';
+import {
+  setExposure,
+  setSkyExposure,
+  setSkyInstrument,
+  type SkyInstrumentName,
+} from '../store';
+
+const SKY_MODES: Array<{ name: SkyInstrumentName; label: string; title: string }> = [
+  { name: 'camera', label: 'camera', title: 'sky-subtracted deep exposure, true colour' },
+  { name: 'eye', label: 'eye', title: 'the dark-adapted naked eye — what you would really see' },
+  {
+    name: 'narrowband',
+    label: 'SHO',
+    title: 'mapped narrowband: [S II]/Hα/[O III] on RGB, false colour',
+  },
+];
 
 const COG = (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
@@ -14,6 +29,7 @@ const COG = (
  */
 export function SettingsMenu(): ReactNode {
   const [open, setOpen] = useState(false);
+  const [skyMode, setSkyMode] = useState<SkyInstrumentName>('camera');
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -54,6 +70,40 @@ export function SettingsMenu(): ReactNode {
             step={0.05}
             defaultValue={1}
             onChange={(event) => setExposure(Number(event.currentTarget.value))}
+          />
+        </div>
+        <div className="row" id="sky-modes" role="radiogroup" aria-label="sky instrument">
+          <label>sky</label>
+          <div>
+            {SKY_MODES.map(({ name, label, title }) => (
+              <button
+                key={name}
+                className={skyMode === name ? 'active' : ''}
+                title={title}
+                role="radio"
+                aria-checked={skyMode === name}
+                onClick={() => {
+                  setSkyMode(name);
+                  setSkyInstrument(name);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="row">
+          <label htmlFor="sky-exposure" title="how deep the sky's instrument integrates">
+            sky depth
+          </label>
+          <input
+            id="sky-exposure"
+            type="range"
+            min={-2}
+            max={2}
+            step={0.05}
+            defaultValue={0}
+            onChange={(event) => setSkyExposure(10 ** Number(event.currentTarget.value))}
           />
         </div>
       </div>

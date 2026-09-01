@@ -3,15 +3,18 @@ import { cloudsNear } from './clouds';
 import { DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
 import { dustScatterTable, sampleScatterTable, SCATTER_OPACITY_RGB } from './dustScattering';
 import {
+  BEAM_SR,
   DISPLAY_CEIL,
   DISPLAY_GAIN,
   DISPLAY_GAMMA,
   DISPLAY_PIVOT_LSUN_PC2,
   displayEnergy,
   displaySurfaceBrightness,
+  EYE_INSTRUMENT,
   radianceFromDisplay,
 } from './displayLaw';
 import { nebulaEmissionShare, nebulaFor, nebulaLightSolar, type Nebula } from './nebula';
+import { nebulaNarrowbandColor } from './nebulaLines';
 import {
   bakeNebulaVolume,
   SCATTER_EMISSIVITY_PER_LSUN,
@@ -83,6 +86,47 @@ describe('the display law', () => {
     for (const radiance of [0.2, 4, 230]) {
       expect(radianceFromDisplay(displaySurfaceBrightness(radiance))).toBeCloseTo(radiance, 6);
     }
+  });
+});
+
+describe('the instruments', () => {
+  it('gives the eye the sky it really gets', () => {
+    // The same physics through the eye's anchors: a sixth-magnitude
+    // star sits at the visibility cutoff, the brightest points near
+    // unit display, and the Milky Way band — a few units of radiance —
+    // lands as the barely-there grey it truly is from a dark hillside,
+    // well under the mesopic knee where colour would wake.
+    const eye = EYE_INSTRUMENT;
+    const display = (brightness: number): number =>
+      eye.gain * (brightness / eye.pivotLsunPc2) ** eye.gamma;
+    expect(eye.cutoffLsunPc2).toBeGreaterThan(1e-3);
+    expect(eye.cutoffLsunPc2).toBeLessThan(3e-3);
+    expect(display(2.7)).toBeCloseTo(1, 6);
+    const band = display(4 * Math.PI * BEAM_SR * 5);
+    expect(band).toBeGreaterThan(0.005);
+    expect(band).toBeLessThan(0.04);
+    // And the band's radiance sits far below the colour knee — grey —
+    // while an Orion-class core pokes just past it.
+    expect(eye.colorKneeRadiance).toBeGreaterThan(5);
+    expect(eye.colorKneeRadiance).toBeLessThan(230);
+  });
+
+  it('maps the narrowband palette from the real lines', () => {
+    // SHO is false colour, but the channels are the true strengths:
+    // a hard high-U core is [O III]-dominant and maps blue; a low-U
+    // metal-rich skin is [S II]/[N II] territory and maps toward red;
+    // and every hue leaves at unit luminance so brightness stays the
+    // emission measure's alone.
+    const core = nebulaNarrowbandColor(1, 42000, 0);
+    expect(core[2]).toBeGreaterThan(core[0]);
+    const skin = nebulaNarrowbandColor(0.05, 42000, 0.3);
+    expect(skin[0]).toBeGreaterThan(skin[2]);
+    for (const hue of [core, skin]) {
+      expect(luminance(...hue)).toBeCloseTo(1, 6);
+    }
+    // A star too cool to make [O III] cannot map blue at any U.
+    const cool = nebulaNarrowbandColor(1, 30000, 0);
+    expect(cool[2]).toBeLessThan(cool[1] * 0.2);
   });
 });
 

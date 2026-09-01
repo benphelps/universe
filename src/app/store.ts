@@ -13,6 +13,12 @@ import { cloudReachPc } from '../universe/galaxy/clouds';
 import { cloudMassSolar, cloudMeanHydrogenDensity } from '../universe/galaxy/gas';
 import { ismMetallicity } from '../universe/galaxy/population';
 import type { NebulaKind } from '../universe/galaxy/nebula';
+import {
+  CAMERA_INSTRUMENT,
+  EYE_INSTRUMENT,
+  NARROWBAND_INSTRUMENT,
+  type DisplayInstrument,
+} from '../universe/galaxy/displayLaw';
 import type { Asteroid } from '../universe/smallbody/types';
 import type { Planet, StarSystem } from '../universe/system/types';
 import { generateSystem } from '../universe/system/generate';
@@ -697,6 +703,28 @@ export function saveCaption(key: string, caption: string): void {
 export function setExposure(value: number): void {
   exposure = value;
   if (viewer) viewer.exposure = value;
+}
+
+export type SkyInstrumentName = 'camera' | 'eye' | 'narrowband';
+const SKY_INSTRUMENTS: Record<SkyInstrumentName, DisplayInstrument> = {
+  camera: CAMERA_INSTRUMENT,
+  eye: EYE_INSTRUMENT,
+  narrowband: NARROWBAND_INSTRUMENT,
+};
+let skyInstrumentName: SkyInstrumentName = 'camera';
+let skyExposure = 1;
+
+/** The sky's instrument: which detector the night answers to, and how
+ *  deep it integrates. One seating for points, glow, sprites and
+ *  volumes alike. */
+export function setSkyInstrument(name: SkyInstrumentName): void {
+  skyInstrumentName = name;
+  viewer?.setSkyInstrument(SKY_INSTRUMENTS[name], skyExposure);
+}
+
+export function setSkyExposure(value: number): void {
+  skyExposure = value;
+  viewer?.setSkyInstrument(SKY_INSTRUMENTS[skyInstrumentName], skyExposure);
 }
 
 export function setTimeScale(daysPerSecond: number): void {

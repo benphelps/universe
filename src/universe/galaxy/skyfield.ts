@@ -33,7 +33,7 @@ import {
   nebulaLightSolar,
   type Nebula,
 } from './nebula';
-import { NEBULA_MEAN_U, nebulaEmissionColor } from './nebulaLines';
+import { NEBULA_MEAN_U, nebulaEmissionColor, nebulaNarrowbandColor } from './nebulaLines';
 import { displaySurfaceBrightness } from './displayLaw';
 import { SCATTER_TINT_RGB } from './dustScattering';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
@@ -65,8 +65,11 @@ export interface NebulaPatch {
    *  standing. */
   peakRadiance: number;
   /** Unit-luminance line and scattered-continuum hues; the tile's
-   *  green channel mixes between them per pixel. */
+   *  green channel mixes between them per pixel. The narrowband hue
+   *  is the same grid through the mapped palette, carried so an
+   *  instrument switch never re-bakes a sky. */
   emissionHue: [number, number, number];
+  emissionHueNarrow: [number, number, number];
   reflectionHue: [number, number, number];
   /** Tangent-plane basis (galactic frame) matching the sprite tile. */
   right: [number, number, number];
@@ -897,6 +900,11 @@ function buildGroups(
       brightness: displaySurfaceBrightness(peakRadiance),
       peakRadiance,
       emissionHue: emission,
+      emissionHueNarrow: nebulaNarrowbandColor(
+        NEBULA_MEAN_U,
+        candidate.nebula.maxTeff,
+        candidate.nebula.metallicity,
+      ),
       reflectionHue: reflection,
       right,
       up,

@@ -66,6 +66,78 @@ export const BEAM_SR = ((55 * Math.PI) / 180 / 1080) ** 2;
  *  extended tier displays as contrast above it. */
 export const SKY_PEDESTAL_LSUN_PC2_SR = 1;
 
+/**
+ * An instrument: one set of transfer parameters the whole sky answers
+ * to. Every mode is honest — the same physical radiances and
+ * irradiances, differing only in what a detector makes of them — and
+ * a mode switch is a uniform swap, never a re-bake.
+ */
+export interface DisplayInstrument {
+  gamma: number;
+  gain: number;
+  pivotLsunPc2: number;
+  floor: number;
+  ceil: number;
+  /** Points fainter than this vanish outright, L☉/pc²; 0 keeps every
+   *  point at the floor — the deep exposure's anti-flicker
+   *  affordance. */
+  cutoffLsunPc2: number;
+  /** Radiance where colour vision wakes, L☉ pc⁻² sr⁻¹, saturating
+   *  over the next two decades; 0 keeps full colour at any level. */
+  colorKneeRadiance: number;
+  /** Display energy below which a point's colour drains; 0 = never. */
+  pointColorKnee: number;
+  /** Emission hues: the real line wavelengths through CIE, or the
+   *  mapped Hubble palette, labelled the false colour it is. */
+  palette: 'line' | 'narrowband';
+  /** The share of continuum light the instrument passes — unity for
+   *  broadband; a narrowband stack rejects nearly all of it. */
+  continuumShare: number;
+}
+
+/** The deep exposure the sky was built under: sky-subtracted, every
+ *  swept star held visible, full colour. */
+export const CAMERA_INSTRUMENT: DisplayInstrument = {
+  gamma: DISPLAY_GAMMA,
+  gain: DISPLAY_GAIN,
+  pivotLsunPc2: DISPLAY_PIVOT_LSUN_PC2,
+  floor: DISPLAY_FLOOR,
+  ceil: DISPLAY_CEIL,
+  cutoffLsunPc2: 0,
+  colorKneeRadiance: 0,
+  pointColorKnee: 0,
+  palette: 'line',
+  continuumShare: 1,
+};
+
+/** The dark-adapted naked eye: stars stop near sixth magnitude
+ *  (cutoff at ~1.7×10⁻³ L☉/pc²), the brightest points near unit
+ *  display (pivot at a Sirius), rods see the faint sky grey with
+ *  colour waking only toward the brightest nebular cores — the honest
+ *  answer to how any of this looks from a dark hillside. */
+export const EYE_INSTRUMENT: DisplayInstrument = {
+  gamma: DISPLAY_GAMMA,
+  gain: 1,
+  pivotLsunPc2: 2.7,
+  floor: 0,
+  ceil: DISPLAY_CEIL,
+  cutoffLsunPc2: 1.7e-3,
+  colorKneeRadiance: 30,
+  pointColorKnee: 0.4,
+  palette: 'line',
+  continuumShare: 1,
+};
+
+/** The mapped-narrowband stack: the camera's depth, the line palette
+ *  swapped to [S II]/Hα/[O III] on RGB, and the continuum — starlight
+ *  scattered off dust, the glow — cut to the sliver such filters
+ *  pass. */
+export const NARROWBAND_INSTRUMENT: DisplayInstrument = {
+  ...CAMERA_INSTRUMENT,
+  palette: 'narrowband',
+  continuumShare: 0.06,
+};
+
 /** Display energy for a point brightness, L☉/pc². Unclamped — the
  *  point tier applies its own floor and ceiling. */
 export function displayEnergy(brightnessLsunPc2: number): number {

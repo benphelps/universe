@@ -99,6 +99,25 @@ export function nebulaEmissionColor(u01: number, tEff = 40000, feH = 0): LinearR
 }
 
 /**
+ * The same point on the grid through the mapped-narrowband instrument:
+ * the Hubble palette, [S II] to red, Hα to green, [O III] to blue —
+ * false colour by construction and labelled as such, but the channels
+ * are the real line strengths, so ionization structure reads directly:
+ * hard high-U cores go blue-white, low-U skins go rust.
+ */
+export function nebulaNarrowbandColor(u01: number, tEff = 40000, feH = 0): LinearRgb {
+  let s2 = 0;
+  let ha = 0;
+  let o3 = 0;
+  for (const [nm, strength] of nebulaLines(u01, tEff, feH)) {
+    if (nm === 671.7 || nm === 673.1) s2 += strength;
+    else if (nm === 656.3) ha += strength;
+    else if (nm === 500.7 || nm === 495.9) o3 += strength;
+  }
+  return unitLuminance([s2, ha, o3]);
+}
+
+/**
  * Scale a hue to unit luminance. The volume's own emission measure
  * carries how bright the gas is, so the colour must not smuggle
  * brightness in with it — normalizing to the peak channel would make a
