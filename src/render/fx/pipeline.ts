@@ -3,11 +3,19 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { DiagramPass } from './diagramLayer';
 
 /**
  * HDR render pipeline: linear half-float rendering → threshold bloom →
  * ACES tone mapping + sRGB encode in the output pass. Bloom is the only
  * source of glow anywhere; brightness beyond 1.0 blooms naturally.
+ *
+ * Diagrams come last, after the tone map. They are annotations rather
+ * than light: a zone wash blended into the scene takes its appearance
+ * from whatever sky happens to be behind it, which is how an opaque
+ * dark cloud ends up looking like it was painted over a ring drawn
+ * after it. Composited onto the finished image, a decal's strength is
+ * its own wherever it falls.
  */
 export class RenderPipeline {
   readonly renderer: WebGLRenderer;
@@ -29,6 +37,7 @@ export class RenderPipeline {
     this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.45, 0.6, 0.9);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+    this.composer.addPass(new DiagramPass(scene, camera));
   }
 
   setSize(width: number, height: number): void {

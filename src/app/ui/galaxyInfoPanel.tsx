@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { NEIGHBOR_RADIUS_PC } from '../../universe/galaxy/neighborhood';
 import type { GalacticAddress } from '../../universe/galaxy/regions';
 import type { Star } from '../../universe/star/types';
-import { travelTo, type AppSnapshot } from '../store';
+import { travelToCloud, type AppSnapshot } from '../store';
 import { fmt } from './format';
 import { CoreDestination } from './nucleusPanel';
 import { BodyRow } from './bodyRow';
@@ -71,7 +71,7 @@ export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
                 [fmt(kpc), 'kpc'],
               ],
               onClick: () =>
-                travelTo({ seedHex: landmark.seedHex, positionPc: landmark.positionPc }),
+                travelToCloud({ seedHex: landmark.seedHex, positionPc: landmark.positionPc }),
             }}
           />
         ))

@@ -89,6 +89,7 @@ import { stellarBlackHole } from '../universe/star/stellarHole';
 import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
+import { markAsDiagram } from '../render/fx/diagramLayer';
 import { requestNebulaVolume } from './nebulaService';
 import { nebulaeNear } from '../universe/galaxy/nebula';
 import { cloudReachPc } from '../universe/galaxy/clouds';
@@ -217,7 +218,8 @@ export type PickTarget =
   | { kind: 'moon'; planet: number; index: number }
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
-  | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition };
+  | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition }
+  | { kind: 'cloud'; seedHex: string; positionPc: GalacticPosition };
 
 interface Pickable {
   x: number;
@@ -1217,6 +1219,7 @@ export class UnifiedViewer {
       // planet's — visible whenever the orbit map is.
       addStar(companion.star, c + 1);
       this.stellarOrbits.add(createOrbitLine(companion.elements, 0xa0a0cc, 0.55));
+      this.markDiagrams();
     }
 
     // Photometric glints carry the stars once their discs fall subpixel
@@ -1556,6 +1559,21 @@ export class UnifiedViewer {
         createOrbitLine(planet.elements, planet.inHabitableZone ? 0x5fdf97 : 0x8a97ab, 0.75),
       );
     }
+    this.markDiagrams();
+  }
+
+  /**
+   * The zone and orbit diagrams are annotations, not sky: they come out
+   * of the scene pass and composite onto the finished image, so a
+   * decal's strength is its own rather than borrowed from whatever
+   * happens to lie behind it. Called wherever their contents change,
+   * since the layer belongs to each object rather than to the group.
+   */
+  private markDiagrams(): void {
+    markAsDiagram(this.overlay);
+    markAsDiagram(this.zoneOverlay);
+    markAsDiagram(this.stellarOrbits);
+    if (this.moonOrbits) markAsDiagram(this.moonOrbits);
   }
 
   /** Tear down the host-scoped content (planets, belts, comets, chart lines). */
@@ -2158,7 +2176,7 @@ export class UnifiedViewer {
           action: travelable ? 'click to travel' : null,
           target: travelable
             ? {
-                kind: 'neighbor',
+                kind: 'cloud',
                 seedHex: seedToHex(deriveSeed(seed, 'gateway')),
                 positionPc: centre,
               }
@@ -2595,6 +2613,7 @@ export class UnifiedViewer {
         };
       });
     this.scene.add(this.moonGroup);
+    this.markDiagrams();
   }
 
   /**

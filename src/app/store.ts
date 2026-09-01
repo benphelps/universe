@@ -359,6 +359,15 @@ export function boot(viewElement: HTMLElement): void {
       viewer.focusBeltAsteroid(target.asteroid);
       beltPick = target.asteroid;
       notify();
+    } else if (target.kind === 'cloud') {
+      // A cloud is not a system and standing on its gateway star is not
+      // looking at it. Arrive on the galaxy map, where the camera
+      // orbits the locale itself — which the arrival framing has
+      // already stood far enough back from to hold the whole cloud.
+      viewMode = 'galaxy';
+      planetIndex = 0;
+      moonIndex = -1;
+      load(target.seedHex, target.positionPc);
     } else if (target.kind === 'neighbor') {
       // Travel arrives at the destination star, not at whatever the
       // previous system had focused; the galaxy map keeps its own
@@ -470,6 +479,22 @@ export function selectStar(index: number): void {
 /** Travel to a neighbor star or landmark at its true galactic position. */
 export function travelTo(destination: { seedHex: string; positionPc: GalacticPosition }): void {
   acted();
+  load(destination.seedHex, destination.positionPc);
+}
+
+/**
+ * Travel to a molecular cloud. The destination is a place rather than a
+ * body, so it arrives on the galaxy map looking at the cloud, not in a
+ * system view looking at the star that happens to sit in it.
+ */
+export function travelToCloud(destination: {
+  seedHex: string;
+  positionPc: GalacticPosition;
+}): void {
+  acted();
+  viewMode = 'galaxy';
+  planetIndex = 0;
+  moonIndex = -1;
   load(destination.seedHex, destination.positionPc);
 }
 
