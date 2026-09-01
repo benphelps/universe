@@ -115,9 +115,9 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 5. Photoevaporative erosion pass and the line-ratio LUT — the step where the picture becomes physics rather than fog. **First slice landed**: the region gets its age — Spitzer D-type expansion scales the natal front by R(t)/R_s with the interior diluted n ∝ R^{-3/2} (budget-conserving exactly, pinned by test), a swept shell at the front, and the ionization march run in contracted coordinates so the carved directional shape survives the growth. An 11 Myr region is tens of parsecs, visible at cloud scale, which is what closed the sprite→volume "pink object vanishes into a blue dot" seam. Both renderers now colour from the same budgets — `nebulaEmissionShare` weighs line output against scattered continuum surface brightness, so O groups read pink and B groups read blue in sprite and volume alike, replacing the hand-mixed maxTeff hue ramp. Still open here: trunk/pillar erosion proper, winds and supernovae past the Spitzer floor, and the full line-ratio LUT.
 6. Nebulae as places. **Part landed**: a cloud is a destination — the gazetteer already derives a gateway system per cloud, so travelling to one puts the scene origin at the cloud centre and the ordinary orbit camera circles it, and arrival stands off 2.2 cloud reaches so the whole cloud is in frame rather than the usual fifteen-parsec hop. The volume follows the view: the resident nebula is chosen by projected angular size rather than distance (radii run 10–65 pc, so a great cloud far off outranks a small one near), and inside three cloud reaches the box holds the whole cloud instead of just the bubble. Bakes are keyed by cloud *and* scale, since a cloud is a different volume seen from outside than from within.
 
-   Open: several volumes resident with a crossfade between scales instead of a swap; in-shader detail octaves below cell size (a cloud box at 96³ is 4 pc per cell, which is coarser than the cascade the bake can resolve); and the pick priority — seeded stars win the cursor over an extended object by design, which was right when nebulae were background decals and now makes a nebula hard to click in a dense field. The landmark list travels to the same clouds meanwhile.
+   Open: in-shader detail octaves below cell size (a cloud box at 96³ is 4 pc per cell, which is coarser than the cascade the bake can resolve); and the pick priority — seeded stars win the cursor over an extended object by design, which was right when nebulae were background decals and now makes a nebula hard to click in a dense field. The landmark list travels to the same clouds meanwhile.
 
-7. Multi-volume marching, crossfade, streaming and eviction.
+7. Multi-volume marching, crossfade, streaming and eviction. **Landed** — sixty-four residents chosen by projected size, baked on the GPU in seconds, each dissolving in against its sprite (which carries the complement) and fading back out when residency moves on, with disposal only at zero and a swing-back simply fading up again. What remains of this stage is the one-pass multi-box march in the ledger.
 8. Reflection scattering; display modes.
 
 ## Ledger — open items as of the galaxy-march branch (Sep 2026)
@@ -126,21 +126,37 @@ Rough priority order. The residency dials live at the top of
 `src/app/unifiedViewer.ts` (`NEBULA_VOLUME_RESIDENTS`, `NEBULA_VOLUME_REACH_PC`,
 `NEBULA_VOLUME_MIN_ANGULAR`, `NEBULA_RESIDENCY_STRIDE_PC`).
 
-- **Multi-box march.** Each resident volume is its own full-screen dome; several
-  *enclosing* volumes at a gateway complex each march the whole sky (~45 ms GPU
-  measured with four). Non-enclosing residents are nearly free — Ben ran the cap
-  at 64 with no meaningful frame cost, since a dome only pays for the pixels its
-  box covers — so what a big cap really costs is the serial bake queue (minutes
-  to populate) and texture memory, not the march. The carrier should still march
-  all resident boxes in one pass, sorted front-to-back (§render pass), to tame
-  the enclosing-overlap case. Per-axis box extents (the bake already stores a
-  vec3; the shader assumes cubic) would also shrink footprints for stretched
-  clouds. The star-extinction shader carries `MAX_STAR_NEBULAE` slots, filled
-  nearest-first when residents outnumber them.
+- **Multi-box march.** Each resident volume is its own full-screen dome;
+  several *enclosing* volumes at a gateway complex each march the whole sky
+  (~45 ms GPU measured with four). Non-enclosing residents are nearly free —
+  the cap now runs at 64 with no meaningful frame cost, since a dome only pays
+  for the pixels its box covers, and the GPU bake fills the whole set in
+  ~20 s from a cold arrival — so what a big cap costs is texture memory
+  (~3.4 MB per grid, two grids for a lit cloud), not the march. The carrier
+  should still march all resident boxes in one pass, sorted front-to-back
+  (§render pass), to tame the enclosing-overlap case. Per-axis box extents
+  (the bake already stores a vec3; the shader assumes cubic) would also
+  shrink footprints for stretched clouds. The star-extinction shader carries
+  `MAX_STAR_NEBULAE` slots, filled nearest-first when residents outnumber
+  them.
 - **Residency ranking.** Admission is by projected size alone, so a bright
-  emission complex can lose its slot to four bigger dark rifts. Weight by the
-  object's light budgets, and consider admitting more small-footprint volumes
-  (cheap) while capping enclosing ones (expensive).
+  emission complex can in principle lose its slot to bigger dark rifts —
+  much blunter now that sixty-four stand at once, but the ranking is still
+  brightness-blind. Weight by the object's light budgets if it ever bites.
+- **Systems embedded in dark clouds — decision pending.** Measured over 5.1 M
+  catalog stars: 0.4% stand in cloud gas and 0.1% in dense gas, where reality
+  keeps mature systems essentially clear of it (clouds live ~20 Myr, stars
+  decouple; only natal groups are genuinely embedded, and the nebula members
+  already model those). Worse, every landmark cloud's *gateway* system is
+  seeded at the complex itself — the densest possible sky, A_V 5–223 mag by
+  direction measured at one — so the flagship destinations get near-black
+  skies by construction. The render of an embedded viewpoint is honest
+  (nearest stars survive at 55–80% flux; the rest go; Barnard 68 from
+  inside). Proposed, awaiting the call: move gateways to the cloud's near
+  edge or a carved cavity so arrival puts the complex overhead rather than
+  around you; optionally veto catalog systems where the smooth cloud density
+  is high (an envelope-level check — the full turbulent field is too dear per
+  star). Both change which seeds exist and where some travel URLs land.
 - **Photometric unification.** The sprite's brightness law is still the impostor
   (`95·√L/d²`, peak-normalized tiles); the volume's zero point is order-unity
   provisional. Build the sprite/volume agreement harness and tie both to the
