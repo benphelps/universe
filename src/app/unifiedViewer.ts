@@ -3220,7 +3220,7 @@ export class UnifiedViewer {
         volume.dispose();
       }
       this.nebulaVolumes.clear();
-      setStarNebulaExtinction(null);
+      setStarNebulaExtinction([]);
     }
     this.wantedNebulae.clear();
     this.coarseBakes.clear();
@@ -3645,7 +3645,6 @@ export class UnifiedViewer {
         // The nebulae are bodies in the same galaxy, marched in the
         // same frame — they do not fade with the band, because unlike
         // the band each is an object standing at a place.
-        let nearestVolume: NebulaVolume | null = null;
         const byDistance: NebulaVolume[] = [];
         for (const volume of this.nebulaVolumes.values()) {
           volume.update(
@@ -3655,9 +3654,6 @@ export class UnifiedViewer {
             Math.min(this.camera.far * 0.3, 3e15),
           );
           byDistance.push(volume);
-          if (!nearestVolume || volume.cameraDistancePc < nearestVolume.cameraDistancePc) {
-            nearestVolume = volume;
-          }
         }
         // Farther volumes draw first so a near cloud composites over a
         // far one. Reversed-Z inverts renderOrder: lowest draws LAST,
@@ -3668,14 +3664,11 @@ export class UnifiedViewer {
         });
         // Every star behind a cloud dims and reddens through it. The
         // depth buffer cannot say which stars those are — the points
-        // are additive and write no depth — so each one asks the
-        // volume it most plausibly stands behind: the nearest.
+        // are additive and write no depth — so each one asks every
+        // volume its sightline could cross.
+        const cameraRotation = new Matrix3().setFromMatrix4(this.camera.matrixWorld);
         setStarNebulaExtinction(
-          nearestVolume
-            ? nearestVolume.extinctionFor(
-                new Matrix3().setFromMatrix4(this.camera.matrixWorld),
-              )
-            : null,
+          byDistance.map((volume) => volume.extinctionFor(cameraRotation)),
         );
         // The nuclear cluster's light comes through the same dust the
         // volume march extinguishes the band with.
