@@ -241,7 +241,7 @@ export class StarfieldBackdrop {
   private nebulaSeeds: bigint[] = [];
   private nebulaBrightness: Vector4[] = [];
   private nebulaBaseBrightness: number[] = [];
-  private volumeSeeds: ReadonlySet<bigint> = new Set();
+  private volumeFades: ReadonlyMap<bigint, number> = new Map();
 
   /** Match the galaxy layers' draw cutoff: below this the contribution
    * is visually nil, but the two full-screen domes are still expensive. */
@@ -430,18 +430,18 @@ export class StarfieldBackdrop {
     }
   }
 
-  /** The clouds whose volumes are standing: their sprites go dark, and
-   *  every other sprite holds (or recovers) its baked brightness. */
-  setNebulaVolumeSeeds(seeds: ReadonlySet<bigint>): void {
-    this.volumeSeeds = seeds;
+  /** How far each cloud's volume is standing, 0..1: the sprite carries
+   *  the complement, so the two tiers crossfade instead of swapping.
+   *  A cloud absent from the map holds its baked brightness. */
+  setNebulaVolumeFades(fades: ReadonlyMap<bigint, number>): void {
+    this.volumeFades = fades;
     this.applyNebulaSuppression();
   }
 
   private applyNebulaSuppression(): void {
     for (let i = 0; i < this.nebulaSeeds.length; i++) {
-      this.nebulaBrightness[i].w = this.volumeSeeds.has(this.nebulaSeeds[i])
-        ? 0
-        : this.nebulaBaseBrightness[i];
+      this.nebulaBrightness[i].w =
+        this.nebulaBaseBrightness[i] * (1 - (this.volumeFades.get(this.nebulaSeeds[i]) ?? 0));
     }
   }
 

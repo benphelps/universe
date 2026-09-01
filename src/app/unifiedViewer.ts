@@ -164,10 +164,18 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
  *  sweep the residency check pays, not by what deserves one. */
 const NEBULA_VOLUME_REACH_PC = 2000;
 const NEBULA_VOLUME_SIZE = 96;
-/** How many nebulae stand as volumes at once; the rest stay sprites. */
-const NEBULA_VOLUME_RESIDENTS = 4;
-/** Projected size below which a sprite is enough, radians. */
-const NEBULA_VOLUME_MIN_ANGULAR = 0.06;
+/** How many nebulae stand as volumes at once; the rest stay sprites.
+ *  Rendering residents is nearly free — a dome only pays for the
+ *  pixels its box covers — and the GPU bake fills a set this size in
+ *  seconds, so the cap is texture memory, not frame time. */
+const NEBULA_VOLUME_RESIDENTS = 64;
+/** Projected size below which a sprite is enough, radians. Low, so
+ *  the sprite→volume handoff happens while the object is still small
+ *  on screen; the resident cap is what bounds the cost. */
+const NEBULA_VOLUME_MIN_ANGULAR = 0.02;
+/** How long a volume takes to dissolve in against its sprite, or back
+ *  out when residency moves on, seconds. */
+const NEBULA_FADE_SECONDS = 1;
 /** How far the camera travels before residency is asked again, pc. */
 const NEBULA_RESIDENCY_STRIDE_PC = 50;
 /** Within this many cloud reaches, the box holds the whole cloud. */
@@ -421,6 +429,8 @@ export class UnifiedViewer {
   private fineBakes = new Map<bigint, NebulaVolumeBake>();
   /** Where the camera stood when residency was last decided. */
   private residencyAt: GalacticPosition | null = null;
+  /** Last frame's clock, for the volume crossfades' rate limit. */
+  private nebulaFadeAtMs = 0;
   private galaxyParticles: GalaxyParticles | null = null;
   /** Set while the camera is at the galactic centre: no system at all,
    *  the galaxy around it, and the hole traced at its own scale. */
@@ -1337,7 +1347,7 @@ export class UnifiedViewer {
           { ...background, starCount: 0, starDirs: EMPTY_F32, starColors: EMPTY_F32, starBrightness: EMPTY_F32 },
           2000,
         );
-        this.backdrop.setNebulaVolumeSeeds(new Set(this.nebulaVolumes.keys()));
+        // Sprite fades for standing volumes arrive with the next frame.
         this.scene.add(this.backdrop.group);
       },
     );
@@ -1352,7 +1362,6 @@ export class UnifiedViewer {
       // It usually stands already, put up when the background landed.
       if (!this.backdrop) {
         this.backdrop = new StarfieldBackdrop(sky, 2000, sky.starCount);
-        this.backdrop.setNebulaVolumeSeeds(new Set(this.nebulaVolumes.keys()));
         this.scene.add(this.backdrop.group);
       }
       this.sectorChart = new SectorChart(sky);
@@ -1436,15 +1445,13 @@ export class UnifiedViewer {
     }
     this.wantedNebulae = new Set(chosen.map((c) => c.cloud.seed));
 
+    // Standing volumes are never yanked: one that lost its slot fades
+    // out and is disposed when it reaches zero, and one the camera
+    // swings back to before it is gone simply fades back up — the
+    // hysteresis that keeps a churning ranking from flickering.
     for (const [seed, volume] of this.nebulaVolumes) {
-      if (this.wantedNebulae.has(seed)) continue;
-      this.pipeline.sky.scene.remove(volume.mesh);
-      volume.dispose();
-      this.nebulaVolumes.delete(seed);
-      this.coarseBakes.delete(seed);
-      this.fineBakes.delete(seed);
+      volume.retiring = !this.wantedNebulae.has(seed);
     }
-    this.backdrop?.setNebulaVolumeSeeds(new Set(this.nebulaVolumes.keys()));
 
     for (const { cloud } of chosen) {
       if (!this.nebulaVolumes.has(cloud.seed)) {
@@ -1472,6 +1479,17 @@ export class UnifiedViewer {
     const stale = (): boolean => this.disposed || this.viewpointPc !== viewpoint;
     const nebula = nebulaFor(cloud);
     const lit = nebula !== null && bubbleNeedsOwnBake(nebula, cloudReachPc(cloud));
+    // Once the standing volume carries every grid it will ever get,
+    // the source bakes have nothing left to serve — the textures hold
+    // the data now, and at a full residency the copies are hundreds of
+    // megabytes of heap.
+    const settled = (): void => {
+      const volume = this.nebulaVolumes.get(seed);
+      if (volume && (!lit || volume.hasFine)) {
+        this.coarseBakes.delete(seed);
+        this.fineBakes.delete(seed);
+      }
+    };
     const coarse = requestNebulaVolume(
       cloud,
       NEBULA_VOLUME_SIZE,
@@ -1480,6 +1498,7 @@ export class UnifiedViewer {
         if (stale()) return;
         this.coarseBakes.set(seed, ready);
         this.installNebulaVolume(seed, viewpoint, orientation);
+        settled();
       },
     );
     if (coarse) this.coarseBakes.set(seed, coarse);
@@ -1488,10 +1507,14 @@ export class UnifiedViewer {
         if (stale()) return;
         this.fineBakes.set(seed, ready);
         this.installNebulaVolume(seed, viewpoint, orientation);
+        settled();
       });
       if (fine) this.fineBakes.set(seed, fine);
     }
-    if (coarse) this.installNebulaVolume(seed, viewpoint, orientation);
+    if (coarse) {
+      this.installNebulaVolume(seed, viewpoint, orientation);
+      settled();
+    }
   }
 
   private installNebulaVolume(
@@ -1500,8 +1523,13 @@ export class UnifiedViewer {
     orientation: Float32Array,
   ): void {
     // A bake that lands after its cloud lost residency stays cached
-    // for the next visit, but nothing is stood up for it.
-    if (!this.wantedNebulae.has(seed)) return;
+    // at the service for the next visit, but nothing is stood up for
+    // it and nothing here needs to keep holding it.
+    if (!this.wantedNebulae.has(seed)) {
+      this.coarseBakes.delete(seed);
+      this.fineBakes.delete(seed);
+      return;
+    }
     const coarse = this.coarseBakes.get(seed);
     if (!coarse) return;
     const existing = this.nebulaVolumes.get(seed);
@@ -1510,11 +1538,13 @@ export class UnifiedViewer {
       existing.dispose();
     }
     const volume = new NebulaVolume(coarse, this.fineBakes.get(seed) ?? null, viewpoint, orientation);
+    // A fresh volume dissolves in from nothing; a reinstall — the fine
+    // bake landing over the coarse one — picks the fade up where the
+    // volume it replaces stood, so the upgrade is invisible.
+    volume.fade = existing?.fade ?? 0;
+    volume.opacity = volume.fade;
     this.nebulaVolumes.set(seed, volume);
     this.pipeline.sky.scene.add(volume.mesh);
-    // The sprite stands down for a volume that is now actually there.
-    // The backdrop may not be up yet; it asks again when it lands.
-    this.backdrop?.setNebulaVolumeSeeds(new Set(this.nebulaVolumes.keys()));
   }
 
   /**
@@ -3654,8 +3684,27 @@ export class UnifiedViewer {
         // The nebulae are bodies in the same galaxy, marched in the
         // same frame — they do not fade with the band, because unlike
         // the band each is an object standing at a place.
+        // Crossfade at a bounded rate: each volume dissolves toward
+        // where residency wants it, its sprite carrying the complement,
+        // and one that finishes fading out is only then let go.
+        const nowMs = performance.now();
+        const fadeStep =
+          Math.min(0.1, (nowMs - (this.nebulaFadeAtMs || nowMs)) / 1000) / NEBULA_FADE_SECONDS;
+        this.nebulaFadeAtMs = nowMs;
         const byDistance: NebulaVolume[] = [];
-        for (const volume of this.nebulaVolumes.values()) {
+        for (const [seed, volume] of this.nebulaVolumes) {
+          volume.fade = volume.retiring
+            ? Math.max(0, volume.fade - fadeStep)
+            : Math.min(1, volume.fade + fadeStep);
+          if (volume.retiring && volume.fade === 0) {
+            this.pipeline.sky.scene.remove(volume.mesh);
+            volume.dispose();
+            this.nebulaVolumes.delete(seed);
+            this.coarseBakes.delete(seed);
+            this.fineBakes.delete(seed);
+            continue;
+          }
+          volume.opacity = volume.fade;
           volume.update(
             this.camera.position,
             worldToScene,
@@ -3663,6 +3712,11 @@ export class UnifiedViewer {
             Math.min(this.camera.far * 0.3, 3e15),
           );
           byDistance.push(volume);
+        }
+        if (this.backdrop) {
+          const fades = new Map<bigint, number>();
+          for (const [seed, volume] of this.nebulaVolumes) fades.set(seed, volume.fade);
+          this.backdrop.setNebulaVolumeFades(fades);
         }
         // Farther volumes draw first so a near cloud composites over a
         // far one. Reversed-Z inverts renderOrder: lowest draws LAST,

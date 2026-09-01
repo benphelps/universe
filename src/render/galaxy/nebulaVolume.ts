@@ -174,6 +174,7 @@ export class NebulaVolume {
     sceneFromGalaxy: Float32Array,
   ) {
     this.seed = bake.seed;
+    this.hasFine = fine !== null;
     const m = sceneFromGalaxy;
     this.sceneToGalaxy = new Matrix3().set(m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]);
 
@@ -241,6 +242,18 @@ export class NebulaVolume {
     this.mesh.renderOrder = -6;
     this.mesh.frustumCulled = false;
   }
+
+  /** Whether the bubble-scale grid rode in beside the cloud's — what
+   *  tells the viewer this volume is complete and its source bakes
+   *  need not be held for a reinstall. */
+  readonly hasFine: boolean;
+  /** Crossfade against the sprite tier, 0..1 — the viewer ramps it
+   *  every frame, and the sprite carries the complement, so a volume
+   *  arrives and leaves as a dissolve rather than a swap. */
+  fade = 0;
+  /** Standing down: fading toward removal — until residency wants the
+   *  cloud again, which simply fades it back. */
+  retiring = false;
 
   set opacity(value: number) {
     this.material.uniforms.uOpacity.value = value;
