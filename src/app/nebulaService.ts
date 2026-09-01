@@ -88,9 +88,10 @@ export function requestNebulaVolume(
   onReady: (bake: NebulaVolumeBake) => void,
 ): NebulaVolumeBake | null {
   // A cloud can be wanted at more than one scale — its whole body from
-  // outside, its ionized bubble from within — so the scale is part of
-  // what is being asked for, not just the cloud.
-  const key = `${seedToHex(cloud.seed)}@${boxPc ? boxPc.toFixed(1) : 'bubble'}`;
+  // outside, its ionized bubble from within — and at more than one
+  // resolution, since a sky-filling volume earns a finer grid. Both
+  // are part of what is being asked for, not just the cloud.
+  const key = `${seedToHex(cloud.seed)}@${boxPc ? boxPc.toFixed(1) : 'bubble'}@${size}`;
   const cached = cache.get(key);
   if (cached) return cached;
   // Coming back to a cloud whose bake is still in flight has to leave

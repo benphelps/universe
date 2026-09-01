@@ -85,22 +85,31 @@ float dither(vec2 p) {
 }
 
 /**
- * The turbulent cascade continued below the grid. A cell of a
- * cloud-sized box spans degrees of sky from within, and trilinear
- * filtering renders it as featureless mush; real clouds are structured
- * all the way down. Two octaves of the galaxy's tiling noise, pitched
- * just under the cell and world-anchored in the box's own frame,
- * modulate the sampled density — statistical detail, deliberately
- * unseeded, the same line the terrain draws below its tiles. The amps
- * echo the model's own cascade and the clamp is its carve: a deep
- * trough goes to nothing, which is where the filaments come from.
+ * The grid softened below its own cells. A cell of a cloud-sized box
+ * spans degrees of sky from within, and every cell-aligned feature —
+ * the trilinear mush, the baked shadow's banding — reads as blocks.
+ * Noise painted over blocks is still blocks, so the treatment is a
+ * domain warp instead: the sample position is bent by smooth tiling
+ * noise a couple of cells in wavelength and well under a cell in
+ * reach, world-anchored in the box's own frame, so straight grid
+ * edges go organic without inventing brightness that is not in the
+ * data. A single gentle octave of the same noise adds texture at an
+ * amplitude a continued cascade could actually carry.
  */
+vec3 warped(vec3 p, float freq) {
+  vec3 c = p * (freq * ${f(0.5 / CLUMP_TILE_PERIOD)});
+  vec3 n = vec3(
+    texture(uDetailNoise, c).r,
+    texture(uDetailNoise, c + 0.31).r,
+    texture(uDetailNoise, c + 0.67).r
+  ) * ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
+  return p + (uDetailAmp * 0.75 / freq) * n;
+}
+
 float subCellDetail(vec3 p, float freq) {
-  float n1 = texture(uDetailNoise, p * (freq * ${f(1 / CLUMP_TILE_PERIOD)})).r *
+  float n1 = texture(uDetailNoise, p * (freq * ${f(1 / CLUMP_TILE_PERIOD)}) + 0.13).r *
     ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
-  float n2 = texture(uDetailNoise, p * (freq * ${f(2.26 / CLUMP_TILE_PERIOD)}) + 0.37).r *
-    ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
-  return max(0.0, 1.0 + uDetailAmp * (0.55 * n1 + 0.3 * n2));
+  return max(0.0, 1.0 + uDetailAmp * 0.18 * n1);
 }
 
 void main() {
@@ -123,11 +132,16 @@ void main() {
   for (int i = 0; i < ${MAX_STEPS}; i++) {
     if (i >= uSteps) break;
     vec3 p = rel + dir * (near + (float(i) + jitter) * ds);
-    vec4 cell = texture(uVolume, p / (2.0 * uHalfPc) + 0.5);
+    // The warp bends every texture read but never the geometry: flux
+    // distances and the ray itself stay honest. Paid for only when
+    // the volume is large in frame — the amp is zero otherwise and
+    // the fetches are skipped.
+    bool detailed = uDetailAmp > 0.001;
+    vec3 ps = detailed ? warped(p, uDetailFreq) : p;
+    vec4 cell = texture(uVolume, ps / (2.0 * uHalfPc) + 0.5);
     float dust = cell.r * uDustRef;
     float ionized = cell.g * uDensityRef;
     float coefficient = uEmissionCoefficient;
-    float detailFreq = uDetailFreq;
 
     // A cloud is a hundred parsecs and the bubble its newborns blow is
     // a few: one grid cannot hold both, and a grid that holds the cloud
@@ -137,20 +151,18 @@ void main() {
     if (uFineHalfPc > 0.0) {
       vec3 q = p - uFineOffsetPc;
       if (all(lessThan(abs(q), vec3(uFineHalfPc)))) {
-        vec4 fine = texture(uFine, q / (2.0 * uFineHalfPc) + 0.5);
+        vec3 qs = detailed ? warped(q, uFineDetailFreq) : q;
+        vec4 fine = texture(uFine, qs / (2.0 * uFineHalfPc) + 0.5);
         dust = fine.r * uFineDustRef;
         ionized = fine.g * uFineDensityRef;
         cell.b = fine.b;
         cell.a = fine.a;
         coefficient = uFineEmissionCoefficient;
-        detailFreq = uFineDetailFreq;
       }
     }
 
-    // Sub-cell structure, paid for only when the volume is large in
-    // frame — the amp is zero otherwise and the fetches are skipped.
-    if (uDetailAmp > 0.001) {
-      float detail = subCellDetail(p, detailFreq);
+    if (detailed) {
+      float detail = subCellDetail(p, uDetailFreq);
       dust *= detail;
       ionized *= detail;
     }
@@ -217,6 +229,7 @@ export class NebulaVolume {
   ) {
     this.seed = bake.seed;
     this.hasFine = fine !== null;
+    this.bakedSize = bake.size;
     const m = sceneFromGalaxy;
     this.sceneToGalaxy = new Matrix3().set(m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]);
 
@@ -298,6 +311,9 @@ export class NebulaVolume {
    *  tells the viewer this volume is complete and its source bakes
    *  need not be held for a reinstall. */
   readonly hasFine: boolean;
+  /** Cells per axis of the standing grids — what residency compares
+   *  against the resolution the view now deserves. */
+  readonly bakedSize: number;
   /** Crossfade against the sprite tier, 0..1 — the viewer ramps it
    *  every frame, and the sprite carries the complement, so a volume
    *  arrives and leaves as a dissolve rather than a swap. */

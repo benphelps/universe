@@ -164,6 +164,13 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
  *  sweep the residency check pays, not by what deserves one. */
 const NEBULA_VOLUME_REACH_PC = 2000;
 const NEBULA_VOLUME_SIZE = 96;
+/** Grid for a volume large in frame, where a 96³ cell spans degrees of
+ *  sky. The GPU bake makes the finer grid a half-second, and only a
+ *  handful of residents ever qualify at once. */
+const NEBULA_VOLUME_NEAR_SIZE = 160;
+/** Apparent size (reach over distance) above which a volume earns the
+ *  near grid. */
+const NEBULA_NEAR_ANGULAR = 0.6;
 /** How many nebulae stand as volumes at once; the rest stay sprites.
  *  Rendering residents is nearly free — a dome only pays for the
  *  pixels its box covers — and the GPU bake fills a set this size in
@@ -1453,9 +1460,14 @@ export class UnifiedViewer {
       volume.retiring = !this.wantedNebulae.has(seed);
     }
 
-    for (const { cloud } of chosen) {
-      if (!this.nebulaVolumes.has(cloud.seed)) {
-        this.requestVolumeFor(cloud, this.viewpointPc, orientation);
+    for (const { cloud, angular } of chosen) {
+      const size =
+        angular >= NEBULA_NEAR_ANGULAR ? NEBULA_VOLUME_NEAR_SIZE : NEBULA_VOLUME_SIZE;
+      const existing = this.nebulaVolumes.get(cloud.seed);
+      // A standing volume is re-baked only upward: approaching a cloud
+      // upgrades it to the near grid; leaving keeps the finer one.
+      if (!existing || existing.bakedSize < size) {
+        this.requestVolumeFor(cloud, this.viewpointPc, orientation, size);
       }
     }
   }
@@ -1474,6 +1486,7 @@ export class UnifiedViewer {
     cloud: MolecularCloud,
     viewpoint: GalacticPosition,
     orientation: Float32Array,
+    size = NEBULA_VOLUME_SIZE,
   ): void {
     const seed = cloud.seed;
     const stale = (): boolean => this.disposed || this.viewpointPc !== viewpoint;
@@ -1490,31 +1503,32 @@ export class UnifiedViewer {
         this.fineBakes.delete(seed);
       }
     };
-    const coarse = requestNebulaVolume(
-      cloud,
-      NEBULA_VOLUME_SIZE,
-      cloudReachPc(cloud),
-      (ready) => {
-        if (stale()) return;
-        this.coarseBakes.set(seed, ready);
-        this.installNebulaVolume(seed, viewpoint, orientation);
-        settled();
-      },
-    );
+    // A fresh cloud shows its coarse grid the moment it lands; one
+    // whose volume already stands — a resolution upgrade — waits for
+    // the full set, or the standing bubble would flash away while the
+    // finer bake of it was still in the oven.
+    const hadVolume = this.nebulaVolumes.has(seed);
+    const tryInstall = (): void => {
+      if (!this.coarseBakes.get(seed)) return;
+      if (hadVolume && lit && !this.fineBakes.get(seed)) return;
+      this.installNebulaVolume(seed, viewpoint, orientation);
+      settled();
+    };
+    const coarse = requestNebulaVolume(cloud, size, cloudReachPc(cloud), (ready) => {
+      if (stale()) return;
+      this.coarseBakes.set(seed, ready);
+      tryInstall();
+    });
     if (coarse) this.coarseBakes.set(seed, coarse);
     if (lit) {
-      const fine = requestNebulaVolume(cloud, NEBULA_VOLUME_SIZE, undefined, (ready) => {
+      const fine = requestNebulaVolume(cloud, size, undefined, (ready) => {
         if (stale()) return;
         this.fineBakes.set(seed, ready);
-        this.installNebulaVolume(seed, viewpoint, orientation);
-        settled();
+        tryInstall();
       });
       if (fine) this.fineBakes.set(seed, fine);
     }
-    if (coarse) {
-      this.installNebulaVolume(seed, viewpoint, orientation);
-      settled();
-    }
+    if (coarse) tryInstall();
   }
 
   private installNebulaVolume(
@@ -1750,7 +1764,13 @@ export class UnifiedViewer {
       // focused cloud is one of the clouds that get drawn.
       if (this.focusCloud && this.skyPreviewFrame) {
         this.wantedNebulae.add(this.focusCloud.cloud.seed);
-        this.requestVolumeFor(this.focusCloud.cloud, this.viewpointPc, this.skyPreviewFrame);
+        // The focused cloud is the subject: near grid from the start.
+        this.requestVolumeFor(
+          this.focusCloud.cloud,
+          this.viewpointPc,
+          this.skyPreviewFrame,
+          NEBULA_VOLUME_NEAR_SIZE,
+        );
       }
       this.radiusKm = reachPc * PC_KM;
       // Distance from the cloud's centre, not height above an edge it
