@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { cloudReachPc, cloudsNear } from './clouds';
+import { cloudFineDustDensity, cloudReachPc, cloudsNear } from './clouds';
 import { HOME_POSITION } from './density';
+import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity, spitzerRadiusPc } from './ionization';
 import { nebulaFor, type Nebula } from './nebula';
 import { nebulaEmissionColor } from './nebulaLines';
@@ -91,21 +92,32 @@ describe('the region at its age', () => {
       }
       return total * (2 * bake.halfExtentsPc[0]) ** 3;
     };
-    // Wind off on both sides: the invariant here is the Spitzer
-    // dilution, and the cavity is a separate mechanism that
-    // deliberately moves emission measure into its wall (its own test
-    // pins that ring) — frozen at the natal radius the evolved cavity
-    // would swallow the whole bubble and measure nothing.
+    // Wind and venting off on both sides: the invariant here is the
+    // Spitzer dilution alone, and both of those mechanisms
+    // deliberately move or shed emission measure (each has its own
+    // pin) — frozen at the natal radius the evolved cavity would even
+    // swallow the whole bubble. Zero source density disarms the
+    // champagne gate without touching the precomputed radii.
     const natal = measureOf(
       bakeNebulaVolume(
         grown.cloud,
-        { ...grown, bubbleRadiusPc: grown.stromgrenRadiusPc, windCavityPc: 0 },
+        {
+          ...grown,
+          bubbleRadiusPc: grown.stromgrenRadiusPc,
+          windCavityPc: 0,
+          sourceHydrogenDensity: 0,
+        },
         size,
         boxPc,
       ),
     );
     const evolved = measureOf(
-      bakeNebulaVolume(grown.cloud, { ...grown, windCavityPc: 0 }, size, boxPc),
+      bakeNebulaVolume(
+        grown.cloud,
+        { ...grown, windCavityPc: 0, sourceHydrogenDensity: 0 },
+        size,
+        boxPc,
+      ),
     );
     expect(evolved).toBeGreaterThan(natal * 0.2);
     expect(evolved).toBeLessThan(natal * 5);
@@ -147,6 +159,75 @@ describe('the region at its age', () => {
     expect(cavityCells).toBeGreaterThan(0);
     expect(wallCells).toBeGreaterThan(0);
     expect(wallSum / wallCells).toBeGreaterThan(5 * (cavitySum / Math.max(1, cavityCells)));
+  });
+
+  it('vents where the bubble outruns its own cloud', () => {
+    // Champagne: hot gas is held together by the cloud around it, so a
+    // bubble section standing where the natal field has run out must
+    // stream away and go dim, while sections the cloud still confines
+    // keep their brightness. The gate is the cloud's own carved
+    // boundary — which is what opens a face-blister into a horseshoe.
+    // Pinned as an A/B against the disarmed gate on the same nebula:
+    // dense front cells barely exist to compare against, because a
+    // dense direction stops its own ray before the front — the march
+    // itself sees to that. What the gate must do is dim the thin-gas
+    // sectors it gates, and leave everything else exactly alone.
+    const nebula = cloudsNear(HOME_POSITION, 1500)
+      .map((cloud) => nebulaFor(cloud))
+      .filter(
+        (n): n is Nebula =>
+          n !== null && n.photonRate > 0 && n.bubbleRadiusPc > Math.min(...n.halfExtentsPc),
+      )
+      .sort((a, b) => b.photonRate - a.photonRate)[0];
+    expect(nebula).toBeDefined();
+    const size = 24;
+    const boxPc = cloudReachPc(nebula.cloud);
+    const vented = bakeNebulaVolume(nebula.cloud, nebula, size, boxPc);
+    // Zero source density disarms only the champagne gate (the plan
+    // reads it for nothing else); radii and budget are precomputed.
+    const held = bakeNebulaVolume(
+      nebula.cloud,
+      { ...nebula, sourceHydrogenDensity: 0 },
+      size,
+      boxPc,
+    );
+    const source = nebula.sources[0];
+    const half = vented.halfExtentsPc[0];
+    const cellPc = (2 * half) / size;
+    const growth = Math.max(1, nebula.bubbleRadiusPc / nebula.stromgrenRadiusPc);
+    const confine = nebula.sourceHydrogenDensity * growth ** -1.5;
+    let thinOn = 0;
+    let thinOff = 0;
+    let denseOn = 0;
+    let denseOff = 0;
+    for (let k = 0; k < size; k++) {
+      for (let j = 0; j < size; j++) {
+        for (let i = 0; i < size; i++) {
+          const x = -half + (i + 0.5) * cellPc;
+          const y = -half + (j + 0.5) * cellPc;
+          const z = -half + (k + 0.5) * cellPc;
+          const r = Math.hypot(x - source.dxPc, y - source.dyPc, z - source.dzPc);
+          if (r < nebula.windCavityPc * 1.16 || r > nebula.bubbleRadiusPc * 0.97) continue;
+          const local = hydrogenDensity(cloudFineDustDensity(nebula.cloud, x, y, z));
+          const cell = ((k * size + j) * size + i) * 4 + 1;
+          const gOn = (vented.data[cell] / 255) * vented.densityRef;
+          const gOff = (held.data[cell] / 255) * held.densityRef;
+          if (local < 0.2 * confine) {
+            thinOn += gOn;
+            thinOff += gOff;
+          } else if (local >= confine) {
+            denseOn += gOn;
+            denseOff += gOff;
+          }
+        }
+      }
+    }
+    // The gated sectors carried real emission and lost most of it.
+    expect(thinOff).toBeGreaterThan(0);
+    expect(thinOn).toBeLessThan(0.35 * thinOff);
+    // Fully confined cells pass through the gate untouched, up to the
+    // two bakes' own byte quantization.
+    expect(Math.abs(denseOn - denseOff)).toBeLessThanOrEqual(0.05 * denseOff + 1e-6);
   });
 
   it('still carries the bubble at its own scale when one is warranted', () => {

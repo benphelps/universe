@@ -162,6 +162,21 @@ export const WIND_CAVITY_RESIDUAL = 0.02;
 export const WIND_WALL_BOOST =
   1 + (1 - WIND_CAVITY_RESIDUAL) / ((1 + WIND_WALL_WIDTH) ** 3 - 1);
 
+/**
+ * Champagne venting: ten-thousand-kelvin gas is held together by the
+ * cloud around it, and where the bubble has outrun the cloud's own
+ * body there is nothing left to hold — the ionized gas streams out
+ * and thins. Quasi-static, like the rest of the bake: the interior
+ * keeps its density only where the natal field at that place could
+ * confine it, ramping down to a streaming residue where the cloud is
+ * gone. Because the gate is the cloud's own carved boundary, a region
+ * on a cloud's face opens into the horseshoe a blister actually is.
+ */
+export const VENT_RESIDUAL = 0.05;
+/** Ambient natal density that fully confines, in units of the diluted
+ *  interior's own density. */
+export const VENT_CONFINEMENT = 1;
+
 /** Whether the bubble deserves a bake of its own, or the cloud-scale
  *  grid already resolves it: the two-scale split exists for compact
  *  regions, and an evolved bubble tens of parsecs across is not one. */
@@ -196,6 +211,9 @@ export interface NebulaBakePlan {
   windCavityPc: number;
   /** Where the cavity's swept wall ends, pc. */
   windWallPc: number;
+  /** Natal density, cm⁻³, above which the interior is fully confined
+   *  — the champagne gate, scaled to the diluted interior. */
+  ventConfineDensity: number;
   stepPc: number;
   /** Beyond this distance from the source a cell is neutral without
    *  the march having to say so. */
@@ -285,6 +303,8 @@ export function planNebulaBake(
     shellBoost: 1 + (SHELL_COMPRESSION - 1) * (1 - dilution),
     windCavityPc: nebula?.windCavityPc ?? 0,
     windWallPc: (nebula?.windCavityPc ?? 0) * (1 + WIND_WALL_WIDTH),
+    ventConfineDensity:
+      VENT_CONFINEMENT * (nebula?.sourceHydrogenDensity ?? 0) * dilution,
     stepPc: cellPc * 0.9,
     reachLimitPc: IONIZATION_REACH * Math.max(nebula?.bubbleRadiusPc ?? 0, 0.05),
     scatterSourcePc,
@@ -436,14 +456,23 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         const rn = distancePc / growth;
         // The star's wind has re-plumbed the interior: the cavity holds
         // an optically empty residue, its swept wall the mass the wind
-        // ploughed out of it — a ring in n², a hole inside it.
-        const wind = !inBubble
-          ? 1
-          : distancePc < plan.windCavityPc
-            ? WIND_CAVITY_RESIDUAL
-            : distancePc <= plan.windWallPc
-              ? WIND_WALL_BOOST
-              : 1;
+        // ploughed out of it — a ring in n², a hole inside it. And the
+        // champagne gate: where the bubble has outrun the cloud's own
+        // body, nothing confines the hot gas and it streams away — the
+        // natal field at this very cell decides, so the region opens
+        // along the cloud's carved boundary, arcs and horseshoes.
+        const confinement =
+          inBubble && plan.ventConfineDensity > 0
+            ? Math.max(VENT_RESIDUAL, Math.min(1, gas[index] / plan.ventConfineDensity))
+            : 1;
+        const wind =
+          (!inBubble
+            ? 1
+            : distancePc < plan.windCavityPc
+              ? WIND_CAVITY_RESIDUAL
+              : distancePc <= plan.windWallPc
+                ? WIND_WALL_BOOST
+                : 1) * confinement;
         const n =
           (inBubble
             ? sample(
