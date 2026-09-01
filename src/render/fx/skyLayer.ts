@@ -36,6 +36,9 @@ import {
  */
 export const SKY_RESOLUTION_SCALE = 0.5;
 
+/** Washout below which a stellar layer is not worth drawing at all. */
+export const SKY_VISIBILITY_FLOOR = 0.002;
+
 const VERTEX = /* glsl */ `
 out vec2 vUv;
 void main() {
@@ -50,8 +53,13 @@ const FRAGMENT = /* glsl */ `
 in vec2 vUv;
 out vec4 fragColor;
 uniform sampler2D uSky;
+uniform float uIntensity;
 void main() {
-  fragColor = texture(uSky, vUv);
+  // Premultiplied, so one factor washes the domes out of a daytime
+  // sky the way the star points wash out: the light fades and the
+  // occlusion fades with it — a rift cannot darken an atmosphere
+  // that shines in front of it.
+  fragColor = texture(uSky, vUv) * uIntensity;
 }
 `;
 
@@ -60,6 +68,10 @@ export class SkyLayer {
   readonly scene = new Scene();
   /** The composite, for the pipeline to seat in the main scene. */
   readonly quad: Mesh;
+  /** Daylight washout, 0..1 — the same factor the star points carry.
+   *  The domes are everything stellar beyond the system, and a bright
+   *  atmosphere stands in front of all of it. */
+  intensity = 1;
   private readonly target: WebGLRenderTarget;
   private readonly savedColor = new Color();
 
@@ -83,7 +95,7 @@ export class SkyLayer {
         glslVersion: GLSL3,
         vertexShader: VERTEX,
         fragmentShader: FRAGMENT,
-        uniforms: { uSky: { value: this.target.texture } },
+        uniforms: { uSky: { value: this.target.texture }, uIntensity: { value: 1 } },
         // Premultiplied over: the galaxy half is pure added light with
         // zero alpha, the nebula half carries its own occlusion.
         blending: NormalBlending,
@@ -108,12 +120,17 @@ export class SkyLayer {
     );
   }
 
-  /** Render whatever sky volumes are standing; with none, the composite
-   *  stands down and the frame never touches the target. */
+  /** Render whatever sky volumes are standing; with none — or with
+   *  daylight washing the whole layer out — the composite stands down
+   *  and the frame never touches the target. */
   render(renderer: WebGLRenderer, camera: Camera): void {
-    const anything = this.scene.children.some((child) => child.visible);
+    const anything =
+      this.intensity > SKY_VISIBILITY_FLOOR &&
+      this.scene.children.some((child) => child.visible);
     this.quad.visible = anything;
     if (!anything) return;
+    ((this.quad.material as ShaderMaterial).uniforms.uIntensity as { value: number }).value =
+      this.intensity;
     const previousTarget = renderer.getRenderTarget();
     renderer.getClearColor(this.savedColor);
     const previousAlpha = renderer.getClearAlpha();

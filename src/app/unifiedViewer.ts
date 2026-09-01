@@ -46,6 +46,7 @@ import { createRingMesh } from '../render/planet/ringMaterial';
 import { applyOccluders } from '../render/planet/shadows';
 import { planetSeedOffset } from '../render/planet/solidPlanetMaterial';
 import { RenderPipeline } from '../render/fx/pipeline';
+import { SKY_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
 import { StarObject } from '../render/star/starObject';
 import { applySecondSun } from '../render/lighting/secondSun';
 import { foldShaderTime } from '../render/shaderTime';
@@ -177,8 +178,6 @@ const NEBULA_FRAMING_RADII = 2.2;
 const NEBULA_HOME_REACH_PC = 400;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
-/** Layers below the galaxy renderers' existing cutoff are visually nil. */
-const SKY_VISIBILITY_FLOOR = 0.002;
 const ORIGIN = new Vector3();
 
 /** A backdrop standing before the sweep has no stars of its own yet. */
@@ -3269,6 +3268,11 @@ export class UnifiedViewer {
     // sky-sphere geometry is wrong once the camera has real parallax.
     // The neighborhood points are true 3D and stay: they simply recede.
     if (this.backdrop) this.backdrop.intensity = value * (1 - this.galaxyFade);
+    // The volume domes — galaxy band and nebulae — are the same sky the
+    // points are, and an atmosphere shining in front of them washes
+    // them out identically: light and occlusion together, or a rift
+    // punches a dark hole through the daytime sky behind it.
+    this.pipeline.sky.intensity = value;
     if (this.neighborPoints) {
       (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
       this.neighborPoints.visible = value > SKY_VISIBILITY_FLOOR;
