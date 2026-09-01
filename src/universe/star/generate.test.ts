@@ -29,9 +29,12 @@ describe('star fixtures', () => {
   });
 
   it('massive star near end of life is a red supergiant', () => {
+    // Deep in the post-main-sequence window: an 18 M☉ star now lives
+    // ~8.4 Myr on the main sequence (the Eddington floor lengthened
+    // massive lifetimes to what the track grids measure).
     const star = generateStar(3n, {
       massInitial: 18,
-      ageGyr: 0.00595,
+      ageGyr: 0.0096,
       feH: 0,
       withCompanions: false,
     });

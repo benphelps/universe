@@ -220,13 +220,14 @@ Rough priority order. The residency dials live at the top of
   standing compromise a global order forces: a ring's far side just past
   the limb draws over the limb glow rather than under it, traded knowingly
   for the prominent near-side crossing.
-- **Massive-star lifetimes run ~4× short** (cross-domain). `msLifetimeGyr` is
-  the textbook fuel estimate 10·M/L, which ignores the growing convective core:
-  a 30 M☉ star gets ~1.4 Myr against a real ~6, so 3 Myr groups already count
-  several supernovae. The nebula model stays internally consistent with the
-  catalog either way — a star the model says is dead is dead everywhere — but
-  fixing the lifetime law shifts which massive stars exist in every sky, so it
-  is its own pass, not a rider.
+- **Massive-star lifetimes — fixed.** `msLifetimeGyr` was the textbook fuel
+  estimate 10·M/L, which ignores the growing convective core and ran massive
+  stars ~4× short (30 M☉ died at 1.4 Myr against a real ~6, so 3 Myr groups
+  already counted several supernovae). The law now carries the Eddington
+  asymptote as an additive 3.2 Myr floor — 60 M☉ at 3.5 Myr, 20 at 7.2, 9 at
+  33, sunlike untouched, within ~25% of the track grids throughout. This
+  moves which massive stars are alive in every sky, by decision: skies with
+  O stars gain a few and their oldest regions lose their earliest supernovae.
 - **Kerr shadow test flake** (cross-domain): fails ~1-in-5 full-suite runs,
   never in isolation — suspected cross-file state; background task chip spawned.
 
