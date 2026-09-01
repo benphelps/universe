@@ -149,6 +149,8 @@ const BELT_POINT_REBASE_DAYS = 16_384;
 const IDENTITY_FRAME = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
 const IDENTITY_MATRIX = new Matrix3();
 const PC_KM = PARSEC / 1000;
+/** How long the orbit keeps gliding after the hand comes off, seconds. */
+const ORBIT_EASE_SECONDS = 0.05;
 const GALAXY_ARRIVAL_ALTITUDE_KM = 15 * PC_KM;
 /** High enough to frame the whole galaxy from above the disk. */
 const MAX_ALTITUDE_KM = 45_000 * PC_KM;
@@ -3343,6 +3345,14 @@ export class UnifiedViewer {
     const now = performance.now();
     const dtSeconds = Math.min((now - this.lastFrameMs) / 1000, 0.1);
     this.lastFrameMs = now;
+    // OrbitControls decays its leftover motion once per frame, so a
+    // fixed damping factor eases for three times as long at twenty
+    // frames a second as at sixty — the glide outlasts the drag exactly
+    // when the frame rate is already making things feel heavy. Convert
+    // a time constant into this frame's factor instead: the ease lasts
+    // the same fraction of a second whatever the rate, and collapses to
+    // no ease at all once frames are slower than the constant itself.
+    this.controls.dampingFactor = Math.min(1, 1 - Math.exp(-dtSeconds / ORBIT_EASE_SECONDS));
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
     if (this.coreView) {
