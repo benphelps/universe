@@ -190,6 +190,15 @@ Rough priority order. The residency dials live at the top of
 - **Reach cap.** Residency searches 2 kpc of clouds; complexes beyond that lose
   their volumes once the backdrop fades (sub-6° at that range, so quiet — but it
   is a dial, not a law).
+- **Shell ordering vs the sky composite.** The terrain sky dome was drawn
+  before the composite, so a dark cloud's occlusion ate the twilight haze —
+  fixed by moving the dome after it (it is additive; the air shines in front
+  of everything beyond it). The weather `cloudShell` (renderOrder 2) and the
+  space-view `atmosphereShell` (0) still draw before the composite and before
+  the star points, so a volume's occlusion can darken a lit cloud deck or a
+  limb glow, and stars shine through weather clouds. Same class of fix —
+  orders below the star points — but each needs eyes on its own side effects
+  (deck vs terrain fog, limb vs rings) before moving.
 - **Kerr shadow test flake** (cross-domain): fails ~1-in-5 full-suite runs,
   never in isolation — suspected cross-file state; background task chip spawned.
 
