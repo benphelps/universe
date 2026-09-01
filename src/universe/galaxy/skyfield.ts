@@ -26,14 +26,8 @@ import {
   stellarDensity,
   type GalacticPosition,
 } from './density';
-import {
-  nebulaEmissionShare,
-  nebulaFor,
-  nebulaIlluminant,
-  nebulaSpectralHardness,
-  type Nebula,
-} from './nebula';
-import { nebulaEmissionColor } from './nebulaLines';
+import { nebulaEmissionShare, nebulaFor, nebulaIlluminant, type Nebula } from './nebula';
+import { NEBULA_MEAN_U, nebulaEmissionColor } from './nebulaLines';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
 import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
@@ -663,7 +657,10 @@ function nebulaHues(nebula: Nebula): {
   reflection: [number, number, number];
   share: number;
 } {
-  const [er, eg, eb] = nebulaEmissionColor(nebulaSpectralHardness(nebula.maxTeff));
+  // The sprite reads the same line grid the volume does — the group's
+  // hottest star and its own gas, at the representative U a whole
+  // object stands for.
+  const [er, eg, eb] = nebulaEmissionColor(NEBULA_MEAN_U, nebula.maxTeff, nebula.metallicity);
   const illuminant = nebulaIlluminant(nebula);
   const [sr, sg, sb] = blackbodyLinearRgb(Math.max(3000, illuminant?.tEff ?? 4000));
   return {

@@ -5,7 +5,7 @@ import { Rng } from '../../core/rng/rng';
 import { evolve } from '../star/evolution';
 import { ionizingPhotonRate } from '../star/ionizing';
 import { hydrogenBetaLuminosity } from './ionization';
-import { nebulaLineSum } from './nebulaLines';
+import { NEBULA_MEAN_U, nebulaLineSum } from './nebulaLines';
 import {
   cloudHalfExtentsPc,
   cloudLocalDensity,
@@ -32,19 +32,13 @@ export function nebulaIlluminant(nebula: Nebula): NebulaMember | undefined {
   );
 }
 
-/** Where the group's spectrum sits on the line mixture's hardness
- *  axis, by its hottest star: the whole-object proxy for the
- *  ionization parameter the volume bake works out cell by cell. */
-export function nebulaSpectralHardness(maxTeff: number): number {
-  return Math.max(0, Math.min(1, (maxTeff - 28000) / 17000));
-}
-
 /** The group's total optical line output, L☉: its ionizing budget
- *  answered in recombinations, carrying every line the mixture holds. */
+ *  answered in recombinations, carrying every line the grid holds at
+ *  this group's own star and gas. */
 export function nebulaLineLuminositySolar(nebula: Nebula): number {
   return (
     (hydrogenBetaLuminosity(nebula.photonRate) *
-      nebulaLineSum(nebulaSpectralHardness(nebula.maxTeff))) /
+      nebulaLineSum(NEBULA_MEAN_U, nebula.maxTeff, nebula.metallicity)) /
     ERG_PER_SOLAR_LUMINOSITY
   );
 }

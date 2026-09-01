@@ -227,6 +227,9 @@ export interface NebulaBakePlan {
   /** The dominant source's output, photons s⁻¹ — what closes the
    *  emission books in the finish. */
   photonRate: number;
+  /** The dominant source's temperature, K — the line grid's first
+   *  axis, alongside the plan's metallicity and the cells' own U. */
+  sourceTeff: number;
   growth: number;
   dilution: number;
   shellBoost: number;
@@ -321,6 +324,7 @@ export function planNebulaBake(
     ionizePc,
     budget,
     photonRate: source?.photonRate ?? 0,
+    sourceTeff: source?.tEff ?? 40000,
     growth,
     dilution,
     // How much a swept shell actually piles up: nothing when the
@@ -620,7 +624,8 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
   // spectrum with it, and the gas divides that light by n².
   const meanHardness = emissionMeasure > 0 ? hardnessWeighted / emissionMeasure : 0;
   const lineLuminositySolar =
-    (hydrogenBetaLuminosity(plan.photonRate) * nebulaLineSum(meanHardness)) /
+    (hydrogenBetaLuminosity(plan.photonRate) *
+      nebulaLineSum(meanHardness, plan.sourceTeff, plan.metallicity)) /
     ERG_PER_SOLAR_LUMINOSITY;
   const emissionCoefficient =
     emissionMeasure > 0 ? lineLuminositySolar / (4 * Math.PI * emissionMeasure) : 0;
@@ -639,8 +644,13 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
     emissionCoefficient,
     densityRef,
     originPc,
-    emissionHot: nebulaEmissionColor(1),
-    emissionCool: nebulaEmissionColor(0),
+    // The line grid sampled at this nebula's own star and gas, the
+    // cells' U interpolating between: teal only where the star is hot
+    // enough to doubly ionize oxygen, redder skins where the metals
+    // run rich, and the whole mixture thinning toward the metal-poor
+    // rim of the disc.
+    emissionHot: nebulaEmissionColor(1, plan.sourceTeff, plan.metallicity),
+    emissionCool: nebulaEmissionColor(0, plan.sourceTeff, plan.metallicity),
     reflectionColor: blackbodyLinearRgb(plan.reflectionTeff),
     scatterSourcePc: plan.scatterSourcePc,
     scatterLuminositySolar: plan.scatterLuminositySolar,

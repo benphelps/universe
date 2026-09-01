@@ -4,7 +4,7 @@ import { HOME_POSITION } from './density';
 import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity, spitzerRadiusPc } from './ionization';
 import { nebulaFor, type Nebula } from './nebula';
-import { nebulaEmissionColor } from './nebulaLines';
+import { nebulaEmissionColor, nebulaLines } from './nebulaLines';
 import { bakeNebulaVolume, marchNebulaCpu, planNebulaBake } from './nebulaVolume';
 
 /** The brightest H II region near home whose group is still whole —
@@ -44,6 +44,37 @@ describe('nebular colour', () => {
       const [r, g, b] = nebulaEmissionColor(hardness);
       expect(0.2126 * r + 0.7152 * g + 0.0722 * b).toBeCloseTo(1, 6);
     }
+  });
+
+  it('takes oxygen further under hotter stars, monotonically', () => {
+    const o3 = (tEff: number): number =>
+      nebulaLines(0.8, tEff, 0).find(([nm]) => nm === 500.7)?.[1] ?? 0;
+    let last = 0;
+    for (const tEff of [30000, 33000, 36000, 39000, 42000, 46000]) {
+      expect(o3(tEff)).toBeGreaterThanOrEqual(last);
+      last = o3(tEff);
+    }
+    // Orion's core, roughly: Θ¹C at ~39 kK, high U, solar gas.
+    const orion = o3(39000);
+    expect(orion).toBeGreaterThan(2);
+    expect(orion).toBeLessThan(4.5);
+  });
+
+  it('peaks its excitation below solar metallicity', () => {
+    // Metal-poor gas cools badly and runs hot, exciting its scarce
+    // oxygen harder per atom: [O III]/Hβ is stronger in an LMC-like
+    // region than a solar one, and collapses only when the metals are
+    // nearly gone — the classic inversion, and the reason colour now
+    // varies with galactocentric radius on its own.
+    const o3 = (feH: number): number =>
+      nebulaLines(0.8, 42000, feH).find(([nm]) => nm === 500.7)?.[1] ?? 0;
+    expect(o3(-0.5)).toBeGreaterThan(o3(0));
+    expect(o3(0)).toBeGreaterThan(o3(-1.8));
+    // And the low-ionization skin runs redder where metals run rich.
+    const n2 = (feH: number): number =>
+      nebulaLines(0.2, 42000, feH).find(([nm]) => nm === 658.4)?.[1] ?? 0;
+    expect(n2(0.3)).toBeGreaterThan(n2(0));
+    expect(n2(0)).toBeGreaterThan(n2(-1));
   });
 });
 

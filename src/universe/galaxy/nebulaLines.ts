@@ -8,52 +8,94 @@ import { spectralLinesToXyz } from '../../core/color/xyz';
  * hue rather than a palette — which is why a real-colour photograph of
  * an H II region is pink rather than the teal of a narrowband map.
  *
- * Intensities are relative to Hβ, Case B at 10⁴ K. The oxygen pair
- * scales with how hard the ionizing spectrum is: a hot O star doubly
- * ionizes oxygen well beyond where a B star can, which is the one
- * ratio that visibly moves a nebula's colour.
+ * The mixture runs over the three axes that actually move it — the
+ * ionizing star's temperature, the local ionization parameter, and the
+ * gas metallicity — the grid the plan called for. Intensities are
+ * relative to Hβ, Case B at 10⁴ K, anchored on measured regions:
+ * Orion's core lands at [O III] 5007/Hβ ≈ 3, 30 Doradus near 6, a
+ * B-star region under a half, and [N II]/[S II] carry the low-U skin
+ * at their observed shares of Hα. Because metallicity enters, nebular
+ * colour varies with galactocentric radius on its own.
  */
+
+/** The Balmer backbone, Case B at 10⁴ K — metallicity-blind. */
 const HYDROGEN: ReadonlyArray<readonly [number, number]> = [
-  [656.3, 2.86], // Hα — Case B ratio to Hβ
+  [656.3, 2.86], // Hα
   [486.1, 1.0], // Hβ
   [434.0, 0.47], // Hγ
+  [410.2, 0.26], // Hδ
 ];
 
-/** The low-ionization skin: strongest where the front is thickest. */
-const LOW_IONIZATION: ReadonlyArray<readonly [number, number]> = [
-  [658.4, 0.6], // [N II]
-  [654.8, 0.2], // [N II]
-  [671.7, 0.2], // [S II]
-  [673.1, 0.15], // [S II]
-];
+/** Smooth 0→1 over [lo, hi]. */
+function ramp(value: number, lo: number, hi: number): number {
+  const t = Math.min(1, Math.max(0, (value - lo) / (hi - lo)));
+  return t * t * (3 - 2 * t);
+}
 
-/** Doubly ionized oxygen, the teal end. */
-const OXYGEN: ReadonlyArray<readonly [number, number]> = [
-  [500.7, 3.0], // [O III]
-  [495.9, 1.0], // [O III] — fixed 1:3 by atomic physics
-];
-
-/** Every optical line the mixture carries, relative to Hβ. What the
- *  nebula radiates is this times its Hβ luminosity. */
-export function nebulaLineSum(hardness: number): number {
-  const h = Math.min(1, Math.max(0, hardness));
-  const total = (lines: ReadonlyArray<readonly [number, number]>): number =>
-    lines.reduce((sum, [, intensity]) => sum + intensity, 0);
-  return total(HYDROGEN) + total(LOW_IONIZATION) * (1 - 0.7 * h) + total(OXYGEN) * h;
+/** O²⁺ needs 35.1 eV photons: nothing below a hot B star, saturating
+ *  through the O types. */
+function oxygenHardness(tEff: number): number {
+  return ramp(tEff, 32000, 42000);
 }
 
 /**
- * The colour of nebular emission at a given ionization hardness, 0 for
- * a barely-ionized skin to 1 under the hottest stars.
+ * The electron-temperature inversion: metal-poor gas cools badly, runs
+ * hot, and collisionally excites its scarce oxygen harder per atom —
+ * so [O III]/Hβ peaks at LMC-like metallicity and falls toward both
+ * the metal-rich and metal-free ends. Unity at solar by construction.
  */
-export function nebulaEmissionColor(hardness: number): LinearRgb {
-  const h = Math.min(1, Math.max(0, hardness));
-  const lines = [
-    ...HYDROGEN,
-    ...LOW_IONIZATION.map(([nm, i]) => [nm, i * (1 - 0.7 * h)] as const),
-    ...OXYGEN.map(([nm, i]) => [nm, i * h] as const),
-  ];
-  return unitLuminance(gamutMap(xyzToLinearSrgb(spectralLinesToXyz(lines))));
+function oxygenExcitation(z: number): number {
+  return z * (1.15 / (0.15 + z)) ** 1.7;
+}
+
+/**
+ * Every line of the mixture at a point on the grid: u01 is the bake's
+ * normalized log U (its B channel), tEff the ionizing star's, feH the
+ * gas metallicity. Strengths relative to Hβ.
+ */
+export function nebulaLines(
+  u01: number,
+  tEff: number,
+  feH: number,
+): Array<readonly [number, number]> {
+  const u = Math.min(1, Math.max(0, u01));
+  const z = 10 ** feH;
+  const lines: Array<readonly [number, number]> = [...HYDROGEN];
+  // [O III] — the teal end: hard photons, high U, and the excitation
+  // inversion; the 5007/4959 pair fixed 3:1 by atomic physics.
+  const o3 = 6.5 * oxygenExcitation(z) * oxygenHardness(tEff) * u;
+  if (o3 > 0) {
+    lines.push([500.7, o3 * 0.75], [495.9, o3 * 0.25]);
+  }
+  // The low-ionization skin, strongest where U runs low: secondary
+  // nitrogen steepens with metallicity, sulfur follows it linearly.
+  const n2 = 1.6 * z ** 1.6 * (1 - 0.75 * u);
+  lines.push([658.4, n2 * 0.75], [654.8, n2 * 0.25]);
+  const s2 = 0.85 * z * (1 - 0.8 * u);
+  lines.push([671.7, s2 * 0.57], [673.1, s2 * 0.43]);
+  // He I, the one yellow line worth carrying under hot stars.
+  const he = 0.13 * ramp(tEff, 30000, 37000);
+  if (he > 0) lines.push([587.6, he]);
+  return lines;
+}
+
+/** A representative ionization parameter for whole-object questions —
+ *  a sprite's hue, a group's total line budget — where no per-cell U
+ *  exists: bright cores run high. */
+export const NEBULA_MEAN_U = 0.6;
+
+/** Every optical line the mixture carries, relative to Hβ. What the
+ *  nebula radiates is this times its Hβ luminosity. */
+export function nebulaLineSum(u01: number, tEff = 40000, feH = 0): number {
+  return nebulaLines(u01, tEff, feH).reduce((sum, [, intensity]) => sum + intensity, 0);
+}
+
+/** The colour of nebular emission at a point on the grid, 0 for a
+ *  barely-ionized skin to 1 under the hottest stars. */
+export function nebulaEmissionColor(u01: number, tEff = 40000, feH = 0): LinearRgb {
+  return unitLuminance(
+    gamutMap(xyzToLinearSrgb(spectralLinesToXyz(nebulaLines(u01, tEff, feH)))),
+  );
 }
 
 /**
