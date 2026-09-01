@@ -32,7 +32,8 @@ export interface NebulaVolumeBake {
   seed: bigint;
   /** Cells per axis. */
   size: number;
-  /** Box centre — the lighting source — in galactic pc. */
+  /** Box centre in galactic pc: the ionizing star for the bubble-scale
+   *  bake, the cloud's own middle for the cloud-scale one. */
   centrePc: [number, number, number];
   /** Half-extents of the box the grid covers, pc. */
   halfExtentsPc: [number, number, number];
@@ -62,6 +63,13 @@ export interface NebulaVolumeBake {
   emissionCool: LinearRgb;
   /** The source's own light, for what the dust scatters. */
   reflectionColor: LinearRgb;
+  /** Where what shines on the dust stands, box frame, pc: the ionizing
+   *  star when there is one, else the group's brightest member — the
+   *  A-channel transmittance rays radiate from here. */
+  scatterSourcePc: [number, number, number];
+  /** What the group shines on the dust from there, L☉. Zero leaves
+   *  the dust dark: a rift with no stars scatters nothing. */
+  scatterLuminositySolar: number;
 }
 
 const CM_PER_PC = PARSEC * 100;
@@ -136,6 +144,24 @@ export function bakeNebulaVolume(
   const originPc: [number, number, number] = source
     ? [source.dxPc, source.dyPc, source.dzPc]
     : [0, 0, 0];
+  // What lights the dust: the ionizing star where one stands, else the
+  // brightest of the natal group — a reflection nebula's illuminator.
+  // The whole group's light is assigned to it; the members huddle at
+  // the same clumps, and one origin is what a single shadow ray serves.
+  const scatterStar =
+    nebula?.sources[0] ??
+    nebula?.members.reduce(
+      (best, member) => (member.luminosity > (best?.luminosity ?? 0) ? member : best),
+      undefined as Nebula['members'][number] | undefined,
+    );
+  const scatterSourcePc: [number, number, number] = scatterStar
+    ? [
+        scatterStar.dxPc - originPc[0],
+        scatterStar.dyPc - originPc[1],
+        scatterStar.dzPc - originPc[2],
+      ]
+    : [0, 0, 0];
+  const scatterLuminositySolar = scatterStar ? (nebula?.totalLuminosity ?? 0) : 0;
   const reach = Math.max(...cloudHalfExtentsPc(cloud));
   const boxPc = Math.min(
     reach,
@@ -221,21 +247,27 @@ export function bakeNebulaVolume(
             recombined += n * n * RECOMBINATION_SCALE * r * r * ds;
             tau += sample(dust, size, px, py, pz) * DUST_OPACITY_PER_PC * ds;
           }
-        } else {
+        } else if (scatterLuminositySolar > 0) {
           // Beyond it only the dust column is wanted — what the star's
           // light is dimmed and reddened by — and it is smooth enough
-          // at this range to take in far coarser steps.
-          const coarse = Math.min(24, Math.max(1, Math.ceil(distancePc / (4 * stepPc))));
-          const coarseDs = distancePc / coarse;
+          // at this range to take in far coarser steps. The ray runs
+          // from the star that actually shines on the dust, which in
+          // the cloud-scale bake is not the box centre.
+          const sx = x - scatterSourcePc[0];
+          const sy = y - scatterSourcePc[1];
+          const sz = z - scatterSourcePc[2];
+          const shinePc = Math.hypot(sx, sy, sz) || 1e-4;
+          const coarse = Math.min(24, Math.max(1, Math.ceil(shinePc / (4 * stepPc))));
+          const coarseDs = shinePc / coarse;
           for (let s = 0; s < coarse; s++) {
-            const r = (s + 0.5) * coarseDs;
+            const r = (s + 0.5) * coarseDs / shinePc;
             tau +=
               sample(
                 dust,
                 size,
-                (ux * r + boxPc) / cellPc[0] - 0.5,
-                (uy * r + boxPc) / cellPc[1] - 0.5,
-                (uz * r + boxPc) / cellPc[2] - 0.5,
+                (scatterSourcePc[0] + sx * r + boxPc) / cellPc[0] - 0.5,
+                (scatterSourcePc[1] + sy * r + boxPc) / cellPc[1] - 0.5,
+                (scatterSourcePc[2] + sz * r + boxPc) / cellPc[2] - 0.5,
               ) *
               DUST_OPACITY_PER_PC *
               coarseDs;
@@ -302,6 +334,8 @@ export function bakeNebulaVolume(
     originPc,
     emissionHot: nebulaEmissionColor(1),
     emissionCool: nebulaEmissionColor(0),
-    reflectionColor: blackbodyLinearRgb(Math.max(3000, source?.tEff ?? nebula?.maxTeff ?? 4000)),
+    reflectionColor: blackbodyLinearRgb(Math.max(3000, scatterStar?.tEff ?? 4000)),
+    scatterSourcePc,
+    scatterLuminositySolar,
   };
 }

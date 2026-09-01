@@ -57,7 +57,10 @@ uniform float uFineHalfPc;
 uniform float uFineDustRef;
 uniform float uFineDensityRef;
 uniform float uFineEmissionCoefficient;
-uniform float uScatterScale;
+uniform vec3 uScatterSourcePc;
+uniform float uScatterLum;
+uniform float uScatterFloorPc2;
+uniform float uFineScatterFloorPc2;
 uniform float uOpacity;
 
 /** Interleaved gradient noise: one cheap dither per pixel, so the
@@ -89,6 +92,7 @@ void main() {
     float dust = cell.r * uDustRef;
     float ionized = cell.g * uDensityRef;
     float coefficient = uEmissionCoefficient;
+    float scatterFloor = uScatterFloorPc2;
 
     // A cloud is a hundred parsecs and the bubble its newborns blow is
     // a few: one grid cannot hold both, and a grid that holds the cloud
@@ -104,6 +108,7 @@ void main() {
         cell.b = fine.b;
         cell.a = fine.a;
         coefficient = uFineEmissionCoefficient;
+        scatterFloor = uFineScatterFloorPc2;
       }
     }
 
@@ -111,10 +116,14 @@ void main() {
     // the density because every emission is an electron meeting a
     // proton. The hue is the line mixture at this cell's hardness.
     vec3 emission = mix(uEmissionCool, uEmissionHot, cell.b) * ionized * ionized * coefficient;
-    // What the dust scatters of the star's own light, dimmed by the
-    // dust between it and here (cell.a) and by distance.
-    float r2 = max(dot(p, p), 0.05);
-    vec3 scattered = uReflection * uScatterScale * dust * cell.a / r2;
+    // What the dust scatters of the group's light: the flux arriving
+    // from the star it actually comes from, dimmed by the dust between
+    // (cell.a), scattered by this cell's dust. Isotropic phase until
+    // the scattering table lands. The floor keeps the source's own
+    // cell finite rather than singular.
+    vec3 shine = p - uScatterSourcePc;
+    float r2 = max(dot(shine, shine), scatterFloor);
+    vec3 scattered = uReflection * uScatterLum * dust * cell.a / r2;
 
     float extinction = dust * ${DUST_OPACITY_PER_PC.toFixed(4)};
     light += transmittance * (emission + scattered) * ds;
@@ -185,7 +194,14 @@ export class NebulaVolume {
         uEmissionCool: { value: new Vector3(...bake.emissionCool) },
         uReflection: { value: new Vector3(...bake.reflectionColor) },
         uEmissionCoefficient: { value: bake.emissionCoefficient * NEBULA_PIXEL_SCALE },
-        uScatterScale: { value: SCATTER_SCALE },
+        uScatterSourcePc: { value: new Vector3(...bake.scatterSourcePc) },
+        uScatterLum: {
+          value: bake.scatterLuminositySolar * SCATTER_EMISSIVITY_PER_LSUN * NEBULA_PIXEL_SCALE,
+        },
+        uScatterFloorPc2: { value: (bake.halfExtentsPc[0] / bake.size) ** 2 },
+        uFineScatterFloorPc2: {
+          value: fine ? (fine.halfExtentsPc[0] / fine.size) ** 2 : 1,
+        },
         uOpacity: { value: 1 },
         uFine: { value: this.fineTexture },
         uFineOffsetPc: {
@@ -298,6 +314,11 @@ function emptyVolume(): Data3DTexture {
  * brightness, the counterpart of the one the star sprites carry.
  */
 const NEBULA_PIXEL_SCALE = 0.5;
-/** How much of the star's light the dust sends back at us. Provisional
- *  until the scattering table lands with the reflection pass. */
-const SCATTER_SCALE = 0.6;
+/** Optical albedo of interstellar dust (Draine): the share of what
+ *  falls on a grain that leaves it again as scattered light. */
+const DUST_ALBEDO = 0.6;
+/** Scattered emissivity per L☉ per unit dust at unit distance,
+ *  L☉ pc⁻³ sr⁻¹: the flux L/(4πr²) times the dust's opacity per
+ *  parsec, times albedo over the 4π sr it rescatters into — isotropic
+ *  until the phase-function table lands with the reflection pass. */
+const SCATTER_EMISSIVITY_PER_LSUN = (DUST_OPACITY_PER_PC * DUST_ALBEDO) / (16 * Math.PI ** 2);

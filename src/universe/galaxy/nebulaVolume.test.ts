@@ -83,6 +83,9 @@ describe('clouds that never lit', () => {
     expect(dusty).toBeGreaterThan(0);
     expect(ionized).toBe(0);
     expect(bake.emissionCoefficient).toBe(0);
+    // No stars, nothing for the dust to scatter: a rift is dark from
+    // outside and from within.
+    expect(bake.scatterLuminositySolar).toBe(0);
   });
 });
 
@@ -164,6 +167,18 @@ describe('the volume bake', () => {
     const high = fronts[Math.floor(0.85 * fronts.length)];
     expect(low).toBeGreaterThan(0);
     expect(high / low).toBeGreaterThan(1.4);
+  });
+
+  it('lights the dust from the star that shines on it', () => {
+    // The scattered glow is the group's light, placed where the group
+    // is: at the bubble scale the ionizing star is the box centre; at
+    // cloud scale the same star keeps its true offset in the cloud.
+    expect(bake.scatterLuminositySolar).toBe(nebula.totalLuminosity);
+    expect(bake.scatterSourcePc).toEqual([0, 0, 0]);
+    const cloudScale = bakeNebulaVolume(nebula.cloud, nebula, 16, cloudReachPc(nebula.cloud));
+    const source = nebula.sources[0];
+    expect(cloudScale.scatterSourcePc).toEqual([source.dxPc, source.dyPc, source.dzPc]);
+    expect(cloudScale.scatterLuminositySolar).toBe(nebula.totalLuminosity);
   });
 
   it('dims the source light through the gas it crosses', () => {
