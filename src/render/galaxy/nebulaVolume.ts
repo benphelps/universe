@@ -34,7 +34,7 @@ void main() {
 
 const STEPS = 96;
 
-const FRAGMENT = /* glsl */ `
+export const NEBULA_FRAGMENT = /* glsl */ `
 precision highp sampler3D;
 // GLSL 3: a raw shader declares its own varying and its own output —
 // three shims neither for a material it did not write.
@@ -88,12 +88,29 @@ void main() {
     vec4 cell = texture(uVolume, p / (2.0 * uHalfPc) + 0.5);
     float dust = cell.r * uDustRef;
     float ionized = cell.g * uDensityRef;
+    float coefficient = uEmissionCoefficient;
+
+    // A cloud is a hundred parsecs and the bubble its newborns blow is
+    // a few: one grid cannot hold both, and a grid that holds the cloud
+    // puts the whole ionized region inside a single cell. So it is
+    // baked again at its own scale, and read here wherever the ray
+    // passes through it.
+    if (uFineHalfPc > 0.0) {
+      vec3 q = p - uFineOffsetPc;
+      if (all(lessThan(abs(q), vec3(uFineHalfPc)))) {
+        vec4 fine = texture(uFine, q / (2.0 * uFineHalfPc) + 0.5);
+        dust = fine.r * uFineDustRef;
+        ionized = fine.g * uFineDensityRef;
+        cell.b = fine.b;
+        cell.a = fine.a;
+        coefficient = uFineEmissionCoefficient;
+      }
+    }
 
     // Recombination lines: optically thin, and going as the square of
     // the density because every emission is an electron meeting a
     // proton. The hue is the line mixture at this cell's hardness.
-    vec3 emission =
-      mix(uEmissionCool, uEmissionHot, cell.b) * ionized * ionized * uEmissionCoefficient;
+    vec3 emission = mix(uEmissionCool, uEmissionHot, cell.b) * ionized * ionized * coefficient;
     // What the dust scatters of the star's own light, dimmed by the
     // dust between it and here (cell.a) and by distance.
     float r2 = max(dot(p, p), 0.05);
@@ -155,7 +172,7 @@ export class NebulaVolume {
     this.material = new ShaderMaterial({
       glslVersion: GLSL3,
       vertexShader: VERTEX,
-      fragmentShader: FRAGMENT,
+      fragmentShader: NEBULA_FRAGMENT,
       uniforms: {
         uVolume: { value: this.texture },
         uCentrePc: { value: new Vector3(...bake.centrePc) },

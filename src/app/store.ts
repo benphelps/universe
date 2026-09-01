@@ -318,6 +318,13 @@ function syncAddress(): void {
   // Writing it every time is what makes an address portable.
   url.searchParams.set('galaxy', seedToHex(galaxySeed()));
   url.searchParams.set('view', viewMode);
+  // A cloud is the subject, not the gateway star that shares its
+  // locale: without this a shared link reopens on the star.
+  if (cloudFocus) {
+    url.searchParams.set('cloud', '1');
+  } else {
+    url.searchParams.delete('cloud');
+  }
   if (coreView) {
     url.searchParams.set('core', '1');
   } else {
@@ -382,6 +389,7 @@ export function boot(viewElement: HTMLElement): void {
       : viewParam === 'surface'
         ? 'planet'
         : 'star';
+  cloudFocus = params.get('cloud') !== null;
   planetIndex = Number(params.get('planet') ?? 0) || 0;
   moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
   companionIndex = Number(params.get('companion') ?? 0) || 0;

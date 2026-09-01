@@ -110,6 +110,11 @@ const BOX_MIN_PC = 5;
  */
 const IONIZATION_REACH = 10;
 
+/** How much thinner in dust an ionized region is than the neutral gas
+ *  around it. Models and infrared observations of H II regions put this
+ *  at a few, not the near-total removal a clean cavity would imply. */
+const DUST_DEPLETION = 5;
+
 /**
  * Bake a nebula's volume. `boxPc` chooses the scale: left out, the box
  * is the ionized bubble and its walls — what you look at from close
@@ -123,10 +128,11 @@ export function bakeNebulaVolume(
   boxRequestPc?: number,
 ): NebulaVolumeBake {
   const metallicity = nebula?.metallicity ?? ismMetallicity(cloud.positionPc);
-  // Lit or not, a cloud is a body. Where a group has formed the volume
-  // centres on the star that lights it; where none has, the cloud is
-  // its own subject and the box sits on the cloud.
-  const source = nebula?.sources[0];
+  // The bubble is centred on the star that blows it; the cloud is
+  // centred on itself. Centring a cloud-scale box on the star would
+  // shift the box off the body by however far into the cloud the star
+  // happens to have formed — tens of parsecs — and clip the far side.
+  const source = boxRequestPc === undefined ? nebula?.sources[0] : undefined;
   const originPc: [number, number, number] = source
     ? [source.dxPc, source.dyPc, source.dzPc]
     : [0, 0, 0];
@@ -254,12 +260,15 @@ export function bakeNebulaVolume(
         emissionMeasure += measure;
         hardnessWeighted += measure * Math.min(1, Math.max(0, hardness));
 
-        // Ionized gas keeps almost no dust: grains are destroyed in the
-        // radiation field and the rest is swept out with the flow, which
-        // is why an H II region is a cavity in the extinction and not
-        // merely a bright patch behind it.
+        // Ionized gas holds less dust than the cloud it was carved out
+        // of — grains are eroded in the radiation field and swept with
+        // the flow — but it is not swept clean: observations and models
+        // put H II regions a few times thinner in dust, not twenty, and
+        // the dust that remains is what makes them visible in the
+        // infrared at all.
         const out = index * 4;
-        data[out] = Math.round(255 * Math.min(1, (dust[index] * (1 - 0.95 * ionized)) / dustRef));
+        const thinned = dust[index] / (1 + (DUST_DEPLETION - 1) * ionized);
+        data[out] = Math.round(255 * Math.min(1, thinned / dustRef));
         data[out + 1] = Math.round(255 * Math.min(1, (n * ionized) / densityRef));
         data[out + 2] = Math.round(255 * Math.min(1, Math.max(0, hardness)));
         data[out + 3] = Math.round(255 * transmittance);

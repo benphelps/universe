@@ -48,10 +48,14 @@ export function requestNebulaVolume(
   const key = `${seedToHex(cloud.seed)}@${boxPc ? boxPc.toFixed(1) : 'bubble'}`;
   const cached = cache.get(key);
   if (cached) return cached;
+  // Coming back to a cloud whose bake is still in flight has to leave
+  // someone listening for it. Registering the new caller and returning
+  // is right; dropping it left the answer arriving to nobody and the
+  // volume missing until something else forced a rebuild.
+  waiting.set(key, onReady);
   if (queued.has(key)) return null;
   queued.add(key);
   const active = ensureWorker();
-  waiting.set(key, onReady);
   active.onmessage = (event: MessageEvent<NebulaBakeResult>) => {
     const answer = waiting.get(event.data.key);
     waiting.delete(event.data.key);
