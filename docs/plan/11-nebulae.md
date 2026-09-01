@@ -163,9 +163,19 @@ Rough priority order. The residency dials live at the top of
   lifetime, which then ionize as planetary-nebula-nucleus-like sources. Possibly
   physics, never reviewed: decide what a dead member should contribute to Q,
   luminosity, and the illuminant choice.
-- **Arrival bake latency.** ~6 s for the subject's coarse bake after travel
-  (worker is serial, one bake in flight). A low-resolution first pass or a
-  second worker would halve the perceived wait.
+- **Bake on the GPU.** A 96³ bake is ~2–4 s of worker CPU — measured: ~1.7 s of
+  field evaluation (octave count barely matters; the envelope/carve dominates)
+  plus 0.5–2.4 s of per-cell ray marching — and it is exactly
+  fragment-shader-shaped work: independent cells, a smooth field, texture-like
+  sampling. On the GPU it is milliseconds. Design: (1) port the *seeded* simplex
+  to GLSL with the cloud's permutation table as a small texture — near-equal is
+  enough, the CPU field stays the physics authority and the bake is only a
+  render of it; (2) fill dust+gas into an RG float 3D texture layer by layer via
+  `framebufferTextureLayer`; (3) a march pass reading that texture and writing
+  the RGBA8 volume; (4) read back once for the byte references and the
+  emission-measure reduction (or reduce on GPU). Can run on the main renderer
+  between frames or on an OffscreenCanvas in the worker. Until then a pool of
+  three CPU workers overlaps an arrival's bakes.
 - **Reach cap.** Residency searches 2 kpc of clouds; complexes beyond that lose
   their volumes once the backdrop fades (sub-6° at that range, so quiet — but it
   is a dial, not a law).
