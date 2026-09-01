@@ -235,10 +235,13 @@ export class StarfieldBackdrop {
   readonly group = new Group();
   private readonly materials: ShaderMaterial[] = [];
   /** Which cloud each nebula sprite stands for, and the uniform
-   *  carrying its brightness — so a sprite can stand down when the
-   *  cloud it stands for is drawn as the volume it really is. */
+   *  carrying its brightness — so a sprite can stand down while the
+   *  cloud it stands for is drawn as the volume it really is, and
+   *  stand back up at its baked brightness when the volume leaves. */
   private nebulaSeeds: bigint[] = [];
   private nebulaBrightness: Vector4[] = [];
+  private nebulaBaseBrightness: number[] = [];
+  private volumeSeeds: ReadonlySet<bigint> = new Set();
 
   /** Match the galaxy layers' draw cutoff: below this the contribution
    * is visually nil, but the two full-screen domes are still expensive. */
@@ -418,6 +421,8 @@ export class StarfieldBackdrop {
       this.materials.push(nebulaMaterial);
       this.nebulaSeeds = patches.map((patch) => patch.seed);
       this.nebulaBrightness = nebulaB;
+      this.nebulaBaseBrightness = nebulaB.map((brightness) => brightness.w);
+      this.applyNebulaSuppression();
       const nebulaDome = new Mesh(new SphereGeometry(radius * 1.02, 48, 24), nebulaMaterial);
       nebulaDome.frustumCulled = false;
       nebulaDome.renderOrder = -3;
@@ -425,13 +430,22 @@ export class StarfieldBackdrop {
     }
   }
 
-  /** 1 = full night sky; approaches 0 under bright daylight. */
-  /** Silence the sprite for one cloud: its volume has taken over. */
-  suppressNebula(seed: bigint): void {
-    const index = this.nebulaSeeds.indexOf(seed);
-    if (index >= 0) this.nebulaBrightness[index].w = 0;
+  /** The clouds whose volumes are standing: their sprites go dark, and
+   *  every other sprite holds (or recovers) its baked brightness. */
+  setNebulaVolumeSeeds(seeds: ReadonlySet<bigint>): void {
+    this.volumeSeeds = seeds;
+    this.applyNebulaSuppression();
   }
 
+  private applyNebulaSuppression(): void {
+    for (let i = 0; i < this.nebulaSeeds.length; i++) {
+      this.nebulaBrightness[i].w = this.volumeSeeds.has(this.nebulaSeeds[i])
+        ? 0
+        : this.nebulaBaseBrightness[i];
+    }
+  }
+
+  /** 1 = full night sky; approaches 0 under bright daylight. */
   set intensity(value: number) {
     for (const material of this.materials) material.uniforms.uIntensity.value = value;
     this.group.visible = value > StarfieldBackdrop.VISIBILITY_FLOOR;

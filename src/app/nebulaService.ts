@@ -62,7 +62,9 @@ export function requestNebulaVolume(
     queued.delete(event.data.key);
     if (!event.data.bake) return;
     cache.set(event.data.key, event.data.bake);
-    if (cache.size > 8) cache.delete(cache.keys().next().value as string);
+    // Room for a full residency of volumes at both scales, plus a few
+    // recently-left clouds the camera may swing back to.
+    if (cache.size > 12) cache.delete(cache.keys().next().value as string);
     // A bake the camera has moved on from is still worth keeping — it
     // is the answer for a cloud that may come back into view — but only
     // the request that is still waiting hears about it.

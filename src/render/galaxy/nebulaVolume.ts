@@ -161,6 +161,9 @@ void main() {
 export class NebulaVolume {
   readonly mesh: Mesh;
   readonly seed: bigint;
+  /** How far the camera stood from the box centre at the last update,
+   *  pc — what residency ordering and the star march choose by. */
+  cameraDistancePc = Infinity;
   private readonly material: ShaderMaterial;
   private readonly texture: Data3DTexture;
   private readonly fineTexture: Data3DTexture;
@@ -261,6 +264,7 @@ export class NebulaVolume {
       cam.y + this.viewpointPc.yPc,
       cam.z + this.viewpointPc.zPc,
     );
+    this.cameraDistancePc = cam.distanceTo(this.material.uniforms.uCentrePc.value as Vector3);
     this.mesh.position.copy(cameraWorldKm);
     this.mesh.scale.setScalar(domeRadiusKm);
   }
