@@ -126,6 +126,10 @@ export function createAuroraShells(
       side: DoubleSide,
     });
     const mesh = new Mesh(new SphereGeometry(1, 96, 64), material);
+    // The sliver past the limb stands against open sky: after the
+    // composite and the rings (reversed-Z: lowest order last), so
+    // neither a rift behind nor a ring behind shows through it.
+    mesh.renderOrder = -2.15;
     mesh.scale.setScalar(1 + Math.min(0.06, Math.max(layer.floor, layer.altitudeKm / radiusKm)));
     return mesh;
   });

@@ -70,6 +70,10 @@ export function createAtmosphereShell(
     depthWrite: false,
   });
   const mesh = new Mesh(new SphereGeometry(1, 64, 32), material);
+  // Additive limb glow, depth-mute: drawn after the sky composite so a
+  // dark cloud behind the planet cannot eat the rim, and before the
+  // rings, which pass in front of it (reversed-Z: lowest order last).
+  mesh.renderOrder = -2.05;
   // The gas follows the rotating body's figure: an oblate planet wears
   // an equally oblate limb, not a spherical halo lifted off its poles.
   const r = planetRadiusUnits * (1 + relativeHeight);

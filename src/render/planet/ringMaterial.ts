@@ -130,5 +130,13 @@ export function createRingMesh(rings: RingSystem, planetRadiusUnits: number): Me
     depthWrite: false,
   });
 
-  return new Mesh(new RingGeometry(inner, outer, 256, 8), material);
+  const mesh = new Mesh(new RingGeometry(inner, outer, 256, 8), material);
+  // Rings write no depth, so draw order is what stands them in front
+  // of the sky (reversed-Z: lowest order last): after the volume
+  // composite and the star points — a rift behind can no longer dim
+  // them, and stars no longer shine through the sheet — and after the
+  // limb glow, which the near-side crossing passes in front of. The
+  // planet still occludes the far side by depth.
+  mesh.renderOrder = -2.1;
+  return mesh;
 }
