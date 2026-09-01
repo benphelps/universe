@@ -120,6 +120,52 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 7. Multi-volume marching, crossfade, streaming and eviction.
 8. Reflection scattering; display modes.
 
+## Ledger — open items as of the galaxy-march branch (Sep 2026)
+
+Rough priority order. The residency dials live at the top of
+`src/app/unifiedViewer.ts` (`NEBULA_VOLUME_RESIDENTS`, `NEBULA_VOLUME_REACH_PC`,
+`NEBULA_VOLUME_MIN_ANGULAR`, `NEBULA_RESIDENCY_STRIDE_PC`).
+
+- **Multi-box march.** Each resident volume is its own full-screen dome; several
+  *enclosing* volumes at a gateway complex each march the whole sky (~45 ms GPU
+  measured with four). The carrier should march all resident boxes in one pass,
+  sorted front-to-back (§render pass). Per-axis box extents (the bake already
+  stores a vec3; the shader assumes cubic) would also shrink footprints for
+  stretched clouds.
+- **Residency ranking.** Admission is by projected size alone, so a bright
+  emission complex can lose its slot to four bigger dark rifts. Weight by the
+  object's light budgets, and consider admitting more small-footprint volumes
+  (cheap) while capping enclosing ones (expensive).
+- **Photometric unification.** The sprite's brightness law is still the impostor
+  (`95·√L/d²`, peak-normalized tiles); the volume's zero point is order-unity
+  provisional. Build the sprite/volume agreement harness and tie both to the
+  star sprites' photometric system. Hue already unified via `nebulaEmissionShare`.
+- **Display modes.** Bright bubble cores tone-map to white at close range — the
+  natural-vision / camera / narrowband instrument split (§Colour) is where that
+  judgment belongs, not the physics.
+- **Stage 5 remainder.** Trunk/pillar photoevaporation, winds and supernovae
+  past the Spitzer floor (the expansion slice that landed is the floor, not the
+  ceiling).
+- **Cluster members are not addressable.** Group members ride their cloud's
+  stream (`starSeed === 0n` in the sky field), so they hover as "cluster member"
+  but cannot be travelled to. They are deterministic per cloud —
+  `deriveSeed(cloud.seed, 'member', i)` could name them — but arrival needs the
+  system generator to honor a member's physical identity (mass, age, tEff)
+  rather than rolling its own star from the seed.
+- **Dead members as ionizers.** A few nebula members report tEff ~10⁶ K —
+  `evolve()` returning remnant parameters for massive stars past their
+  lifetime, which then ionize as planetary-nebula-nucleus-like sources. Possibly
+  physics, never reviewed: decide what a dead member should contribute to Q,
+  luminosity, and the illuminant choice.
+- **Arrival bake latency.** ~6 s for the subject's coarse bake after travel
+  (worker is serial, one bake in flight). A low-resolution first pass or a
+  second worker would halve the perceived wait.
+- **Reach cap.** Residency searches 2 kpc of clouds; complexes beyond that lose
+  their volumes once the backdrop fades (sub-6° at that range, so quiet — but it
+  is a dial, not a law).
+- **Kerr shadow test flake** (cross-domain): fails ~1-in-5 full-suite runs,
+  never in isolation — suspected cross-file state; background task chip spawned.
+
 ## Testing targets
 
 - GMC population: sampled masses on the observed mass function, densities in 50–500 cm⁻³, surface density near 100 M☉ pc⁻².
