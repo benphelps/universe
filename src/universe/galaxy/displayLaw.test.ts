@@ -150,7 +150,7 @@ describe('sprite photometry', () => {
       expect(escaped).toBeLessThanOrEqual(1);
 
       const distance = nebula.cloud.radiusPc * 12;
-      const extentPc = nebula.cloud.radiusPc * 1.6;
+      const extentPc = cloudReachPc(nebula.cloud);
       const pixelSr = (2 * extentPc) / distance / NEBULA_TILE;
       let flux = 0;
       for (let j = 0; j < NEBULA_TILE; j++) {
@@ -162,6 +162,35 @@ describe('sprite photometry', () => {
       const budget = (escaped * nebulaLightSolar(nebula)) / (4 * Math.PI * distance * distance);
       expect(flux / budget).toBeGreaterThan(0.995);
       expect(flux / budget).toBeLessThan(1.005);
+    }
+  }, 60000);
+
+  it('holds the whole body inside the tile', () => {
+    // A drawn-out cloud reaches well past its nominal radius along its
+    // long axis. A tile that stopped at the radius sliced such a cloud
+    // off in a straight line, and the light along that cut read as a
+    // box hung in the sky; the tile now spans the reach, so its outer
+    // ring carries nothing.
+    const atlas = new Float32Array(
+      NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4,
+    );
+    const view: [number, number, number] = [0.6, 0.48, 0.64];
+    const norm = Math.hypot(...view);
+    const unit: [number, number, number] = [view[0] / norm, view[1] / norm, view[2] / norm];
+    for (const nebula of litNebulae().slice(0, 5)) {
+      renderNebulaTile(atlas, 0, nebula.cloud, unit, nebula);
+      let edge = 0;
+      let inner = 0;
+      for (let j = 1; j < NEBULA_TILE - 1; j++) {
+        for (let i = 1; i < NEBULA_TILE - 1; i++) {
+          const value = atlas[(j * NEBULA_ATLAS_COLS * NEBULA_TILE + i) * 4];
+          if (i <= 3 || j <= 3 || i >= NEBULA_TILE - 4 || j >= NEBULA_TILE - 4) edge += value;
+          else inner += value;
+        }
+      }
+      // What survives at the edge is the vented residue of an interior
+      // that has outrun its cloud, thinned by the champagne gate.
+      expect(edge).toBeLessThan(inner * 0.02);
     }
   }, 60000);
 

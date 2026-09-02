@@ -27,6 +27,8 @@ import {
   stromgrenRadiusPc,
   sweptCavityRadiusPc,
   sweptShellBoost,
+  VENT_CONFINEMENT,
+  VENT_RESIDUAL,
   WIND_CAVITY_RESIDUAL,
   WIND_WALL_BOOST,
   WIND_WALL_WIDTH,
@@ -290,7 +292,24 @@ export function nebulaGasAt(
         : r <= nebula.windCavityPc * (1 + WIND_WALL_WIDTH)
           ? WIND_WALL_BOOST
           : 1;
-    const dust = natal * wind;
+    // The champagne gate: the interior holds its density only where
+    // the cloud at this very place could confine it, and streams to a
+    // residue where the bubble has outrun the body.
+    const confining = VENT_CONFINEMENT * nebula.sourceHydrogenDensity * dilution;
+    const confinement =
+      confining > 0
+        ? Math.max(
+            VENT_RESIDUAL,
+            Math.min(
+              1,
+              hydrogenDensity(
+                cloudLocalDensity(cloud, xPc, yPc, zPc) * dustFactor,
+                nebula.metallicity,
+              ) / confining,
+            ),
+          )
+        : 1;
+    const dust = natal * wind * confinement;
     return { dust: dust / DUST_DEPLETION, ionized: hydrogenDensity(dust, nebula.metallicity) };
   }
   const swept = r <= bubble * (1 + SHELL_WIDTH) ? sweptShellBoost(dilution) : 1;

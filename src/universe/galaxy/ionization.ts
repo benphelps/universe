@@ -173,3 +173,19 @@ export const WIND_CAVITY_RESIDUAL = 0.02;
  *  while the total stays pinned to the ionizing budget by the finish. */
 export const WIND_WALL_BOOST =
   1 + (1 - WIND_CAVITY_RESIDUAL) / ((1 + WIND_WALL_WIDTH) ** 3 - 1);
+
+/**
+ * Champagne venting: ten-thousand-kelvin gas is held together by the
+ * cloud around it, and where the bubble has outrun the cloud's own
+ * body there is nothing left to hold — the ionized gas streams out
+ * and thins. Quasi-static, like the rest of the region's structure:
+ * the interior keeps its density only where the natal field at that
+ * place could confine it, ramping down to a streaming residue where
+ * the cloud is gone. Because the gate is the cloud's own carved
+ * boundary, a region on a cloud's face opens into the horseshoe a
+ * blister actually is.
+ */
+export const VENT_RESIDUAL = 0.05;
+/** Ambient natal density that fully confines, in units of the diluted
+ *  interior's own density. */
+export const VENT_CONFINEMENT = 1;

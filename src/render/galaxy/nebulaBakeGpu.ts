@@ -16,6 +16,7 @@ import {
   DUST_DEPLETION,
   SHELL_SKIN_SHARE,
   SHELL_WIDTH,
+  VENT_RESIDUAL,
   WIND_CAVITY_RESIDUAL,
   WIND_WALL_BOOST,
 } from '../../universe/galaxy/ionization';
@@ -28,7 +29,6 @@ import {
   LOG_U_MIN,
   SCATTER_MAX_STEPS,
   SCATTER_STEP_FACTOR,
-  VENT_RESIDUAL,
   finishNebulaBake,
   nebulaMarchScales,
   planNebulaBake,

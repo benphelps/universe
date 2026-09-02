@@ -60,6 +60,9 @@ export interface NebulaPatch {
   distancePc: number;
   /** Unit view direction (galactic frame, like starDirs). */
   dir: [number, number, number];
+  /** The cloud's nominal radius on the sky, radians: the tile spans
+   *  ENVELOPE_REACH times this, which for a drawn-out cloud is its
+   *  full reach, so the body is never sliced by the tile's edge. */
   angularRadius: number;
   /** Linear sRGB emission hue (tile pixels carry the per-pixel mix). */
   color: [number, number, number];
@@ -755,7 +758,10 @@ export function renderNebulaTile(
   const right = normalize(cross(view, axis));
   const up = cross(view, right);
 
-  const extentPc = cloud.radiusPc * ENVELOPE_REACH;
+  // The tile covers the whole body: a drawn-out cloud reaches past its
+  // nominal radius along its long axis, and a tile sized to the
+  // radius alone would slice it off in a straight line.
+  const extentPc = cloudReachPc(cloud);
   const steps = 16;
   const dt = (2 * extentPc) / steps;
   const source = nebulaIlluminant(nebula);
@@ -936,7 +942,10 @@ function buildGroups(
       seed: candidate.cloud.seed,
       distancePc: candidate.distancePc,
       dir: candidate.view,
-      angularRadius: Math.min(0.35, candidate.cloud.radiusPc / candidate.distancePc),
+      angularRadius: Math.min(
+        0.35,
+        cloudReachPc(candidate.cloud) / ENVELOPE_REACH / candidate.distancePc,
+      ),
       color: nebulaDisplayColor(candidate.nebula),
       brightness: displaySurfaceBrightness(peakRadiance),
       peakRadiance,

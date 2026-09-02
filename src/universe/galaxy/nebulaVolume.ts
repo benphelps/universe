@@ -21,6 +21,8 @@ import {
   SHELL_SKIN_SHARE,
   SHELL_WIDTH,
   sweptShellBoost,
+  VENT_CONFINEMENT,
+  VENT_RESIDUAL,
   WIND_CAVITY_RESIDUAL,
   WIND_WALL_BOOST,
   WIND_WALL_WIDTH,
@@ -262,20 +264,6 @@ export const FRONT_SOFTNESS = 0.15;
 export const SCATTER_STEP_FACTOR = 4;
 export const SCATTER_MAX_STEPS = 24;
 
-/**
- * Champagne venting: ten-thousand-kelvin gas is held together by the
- * cloud around it, and where the bubble has outrun the cloud's own
- * body there is nothing left to hold — the ionized gas streams out
- * and thins. Quasi-static, like the rest of the bake: the interior
- * keeps its density only where the natal field at that place could
- * confine it, ramping down to a streaming residue where the cloud is
- * gone. Because the gate is the cloud's own carved boundary, a region
- * on a cloud's face opens into the horseshoe a blister actually is.
- */
-export const VENT_RESIDUAL = 0.05;
-/** Ambient natal density that fully confines, in units of the diluted
- *  interior's own density. */
-export const VENT_CONFINEMENT = 1;
 
 /** Whether the bubble deserves a bake of its own, or the cloud-scale
  *  grid already resolves it: the two-scale split exists for compact
