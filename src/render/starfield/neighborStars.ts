@@ -79,8 +79,9 @@ const VOLUME_SLOTS = [
 ];
 
 /** Point every star material at the volumes now standing, or at none.
- *  Entries beyond the shader's slots are dropped — the residency cap
- *  and the slot count are the same number. */
+ *  Entries beyond the shader's slots are dropped: the caller hands the
+ *  nearest volumes first, so the rifts the eye actually checks stars
+ *  against are the ones that take the slots. */
 export function setStarNebulaExtinction(extinctions: readonly StarNebulaExtinction[]): void {
   for (let i = 0; i < MAX_STAR_NEBULAE; i++) {
     const extinction = extinctions[i];

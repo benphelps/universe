@@ -96,8 +96,9 @@ export interface NebulaVolumeBake {
 
 /** Scattered emissivity per L☉ per unit dust at unit distance,
  *  L☉ pc⁻³ sr⁻¹: the flux L/(4πr²) times the dust's opacity per
- *  parsec, times albedo over the 4π sr it rescatters into — isotropic
- *  until the phase-function table lands with the reflection pass. */
+ *  parsec, times albedo over the 4π sr it rescatters into. The
+ *  direction it goes is the scattering table's business (the phase
+ *  and every higher order); this is the scale the table multiplies. */
 export const SCATTER_EMISSIVITY_PER_LSUN = (DUST_OPACITY_PER_PC * DUST_ALBEDO) / (16 * Math.PI ** 2);
 
 /** Recombinations per steradian carried by one cm⁻⁶ over a pc³ shell. */

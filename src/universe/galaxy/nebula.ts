@@ -4,7 +4,6 @@ import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { evolve } from '../star/evolution';
 import { ionizingPhotonRate } from '../star/ionizing';
-import { hydrogenBetaLuminosity } from './ionization';
 import { NEBULA_MEAN_U, nebulaLineSum } from './nebulaLines';
 import {
   cloudHalfExtentsPc,
@@ -14,65 +13,13 @@ import {
 } from './clouds';
 import type { GalacticPosition } from './density';
 import { cloudHydrogenDensity } from './gas';
-import { spitzerRadiusPc, stromgrenRadiusPc, sweptCavityRadiusPc } from './ionization';
-
-/** The star whose light the dust scatters: the ionizing star when one
- *  stands, else the brightest of the natal group — every renderer's
- *  single illuminant, so the sprite and the volume agree on it. */
-export function nebulaIlluminant(nebula: Nebula): NebulaMember | undefined {
-  return (
-    nebula.sources[0] ??
-    nebula.members.reduce(
-      (best, member) => (member.luminosity > (best?.luminosity ?? 0) ? member : best),
-      undefined as NebulaMember | undefined,
-    )
-  );
-}
-
-/** The group's total optical line output, L☉: its ionizing budget
- *  answered in recombinations, carrying every line the grid holds at
- *  this group's own star and gas. */
-export function nebulaLineLuminositySolar(nebula: Nebula): number {
-  return (
-    (hydrogenBetaLuminosity(nebula.photonRate) *
-      nebulaLineSum(NEBULA_MEAN_U, nebula.maxTeff, nebula.metallicity)) /
-    ERG_PER_SOLAR_LUMINOSITY
-  );
-}
-
-/** Fraction of the dust the group's light gets caught by and sent back
- *  out: optical albedo times an order-unity interception. */
-const SCATTERED_SHARE_OF_CONTINUUM = 0.3;
-
-/** Everything a lit cloud sends out, L☉: its lines plus the share of
- *  the group's continuum the dust catches and rescatters. The budget
- *  every rendering of the object spends — the sprite's flux closure
- *  and the volume's emission and scatter books draw on the same two
- *  terms. */
-export function nebulaLightSolar(nebula: Nebula): number {
-  return nebulaLineLuminositySolar(nebula) + SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity;
-}
-
-/**
- * How much of the light where the object glows is line emission rather
- * than scattered continuum — what decides whether it reads pink or
- * blue. The lines concentrate in the bubble while the scattered
- * continuum spreads over the whole cloud, so the comparison is between
- * surface brightnesses, not totals. A dozen B stars put out tens of
- * thousands of solar luminosities of continuum against tens of line
- * emission and stay a blue reflection complex; an O group's ionizing
- * budget rivals its continuum and the pink takes over its bubble.
- */
-export function nebulaEmissionShare(nebula: Nebula): number {
-  const lines = nebulaLineLuminositySolar(nebula);
-  const concentration = Math.min(
-    1,
-    (nebula.bubbleRadiusPc / Math.max(...nebula.halfExtentsPc)) ** 2,
-  );
-  const scattered = SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity * concentration;
-  return lines / (lines + scattered + 1e-12);
-}
 import { ismMetallicity } from './population';
+import {
+  hydrogenBetaLuminosity,
+  spitzerRadiusPc,
+  stromgrenRadiusPc,
+  sweptCavityRadiusPc,
+} from './ionization';
 
 /**
  * A nebula is a molecular cloud lit by the stars it just formed, and it
@@ -144,6 +91,63 @@ export interface Nebula {
   kind: NebulaKind;
   /** Half-extents of the density field, pc — the volume's bounds. */
   halfExtentsPc: [number, number, number];
+}
+
+/** The star whose light the dust scatters: the ionizing star when one
+ *  stands, else the brightest of the natal group — every renderer's
+ *  single illuminant, so the sprite and the volume agree on it. */
+export function nebulaIlluminant(nebula: Nebula): NebulaMember | undefined {
+  return (
+    nebula.sources[0] ??
+    nebula.members.reduce(
+      (best, member) => (member.luminosity > (best?.luminosity ?? 0) ? member : best),
+      undefined as NebulaMember | undefined,
+    )
+  );
+}
+
+/** The group's total optical line output, L☉: its ionizing budget
+ *  answered in recombinations, carrying every line the grid holds at
+ *  this group's own star and gas. */
+export function nebulaLineLuminositySolar(nebula: Nebula): number {
+  return (
+    (hydrogenBetaLuminosity(nebula.photonRate) *
+      nebulaLineSum(NEBULA_MEAN_U, nebula.maxTeff, nebula.metallicity)) /
+    ERG_PER_SOLAR_LUMINOSITY
+  );
+}
+
+/** Fraction of the dust the group's light gets caught by and sent back
+ *  out: optical albedo times an order-unity interception. */
+const SCATTERED_SHARE_OF_CONTINUUM = 0.3;
+
+/** Everything a lit cloud sends out, L☉: its lines plus the share of
+ *  the group's continuum the dust catches and rescatters. The budget
+ *  every rendering of the object spends — the sprite's flux closure
+ *  and the volume's emission and scatter books draw on the same two
+ *  terms. */
+export function nebulaLightSolar(nebula: Nebula): number {
+  return nebulaLineLuminositySolar(nebula) + SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity;
+}
+
+/**
+ * How much of the light where the object glows is line emission rather
+ * than scattered continuum — what decides whether it reads pink or
+ * blue. The lines concentrate in the bubble while the scattered
+ * continuum spreads over the whole cloud, so the comparison is between
+ * surface brightnesses, not totals. A dozen B stars put out tens of
+ * thousands of solar luminosities of continuum against tens of line
+ * emission and stay a blue reflection complex; an O group's ionizing
+ * budget rivals its continuum and the pink takes over its bubble.
+ */
+export function nebulaEmissionShare(nebula: Nebula): number {
+  const lines = nebulaLineLuminositySolar(nebula);
+  const concentration = Math.min(
+    1,
+    (nebula.bubbleRadiusPc / Math.max(...nebula.halfExtentsPc)) ** 2,
+  );
+  const scattered = SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity * concentration;
+  return lines / (lines + scattered + 1e-12);
 }
 
 /** How many places a member is offered before it settles on the

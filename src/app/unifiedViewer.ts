@@ -1436,13 +1436,8 @@ export class UnifiedViewer {
     });
   }
 
-  /**
-   * The nebula worth drawing as a volume: the brightest H II region
-   * near enough to have a face, and far enough that the camera is not
-   * standing inside the box. One for now — the tier that keeps several
-   * resident and hands off to the sprites by projected size comes with
-   * the streaming pass.
-   */
+  /** Residency decided afresh for an arrival: where the camera stands
+   *  is recorded so the per-frame stride check starts from here. */
   private chooseNebulaVolume(viewpoint: GalacticPosition, orientation: Float32Array): void {
     this.residencyAt = { ...viewpoint };
     this.updateNebulaResidency(viewpoint, orientation);
