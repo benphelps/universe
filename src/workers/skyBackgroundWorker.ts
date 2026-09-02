@@ -1,7 +1,12 @@
 import { seedFromHex } from '../core/rng/hash';
+import { createSkyBakeGpu } from '../render/galaxy/skyBakeGpu';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { setGalaxySeed } from '../universe/galaxy/galaxySeed';
-import { buildSkyBackground, type SkyBackground } from '../universe/galaxy/skyfield';
+import {
+  buildSkyBackground,
+  type SkyBackground,
+  type SkyMapBaker,
+} from '../universe/galaxy/skyfield';
 
 export interface BackgroundTask {
   seedHex: string;
@@ -27,10 +32,25 @@ export interface BackgroundResult {
  * for the first seconds of a build and idle after, which is exactly
  * when the pool has the most to do.
  */
+/** The GPU baker of the background maps, tried once: null means this
+ *  platform builds them on the CPU, and a baker that throws mid-build
+ *  is demoted the same way. */
+let baker: SkyMapBaker | null | undefined;
+
 self.onmessage = (event: MessageEvent<BackgroundTask>) => {
   const { seedHex, viewpoint, galaxy } = event.data;
   setGalaxySeed(seedFromHex(galaxy));
-  const background = buildSkyBackground(viewpoint, seedFromHex(seedHex));
+  if (baker === undefined) baker = createSkyBakeGpu();
+  let background: SkyBackground;
+  try {
+    background = buildSkyBackground(viewpoint, seedFromHex(seedHex), undefined, baker);
+  } catch (error) {
+    if (!baker) throw error;
+    console.warn('sky GPU bake failed, building on the CPU:', error);
+    baker.dispose();
+    baker = null;
+    background = buildSkyBackground(viewpoint, seedFromHex(seedHex));
+  }
   const result: BackgroundResult = { seedHex, background };
   (self as unknown as Worker).postMessage(result, [
     background.nebulaAtlas.buffer,

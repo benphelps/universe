@@ -254,7 +254,29 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   their grades ten seconds after arrival, with no frame past 90 ms.
   Measurement caveat learned the hard way: a page that has been through
   hot reloads accumulates state — everything-off read 16 ms where a fresh
-  load reads 3 — so time on a fresh load only.
+  load reads 3 — so time on a fresh load only. The climb asks the moment
+  nothing else is baking rather than on the controller's tick: on the
+  tick it stood up a volume, let it dissolve in, and swapped it for its
+  grade a second and a half later, which read as a nebula baked over and
+  over while the camera stood still; asked at once, the finer grid lands
+  while the first grade is still dissolving in.
+- **The sky's background maps on the GPU — landed.** The glow, the rift
+  transmission map and the dark-cloud tiles are per-pixel line integrals
+  of deterministic fields, and `render/galaxy/skyBakeGpu.ts` renders them
+  as three fragment programs on the background worker's OffscreenCanvas:
+  the smooth model from `SMOOTH_MODEL`'s own constants with the arm
+  profile off the polar LUT (bilinear by hand on a float texture), and the
+  cloud carve from `render/galaxy/cloudFieldGlsl.ts`, the seeded simplex
+  and carve the nebula bake was already using, now shared. The CPU
+  builders in `skyfield.ts` stay the authority and the fallback, and the
+  worker demotes itself to them on any GL failure. A/B'd from the page
+  console at Musas against the CPU maps: glow radiance mean relative error
+  1e-4 (max 2.5% on a handful of texels, the LUT's interpolation against
+  the exact orbit solve), the sky floor to seven digits, reddening within
+  4e-3, the rift and dark tiles within 6e-4 with no texel off by a
+  hundredth. Cost: glow 1 ms (300 ms the first time, baking the arm LUT),
+  rift 9 ms for 204 clouds, the tiles a few. The background's 5.9 s is
+  now ~0.75 s, all of it the nebula sprite atlas — the next step.
 - **The near grade's detail octaves — priced and packed.** Zoomed in on
   Musas to where it takes the near grade (250 pc out, 160³ with the fine
   grid, 131 steps, detail amp 0.54), the frame was 52 ms of GPU and Musas

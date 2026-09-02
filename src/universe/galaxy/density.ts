@@ -332,6 +332,28 @@ export function nearestArm(
   return { index, distancePc: nearest };
 }
 
+/**
+ * The smooth model's numbers, for a renderer that evaluates it on a
+ * GPU: the same constants the functions below use, exported so a
+ * shader mirror reads them rather than restating them.
+ */
+export const SMOOTH_MODEL = {
+  thinNorm: THIN_NORM,
+  thinScaleLengthPc: THIN_SCALE_LENGTH,
+  thinScaleHeightPc: THIN_SCALE_HEIGHT,
+  thickNorm: THICK_NORM,
+  thickScaleLengthPc: THICK_SCALE_LENGTH,
+  thickScaleHeightPc: THICK_SCALE_HEIGHT,
+  haloNorm: 0.0008,
+  haloFloorPc: 500,
+  haloReferencePc: 8000,
+  haloIndex: -3.5,
+  dustScaleLengthPc: 2600,
+  dustScaleHeightPc: 120,
+  dustLaneWeight: 1.4,
+  waveMinRadiusPc: WAVE_MIN_RADIUS_PC,
+} as const;
+
 /** Thin disk before any arm enhancement, at cylindrical radius and |z|. */
 function thinSmooth(radiusPc: number, absZPc: number): number {
   return (

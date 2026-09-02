@@ -105,9 +105,37 @@ export const NEBULA_TILE = 128;
 export const NEBULA_ATLAS_COLS = 8;
 export const NEBULA_ATLAS_ROWS = 6;
 
+/** The Milky Way glow map's lat–long resolution. */
+export const GLOW_WIDTH = 256;
+export const GLOW_HEIGHT = 128;
+
 /** Cloud-shadow transmission map resolution (4× the glow map). */
 export const RIFT_WIDTH = 768;
 export const RIFT_HEIGHT = 384;
+
+/** One dark-cloud tile's frame: the cloud, and the tangent basis the
+ *  tile is marched in. */
+export interface DarkTileJob {
+  cloud: MolecularCloud;
+  view: [number, number, number];
+  right: [number, number, number];
+  up: [number, number, number];
+}
+
+/**
+ * A renderer of the sky's background maps — the glow, the rift
+ * transmission and the dark-cloud tiles — that a worker with a GPU can
+ * offer in place of the CPU loops below. Each returns exactly the
+ * array the CPU builder would have: the glow as RGBA texels (radiance,
+ * reddening, 0, 1), the others as one float per texel. The CPU
+ * builders stay the authority; a baker mirrors them.
+ */
+export interface SkyMapBaker {
+  glow(viewpoint: GalacticPosition): Float32Array;
+  rift(viewpoint: GalacticPosition, clouds: MolecularCloud[]): Float32Array;
+  darkTiles(jobs: DarkTileJob[]): Float32Array;
+  dispose(): void;
+}
 
 /** Dark-cloud sprite atlas: transmission tiles, one per prominent cloud. */
 export const DARK_TILE = 96;
@@ -587,6 +615,7 @@ export function buildSkyBackground(
   viewpoint: GalacticPosition,
   seed = 0n,
   onProgress?: SkyProgress,
+  baker: SkyMapBaker | null = null,
 ): SkyBackground {
   const lut = buildTemperatureLut(96);
   const groupStars = makeAccum();
@@ -597,11 +626,14 @@ export function buildSkyBackground(
   onProgress?.(0, 'nebulae', -1);
   const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
   onProgress?.(0.1, 'dark clouds', -1);
-  const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA);
+  const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA, baker);
   onProgress?.(0.25, 'charting', -1);
   const bounds = buildSectorBounds(viewpoint, sceneFromGalaxy(seed));
-  const glow = buildGlow(viewpoint, spriteSeeds, (fraction) =>
-    onProgress?.(0.3 + 0.7 * fraction, 'milky way glow', fraction),
+  const glow = buildGlow(
+    viewpoint,
+    spriteSeeds,
+    (fraction) => onProgress?.(0.3 + 0.7 * fraction, 'milky way glow', fraction),
+    baker,
   );
 
   return {
@@ -1553,10 +1585,10 @@ export function meanPopulationLuminosity(): number {
 }
 
 /** Clouds inside this radius shadow the sky individually. */
-const RIFT_NEAR_PC = 1500;
+export const RIFT_NEAR_PC = 1500;
 
 /** In-plane visual opacity, shared by every dust consumer. */
-const DUST_KAPPA = 0.045;
+export const DUST_KAPPA = 0.045;
 
 /**
  * The prominent nearby dark clouds, done exactly like the nebulae: each
@@ -1567,6 +1599,7 @@ const DUST_KAPPA = 0.045;
 function buildDarkClouds(
   viewpoint: GalacticPosition,
   dustKappa: number,
+  baker: SkyMapBaker | null,
 ): { darkClouds: DarkCloudPatch[]; darkAtlas: Float32Array; spriteSeeds: Set<bigint> } {
   const candidates: Array<{ cloud: MolecularCloud; angular: number; distance: number }> = [];
   for (const cloud of cloudsNear(viewpoint, RIFT_NEAR_PC)) {
@@ -1583,22 +1616,24 @@ function buildDarkClouds(
   candidates.sort((a, b) => b.angular - a.angular);
   const kept = candidates.slice(0, DARK_ATLAS_COLS * DARK_ATLAS_ROWS);
 
-  const darkAtlas = new Float32Array(
-    DARK_ATLAS_COLS * DARK_TILE * DARK_ATLAS_ROWS * DARK_TILE,
-  ).fill(1);
   const spriteSeeds = new Set<bigint>();
   const atlasWidth = DARK_ATLAS_COLS * DARK_TILE;
-
-  const darkClouds: DarkCloudPatch[] = kept.map(({ cloud, distance }, tile) => {
-    spriteSeeds.add(cloud.seed);
+  const jobs: DarkTileJob[] = kept.map(({ cloud, distance }) => {
     const dx = cloud.positionPc.xPc - viewpoint.xPc;
     const dy = cloud.positionPc.yPc - viewpoint.yPc;
     const dz = cloud.positionPc.zPc - viewpoint.zPc;
     const view: [number, number, number] = [dx / distance, dy / distance, dz / distance];
     const axis: [number, number, number] = Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
     const right = normalize(cross(view, axis));
-    const up = cross(view, right);
+    return { cloud, view, right, up: cross(view, right) };
+  });
+  const darkAtlas =
+    baker?.darkTiles(jobs) ??
+    new Float32Array(DARK_ATLAS_COLS * DARK_TILE * DARK_ATLAS_ROWS * DARK_TILE).fill(1);
 
+  const darkClouds: DarkCloudPatch[] = kept.map(({ cloud, distance }, tile) => {
+    spriteSeeds.add(cloud.seed);
+    const { view, right, up } = jobs[tile];
     const reachPc = cloudReachPc(cloud);
     const dustFactor = cloudDustFactor(cloud) * dustKappa;
     const steps = 12;
@@ -1606,7 +1641,7 @@ function buildDarkClouds(
     const tileX = (tile % DARK_ATLAS_COLS) * DARK_TILE;
     const tileY = Math.floor(tile / DARK_ATLAS_COLS) * DARK_TILE;
 
-    for (let j = 1; j < DARK_TILE - 1; j++) {
+    for (let j = baker ? DARK_TILE : 1; j < DARK_TILE - 1; j++) {
       for (let i = 1; i < DARK_TILE - 1; i++) {
         const u = ((i + 0.5) / DARK_TILE) * 2 - 1;
         const v = ((j + 0.5) / DARK_TILE) * 2 - 1;
@@ -1650,15 +1685,11 @@ function buildDarkClouds(
  * its density field. The prominent clouds are excluded — they carry
  * their own sprites.
  */
-function buildCloudTransmission(
-  viewpoint: GalacticPosition,
-  dustKappa: number,
-  excluded: Set<bigint>,
-): Float32Array {
-  const transmission = new Float32Array(RIFT_WIDTH * RIFT_HEIGHT).fill(1);
-  const rowRad = Math.PI / RIFT_HEIGHT;
-  const colRad = (2 * Math.PI) / RIFT_WIDTH;
-
+/** The clouds the rift map shadows the sky with: in reach, not
+ *  carried as a sprite, and standing clear of the viewpoint with a
+ *  footprint worth rasterizing. */
+function riftClouds(viewpoint: GalacticPosition, excluded: Set<bigint>): MolecularCloud[] {
+  const clouds: MolecularCloud[] = [];
   for (const cloud of cloudsNear(viewpoint, RIFT_NEAR_PC)) {
     if (excluded.has(cloud.seed)) continue;
     const dx = cloud.positionPc.xPc - viewpoint.xPc;
@@ -1668,8 +1699,31 @@ function buildCloudTransmission(
     const reachPc = cloudReachPc(cloud);
     // Inside or engulfing the sky: no meaningful footprint to rasterize.
     if (distance < reachPc || distance < 1) continue;
+    if (Math.asin(Math.min(1, reachPc / distance)) > 1.0) continue;
+    clouds.push(cloud);
+  }
+  return clouds;
+}
+
+function buildCloudTransmission(
+  viewpoint: GalacticPosition,
+  dustKappa: number,
+  excluded: Set<bigint>,
+  baker: SkyMapBaker | null,
+): Float32Array {
+  const clouds = riftClouds(viewpoint, excluded);
+  if (baker) return baker.rift(viewpoint, clouds);
+  const transmission = new Float32Array(RIFT_WIDTH * RIFT_HEIGHT).fill(1);
+  const rowRad = Math.PI / RIFT_HEIGHT;
+  const colRad = (2 * Math.PI) / RIFT_WIDTH;
+
+  for (const cloud of clouds) {
+    const dx = cloud.positionPc.xPc - viewpoint.xPc;
+    const dy = cloud.positionPc.yPc - viewpoint.yPc;
+    const dz = cloud.positionPc.zPc - viewpoint.zPc;
+    const distance = Math.hypot(dx, dy, dz);
+    const reachPc = cloudReachPc(cloud);
     const angRad = Math.asin(Math.min(1, reachPc / distance));
-    if (angRad > 1.0) continue;
 
     const dustFactor = cloudDustFactor(cloud) * dustKappa;
     const lat0 = Math.asin(dz / distance);
@@ -1729,6 +1783,7 @@ function buildGlow(
   viewpoint: GalacticPosition,
   spriteSeeds: Set<bigint>,
   onProgress?: (fraction: number) => void,
+  baker: SkyMapBaker | null = null,
 ): {
   glowWidth: number;
   glowHeight: number;
@@ -1736,8 +1791,22 @@ function buildGlow(
   skyFloorRadiance: number;
   riftData: Float32Array;
 } {
-  const width = 256;
-  const height = 128;
+  const width = GLOW_WIDTH;
+  const height = GLOW_HEIGHT;
+  if (baker) {
+    const data = baker.glow(viewpoint);
+    let floor = Infinity;
+    for (let index = 0; index < width * height; index++) {
+      if (data[index * 4] < floor) floor = data[index * 4];
+    }
+    return {
+      glowWidth: width,
+      glowHeight: height,
+      glowData: data,
+      skyFloorRadiance: floor,
+      riftData: buildCloudTransmission(viewpoint, DUST_KAPPA, spriteSeeds, baker),
+    };
+  }
   const data = new Float32Array(width * height * 4);
   const radiance = new Float32Array(width * height);
   const reddenings = new Float32Array(width * height);
@@ -1815,6 +1884,6 @@ function buildGlow(
     glowHeight: height,
     glowData: data,
     skyFloorRadiance: floor,
-    riftData: buildCloudTransmission(viewpoint, dustKappa, spriteSeeds),
+    riftData: buildCloudTransmission(viewpoint, dustKappa, spriteSeeds, null),
   };
 }
