@@ -30,6 +30,8 @@ import {
   VENT_CONFINEMENT,
   VENT_RESIDUAL,
   WIND_CAVITY_RESIDUAL,
+  WIND_REACH,
+  WIND_STALL,
   WIND_WALL_BOOST,
   WIND_WALL_WIDTH,
 } from './ionization';
@@ -286,12 +288,23 @@ export function nebulaGasAt(
       ) *
       dustFactor *
       dilution;
+    // The cavity toward this point: the mean radius eroded to the −¼
+    // against the interior the wind ploughed in this direction.
+    let cavity = nebula.windCavityPc;
+    if (cavity > 0 && r > 0) {
+      const rc = cavity / growth / r;
+      const ploughed = hydrogenDensity(
+        cloudLocalDensity(cloud, source.dxPc + dx * rc, source.dyPc + dy * rc, source.dzPc + dz * rc) *
+          dustFactor,
+        nebula.metallicity,
+      );
+      cavity *= Math.min(
+        WIND_REACH,
+        Math.max(WIND_STALL, (nebula.sourceHydrogenDensity / Math.max(1e-6, ploughed)) ** 0.25),
+      );
+    }
     const wind =
-      r < nebula.windCavityPc
-        ? WIND_CAVITY_RESIDUAL
-        : r <= nebula.windCavityPc * (1 + WIND_WALL_WIDTH)
-          ? WIND_WALL_BOOST
-          : 1;
+      r < cavity ? WIND_CAVITY_RESIDUAL : r <= cavity * (1 + WIND_WALL_WIDTH) ? WIND_WALL_BOOST : 1;
     // The champagne gate: the interior holds its density only where
     // the cloud at this very place could confine it, and streams to a
     // residue where the bubble has outrun the body.

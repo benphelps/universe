@@ -18,7 +18,10 @@ import {
   SHELL_WIDTH,
   VENT_RESIDUAL,
   WIND_CAVITY_RESIDUAL,
+  WIND_REACH,
+  WIND_STALL,
   WIND_WALL_BOOST,
+  WIND_WALL_WIDTH,
 } from '../../universe/galaxy/ionization';
 import type { Nebula } from '../../universe/galaxy/nebula';
 import {
@@ -173,7 +176,7 @@ uniform float uFluxScale;
 uniform vec3 uScatterSourcePc;
 uniform float uScatterOn;
 uniform float uWindCavityPc;
-uniform float uWindWallPc;
+uniform float uWindPivotCarve;
 uniform float uVentConfineCarve;
 uniform float uErosionPivotCarve;
 out vec4 outCell;
@@ -262,9 +265,15 @@ void main() {
     float confinement = uVentConfineCarve > 0.0
       ? clamp(texelFetch(uField, cell, 0).r / uVentConfineCarve, ${f(VENT_RESIDUAL)}, 1.0)
       : 1.0;
-    carveHere *= confinement * (dist < uWindCavityPc
+    float cavity = uWindCavityPc;
+    if (cavity > 0.0 && uWindPivotCarve > 0.0) {
+      float ploughed = fieldAt(uIonizePc + dir * (cavity / uGrowth));
+      cavity *= clamp(
+        pow(uWindPivotCarve / max(1e-9, ploughed), 0.25), ${f(WIND_STALL)}, ${f(WIND_REACH)});
+    }
+    carveHere *= confinement * (dist < cavity
       ? ${f(WIND_CAVITY_RESIDUAL)}
-      : (dist <= uWindWallPc ? ${f(WIND_WALL_BOOST)} : 1.0));
+      : (dist <= cavity * ${f(1 + WIND_WALL_WIDTH)} ? ${f(WIND_WALL_BOOST)} : 1.0));
   }
   float n = carveHere * uGasScale;
   float uParam = uBudgetOn > 0.5 && n > 0.0
@@ -436,7 +445,10 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.uniform3fv(at(marchProgram, 'uScatterSourcePc'), plan.scatterSourcePc);
     gl.uniform1f(at(marchProgram, 'uScatterOn'), plan.scatterLuminositySolar > 0 ? 1 : 0);
     gl.uniform1f(at(marchProgram, 'uWindCavityPc'), plan.windCavityPc);
-    gl.uniform1f(at(marchProgram, 'uWindWallPc'), plan.windWallPc);
+    gl.uniform1f(
+      at(marchProgram, 'uWindPivotCarve'),
+      plan.windPivotDensity > 0 ? plan.windPivotDensity / scales.gasScale : 0,
+    );
     gl.uniform1f(
       at(marchProgram, 'uVentConfineCarve'),
       plan.ventConfineDensity > 0 ? plan.ventConfineDensity / scales.gasScale : 0,

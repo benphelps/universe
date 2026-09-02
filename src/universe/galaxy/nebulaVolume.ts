@@ -24,6 +24,8 @@ import {
   VENT_CONFINEMENT,
   VENT_RESIDUAL,
   WIND_CAVITY_RESIDUAL,
+  WIND_REACH,
+  WIND_STALL,
   WIND_WALL_BOOST,
   WIND_WALL_WIDTH,
 } from './ionization';
@@ -301,10 +303,14 @@ export interface NebulaBakePlan {
   growth: number;
   dilution: number;
   shellBoost: number;
-  /** The wind-blown cavity about the source, pc — zero when no wind. */
+  /** The wind-blown cavity's mean radius about the source, pc — zero
+   *  when no wind. Along each ray it is eroded against the interior
+   *  the wind actually ploughed there. */
   windCavityPc: number;
-  /** Where the cavity's swept wall ends, pc. */
-  windWallPc: number;
+  /** The interior's density before dilution, cm⁻³: the pivot the
+   *  cavity's erosion measures the natal field against (the dilution
+   *  is the same on both sides and cancels). Zero disarms it. */
+  windPivotDensity: number;
   /** Natal density, cm⁻³, above which the interior is fully confined
    *  — the champagne gate, scaled to the diluted interior. */
   ventConfineDensity: number;
@@ -398,7 +404,7 @@ export function planNebulaBake(
     dilution,
     shellBoost: sweptShellBoost(dilution),
     windCavityPc: nebula?.windCavityPc ?? 0,
-    windWallPc: (nebula?.windCavityPc ?? 0) * (1 + WIND_WALL_WIDTH),
+    windPivotDensity: nebula?.sourceHydrogenDensity ?? 0,
     ventConfineDensity:
       VENT_CONFINEMENT * (nebula?.sourceHydrogenDensity ?? 0) * dilution,
     erosionPivotDensity:
@@ -603,12 +609,31 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
           inBubble && plan.ventConfineDensity > 0
             ? Math.max(VENT_RESIDUAL, Math.min(1, gas[index] / plan.ventConfineDensity))
             : 1;
+        // The cavity along this ray: the mean radius the momentum
+        // budget reached, eroded to the −¼ against what the interior
+        // holds in this direction — read at the cavity's own natal
+        // position, since the interior is the natal field grown out.
+        let cavityPc = plan.windCavityPc;
+        if (inBubble && cavityPc > 0 && plan.windPivotDensity > 0) {
+          const rc = cavityPc / growth;
+          const ploughed = sample(
+            gas,
+            size,
+            (ionizePc[0] + ux * rc + boxPc) / cellPc - 0.5,
+            (ionizePc[1] + uy * rc + boxPc) / cellPc - 0.5,
+            (ionizePc[2] + uz * rc + boxPc) / cellPc - 0.5,
+          );
+          cavityPc *= Math.min(
+            WIND_REACH,
+            Math.max(WIND_STALL, (plan.windPivotDensity / Math.max(1e-6, ploughed)) ** 0.25),
+          );
+        }
         const wind =
           (!inBubble
             ? 1
-            : distancePc < plan.windCavityPc
+            : distancePc < cavityPc
               ? WIND_CAVITY_RESIDUAL
-              : distancePc <= plan.windWallPc
+              : distancePc <= cavityPc * (1 + WIND_WALL_WIDTH)
                 ? WIND_WALL_BOOST
                 : 1) * confinement;
         const n =

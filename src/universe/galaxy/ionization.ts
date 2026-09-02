@@ -164,6 +164,18 @@ export const DUST_DEPLETION = 5;
 
 /** Fraction of the wind cavity's radius its swept wall spans. */
 export const WIND_WALL_WIDTH = 0.15;
+/**
+ * How far the cavity's wall runs ahead of or behind the mean along a
+ * direction. A snowplow's radius goes as the density it ploughs to
+ * the −¼: the wall blows out where the interior is thin and stalls
+ * against a filament, so it follows the cloud's own turbulence —
+ * corrugated, lopsided, wrapped around clumps — instead of standing
+ * as the one surface in the region drawn with a compass. The mean
+ * radius is the momentum budget's; these bound how far the direction
+ * can move it.
+ */
+export const WIND_STALL = 0.6;
+export const WIND_REACH = 1.6;
 /** What the wind leaves behind it: shocked gas at millions of kelvin
  *  and a hundredth the density — X-ray bright, optically nothing. */
 export const WIND_CAVITY_RESIDUAL = 0.02;

@@ -138,7 +138,6 @@ describe('the region at its age', () => {
     const size = 48;
     const plan = planNebulaBake(grown.cloud, grown, size);
     plan.windCavityPc = 0;
-    plan.windWallPc = 0;
     plan.ventConfineDensity = 0;
     const fields = marchNebulaCpu(plan);
     const growth = Math.max(1, grown.bubbleRadiusPc / grown.stromgrenRadiusPc);
@@ -176,39 +175,49 @@ describe('the region at its age', () => {
   it('is hollowed by its star wind into a ring, not a filled disc', () => {
     // Real evolved regions are limb-brightened shells — the wind
     // evacuates the interior and piles it into a photoionized wall,
-    // which is where the n² emission concentrates. The bake's cavity
-    // must be dark against its own wall.
+    // which is where the n² emission concentrates. Along every ray
+    // that has a cavity at all (a front stalled inside the cavity
+    // radius has none), the bake's cavity must be dark against the
+    // wall it rises to.
     const nebula = brightestNebula();
     expect(nebula.windCavityPc).toBeGreaterThan(0);
-    const size = 32;
-    const bake = bakeNebulaVolume(nebula.cloud, nebula, size);
-    const half = bake.halfExtentsPc[0];
-    const cellPc = (2 * half) / size;
-    let cavitySum = 0;
-    let cavityCells = 0;
-    let wallSum = 0;
-    let wallCells = 0;
-    for (let k = 0; k < size; k++) {
-      for (let j = 0; j < size; j++) {
-        for (let i = 0; i < size; i++) {
-          const x = -half + (i + 0.5) * cellPc;
-          const y = -half + (j + 0.5) * cellPc;
-          const z = -half + (k + 0.5) * cellPc;
-          const r = Math.hypot(x, y, z);
-          const g = bake.data[((k * size + j) * size + i) * 4 + 1];
-          if (r < nebula.windCavityPc * 0.6) {
-            cavitySum += g;
-            cavityCells++;
-          } else if (r >= nebula.windCavityPc && r <= nebula.windCavityPc * 1.15) {
-            wallSum += g;
-            wallCells++;
-          }
-        }
-      }
+    const cavities = cavityEdges(bakeNebulaVolume(nebula.cloud, nebula, 48), nebula);
+    expect(cavities.length).toBeGreaterThanOrEqual(8);
+    for (const { insideByte, peakByte } of cavities) {
+      expect(peakByte).toBeGreaterThan(5 * insideByte);
     }
-    expect(cavityCells).toBeGreaterThan(0);
-    expect(wallCells).toBeGreaterThan(0);
-    expect(wallSum / wallCells).toBeGreaterThan(5 * (cavitySum / Math.max(1, cavityCells)));
+  });
+
+  it('blows the cavity out where the interior is thin and stalls it where it is dense', () => {
+    // A snowplow's radius goes as the ploughed density to the −¼, so
+    // the cavity is not one sphere: along a thin direction its edge
+    // runs ahead of the mean, against a filament it hangs back — the
+    // cloud's own turbulence corrugates it. The bake's cavity edge
+    // must vary with direction, and in the sense the density says.
+    const nebula = brightestNebula();
+    const cavities = cavityEdges(bakeNebulaVolume(nebula.cloud, nebula, 48), nebula);
+    const edges = cavities.map((c) => c.edgePc);
+    expect(Math.max(...edges) / Math.min(...edges)).toBeGreaterThan(1.3);
+    // Rank the rays by the interior density the wind ploughed at the
+    // mean cavity's natal position: the thinnest third must carry the
+    // edge further out than the densest third.
+    const growth = Math.max(1, nebula.bubbleRadiusPc / nebula.stromgrenRadiusPc);
+    const source = nebula.sources[0];
+    const ranked = cavities
+      .map((c) => ({
+        edgePc: c.edgePc,
+        ploughed: cloudFineDustDensity(
+          nebula.cloud,
+          source.dxPc + (c.dir[0] * nebula.windCavityPc) / growth,
+          source.dyPc + (c.dir[1] * nebula.windCavityPc) / growth,
+          source.dzPc + (c.dir[2] * nebula.windCavityPc) / growth,
+        ),
+      }))
+      .sort((a, b) => a.ploughed - b.ploughed);
+    const third = Math.floor(ranked.length / 3);
+    const mean = (rows: typeof ranked): number =>
+      rows.reduce((sum, row) => sum + row.edgePc, 0) / rows.length;
+    expect(mean(ranked.slice(0, third))).toBeGreaterThan(mean(ranked.slice(-third)));
   });
 
   it('vents where the bubble outruns its own cloud', () => {
@@ -505,3 +514,46 @@ describe('the combined occupancy', () => {
     expect(combinedOccupancy(coarse, fine).reduce((n, value) => n + (value ? 1 : 0), 0)).toBe(2);
   });
 });
+
+/**
+ * The cavity along a fan of directions from the source: the radius
+ * where the ionized byte first climbs to a third of the ray's peak,
+ * for every ray whose innermost sample sits below that — a ray the
+ * front stalls inside the cavity radius has no cavity to measure.
+ */
+function cavityEdges(
+  bake: ReturnType<typeof bakeNebulaVolume>,
+  nebula: Nebula,
+): Array<{ dir: [number, number, number]; edgePc: number; insideByte: number; peakByte: number }> {
+  const size = bake.size;
+  const half = bake.halfExtentsPc[0];
+  const cellPc = (2 * half) / size;
+  const byteAt = (x: number, y: number, z: number): number => {
+    const i = Math.floor((x + half) / cellPc);
+    const j = Math.floor((y + half) / cellPc);
+    const k = Math.floor((z + half) / cellPc);
+    if (i < 0 || j < 0 || k < 0 || i >= size || j >= size || k >= size) return 0;
+    return bake.data[((k * size + j) * size + i) * 4 + 1];
+  };
+  const cavities: Array<{ dir: [number, number, number]; edgePc: number; insideByte: number; peakByte: number }> = [];
+  for (let n = 0; n < 27; n++) {
+    const raw: [number, number, number] = [(n % 3) - 1, (Math.floor(n / 3) % 3) - 1, Math.floor(n / 9) - 1];
+    if (raw[0] === 0 && raw[1] === 0 && raw[2] === 0) continue;
+    const norm = Math.hypot(...raw);
+    const dir: [number, number, number] = [raw[0] / norm, raw[1] / norm, raw[2] / norm];
+    const radii: number[] = [];
+    const bytes: number[] = [];
+    for (let r = nebula.windCavityPc * 0.3; r <= nebula.windCavityPc * 1.9; r += cellPc * 0.5) {
+      radii.push(r);
+      bytes.push(byteAt(dir[0] * r, dir[1] * r, dir[2] * r));
+    }
+    const peakByte = Math.max(...bytes);
+    const insideByte = bytes[0];
+    // A ray too faint to read, or one the front stalls inside the
+    // cavity radius, has no cavity to measure.
+    if (peakByte < 16 || insideByte >= peakByte / 3) continue;
+    const edge = bytes.findIndex((byte) => byte >= peakByte / 3);
+    cavities.push({ dir, edgePc: radii[edge], insideByte, peakByte });
+  }
+  return cavities;
+}
