@@ -287,9 +287,14 @@ Rough priority order. The residency dials live at the top of
   per grid size for the baker's life. No automated CPU-vs-GPU test exists —
   vitest has no WebGL — so any change to the CPU march must re-run the
   in-browser A/B (bake both paths on one cloud from a page console, diff the
-  byte volumes) before trusting the GPU mirror. Outstanding for that A/B:
-  the beam's dust depletion inside the ionized interior, mirrored in both
-  marches in the review pass but not yet re-diffed in the browser.
+  byte volumes) before trusting the GPU mirror. Re-run after the review
+  pass's depletion change on the Musas cloud at 64³, both boxes: refs within
+  1%, emission coefficient within 0.8%, dust and ionized bytes off by more
+  than one in ~10–25 cells of 262k, hardness in ~130–520 (log U on
+  near-empty cells, where nothing is emitted) and transmittance in ~90–290 —
+  the one-step front flips, as before. The recipe is a page-console
+  `import('/src/…')` of the bake modules under the Vite dev server; the
+  GPU baker stands on the main thread's OffscreenCanvas as well.
 - **Reach cap.** Residency searches 2 kpc of clouds; complexes beyond that lose
   their volumes once the backdrop fades (sub-6° at that range, so quiet — but it
   is a dial, not a law).
