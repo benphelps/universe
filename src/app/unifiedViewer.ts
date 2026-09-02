@@ -61,6 +61,7 @@ import {
   createStarPointsMaterial,
   MAX_STAR_NEBULAE,
   setStarNebulaExtinction,
+  type StarNebulaExtinction,
 } from '../render/starfield/neighborStars';
 import { createBeltPointsForSystem } from '../render/system/beltPoints';
 import {
@@ -454,6 +455,14 @@ export class UnifiedViewer {
   private residencyAt: GalacticPosition | null = null;
   /** Last frame's clock, for the volume crossfades' rate limit. */
   private nebulaFadeAtMs = 0;
+  /** Per-frame scratch for the volume pass, so a frame allocates
+   *  nothing for it: the standing volumes by distance, their sprite
+   *  fades, the camera's rotation, and the nearest few for the star
+   *  extinction. */
+  private readonly volumesByDistance: NebulaVolume[] = [];
+  private readonly volumeFades = new Map<bigint, number>();
+  private readonly cameraRotation = new Matrix3();
+  private readonly starExtinctions: StarNebulaExtinction[] = [];
   private galaxyParticles: GalaxyParticles | null = null;
   /** Set while the camera is at the galactic centre: no system at all,
    *  the galaxy around it, and the hole traced at its own scale. */
@@ -3784,7 +3793,8 @@ export class UnifiedViewer {
         const fadeStep =
           Math.min(0.1, (nowMs - (this.nebulaFadeAtMs || nowMs)) / 1000) / NEBULA_FADE_SECONDS;
         this.nebulaFadeAtMs = nowMs;
-        const byDistance: NebulaVolume[] = [];
+        const byDistance = this.volumesByDistance;
+        byDistance.length = 0;
         for (const [seed, volume] of this.nebulaVolumes) {
           volume.fade = volume.retiring
             ? Math.max(0, volume.fade - fadeStep)
@@ -3807,9 +3817,9 @@ export class UnifiedViewer {
           byDistance.push(volume);
         }
         if (this.backdrop) {
-          const fades = new Map<bigint, number>();
-          for (const [seed, volume] of this.nebulaVolumes) fades.set(seed, volume.fade);
-          this.backdrop.setNebulaVolumeFades(fades);
+          this.volumeFades.clear();
+          for (const [seed, volume] of this.nebulaVolumes) this.volumeFades.set(seed, volume.fade);
+          this.backdrop.setNebulaVolumeFades(this.volumeFades);
         }
         // Farther volumes draw first so a near cloud composites over a
         // far one. Reversed-Z inverts renderOrder: lowest draws LAST,
@@ -3824,13 +3834,12 @@ export class UnifiedViewer {
         // volumes its sightline could cross. The shader carries a few
         // slots; when residents outnumber them, the nearest volumes —
         // the rifts the eye actually checks stars against — take them.
-        const cameraRotation = new Matrix3().setFromMatrix4(this.camera.matrixWorld);
-        setStarNebulaExtinction(
-          byDistance
-            .slice(-MAX_STAR_NEBULAE)
-            .reverse()
-            .map((volume) => volume.extinctionFor(cameraRotation)),
-        );
+        this.cameraRotation.setFromMatrix4(this.camera.matrixWorld);
+        this.starExtinctions.length = 0;
+        for (let i = byDistance.length - 1; i >= 0 && i >= byDistance.length - MAX_STAR_NEBULAE; i--) {
+          this.starExtinctions.push(byDistance[i].extinctionFor(this.cameraRotation));
+        }
+        setStarNebulaExtinction(this.starExtinctions);
         // The nuclear cluster's light comes through the same dust the
         // volume march extinguishes the band with.
         const kpc = this.galaxyVolume.cameraGalacticKpc;
