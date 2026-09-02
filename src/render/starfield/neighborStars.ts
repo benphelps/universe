@@ -190,7 +190,18 @@ void main() {
   // the energy, and the star keeps its brightness at its true size.
   float drawn = max(size * uSizeScale, 1.0);
   float restored = (size * size) / (drawn * drawn);
-  float energy = clamp(uGain * exp2(uGamma * logE), uFloor, uCeil) * uIntensity * restored;
+  float raw = uGain * exp2(uGamma * logE);
+  // The floor holds a point that would otherwise flicker at the edge
+  // of visibility; it is not a promise to draw every star at every
+  // distance. A star a decade below the floor's own brightness starts
+  // to go, two decades below it is gone — at a locale nothing the
+  // sweep kept is that faint, and from kiloparsecs out the galaxy's
+  // own light carries what these points were, which it would
+  // otherwise carry twice.
+  float held = uFloor > 0.0
+    ? smoothstep(-6.64, -3.32, log2(max(raw, 1e-12) / uFloor) / uGamma)
+    : 1.0;
+  float energy = clamp(raw, uFloor, uCeil) * uIntensity * restored * held;
   // An instrument with a real limit drops the points below it — the
   // same seating the backdrop's stars take, so the two star tiers
   // stay one photometric system under any mode.
@@ -224,6 +235,9 @@ void main() {
   // or the sky wins the reversed GEQUAL test and shines through it;
   // 1e-24 is beyond any body yet still beats the far-plane clear at 0.
   gl_Position.z = clamp(gl_Position.z, 1e-24 * gl_Position.w, gl_Position.w);
+  // A point that has gone costs no fragments: put it outside the clip
+  // volume and the rasterizer never sees it.
+  if (held <= 0.0) gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
 }
 `;
 

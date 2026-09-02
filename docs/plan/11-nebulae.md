@@ -206,6 +206,25 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   shrink footprints for stretched clouds. The star-extinction shader carries
   `MAX_STAR_NEBULAE` slots, filled nearest-first when residents outnumber
   them.
+- **Glints at the galaxy frame — measured, and the floor released.** The
+  star tiers were suspected of the pulled-out frame's cost at 400–500k
+  points. Timed in a visible tab at a 2564×2074 canvas, with the far
+  field cloned to eight times its count (442k points): the whole star
+  tier adds under 2.5 ms at any altitude, and at full pull-out the frame
+  is ~6 ms with the galaxy dome (4–6 ms at mid range) and the bloom pass
+  (4–5 ms, in its full-resolution bright and composite passes, not its
+  mips — halving them saved 1 ms) as the costs. No CPU culling exists and
+  none is needed: the points are one draw, the GPU clips them after a
+  cheap vertex stage. What was wrong was the display floor: it held every
+  point at a dim constant at every distance, so from kiloparsecs out the
+  whole sky field drew as a blob at the origin, light the galaxy dome
+  already carries. A point a decade below the floor's own brightness now
+  fades and two decades below it leaves the clip volume, costing no
+  fragments; at a locale nothing the sweep kept is that faint (its
+  faintest is three decades above the release), so the sky is unchanged.
+  The star count itself is the sweep's brightness threshold against the
+  local density — 63k at Musas, several hundred thousand in the inner
+  disk — and a budget on it would be a display choice, not made here.
 - **Residency ranking.** Admission is by projected size alone, so a bright
   emission complex can in principle lose its slot to bigger dark rifts —
   much blunter with dozens standing at once, but the ranking is still

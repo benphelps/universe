@@ -147,7 +147,14 @@ void main() {
   // own floor and ceiling as uniforms, so the instrument can change.
   float logE = log2(max(brightness, 1e-12)) - uLogPivot;
   float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
-  float energy = clamp(uGain * exp2(uGamma * logE), uFloor, uCeil) * uIntensity;
+  float raw = uGain * exp2(uGamma * logE);
+  // The same release from the floor the 3D star tiers take: a decade
+  // below the floor's own brightness a point fades, two below it is
+  // gone rather than held.
+  float held = uFloor > 0.0
+    ? smoothstep(-6.64, -3.32, log2(max(raw, 1e-12) / uFloor) / uGamma)
+    : 1.0;
+  float energy = clamp(raw, uFloor, uCeil) * uIntensity * held;
   // An instrument with a real limit: points below it vanish outright
   // (half a magnitude of softness so the sky never pops), and colour
   // drains from the faint ones the way it does at the eyepiece.
@@ -165,6 +172,7 @@ void main() {
   // reversed-Z far floor so every real body occludes it by depth, even if
   // a later material or render-queue change reorders the draw calls.
   gl_Position.z = 1e-24 * gl_Position.w;
+  if (held <= 0.0) gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
 }
 `;
 
