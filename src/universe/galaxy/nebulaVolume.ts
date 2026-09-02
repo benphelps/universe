@@ -57,7 +57,11 @@ export interface NebulaVolumeBake {
    * things the march needs and none of the cost of finding them.
    */
   data: Uint8Array;
-  /** Dust density that R = 255 stands for. */
+  /** Dust density that R = 255 stands for. R holds the square root of
+   *  the fraction: the clump peaks the reference is taken from stand
+   *  orders of magnitude over the diffuse dust a sightline mostly
+   *  crosses, and a linear byte zeroes nearly every dusty cell — the
+   *  extinction a star behind the cloud actually suffers. */
   dustRef: number;
   /**
    * Emission coefficient: L☉ per parsec³ per steradian per cm⁻⁶ of
@@ -632,7 +636,7 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
   let hardnessWeighted = 0;
   for (let index = 0; index < cells; index++) {
     const out = index * 4;
-    data[out] = Math.round(255 * Math.min(1, fields.dust[index] / dustRef));
+    data[out] = Math.round(255 * Math.sqrt(Math.min(1, fields.dust[index] / dustRef)));
     data[out + 1] = Math.round(255 * Math.min(1, fields.ionized[index] / densityRef));
     data[out + 2] = Math.round(255 * fields.hardness[index]);
     data[out + 3] = Math.round(255 * fields.transmittance[index]);

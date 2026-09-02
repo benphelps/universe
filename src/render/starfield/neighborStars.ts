@@ -158,7 +158,8 @@ float nebulaOpticalDepth(sampler3D volume, vec4 box, float dustRef, vec3 relPc) 
   float tau = 0.0;
   for (int i = 0; i < 12; i++) {
     vec3 p = origin + dir * (near + (float(i) + 0.5) * ds);
-    tau += texture(volume, p / (2.0 * halfPc) + 0.5).r;
+    float root = texture(volume, p / (2.0 * halfPc) + 0.5).r;
+    tau += root * root;
   }
   return tau * dustRef * ${DUST_OPACITY_PER_PC.toFixed(4)} * ds;
 }

@@ -168,7 +168,9 @@ void main() {
     bool detailed = uDetailAmp > 0.001;
     vec3 ps = detailed ? warped(p, uDetailFreq) : p;
     vec4 cell = texture(uVolume, ps / (2.0 * uHalfPc) + 0.5);
-    float dust = cell.r * uDustRef;
+    // The dust byte is a square root, so the thin columns that dim
+    // the sky behind a cloud survive the quantization.
+    float dust = cell.r * cell.r * uDustRef;
     float ionized = cell.g * uDensityRef;
     float coefficient = uEmissionCoefficient;
 
@@ -182,7 +184,7 @@ void main() {
       if (all(lessThan(abs(q), vec3(uFineHalfPc)))) {
         vec3 qs = detailed ? warped(q, uFineDetailFreq) : q;
         vec4 fine = texture(uFine, qs / (2.0 * uFineHalfPc) + 0.5);
-        dust = fine.r * uFineDustRef;
+        dust = fine.r * fine.r * uFineDustRef;
         ionized = fine.g * uFineDensityRef;
         cell.b = fine.b;
         cell.a = fine.a;

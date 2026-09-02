@@ -256,7 +256,7 @@ function marchedFlux(
         const p = [origin[0] + dir[0] * t, origin[1] + dir[1] * t, origin[2] + dir[2] * t];
         const index = cellIndex(p, half, bake.size);
         if (index < 0) continue;
-        const dust = (bake.data[index * 4] / 255) * bake.dustRef;
+        const dust = (bake.data[index * 4] / 255) ** 2 * bake.dustRef;
         const ionized = (bake.data[index * 4 + 1] / 255) * bake.densityRef;
         const hardness = bake.data[index * 4 + 2] / 255;
         const shadow = bake.data[index * 4 + 3] / 255;
