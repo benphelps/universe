@@ -158,7 +158,7 @@ Rough priority order. The residency dials live at the top of
 
 - **Multi-box march.** Each resident volume is its own full-screen dome;
   several *enclosing* volumes at a gateway complex each march the whole sky
-  (~45 ms GPU measured with four). Non-enclosing residents are nearly free —
+  (~45 ms GPU measured with four — before empty-space skipping; see below). Non-enclosing residents are nearly free —
   the cap runs at 32, priced by the near grade (finer grid, deeper march,
   detail octaves) rather than by the march itself, since a dome only pays
   for the pixels its box covers, and the GPU bake fills the whole set in
@@ -166,7 +166,22 @@ Rough priority order. The residency dials live at the top of
   per grid on the heap and again on the GPU, two grids for a lit cloud,
   16 MB per near-grade grid; the textures keep the bake buffers alive, so
   a standing residency is a few hundred megabytes of heap), not the
-  march. The carrier
+  march. **Empty-space skipping landed** after a GPU timer-query bisection
+  at the Musas gateway (`EXT_disjoint_timer_query_webgl2` around the sky
+  layer, one volume visible at a time): of a 50 ms frame the sky pass was
+  43 ms, and two volumes were nearly all of it — the rift the camera stood
+  in (160³, 154 steps, detail on) at 20 ms, fifteen of them the detail
+  octaves' four extra 3D fetches per step through void, and the Musas
+  volume at 20 ms for a hundred steps through a box the carve fills a few
+  percent of; the other thirty cost under a millisecond each. Each bake now
+  carries a 16³ occupancy grid (a block is occupied if any cell a trilinear
+  read inside it could touch is non-zero, so the skip is exact) and the
+  march runs an empty block to its far face in one iteration, spending
+  samples, warps, table fetches and the emission and scatter arithmetic
+  only where there is gas. Same view, every volume standing: sky pass
+  5.9 ms, frame 8.4 ms — the display's 120 Hz quantum, and the same frame as
+  with no nebulae drawn at all. The rift volume went 20 → 2.6 ms, Musas
+  20 → 5.3. The carrier
   should still march all resident boxes in one pass, sorted front-to-back
   (§render pass), to tame the enclosing-overlap case. Per-axis box extents
   (the bake already stores a vec3; the shader assumes cubic) would also
