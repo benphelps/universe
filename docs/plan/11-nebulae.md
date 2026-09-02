@@ -238,7 +238,23 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   one; midplane-weighted spacing would keep the integral at fewer steps.
   Bake contention is the transient on top: right after an arrival or a
   pull-out the worker's GPU bakes stretch frames to ~90 ms until the
-  queue drains.
+  queue drains. **Two of those levers landed.** The dome's disk crossing
+  is sampled by where the light is: seventy-two steps shared between the
+  thin disk's own slab (|z| < 0.5 kpc, which holds the dust and nearly
+  all the light) and the thick disk either side by length, the thick
+  counting a third, and neither taking more steps than 60 pc of thin or
+  180 pc of thick call for — a ray along the plane keeps its seventy-two,
+  a ray from above crosses in about forty. Measured fresh at 1.5 kpc: dome
+  11 → ~5 ms, the frame 9 ms GPU at 120 Hz with sixteen volumes. And
+  residents now stand up at a first grade of 48³ — a bake the worker's
+  GPU finishes in milliseconds, so an arrival's whole residency lands
+  within a second — and climb to their grade one bake at a time whenever
+  nothing else is baking, the most apparent first; only a residency at
+  its grade, with headroom, admits more. Measured: twelve residents at
+  their grades ten seconds after arrival, with no frame past 90 ms.
+  Measurement caveat learned the hard way: a page that has been through
+  hot reloads accumulates state — everything-off read 16 ms where a fresh
+  load reads 3 — so time on a fresh load only.
 - **The sky's reaches taper — landed.** Pulled out, the sky field showed
   nested spheres: the near census (every star, whatever its light, to the
   neighbourhood's radius) ended on one, and each catalog row's sweep ended

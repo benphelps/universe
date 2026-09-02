@@ -172,6 +172,12 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
  *  sweep the residency check pays, not by what deserves one. */
 const NEBULA_VOLUME_REACH_PC = 2000;
 const NEBULA_VOLUME_SIZE = 96;
+/** The grid a resident is first baked at: an eighth of the far grade's
+ *  cells, a bake the worker's GPU finishes in a few milliseconds, so an
+ *  arrival's whole residency stands within a second instead of the
+ *  frame stalling on tens of full bakes at once. Each then climbs to
+ *  its grade one at a time, as the frame allows. */
+const NEBULA_VOLUME_FIRST_SIZE = 48;
 /** Grid for a volume large in frame, where a 96³ cell spans degrees of
  *  sky. The GPU bake makes the finer grid a half-second, and only a
  *  handful of residents ever qualify at once. */
@@ -471,6 +477,8 @@ export class UnifiedViewer {
   /** The clouds residency has asked for — a bake landing for any other
    *  cloud is kept in the cache but never stood up. */
   private wantedNebulae = new Set<bigint>();
+  /** The cloud behind each wanted seed, for the grade climb. */
+  private residentClouds = new Map<bigint, MolecularCloud>();
   /** Landed bakes by cloud seed: the body, and its ionized region. */
   private coarseBakes = new Map<bigint, NebulaVolumeBake>();
   private fineBakes = new Map<bigint, NebulaVolumeBake>();
@@ -1544,6 +1552,7 @@ export class UnifiedViewer {
       chosen.push({ cloud: focused, angular: 1 });
     }
     this.wantedNebulae = new Set(chosen.map((c) => c.cloud.seed));
+    this.residentClouds = new Map(chosen.map((c) => [c.cloud.seed, c.cloud]));
 
     // Standing volumes are never yanked: one that lost its slot fades
     // out and is disposed when it reaches zero, and one the camera
@@ -1553,16 +1562,43 @@ export class UnifiedViewer {
       volume.retiring = !this.wantedNebulae.has(seed);
     }
 
-    for (const { cloud, angular } of chosen) {
-      const size =
-        angular >= NEBULA_NEAR_ANGULAR ? NEBULA_VOLUME_NEAR_SIZE : NEBULA_VOLUME_SIZE;
-      const existing = this.nebulaVolumes.get(cloud.seed);
-      // A standing volume is re-baked only upward: approaching a cloud
-      // upgrades it to the near grid; leaving keeps the finer one.
-      if (!existing || existing.bakedSize < size) {
-        this.requestVolumeFor(cloud, this.viewpointPc, orientation, size);
+    // A newcomer stands up at the first grade; the climb to its own
+    // grade is metered against the frame by the controller, so a
+    // residency of thirty never lands as thirty full bakes at once.
+    for (const { cloud } of chosen) {
+      if (!this.nebulaVolumes.has(cloud.seed)) {
+        this.requestVolumeFor(cloud, this.viewpointPc, orientation, NEBULA_VOLUME_FIRST_SIZE);
       }
     }
+  }
+
+  /** The grid a standing volume deserves at its apparent size. */
+  private nebulaGrade(volume: NebulaVolume): number {
+    const apparent =
+      (volume.mesh.material as ShaderMaterial).uniforms.uHalfPc.value /
+      Math.max(1, volume.cameraDistancePc);
+    return apparent >= NEBULA_NEAR_ANGULAR ? NEBULA_VOLUME_NEAR_SIZE : NEBULA_VOLUME_SIZE;
+  }
+
+  /**
+   * Raise one standing volume toward its grade — the most apparent one
+   * still below it — and say whether a bake was asked for. A standing
+   * volume is re-baked only upward: approaching a cloud takes it to
+   * the near grid, leaving keeps the finer one.
+   */
+  private climbNebulaGrade(orientation: Float32Array): boolean {
+    let best: { volume: NebulaVolume; cloud: MolecularCloud; apparent: number } | null = null;
+    for (const [seed, volume] of this.nebulaVolumes) {
+      const cloud = this.residentClouds.get(seed);
+      if (!cloud || volume.retiring || volume.bakedSize >= this.nebulaGrade(volume)) continue;
+      const apparent =
+        (volume.mesh.material as ShaderMaterial).uniforms.uHalfPc.value /
+        Math.max(1, volume.cameraDistancePc);
+      if (!best || apparent > best.apparent) best = { volume, cloud, apparent };
+    }
+    if (!best) return false;
+    this.requestVolumeFor(best.cloud, this.viewpointPc, orientation, this.nebulaGrade(best.volume));
+    return true;
   }
 
   /**
@@ -1605,16 +1641,25 @@ export class UnifiedViewer {
     }
     this.residencyTunedAtMs = nowMs;
     const before = this.nebulaResidents;
+    const settled =
+      pendingNebulaBakes() === 0 && this.coarseBakes.size === 0 && this.fineBakes.size === 0;
     if (this.frameMsSmoothed > NEBULA_FRAME_BUDGET_MS) {
       this.nebulaResidents = Math.max(
         NEBULA_RESIDENTS_MIN,
         Math.floor(this.nebulaResidents * NEBULA_SHRINK_FACTOR),
       );
-    } else if (
-      this.frameMsSmoothed < NEBULA_FRAME_BUDGET_MS * NEBULA_FRAME_HEADROOM &&
-      pendingNebulaBakes() === 0 &&
-      this.coarseBakes.size === 0 &&
-      this.fineBakes.size === 0
+    }
+    // The standing volumes climb to their grade one bake at a time
+    // whenever nothing else is baking, whatever the frame: a volume's
+    // grade costs its bake, not its frame, and a residency the frame
+    // has already trimmed still deserves its resolution. Only a
+    // residency at its grade, with headroom, admits more.
+    if (settled && this.skyPreviewFrame && this.climbNebulaGrade(this.skyPreviewFrame)) {
+      return this.nebulaResidents !== before;
+    }
+    if (
+      settled &&
+      this.frameMsSmoothed < NEBULA_FRAME_BUDGET_MS * NEBULA_FRAME_HEADROOM
     ) {
       this.nebulaResidents = Math.min(NEBULA_RESIDENTS_MAX, this.nebulaResidents + NEBULA_GROW_BY);
     }
