@@ -155,7 +155,7 @@ function sample(grid: Float32Array, size: number, x: number, y: number, z: numbe
 /** Blocks per axis of a bake's occupancy grid. A cloud-sized box is
  *  mostly void — the carve fills a few percent of it — and the march's
  *  cost is in the samples it takes there. */
-export const OCCUPANCY_SIZE = 16;
+export const OCCUPANCY_SIZE = 32;
 
 /**
  * Which blocks a march has to sample: any block holding a non-zero

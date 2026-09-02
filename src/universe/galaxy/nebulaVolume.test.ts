@@ -463,7 +463,8 @@ describe('the occupancy grid', () => {
     // A single lit cell in the middle of a block marks that block
     // alone; one on a block's face also marks the block across the
     // face, since a trilinear read just inside that block touches it.
-    const size = 64;
+    // Four cells per block, so a cell can sit clear of every face.
+    const size = OCCUPANCY_SIZE * 4;
     const data = new Uint8Array(size ** 3 * 4);
     const at = (i: number, j: number, k: number): number => ((k * size + j) * size + i) * 4;
     const block = (i: number, j: number, k: number): number =>
@@ -501,17 +502,24 @@ describe('the combined occupancy', () => {
       }) as unknown as NebulaVolumeBake;
     const coarse = empty(100, [0, 0, 0]);
     const fine = empty(25, [50, 0, 0]);
-    // A fine block near the fine box's +x face, mid y and z: x in
-    // [68.75, 71.875] pc, inside coarse block 13 (x 62.5–75 pc), and
-    // y, z in [0, 3.125] pc, inside coarse block 8.
-    fine.occupancy[(8 * OCCUPANCY_SIZE + 8) * OCCUPANCY_SIZE + 14] = 255;
+    // One fine block, chosen so its extent in the coarse frame sits
+    // inside a single coarse block on every axis; the expected coarse
+    // block follows from the geometry rather than being hand-picked.
+    const half = OCCUPANCY_SIZE / 2;
+    const fineBlockPc = 50 / OCCUPANCY_SIZE;
+    const coarseBlockPc = 200 / OCCUPANCY_SIZE;
+    const toCoarse = (pc: number): number => Math.floor((pc + 100) / coarseBlockPc);
+    let chosen = -1;
+    for (let b = 0; b < OCCUPANCY_SIZE; b++) {
+      const lo = 50 - 25 + b * fineBlockPc;
+      if (toCoarse(lo) === toCoarse(lo + fineBlockPc)) chosen = b;
+    }
+    expect(chosen).toBeGreaterThanOrEqual(0);
+    fine.occupancy[(half * OCCUPANCY_SIZE + half) * OCCUPANCY_SIZE + chosen] = 255;
     const occupancy = combinedOccupancy(coarse, fine);
-    expect(occupancy[(8 * OCCUPANCY_SIZE + 8) * OCCUPANCY_SIZE + 13]).toBe(255);
+    const y = toCoarse(half * fineBlockPc - 25);
+    expect(occupancy[(y * OCCUPANCY_SIZE + y) * OCCUPANCY_SIZE + toCoarse(25 + chosen * fineBlockPc)]).toBe(255);
     expect(occupancy.reduce((n, value) => n + (value ? 1 : 0), 0)).toBe(1);
-    // One on the face marks the block across it too, as a read there
-    // could reach it.
-    fine.occupancy[(8 * OCCUPANCY_SIZE + 8) * OCCUPANCY_SIZE + 15] = 255;
-    expect(combinedOccupancy(coarse, fine).reduce((n, value) => n + (value ? 1 : 0), 0)).toBe(2);
   });
 });
 

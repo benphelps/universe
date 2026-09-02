@@ -255,6 +255,22 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   Measurement caveat learned the hard way: a page that has been through
   hot reloads accumulates state — everything-off read 16 ms where a fresh
   load reads 3 — so time on a fresh load only.
+- **The near grade's detail octaves — priced and packed.** Zoomed in on
+  Musas to where it takes the near grade (250 pc out, 160³ with the fine
+  grid, 131 steps, detail amp 0.54), the frame was 52 ms of GPU and Musas
+  alone 31 of it, 26 of those the detail path: per occupied sample a
+  three-fetch domain warp on the cloud grid, another on the fine grid, and
+  the sub-cell octave — up to nine texture fetches where the plain march
+  takes two. Three exact changes: the clump tile is RGBA now, its colour
+  channels the noise at the warp's three offsets so the warp is one fetch,
+  and its alpha the noise at twice the frequency with the octave's offset,
+  which is the sub-cell octave from that same fetch; the fine grid takes
+  the cloud grid's displacement instead of fetching its own, so the two
+  grids are bent into one space; and the occupancy grid is 32³, five cells
+  a block at the near grade, so fewer void samples inside occupied blocks
+  are marched at all. A detailed sample is three fetches. Same view: the
+  frame 26.6 ms, Musas 8.6 ms with the detail path 5 of it, 29 → ~57 fps.
+  The step count matters less than it looks (131 → 64 saved 3 ms).
 - **The sky's reaches taper — landed.** Pulled out, the sky field showed
   nested spheres: the near census (every star, whatever its light, to the
   neighbourhood's radius) ended on one, and each catalog row's sweep ended

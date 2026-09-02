@@ -94,7 +94,6 @@ uniform float uOpacity;
 uniform sampler3D uDetailNoise;
 uniform float uDetailAmp;
 uniform float uDetailFreq;
-uniform float uFineDetailFreq;
 uniform int uSteps;
 uniform sampler2D uScatterTable;
 ${TRANSFER_GLSL}
@@ -129,20 +128,21 @@ float dither(vec2 p) {
  * data. A single gentle octave of the same noise adds texture at an
  * amplitude a continued cascade could actually carry.
  */
-vec3 warped(vec3 p, float freq) {
-  vec3 c = p * (freq * ${f(0.5 / CLUMP_TILE_PERIOD)});
-  vec3 n = vec3(
-    texture(uDetailNoise, c).r,
-    texture(uDetailNoise, c + 0.31).r,
-    texture(uDetailNoise, c + 0.67).r
-  ) * ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
-  return p + (uDetailAmp * 0.75 / freq) * n;
+/** One fetch of the tile serves the whole sub-cell treatment: the
+ *  colour channels are the noise at three offsets — the warp's three
+ *  components — and the alpha is the noise at twice the frequency, the
+ *  octave of texture the warp's own frequency is too smooth to carry. */
+vec4 detailNoise(vec3 p, float freq) {
+  return texture(uDetailNoise, p * (freq * ${f(0.5 / CLUMP_TILE_PERIOD)})) *
+    ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
 }
 
-float subCellDetail(vec3 p, float freq) {
-  float n1 = texture(uDetailNoise, p * (freq * ${f(1 / CLUMP_TILE_PERIOD)}) + 0.13).r *
-    ${f(2 * CLUMP_TILE_RANGE)} - ${f(CLUMP_TILE_RANGE)};
-  return max(0.0, 1.0 + uDetailAmp * 0.18 * n1);
+vec3 warpShift(vec4 noise, float freq) {
+  return (uDetailAmp * 0.75 / freq) * noise.rgb;
+}
+
+float subCellDetail(vec4 noise) {
+  return max(0.0, 1.0 + uDetailAmp * 0.18 * noise.a);
 }
 
 void main() {
@@ -190,9 +190,11 @@ void main() {
     // The warp bends every texture read but never the geometry: flux
     // distances and the ray itself stay honest. Paid for only when
     // the volume is large in frame — the amp is zero otherwise and
-    // the fetches are skipped.
-    vec3 ps = detailed ? warped(p, uDetailFreq) : p;
-    vec4 cell = texture(uVolume, ps / (2.0 * uHalfPc) + 0.5);
+    // the fetch is skipped. One displacement serves both grids, so
+    // the bubble's cells and the cloud's are bent into one space.
+    vec4 noise = detailed ? detailNoise(p, uDetailFreq) : vec4(0.0);
+    vec3 shift = detailed ? warpShift(noise, uDetailFreq) : vec3(0.0);
+    vec4 cell = texture(uVolume, (p + shift) / (2.0 * uHalfPc) + 0.5);
     // The dust byte is a square root, so the thin columns that dim
     // the sky behind a cloud survive the quantization.
     float dust = cell.r * cell.r * uDustRef;
@@ -207,8 +209,7 @@ void main() {
     if (uFineHalfPc > 0.0) {
       vec3 q = p - uFineOffsetPc;
       if (all(lessThan(abs(q), vec3(uFineHalfPc)))) {
-        vec3 qs = detailed ? warped(q, uFineDetailFreq) : q;
-        vec4 fine = texture(uFine, qs / (2.0 * uFineHalfPc) + 0.5);
+        vec4 fine = texture(uFine, (q + shift) / (2.0 * uFineHalfPc) + 0.5);
         dust = fine.r * fine.r * uFineDustRef;
         ionized = fine.g * uFineDensityRef;
         cell.b = fine.b;
@@ -223,7 +224,7 @@ void main() {
       continue;
     }
     if (detailed) {
-      float detail = subCellDetail(p, uDetailFreq);
+      float detail = subCellDetail(noise);
       dust *= detail;
       ionized *= detail;
     }
@@ -383,7 +384,6 @@ export class NebulaVolume {
         uDetailAmp: { value: 0 },
         // First sub-cell octave at half the cell of each grid.
         uDetailFreq: { value: bake.size / bake.halfExtentsPc[0] },
-        uFineDetailFreq: { value: fine ? fine.size / fine.halfExtentsPc[0] : 1 },
         uSteps: { value: BASE_STEPS },
         uScatterTable: { value: scatterTableTexture() },
         uFine: { value: this.fineTexture },

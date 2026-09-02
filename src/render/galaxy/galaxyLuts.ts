@@ -6,6 +6,7 @@ import {
   HalfFloatType,
   LinearFilter,
   RedFormat,
+  RGBAFormat,
   RepeatWrapping,
   RGFormat,
   UnsignedByteType,
@@ -51,12 +52,12 @@ export function galaxyLutTextures(): GalaxyLuts {
   armLut.needsUpdate = true;
 
   const clumpTile = new Data3DTexture(
-    new Uint8Array(CLUMP_TILE_SIZE ** 3),
+    new Uint8Array(CLUMP_TILE_SIZE ** 3 * 4),
     CLUMP_TILE_SIZE,
     CLUMP_TILE_SIZE,
     CLUMP_TILE_SIZE,
   );
-  clumpTile.format = RedFormat;
+  clumpTile.format = RGBAFormat;
   clumpTile.type = UnsignedByteType;
   clumpTile.minFilter = LinearFilter;
   clumpTile.magFilter = LinearFilter;
