@@ -63,7 +63,14 @@ ${TRANSFER_GLSL}
 
 void main() {
   vec3 dir = normalize(vDir);
-  vec3 sum = vec3(0.0);
+  // Overlapping sprites add their radiance before the law, not their
+  // display energies after it: the pedestal's compression is paid
+  // once for the light in this direction, whatever it is made of. The
+  // crossfade against each standing volume stays a share of what is
+  // shown, as the volume's own fade is.
+  float radiance = 0.0;
+  float shownShare = 0.0;
+  vec3 tint = vec3(0.0);
   for (int i = 0; i < ${MAX_NEBULAE}; i++) {
     if (i >= uNebulaCount) break;
     vec4 a = uNebulaA[i];
@@ -84,13 +91,18 @@ void main() {
     // standing volume, all uniforms.
     vec2 cell = texture2D(uNebulaAtlas, uv).rg;
     float pass = mix(uContinuumShare, 1.0, cell.g);
-    float radiance = cell.r * uNebulaB[i].w * pass;
+    float here = cell.r * uNebulaB[i].w * pass;
     float lineShare = cell.g / max(pass, 1e-6);
     vec3 hue = mix(uNebulaHueR[i],
       mix(uNebulaHueE[i], uNebulaHueEN[i], uNarrowband), lineShare);
-    sum += scotopic(hue * displayRadiance(radiance), radiance) * uNebulaFade[i];
+    radiance += here;
+    shownShare += here * uNebulaFade[i];
+    tint += hue * here * uNebulaFade[i];
   }
-  gl_FragColor = vec4(sum * uIntensity, 1.0);
+  vec3 shown = shownShare > 0.0
+    ? scotopic(tint / shownShare, radiance) * displayRadiance(radiance) * (shownShare / radiance)
+    : vec3(0.0);
+  gl_FragColor = vec4(shown * uIntensity, 1.0);
 }
 `;
 
