@@ -56,3 +56,70 @@ Each sampled star inherits from its birthplace:
 - Local density normalization within tolerance at the solar radius.
 - Sampled metallicity/age distributions match component definitions.
 - Skybox regression: star counts per magnitude bin near a Sun-like location roughly match real all-sky counts (e.g. ~9,000 stars brighter than m=6.5).
+
+## Ledger — where stars are (Sep 2026)
+
+A pass over star placement against the model as it stands now, with
+first-class clouds, natal groups and nebulae, asking what the science
+says about each population's place.
+
+- **Field stars and the clouds — correct as built, now pinned.** The
+  catalog begins at thirty million years (`thinAgeForUnit`'s floor), and a
+  star that old has long since left its natal cloud — a few km/s over tens
+  of megayears is hundreds of parsecs — while a cloud's own gravity is
+  nothing to a passing star, so the field is dynamically uncorrelated with
+  the gas and the share of catalog stars standing in cloud gas is exactly
+  the share of the volume the gas fills. Measured around the Musas complex
+  (`placement.test.ts`): the stars' in-gas share equals the volume's
+  filling share within the pin's 0.6–1.6. The earlier proposal to veto
+  catalog systems where the cloud density is high was wrong science and is
+  dropped. Everything younger than the floor is embedded by construction
+  and drawn by the nebula model as the natal group; the two populations
+  meet at the floor.
+- **Open clusters — a population now.** The dispersed clusters were a
+  sprinkle laid out *relative to the viewpoint* from one global stream —
+  the same hundred and thirty offsets from every sky, so a cluster stood
+  at a different place, with different members, from every system that
+  saw it. `universe/galaxy/clusters.ts` seeds them per 250 pc cell like the
+  clouds: 1.8 per 10⁷ pc³ at the solar circle, tracing what young objects
+  trace (the dust disk concentrated onto the arms, the clouds' own
+  tracer), ages log-uniform from the clouds' dispersal at twelve million
+  years — where the natal groups leave off — to the 2.5 Gyr survivors, and
+  each cluster's members drawn from its own seed. Pinned: the same cluster
+  from two skies, and the kiloparsec count against the tracer's integral.
+- **Cloud gateways — a real star outside the gas.** Every landmark's
+  gateway was a system minted at the cloud's centre — a mature planetary
+  system at the densest point of a giant molecular cloud, in every
+  landmark, where the model itself puts nothing older than a natal group;
+  and from a centre even the thinnest direction carries A_V of one to fifty
+  magnitudes, so flagship destinations arrived under black skies by
+  construction. `universe/galaxy/gateway.ts` now finds the vantage — the
+  direction from the centre along which the cloud's own column is least,
+  which for a lit region is where its interior vents, its bright face —
+  and takes the nearest catalog star outside any cloud's gas to the point
+  just past the reach that way. Landmarks name their cloud; the store
+  resolves the gateway on travel and the address carries the cloud's seed
+  (`cloud=<hex>`), so the subject survives a reload where a small cloud
+  near the gateway star would otherwise be taken for it; the arrival
+  orbit stands the camera on the far side of the star from the cloud so
+  the whole body lies beyond it in frame. Musas: reach 200 pc, gateway 210 pc from the centre, under
+  a parsec from the vantage, resolved in a millisecond.
+- **Arm response by age — open, with numbers.** The arm boost multiplies
+  the thin disk's count at every age, where a density wave moves old
+  stars weakly (K-band contrasts of 1.2–2) and concentrates the young. As
+  built the boost is knots: over the 5–12 kpc annulus it averages 1.11,
+  sits under 1.5 on 93% of the area and above 3 on under one percent, so
+  the old population is over-concentrated only in the star-forming beads.
+  A correct form would boost the young thin-disk slice alone, which means
+  a position-dependent thin age distribution (the row cap in `catalog.ts`
+  must then bound over the arm's maximum), and the band's glow re-derived
+  from the split (`ARM_YOUNG_LIGHT` stands in for it now). Not done in
+  this pass; the numbers above are what it would change.
+- **Young systems — open.** A star younger than the catalog's floor has
+  no planetary system the generator can honestly make: giant planets
+  form within the disc's few megayears and terrestrial ones over tens of
+  megayears, and the pre-main-sequence star itself is larger and cooler
+  than the zero-age track `evolve` starts from. Natal-group members are
+  not destinations for that reason, and a gateway is a field star. A
+  young-system stage — a pre-main-sequence star with its disc — would be
+  what lets a group member be visited.

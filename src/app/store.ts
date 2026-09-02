@@ -9,7 +9,8 @@ import {
   type GalacticAddress,
   type GalacticLandmark,
 } from '../universe/galaxy/regions';
-import { cloudReachPc } from '../universe/galaxy/clouds';
+import { cloudReachPc, cloudsNear } from '../universe/galaxy/clouds';
+import { cloudGateway } from '../universe/galaxy/gateway';
 import { cloudMassSolar, cloudMeanHydrogenDensity } from '../universe/galaxy/gas';
 import { ismMetallicity } from '../universe/galaxy/population';
 import type { NebulaKind } from '../universe/galaxy/nebula';
@@ -154,6 +155,9 @@ let coreView = false;
 /** True while the thing being looked at is a molecular cloud rather
  *  than a body — travel to one focuses the cloud itself. */
 let cloudFocus = false;
+/** The focused cloud's seed, hex, when travel named it; null leaves the
+ *  viewer to take the cloud the locale stands off. */
+let cloudSubjectHex: string | null = null;
 let ridingOut = false;
 let marksEpoch = 0;
 let consoleOpen = false;
@@ -281,6 +285,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     companionIndex === 0 ? system.planets : system.companions[companionIndex - 1].planets;
   viewer.setHost(companionIndex);
   if (cloudFocus) {
+    viewer.setCloudSubject(cloudSubjectHex ? seedFromHex(cloudSubjectHex) : null);
     viewer.setFocus('cloud', 'galaxy');
   } else if (viewMode === 'star') {
     viewer.setFocus('star', 'star');
@@ -338,7 +343,7 @@ function syncAddress(): void {
   // A cloud is the subject, not the gateway star that shares its
   // locale: without this a shared link reopens on the star.
   if (cloudFocus) {
-    url.searchParams.set('cloud', '1');
+    url.searchParams.set('cloud', cloudSubjectHex ?? '1');
   } else {
     url.searchParams.delete('cloud');
   }
@@ -406,7 +411,9 @@ export function boot(viewElement: HTMLElement): void {
       : viewParam === 'surface'
         ? 'planet'
         : 'star';
-  cloudFocus = params.get('cloud') !== null;
+  const cloudParam = params.get('cloud');
+  cloudFocus = cloudParam !== null;
+  cloudSubjectHex = cloudParam && cloudParam !== '1' ? cloudParam : null;
   planetIndex = Number(params.get('planet') ?? 0) || 0;
   moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
   companionIndex = Number(params.get('companion') ?? 0) || 0;
@@ -440,17 +447,10 @@ export function boot(viewElement: HTMLElement): void {
       beltPick = target.asteroid;
       notify();
     } else if (target.kind === 'cloud') {
-      cloudFocus = true;
-      // A cloud is not a system and standing on its gateway star is not
-      // looking at it. Arrive on the galaxy map, where the camera
-      // orbits the locale itself — which the arrival framing has
-      // already stood far enough back from to hold the whole cloud.
-      viewMode = 'galaxy';
-      planetIndex = 0;
-      moonIndex = -1;
-      load(target.seedHex, target.positionPc);
+      arriveAtCloud(target.cloudSeedHex, target.positionPc);
     } else if (target.kind === 'neighbor') {
       cloudFocus = false;
+      cloudSubjectHex = null;
       // Travel arrives at the destination star, not at whatever the
       // previous system had focused; the galaxy map keeps its own
       // framing so neighbor-hopping stays on the map.
@@ -493,7 +493,10 @@ function acted(): void {
 
 export function setTab(tab: Tab): void {
   // Picking a level is asking about the system again.
-  if (tab !== 'poi') cloudFocus = false;
+  if (tab !== 'poi') {
+    cloudFocus = false;
+    cloudSubjectHex = null;
+  }
   if (tab === 'poi') {
     poiOpen = true;
     notify();
@@ -564,24 +567,36 @@ export function selectStar(index: number): void {
 export function travelTo(destination: { seedHex: string; positionPc: GalacticPosition }): void {
   acted();
   cloudFocus = false;
+  cloudSubjectHex = null;
   load(destination.seedHex, destination.positionPc);
 }
 
 /**
  * Travel to a molecular cloud. The destination is a place rather than a
- * body, so it arrives on the galaxy map looking at the cloud, not in a
- * system view looking at the star that happens to sit in it.
+ * body: it is visited from its gateway — the nearest star outside its
+ * gas, off its thinnest side — and arrives on the galaxy map looking at
+ * the cloud, not in a system view looking at that star.
  */
 export function travelToCloud(destination: {
-  seedHex: string;
+  cloudSeedHex: string;
   positionPc: GalacticPosition;
 }): void {
   acted();
+  arriveAtCloud(destination.cloudSeedHex, destination.positionPc);
+}
+
+/** Stand off the cloud with this seed, found again by its position. */
+function arriveAtCloud(cloudSeedHex: string, positionPc: GalacticPosition): void {
+  const seed = seedFromHex(cloudSeedHex);
+  const cloud = cloudsNear(positionPc, 5).find((candidate) => candidate.seed === seed);
+  if (!cloud) return;
+  const gateway = cloudGateway(cloud);
   viewMode = 'galaxy';
   planetIndex = 0;
   moonIndex = -1;
   cloudFocus = true;
-  load(destination.seedHex, destination.positionPc);
+  cloudSubjectHex = cloudSeedHex;
+  load(gateway.seedHex, gateway.positionPc);
 }
 
 /**

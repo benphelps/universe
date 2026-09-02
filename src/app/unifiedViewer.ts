@@ -228,6 +228,9 @@ const NEBULA_CLOUD_SCALE_RADII = 3;
 const NEBULA_FRAMING_RADII = 2.2;
 /** Only clouds this close can be the one the camera is standing in. */
 const NEBULA_HOME_REACH_PC = 400;
+/** How far past a cloud's reach its gateway star may stand and still
+ *  count as standing off that cloud. */
+const NEBULA_GATEWAY_STANDOFF_PC = 200;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
 const ORIGIN = new Vector3();
@@ -286,7 +289,7 @@ export type PickTarget =
   | { kind: 'notable'; index: number }
   | { kind: 'belt'; asteroid: Asteroid }
   | { kind: 'neighbor'; seedHex: string; positionPc: GalacticPosition }
-  | { kind: 'cloud'; seedHex: string; positionPc: GalacticPosition };
+  | { kind: 'cloud'; cloudSeedHex: string; positionPc: GalacticPosition };
 
 interface Pickable {
   x: number;
@@ -909,6 +912,11 @@ export class UnifiedViewer {
   private focus: FocusTarget = 'star';
   /** The cloud the camera is standing off, when one is the focus. */
   private focusCloud: FocusedCloud | null = null;
+  /** The cloud travel named as the subject, when it named one. */
+  private cloudSubject: bigint | null = null;
+  /** The galaxy-to-scene rotation of the system standing, for aiming
+   *  at galactic things before the sky has been built. */
+  private sceneOrientation: Float32Array | null = null;
   private focusMoon: Moon | null = null;
   /** The parent planet hanging in a focused moon's sky. */
   private parentObject: PlanetObject | null = null;
@@ -1391,6 +1399,7 @@ export class UnifiedViewer {
     this.buildNeighborhood();
 
     const galaxyOrientation = sceneFromGalaxy(seedFromHex(system.seedHex));
+    this.sceneOrientation = galaxyOrientation;
     // The same rotation the finished field will carry, so a slab drawn
     // early sits exactly where its star ends up.
     this.skyPreviewFrame = galaxyOrientation;
@@ -1973,7 +1982,7 @@ export class UnifiedViewer {
     // arriving means standing off the cloud rather than standing on a
     // star that is zoomed out until the cloud fits.
     if (target === 'cloud') {
-      this.focusCloud = this.localCloud();
+      this.focusCloud = this.localCloud(true);
       this.focusPlanet = null;
       this.focusMoon = null;
       this.focusAsteroid = null;
@@ -2070,7 +2079,7 @@ export class UnifiedViewer {
    * field reaches the viewpoint. Lit or not — a dark rift is the same
    * kind of object as the nebula beside it, and just as much a place.
    */
-  private localCloud(): FocusedCloud | null {
+  private localCloud(stoodOff = false): FocusedCloud | null {
     let best: MolecularCloud | null = null;
     let bestDistance = Infinity;
     for (const cloud of cloudsNear(this.viewpointPc, NEBULA_HOME_REACH_PC)) {
@@ -2078,16 +2087,42 @@ export class UnifiedViewer {
       const dy = cloud.positionPc.yPc - this.viewpointPc.yPc;
       const dz = cloud.positionPc.zPc - this.viewpointPc.zPc;
       const distance = Math.hypot(dx, dy, dz);
-      if (distance > cloudReachPc(cloud) || distance >= bestDistance) continue;
+      // Standing in a cloud means inside its reach; standing off one
+      // means at its gateway, a star just past the reach.
+      const within = stoodOff ? cloudReachPc(cloud) + NEBULA_GATEWAY_STANDOFF_PC : cloudReachPc(cloud);
+      if (distance > within) continue;
+      // The cloud travel named is the subject whatever else stands near.
+      if (stoodOff && cloud.seed === this.cloudSubject) return { cloud, nebula: nebulaFor(cloud) };
+      if (distance >= bestDistance) continue;
       best = cloud;
       bestDistance = distance;
     }
     return best ? { cloud: best, nebula: nebulaFor(best) } : null;
   }
 
+  /** Name the cloud a cloud focus is about, or null for whichever the
+   *  locale stands off. */
+  setCloudSubject(seed: bigint | null): void {
+    this.cloudSubject = seed;
+  }
+
   /** The cloud the camera is standing off, for the panels that name it. */
   get focusedCloud(): FocusedCloud | null {
     return this.focusCloud;
+  }
+
+  /** Unit direction from the viewpoint to the focused cloud's centre,
+   *  in the scene frame, or null with nothing focused. */
+  private focusedCloudSceneDir(): Vector3 | null {
+    const cloud = this.focusCloud?.cloud;
+    if (!cloud || !this.sceneOrientation) return null;
+    const dx = cloud.positionPc.xPc - this.viewpointPc.xPc;
+    const dy = cloud.positionPc.yPc - this.viewpointPc.yPc;
+    const dz = cloud.positionPc.zPc - this.viewpointPc.zPc;
+    const length = Math.hypot(dx, dy, dz);
+    if (length === 0) return null;
+    const [x, y, z] = rotateToScene(this.sceneOrientation, dx / length, dy / length, dz / length);
+    return new Vector3(x, y, z).applyQuaternion(this.frameQuat);
   }
 
   /**
@@ -2216,6 +2251,12 @@ export class UnifiedViewer {
     // Ringed worlds greet the camera from above the ring plane — an
     // edge-on arrival would collapse the rings to a one-pixel sliver.
     if (this.focusPlanet?.rings) arrival.y += 0.55;
+    // A cloud is stood off from its gateway star, which sits just past
+    // the cloud's edge: the camera arrives on the far side of the star
+    // from the cloud, raised a little, so the whole body lies beyond
+    // the star in frame.
+    const cloudDir = this.focus === 'cloud' ? this.focusedCloudSceneDir() : null;
+    if (cloudDir) arrival.copy(cloudDir).negate().addScaledVector(new Vector3(0, 1, 0), 0.35);
     arrival.normalize();
     this.camera.position
       .copy(arrival)
@@ -2568,9 +2609,9 @@ export class UnifiedViewer {
         if (dir.dot(ray) < Math.cos(angularRadius)) return;
         bestAngular = angularRadius;
         const reach = this.camera.far * 0.25;
-        // A cloud is a place, and its own gateway system is how you
-        // stand in it — the same seed the gazetteer names it by, so
-        // arriving somewhere and reading its name agree.
+        // A cloud is a place, named by the seed the gazetteer names it
+        // by; where it is stood off from is its gateway, resolved on
+        // travel.
         const centre: GalacticPosition = {
           xPc: this.viewpointPc.xPc + patchDir[0] * distancePc,
           yPc: this.viewpointPc.yPc + patchDir[1] * distancePc,
@@ -2586,7 +2627,7 @@ export class UnifiedViewer {
           target: travelable
             ? {
                 kind: 'cloud',
-                seedHex: seedToHex(deriveSeed(seed, 'gateway')),
+                cloudSeedHex: seedToHex(seed),
                 positionPc: centre,
               }
             : null,
@@ -4113,7 +4154,11 @@ export class UnifiedViewer {
           name: `${landmark.name} Complex`,
           info: `molecular complex · anchor of the ${landmark.sector} Sector · ${fmt(distanceKpc)} kpc`,
           action: 'click to travel',
-          target: { kind: 'neighbor', seedHex: landmark.seedHex, positionPc: landmark.positionPc },
+          target: {
+            kind: 'cloud',
+            cloudSeedHex: landmark.cloudSeedHex,
+            positionPc: landmark.positionPc,
+          },
         });
       }
     }

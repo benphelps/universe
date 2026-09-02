@@ -84,7 +84,7 @@ export function galaxyPlateSpec(
 export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
   const { landmarks, system } = snap;
   // The galaxy's named complexes, nearest first: destinations far
-  // beyond the neighborhood — travel arrives inside the landmark.
+  // beyond the neighborhood — travel arrives at the landmark's gateway.
   const sorted = (landmarks ?? [])
     .map((landmark) => ({
       landmark,
@@ -104,7 +104,7 @@ export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
       {landmarks ? (
         sorted.map(({ landmark, kpc }) => (
           <BodyRow
-            key={landmark.seedHex}
+            key={landmark.cloudSeedHex}
             spec={{
               name: `${landmark.name} Complex`,
               kind: 'complex',
@@ -113,7 +113,10 @@ export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
                 [fmt(kpc), 'kpc'],
               ],
               onClick: () =>
-                travelToCloud({ seedHex: landmark.seedHex, positionPc: landmark.positionPc }),
+                travelToCloud({
+                  cloudSeedHex: landmark.cloudSeedHex,
+                  positionPc: landmark.positionPc,
+                }),
             }}
           />
         ))

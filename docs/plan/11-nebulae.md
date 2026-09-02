@@ -359,20 +359,13 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   emission complex can in principle lose its slot to bigger dark rifts —
   much blunter with dozens standing at once, but the ranking is still
   brightness-blind. Weight by the object's light budgets if it ever bites.
-- **Systems embedded in dark clouds — decision pending.** Measured over 5.1 M
-  catalog stars: 0.4% stand in cloud gas and 0.1% in dense gas, where reality
-  keeps mature systems essentially clear of it (clouds live ~20 Myr, stars
-  decouple; only natal groups are genuinely embedded, and the nebula members
-  already model those). Worse, every landmark cloud's *gateway* system is
-  seeded at the complex itself — the densest possible sky, A_V 5–223 mag by
-  direction measured at one — so the flagship destinations get near-black
-  skies by construction. The render of an embedded viewpoint is honest
-  (nearest stars survive at 55–80% flux; the rest go; Barnard 68 from
-  inside). Proposed, awaiting the call: move gateways to the cloud's near
-  edge or a carved cavity so arrival puts the complex overhead rather than
-  around you; optionally veto catalog systems where the smooth cloud density
-  is high (an envelope-level check — the full turbulent field is too dear per
-  star). Both change which seeds exist and where some travel URLs land.
+- **Systems embedded in dark clouds — settled, in the galaxy plan's
+  placement ledger.** The field is uncorrelated with the gas and stands in
+  it at the filling factor, which is the science; what was wrong was the
+  gateway, a system minted at every landmark's centre. Gateways are real
+  catalog stars outside the gas now, off the cloud's thinnest side, and
+  the open clusters became a population of the galaxy rather than a
+  sprinkle around the viewer. See `docs/plan/01-galaxy.md`.
 - **Photometric unification — landed.** One law for the whole sky, in
   `universe/galaxy/displayLaw.ts`: the star points' own curve (display energy
   `0.055·(B/2⁻¹⁷)^0.36`, B in L☉/pc²) extracted as the shared transfer, with

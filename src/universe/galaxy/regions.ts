@@ -217,8 +217,8 @@ export function sectorSeedAt(positionPc: GalacticPosition): bigint {
 /**
  * The galaxy's celestial landmarks: every province's anchor complex —
  * the prominent molecular clouds the gazetteer already names sectors
- * after — as travel destinations. Each carries a gateway system seeded
- * from its cloud, so arriving puts the complex overhead in that sky.
+ * after — as travel destinations. Each names its anchor cloud; the
+ * star it is visited from is the cloud's gateway, resolved on travel.
  * Deterministic and universal; expensive to enumerate (a full-disk
  * span sweep), so callers should hold the result or run it off-thread.
  */
@@ -231,8 +231,8 @@ export interface GalacticLandmark {
   radiusPc: number;
   /** Sector this landmark anchors (same name by construction). */
   sector: string;
-  /** Gateway system inside the complex. */
-  seedHex: string;
+  /** The anchor cloud's seed, hex. */
+  cloudSeedHex: string;
 }
 
 export function galacticLandmarks(): GalacticLandmark[] {
@@ -253,7 +253,7 @@ export function galacticLandmarks(): GalacticLandmark[] {
             weight: site.weight,
             radiusPc: site.radiusPc,
             sector: name,
-            seedHex: seedToHex(deriveSeed(site.seed, 'gateway')),
+            cloudSeedHex: seedToHex(site.seed),
           });
         }
       }
