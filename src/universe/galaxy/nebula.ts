@@ -132,7 +132,7 @@ export interface Nebula {
 /** Directions the front and the interception are marched along, and
  *  the steps each ray takes: a few thousand field reads per nebula,
  *  comparable to drawing its group. */
-const FRONT_DIRECTIONS = 64;
+export const FRONT_DIRECTIONS = 64;
 const FRONT_STEPS = 64;
 
 /** A Fibonacci sphere of unit vectors, xyz per direction. */
@@ -151,9 +151,9 @@ const FRONT_AXES: Float32Array = (() => {
 
 /** Which marched ray is nearest each cell of a latitude–longitude
  *  grid, so a lookup is one index rather than a search. */
-const FRONT_LOOKUP_COLS = 48;
-const FRONT_LOOKUP_ROWS = 24;
-const FRONT_LOOKUP: Uint8Array = (() => {
+export const FRONT_LOOKUP_COLS = 48;
+export const FRONT_LOOKUP_ROWS = 24;
+export const FRONT_LOOKUP: Uint8Array = (() => {
   const lookup = new Uint8Array(FRONT_LOOKUP_COLS * FRONT_LOOKUP_ROWS);
   for (let row = 0; row < FRONT_LOOKUP_ROWS; row++) {
     const latitude = ((row + 0.5) / FRONT_LOOKUP_ROWS - 0.5) * Math.PI;

@@ -275,8 +275,22 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   the exact orbit solve), the sky floor to seven digits, reddening within
   4e-3, the rift and dark tiles within 6e-4 with no texel off by a
   hundredth. Cost: glow 1 ms (300 ms the first time, baking the arm LUT),
-  rift 9 ms for 204 clouds, the tiles a few. The background's 5.9 s is
-  now ~0.75 s, all of it the nebula sprite atlas — the next step.
+  rift 9 ms for 204 clouds, the tiles a few.
+- **The nebula sprite atlas on the GPU — landed.** The fourth program
+  marches `nebulaGasAt` per texel: the carve shared with the maps, the
+  region's re-plumbing — contracted interior, eroded wind cavity,
+  champagne gate, swept shell and skin — from per-tile scalars in a
+  float table, and the front read off the model's own marched rays,
+  packed four to a texel, through the same latitude–longitude lookup as
+  an integer texture. The CPU tile split into `nebulaTileFrame`,
+  `marchNebulaTile` and the closure in `renderNebulaTile`, so both paths
+  hand the same (line, scatter, lineFree, scatterFree) field to one
+  closure and the budgets, peak and escaped share are computed once, on
+  the CPU, from whichever march ran. A/B at Musas, eight lit tiles:
+  mean relative error 2e-7 of each tile's peak, worst 1.4e-3, atlas
+  radiance within 4e-4, peaks within 3e-4, escaped shares equal to four
+  digits; 726 ms of CPU became 13 ms. The whole background from the
+  worker: 5.9 s → 0.42 s cold (the arm LUT's 300 ms) and 60 ms warm.
 - **The near grade's detail octaves — priced and packed.** Zoomed in on
   Musas to where it takes the near grade (250 pc out, 160³ with the fine
   grid, 131 steps, detail amp 0.54), the frame was 52 ms of GPU and Musas

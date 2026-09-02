@@ -122,18 +122,32 @@ export interface DarkTileJob {
   up: [number, number, number];
 }
 
+/** One lit cloud's sprite tile: the object, the tangent basis the
+ *  tile is marched in and the half-extent it spans. */
+export interface NebulaTileJob {
+  cloud: MolecularCloud;
+  nebula: Nebula;
+  view: [number, number, number];
+  right: [number, number, number];
+  up: [number, number, number];
+  extentPc: number;
+}
+
 /**
  * A renderer of the sky's background maps — the glow, the rift
- * transmission and the dark-cloud tiles — that a worker with a GPU can
- * offer in place of the CPU loops below. Each returns exactly the
- * array the CPU builder would have: the glow as RGBA texels (radiance,
- * reddening, 0, 1), the others as one float per texel. The CPU
- * builders stay the authority; a baker mirrors them.
+ * transmission, the dark-cloud tiles and the nebula tiles' march —
+ * that a worker with a GPU can offer in place of the CPU loops below.
+ * Each returns exactly the array the CPU builder would have: the glow
+ * as RGBA texels (radiance, reddening, 0, 1), the transmissions as one
+ * float per texel, the nebula march as the atlas-shaped RGBA field
+ * marchNebulaTile fills per tile. The CPU builders stay the authority;
+ * a baker mirrors them.
  */
 export interface SkyMapBaker {
   glow(viewpoint: GalacticPosition): Float32Array;
   rift(viewpoint: GalacticPosition, clouds: MolecularCloud[]): Float32Array;
   darkTiles(jobs: DarkTileJob[]): Float32Array;
+  nebulaTiles(jobs: NebulaTileJob[]): Float32Array;
   dispose(): void;
 }
 
@@ -624,7 +638,7 @@ export function buildSkyBackground(
 
   const localDensity = stellarDensity(viewpoint);
   onProgress?.(0, 'nebulae', -1);
-  const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push);
+  const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push, baker);
   onProgress?.(0.1, 'dark clouds', -1);
   const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA, baker);
   onProgress?.(0.25, 'charting', -1);
@@ -810,69 +824,48 @@ function nebulaDisplayColor(nebula: Nebula): [number, number, number] {
   ];
 }
 
-/**
- * Ray-march one lit cloud into an atlas tile: the cloud's field as the
- * region has re-plumbed it — the diluted interior, the swept shell and
- * its ionized skin, the natal cloud beyond — lit from the illuminant
- * with the flux floor the volume shines with, self-extinguished along
- * the view path at the dust's real opacity. Two mechanisms march
- * side by side, lines going as the ionized density squared and
- * scattered continuum as dust times flux, and each closes on its own
- * budget, so the tile's per-pixel line share is a measured thing.
- * Filaments, the bright rim, dark foreground lanes and soft edges all
- * come from the field itself.
- */
-export function renderNebulaTile(
-  atlas: Float32Array,
-  tile: number,
+/** The frame a cloud's tile is marched in: a tangent basis about the
+ *  view direction, and the half-extent that covers the whole body — a
+ *  drawn-out cloud reaches past its nominal radius along its long axis,
+ *  and a tile sized to the radius alone would slice it off in a
+ *  straight line. */
+export function nebulaTileFrame(
   cloud: MolecularCloud,
   view: [number, number, number],
-  nebula: Nebula,
-): {
-  right: [number, number, number];
-  up: [number, number, number];
-  peakRadiance: number;
-  /** The share of the object's light that leaves it toward this
-   *  viewpoint, its own dust having eaten the rest. */
-  escaped: number;
-} {
+): { right: [number, number, number]; up: [number, number, number]; extentPc: number } {
   const axis: [number, number, number] =
     Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
   const right = normalize(cross(view, axis));
-  const up = cross(view, right);
+  return { right, up: cross(view, right), extentPc: cloudReachPc(cloud) };
+}
 
-  // The tile covers the whole body: a drawn-out cloud reaches past its
-  // nominal radius along its long axis, and a tile sized to the
-  // radius alone would slice it off in a straight line.
-  const extentPc = cloudReachPc(cloud);
-  const steps = 16;
-  const dt = (2 * extentPc) / steps;
+/** Steps a tile's sightline takes through the body. */
+const NEBULA_TILE_STEPS = 16;
+
+/**
+ * Ray-march one lit cloud's tile: the cloud's field as the region has
+ * re-plumbed it — the diluted interior, the swept shell and its
+ * ionized skin, the natal cloud beyond — lit from the illuminant with
+ * the flux floor the volume shines with, self-extinguished along the
+ * view path at the dust's real opacity. Two mechanisms march side by
+ * side, lines going as the ionized density squared and scattered
+ * continuum as dust times flux, and each pixel keeps each integral
+ * with and without the view path's extinction: (line, scatter,
+ * lineFree, scatterFree) per pixel, the border empty so the atlas
+ * samples to zero at tile edges. Filaments, the bright rim, dark
+ * foreground lanes and soft edges all come from the field itself.
+ */
+export function marchNebulaTile(job: NebulaTileJob): Float32Array {
+  const { cloud, nebula, view, right, up, extentPc } = job;
+  const dt = (2 * extentPc) / NEBULA_TILE_STEPS;
   const source = nebulaIlluminant(nebula);
   const sx = source?.dxPc ?? 0;
   const sy = source?.dyPc ?? 0;
   const sz = source?.dzPc ?? 0;
   const floorSq = (MEMBER_SPREAD * cloud.radiusPc) ** 2;
-  const atlasWidth = NEBULA_ATLAS_COLS * NEBULA_TILE;
-  const tileX = (tile % NEBULA_ATLAS_COLS) * NEBULA_TILE;
-  const tileY = Math.floor(tile / NEBULA_ATLAS_COLS) * NEBULA_TILE;
-
-  // The tile carries physics, not pixels: relative luminance and the
-  // local line-vs-scattered mix, and the sky shader colours and
-  // exposes them under whatever instrument is standing — so a mode
-  // change never re-bakes a sky.
-  const lineY = new Float32Array(NEBULA_TILE * NEBULA_TILE);
-  const scatterY = new Float32Array(NEBULA_TILE * NEBULA_TILE);
-  // Each mechanism's integral with and without the view path's
-  // extinction: the budget is what the gas emits, and what the tile
-  // may show of it is what gets out.
-  let lineSum = 0;
-  let scatterSum = 0;
-  let lineFree = 0;
-  let scatterFree = 0;
-  for (let j = 0; j < NEBULA_TILE; j++) {
-    for (let i = 0; i < NEBULA_TILE; i++) {
-      // Border stays empty so the atlas samples to zero at tile edges.
-      if (i === 0 || j === 0 || i === NEBULA_TILE - 1 || j === NEBULA_TILE - 1) continue;
+  const marched = new Float32Array(NEBULA_TILE * NEBULA_TILE * 4);
+  for (let j = 1; j < NEBULA_TILE - 1; j++) {
+    for (let i = 1; i < NEBULA_TILE - 1; i++) {
       const u = ((i + 0.5) / NEBULA_TILE) * 2 - 1;
       const v = ((j + 0.5) / NEBULA_TILE) * 2 - 1;
       const ox = (right[0] * u + up[0] * v) * extentPc;
@@ -882,7 +875,9 @@ export function renderNebulaTile(
       let tau = 0;
       let line = 0;
       let scatter = 0;
-      for (let s = 0; s < steps; s++) {
+      let lineFree = 0;
+      let scatterFree = 0;
+      for (let s = 0; s < NEBULA_TILE_STEPS; s++) {
         const t = -extentPc + (s + 0.5) * dt;
         const px = ox + view[0] * t;
         const py = oy + view[1] * t;
@@ -899,20 +894,73 @@ export function renderNebulaTile(
         lineFree += emitting;
         tau += dust * DUST_OPACITY_PER_PC * dt;
       }
-      const at = j * NEBULA_TILE + i;
-      lineY[at] = line;
-      scatterY[at] = scatter;
-      lineSum += line;
-      scatterSum += scatter;
+      const at = (j * NEBULA_TILE + i) * 4;
+      marched[at] = line;
+      marched[at + 1] = scatter;
+      marched[at + 2] = lineFree;
+      marched[at + 3] = scatterFree;
     }
   }
+  return marched;
+}
 
-  // Each mechanism closes on its own budget: its whole light crosses
-  // this tile, so the radiance at a pixel follows from flux closure —
-  // luminosity over 4πd² spread by the tile's own integral — and the
-  // distance cancels, as it must: surface brightness carries none.
-  // Spread by the unextinguished integral, so what the tile shows is
-  // the budget less what the cloud's own dust took on the way out.
+/** One tile's march cut from an atlas-shaped field, as
+ *  marchNebulaTile lays it out. */
+export function nebulaTileFromAtlas(field: Float32Array, tile: number): Float32Array {
+  const atlasWidth = NEBULA_ATLAS_COLS * NEBULA_TILE;
+  const tileX = (tile % NEBULA_ATLAS_COLS) * NEBULA_TILE;
+  const tileY = Math.floor(tile / NEBULA_ATLAS_COLS) * NEBULA_TILE;
+  const marched = new Float32Array(NEBULA_TILE * NEBULA_TILE * 4);
+  for (let j = 0; j < NEBULA_TILE; j++) {
+    const from = ((tileY + j) * atlasWidth + tileX) * 4;
+    marched.set(field.subarray(from, from + NEBULA_TILE * 4), j * NEBULA_TILE * 4);
+  }
+  return marched;
+}
+
+/**
+ * Close a marched tile on its budgets and write it into the atlas.
+ * Each mechanism closes on its own: its whole light crosses this tile,
+ * so the radiance at a pixel follows from flux closure — luminosity
+ * over 4πd² spread by the tile's own integral — and the distance
+ * cancels, as it must: surface brightness carries none. Spread by the
+ * unextinguished integral, so what the tile shows is the budget less
+ * what the cloud's own dust took on the way out. The tile carries
+ * physics, not pixels: relative luminance and the local line-vs-
+ * scattered mix, and the sky shader colours and exposes them under
+ * whatever instrument is standing — so a mode change never re-bakes a
+ * sky.
+ */
+export function renderNebulaTile(
+  atlas: Float32Array,
+  tile: number,
+  cloud: MolecularCloud,
+  view: [number, number, number],
+  nebula: Nebula,
+  marched: Float32Array = marchNebulaTile({ cloud, nebula, view, ...nebulaTileFrame(cloud, view) }),
+): {
+  right: [number, number, number];
+  up: [number, number, number];
+  peakRadiance: number;
+  /** The share of the object's light that leaves it toward this
+   *  viewpoint, its own dust having eaten the rest. */
+  escaped: number;
+} {
+  const { right, up, extentPc } = nebulaTileFrame(cloud, view);
+  const atlasWidth = NEBULA_ATLAS_COLS * NEBULA_TILE;
+  const tileX = (tile % NEBULA_ATLAS_COLS) * NEBULA_TILE;
+  const tileY = Math.floor(tile / NEBULA_ATLAS_COLS) * NEBULA_TILE;
+
+  let lineSum = 0;
+  let scatterSum = 0;
+  let lineFree = 0;
+  let scatterFree = 0;
+  for (let at = 0; at < marched.length; at += 4) {
+    lineSum += marched[at];
+    scatterSum += marched[at + 1];
+    lineFree += marched[at + 2];
+    scatterFree += marched[at + 3];
+  }
   const closure = NEBULA_TILE ** 2 / (16 * Math.PI * extentPc ** 2);
   const lineLum = nebulaLineLuminositySolar(nebula);
   const scatterLum = nebulaScatteredSolar(nebula);
@@ -925,16 +973,16 @@ export function renderNebulaTile(
         (lineLum + scatterLum)
       : 0;
   let peak = 1e-6;
-  for (let at = 0; at < lineY.length; at++) {
-    const radiance = lineScale * lineY[at] + scatterScale * scatterY[at];
+  for (let at = 0; at < marched.length; at += 4) {
+    const radiance = lineScale * marched[at] + scatterScale * marched[at + 1];
     if (radiance > peak) peak = radiance;
   }
   for (let j = 0; j < NEBULA_TILE; j++) {
     for (let i = 0; i < NEBULA_TILE; i++) {
-      const at = j * NEBULA_TILE + i;
+      const at = (j * NEBULA_TILE + i) * 4;
       const dst = ((tileY + j) * atlasWidth + tileX + i) * 4;
-      const lines = lineScale * lineY[at];
-      const radiance = lines + scatterScale * scatterY[at];
+      const lines = lineScale * marched[at];
+      const radiance = lines + scatterScale * marched[at + 1];
       atlas[dst] = radiance / peak;
       atlas[dst + 1] = radiance > 0 ? lines / radiance : 0;
       atlas[dst + 2] = 0;
@@ -979,6 +1027,7 @@ function buildGroups(
   viewpoint: GalacticPosition,
   localDensity: number,
   push: PushStar,
+  baker: SkyMapBaker | null,
 ): { nebulae: NebulaPatch[]; nebulaAtlas: Float32Array } {
   const candidates: NebulaCandidate[] = [];
 
@@ -1006,12 +1055,24 @@ function buildGroups(
     });
   }
 
-  // The atlas holds the brightest; ray-march only those.
+  // The atlas holds the brightest; ray-march only those — in one pass
+  // where a baker stands, tile by tile on the CPU otherwise.
   candidates.sort((a, b) => b.fluxSolar - a.fluxSolar);
   const kept = candidates.slice(0, NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS);
   const nebulaAtlas = new Float32Array(
     NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4,
   );
+  const marchedField =
+    baker && kept.length
+      ? baker.nebulaTiles(
+          kept.map(({ cloud, nebula, view }) => ({
+            cloud,
+            nebula,
+            view,
+            ...nebulaTileFrame(cloud, view),
+          })),
+        )
+      : null;
   const nebulae: NebulaPatch[] = kept.map((candidate, tile) => {
     const { right, up, peakRadiance } = renderNebulaTile(
       nebulaAtlas,
@@ -1019,6 +1080,7 @@ function buildGroups(
       candidate.cloud,
       candidate.view,
       candidate.nebula,
+      marchedField ? nebulaTileFromAtlas(marchedField, tile) : undefined,
     );
     const { emission, reflection } = nebulaHues(candidate.nebula);
     return {
