@@ -41,7 +41,11 @@ vec3 scotopic(vec3 shown, float radiance) {
 /** Seat an instrument on an extended-light material's uniforms.
  *  Exposure scales what a given physical brightness lands at — pivot
  *  and the mesopic knee both slide with it, so a longer exposure digs
- *  deeper and a darker adaptation sees colour later. */
+ *  deeper and a darker adaptation sees colour later. The pedestal is
+ *  starlight, continuum through and through, so an instrument that
+ *  rejects continuum subtracts only the share of it that its filters
+ *  pass — the very suppression that lets a narrowband stack dig
+ *  faint nebulosity out of a sky a broadband exposure drowns it in. */
 export function seatExtendedInstrument(
   uniforms: Record<string, { value: unknown }>,
   pedestalRadiance: number,
@@ -49,7 +53,7 @@ export function seatExtendedInstrument(
   exposure: number,
 ): void {
   const beamPivot = ((4 * Math.PI * BEAM_SR) / instrument.pivotLsunPc2) * exposure;
-  const pedestalBeam = pedestalRadiance * beamPivot;
+  const pedestalBeam = pedestalRadiance * instrument.continuumShare * beamPivot;
   uniforms.uGamma.value = instrument.gamma;
   uniforms.uGain.value = instrument.gain;
   uniforms.uCeil.value = instrument.ceil;
