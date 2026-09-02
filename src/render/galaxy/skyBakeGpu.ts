@@ -247,7 +247,8 @@ void main() {
 /** Per-nebula rows: the tile's frame, the illuminant and the
  *  region's re-plumbing scalars, laid out by the CPU. */
 const NEBULA_TEXELS = 8;
-/** The marched front, FRONT_DIRECTIONS radii packed four to a texel. */
+/** The marched front and, beside it, the vent: FRONT_DIRECTIONS radii
+ *  each, packed four to a texel. */
 const FRONT_TEXELS = FRONT_DIRECTIONS / 4;
 /** Sightline steps through the body, marchNebulaTile's own. */
 const NEBULA_TILE_STEPS = 16;
@@ -293,15 +294,18 @@ float dustAt(vec3 p) {
   return localCarve(p, gInvStretch, gRadiusPc, gSeedOffset) * gDensityScale;
 }
 
-float frontToward(vec3 u) {
+int rayToward(vec3 u) {
   int row = min(${FRONT_LOOKUP_ROWS - 1}, int(floor(
     (asin(clamp(u.z, -1.0, 1.0)) / 3.141592653589793 + 0.5) * ${f(FRONT_LOOKUP_ROWS)})));
   float longitude = atan(u.y, u.x);
   if (longitude < 0.0) longitude += 6.283185307179586;
   int col = min(${FRONT_LOOKUP_COLS - 1}, int(floor(
     longitude / 6.283185307179586 * ${f(FRONT_LOOKUP_COLS)})));
-  int ray = int(texelFetch(uLookup, ivec2(col, row), 0).r);
-  vec4 quad = texelFetch(uFronts, ivec2(ray >> 2, gTile), 0);
+  return int(texelFetch(uLookup, ivec2(col, row), 0).r);
+}
+
+float rayRadius(int ray, int table) {
+  vec4 quad = texelFetch(uFronts, ivec2(table * ${FRONT_TEXELS} + (ray >> 2), gTile), 0);
   return quad[ray & 3];
 }
 
@@ -310,7 +314,8 @@ vec2 gasAt(vec3 p) {
   vec3 d = p - gSource;
   float r = length(d);
   if (r > gFrontReachPc * 1.5) return vec2(dustAt(p), 0.0);
-  float bubble = r > 0.0 ? frontToward(d / r) : gBubblePc;
+  int ray = r > 0.0 ? rayToward(d / r) : -1;
+  float bubble = ray >= 0 ? rayRadius(ray, 0) : gBubblePc;
   if (r < bubble) {
     float natal = dustAt(gSource + d / gGrowth) * gDilution;
     float cavity = gCavityPc;
@@ -322,8 +327,10 @@ vec2 gasAt(vec3 p) {
     float wind = r < cavity
       ? ${f(WIND_CAVITY_RESIDUAL)}
       : (r <= cavity * ${f(1 + WIND_WALL_WIDTH)} ? ${f(WIND_WALL_BOOST)} : 1.0);
+    float vent = ray >= 0 ? rayRadius(ray, 1) : 0.0;
+    float residual = ${f(VENT_RESIDUAL)} * (r > vent ? (vent * vent) / (r * r) : 1.0);
     float confinement = gConfining > 0.0
-      ? clamp(dustAt(p) * gHydrogenPerDust / gConfining, ${f(VENT_RESIDUAL)}, 1.0)
+      ? max(residual, min(dustAt(p) * gHydrogenPerDust / gConfining, 1.0))
       : 1.0;
     float dust = natal * wind * confinement;
     return vec2(dust * ${f(1 / DUST_DEPLETION)}, dust * gHydrogenPerDust);
@@ -621,7 +628,7 @@ export function createSkyBakeGpu(): SkyMapBaker | null {
     nebulaTiles(jobs: NebulaTileJob[]): Float32Array {
       const rows = Math.max(1, jobs.length);
       const table = new Float32Array(NEBULA_TEXELS * rows * 4);
-      const fronts = new Float32Array(FRONT_TEXELS * rows * 4);
+      const fronts = new Float32Array(2 * FRONT_TEXELS * rows * 4);
       jobs.forEach((job, i) => {
         const { cloud, nebula } = job;
         const { invStretch, seedOffset } = cloudRow(cloud);
@@ -656,7 +663,10 @@ export function createSkyBakeGpu(): SkyMapBaker | null {
           [sweptShellBoost(dilution), VENT_CONFINEMENT * nebula.sourceHydrogenDensity * dilution, 0, 0],
           base + 28,
         );
-        if (lit) fronts.set(nebula.frontPc, i * FRONT_TEXELS * 4);
+        if (lit) {
+          fronts.set(nebula.frontPc, i * 2 * FRONT_TEXELS * 4);
+          fronts.set(nebula.ventPc, i * 2 * FRONT_TEXELS * 4 + FRONT_DIRECTIONS);
+        }
       });
       if (!lookupTexture) {
         lookupTexture = gl.createTexture();
@@ -671,7 +681,7 @@ export function createSkyBakeGpu(): SkyMapBaker | null {
         gl.bindTexture(gl.TEXTURE_2D, null);
       }
       const tileTexture = floatTexture(NEBULA_TEXELS, rows, table);
-      const frontTexture = floatTexture(FRONT_TEXELS, rows, fronts);
+      const frontTexture = floatTexture(2 * FRONT_TEXELS, rows, fronts);
       try {
         return pass(
           nebulaProgram,

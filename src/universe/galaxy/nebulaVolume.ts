@@ -22,7 +22,7 @@ import {
   SHELL_WIDTH,
   sweptShellBoost,
   VENT_CONFINEMENT,
-  VENT_RESIDUAL,
+  ventResidual,
   WIND_CAVITY_RESIDUAL,
   WIND_REACH,
   WIND_STALL,
@@ -490,6 +490,7 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         let recombined = 0;
         let tau = 0;
         let frontR = -1;
+        let ventR = 0;
         if (reachable) {
           // One walk in the evolved region's own space. While the
           // budget lasts, the gas here is the natal field read at
@@ -514,6 +515,21 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
               tau +=
                 (sample(dust, size, px, py, pz) * dilution * DUST_OPACITY_PER_PC * ds) /
                 DUST_DEPLETION;
+              // The opening: the last place the uncontracted cloud
+              // still held the interior in.
+              if (
+                frontR < 0 &&
+                plan.ventConfineDensity > 0 &&
+                sample(
+                  gas,
+                  size,
+                  (ionizePc[0] + ux * r + boxPc) / cellPc - 0.5,
+                  (ionizePc[1] + uy * r + boxPc) / cellPc - 0.5,
+                  (ionizePc[2] + uz * r + boxPc) / cellPc - 0.5,
+                ) >= plan.ventConfineDensity
+              ) {
+                ventR = r;
+              }
             } else {
               const swept = r <= frontR * (1 + SHELL_WIDTH) ? shellBoost : 1;
               const px = (ionizePc[0] + ux * r + boxPc) / cellPc - 0.5;
@@ -604,10 +620,14 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         // champagne gate: where the bubble has outrun the cloud's own
         // body, nothing confines the hot gas and it streams away — the
         // natal field at this very cell decides, so the region opens
-        // along the cloud's carved boundary, arcs and horseshoes.
+        // along the cloud's carved boundary, arcs and horseshoes — and
+        // the residue thins past the opening the flow left through.
         const confinement =
           inBubble && plan.ventConfineDensity > 0
-            ? Math.max(VENT_RESIDUAL, Math.min(1, gas[index] / plan.ventConfineDensity))
+            ? Math.max(
+                ventResidual(ventR, distancePc),
+                Math.min(1, gas[index] / plan.ventConfineDensity),
+              )
             : 1;
         // The cavity along this ray: the mean radius the momentum
         // budget reached, eroded to the −¼ against what the interior

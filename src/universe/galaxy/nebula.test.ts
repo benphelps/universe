@@ -9,7 +9,7 @@ import {
 import { armBoost, dustDensity, DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
 import { AV_PER_TAU, cloudCentralExtinction, cloudMassSolar, hydrogenDensity } from './gas';
 import { stromgrenRadiusPc } from './ionization';
-import { nebulaeNear, nebulaFor, type Nebula } from './nebula';
+import { FRONT_DIRECTIONS, nebulaeNear, nebulaFor, nebulaGasAt, type Nebula } from './nebula';
 import { ismMetallicity } from './population';
 import { landmarkWeight } from './regions';
 
@@ -206,5 +206,48 @@ describe('molecular clouds against the observed population', () => {
     expect(lit.length).toBeGreaterThan(5);
     expect(median(lit.map((nebula) => nebula.sourceHydrogenDensity))).toBeGreaterThan(30);
     expect(median(lit.map((nebula) => nebula.stromgrenRadiusPc / nebula.cloud.radiusPc))).toBeLessThan(0.5);
+  });
+});
+
+describe('the champagne residue', () => {
+  it('thins with distance past the opening the flow left through', () => {
+    // A vented ray carries its opening — the last radius the cloud
+    // still confined the interior — and the streaming residue beyond
+    // it falls as a diverging flow does, so the interior of a region
+    // that has outrun its cloud is not a flat floor cut off wherever a
+    // box or a tile ends. Summed over every ray whose front stands
+    // well past its opening, on every lit region near home.
+    const lit = cloudsNear(HOME_POSITION, 1500)
+      .map((cloud) => nebulaFor(cloud))
+      .filter((n): n is Nebula => n !== null && n.photonRate > 0 && n.ventPc.length > 0);
+    let nearOpening = 0;
+    let nearFront = 0;
+    let rays = 0;
+    for (const nebula of lit) {
+      const source = nebula.sources[0];
+      for (let i = 0; i < FRONT_DIRECTIONS; i++) {
+        const front = nebula.frontPc[i];
+        const vent = nebula.ventPc[i];
+        expect(vent).toBeLessThanOrEqual(front);
+        if (vent <= 0 || front < 2.5 * vent) continue;
+        const z = 1 - (2 * i + 1) / FRONT_DIRECTIONS;
+        const ring = Math.sqrt(1 - z * z);
+        const ux = ring * Math.cos(i * 2.399963);
+        const uy = ring * Math.sin(i * 2.399963);
+        const dustAt = (r: number): number =>
+          nebulaGasAt(
+            nebula,
+            source.dxPc + ux * r,
+            source.dyPc + uy * r,
+            source.dzPc + z * r,
+          ).dust;
+        nearOpening += dustAt(1.1 * vent);
+        nearFront += dustAt(0.9 * front);
+        rays++;
+      }
+    }
+    expect(rays).toBeGreaterThan(20);
+    expect(nearOpening).toBeGreaterThan(0);
+    expect(nearFront / nearOpening).toBeLessThan(0.5);
   });
 });

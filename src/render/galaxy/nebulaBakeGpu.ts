@@ -140,6 +140,7 @@ void main() {
   float recombined = 0.0;
   float tau = 0.0;
   float frontR = -1.0;
+  float ventR = 0.0;
   if (reachable) {
     int steps = max(1, int(ceil(dist / uStepPc)));
     float ds = dist / float(steps);
@@ -152,6 +153,8 @@ void main() {
         recombined += carve * carve * uRecombFrac * rn * rn * (ds / uGrowth);
         if (recombined >= 1.0) frontR = r;
         tau += carve * uDilution * uTauScale * ds * ${f(1 / DUST_DEPLETION)};
+        if (frontR < 0.0 && uVentConfineCarve > 0.0 &&
+            fieldAt(uIonizePc + dir * r) >= uVentConfineCarve) ventR = r;
       } else {
         float swept = r <= frontR * ${f(1 + SHELL_WIDTH)} ? uShellBoost : 1.0;
         tau += fieldAt(uIonizePc + dir * r) * swept * uTauScale * ds;
@@ -199,10 +202,12 @@ void main() {
   // The wind's re-plumbing and the champagne gate, mirroring the CPU
   // march: an optically empty cavity, a swept wall carrying the
   // ploughed-out mass, and streaming loss wherever the natal field at
-  // this cell is too thin to confine the hot interior.
+  // this cell is too thin to confine the hot interior, the residue
+  // thinning as the inverse square past the ray's opening.
   if (inBubble) {
+    float residual = ${f(VENT_RESIDUAL)} * (dist > ventR ? (ventR * ventR) / (dist * dist) : 1.0);
     float confinement = uVentConfineCarve > 0.0
-      ? clamp(texelFetch(uField, cell, 0).r / uVentConfineCarve, ${f(VENT_RESIDUAL)}, 1.0)
+      ? max(residual, min(texelFetch(uField, cell, 0).r / uVentConfineCarve, 1.0))
       : 1.0;
     float cavity = uWindCavityPc;
     if (cavity > 0.0 && uWindPivotCarve > 0.0) {

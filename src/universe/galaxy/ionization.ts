@@ -201,3 +201,16 @@ export const VENT_RESIDUAL = 0.05;
 /** Ambient natal density that fully confines, in units of the diluted
  *  interior's own density. */
 export const VENT_CONFINEMENT = 1;
+
+/**
+ * The streaming residue's floor at a radius from the source, as a
+ * fraction of the diluted interior: the flat residue out to the
+ * opening the flow left the body through — the last radius along the
+ * ray the cloud still confined — and past it a flow that diverges,
+ * its density falling as the inverse square of distance the way a
+ * steady outflow through an opening must. A ray never confined has
+ * no body to stream from and no residue.
+ */
+export function ventResidual(ventPc: number, rPc: number): number {
+  return rPc > ventPc ? VENT_RESIDUAL * (ventPc / rPc) ** 2 : VENT_RESIDUAL;
+}

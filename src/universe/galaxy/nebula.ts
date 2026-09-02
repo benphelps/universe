@@ -28,7 +28,7 @@ import {
   sweptCavityRadiusPc,
   sweptShellBoost,
   VENT_CONFINEMENT,
-  VENT_RESIDUAL,
+  ventResidual,
   WIND_CAVITY_RESIDUAL,
   WIND_REACH,
   WIND_STALL,
@@ -117,6 +117,10 @@ export interface Nebula {
    *  dense ones — is known wherever a per-cell march is too dear.
    *  Empty when nothing ionizes. */
   frontPc: Float32Array;
+  /** Where each ray's flow left the body, pc: the last radius before
+   *  the front at which the natal cloud still confined the interior.
+   *  Beyond it the champagne residue thins as the flow diverges. */
+  ventPc: Float32Array;
   /** The farthest any marched ray reaches, pc: beyond it the cloud
    *  stands natal, and a read there need not ask which ray. */
   frontReachPc: number;
@@ -176,9 +180,8 @@ export const FRONT_LOOKUP: Uint8Array = (() => {
   return lookup;
 })();
 
-/** The front's radius toward a direction from the source, pc: the
- *  nearest marched ray's. */
-function nebulaFrontToward(nebula: Nebula, ux: number, uy: number, uz: number): number {
+/** The marched ray nearest a direction from the source. */
+function nebulaRayToward(ux: number, uy: number, uz: number): number {
   const row = Math.min(
     FRONT_LOOKUP_ROWS - 1,
     Math.floor((Math.asin(Math.max(-1, Math.min(1, uz))) / Math.PI + 0.5) * FRONT_LOOKUP_ROWS),
@@ -186,25 +189,36 @@ function nebulaFrontToward(nebula: Nebula, ux: number, uy: number, uz: number): 
   let longitude = Math.atan2(uy, ux);
   if (longitude < 0) longitude += 2 * Math.PI;
   const col = Math.min(FRONT_LOOKUP_COLS - 1, Math.floor((longitude / (2 * Math.PI)) * FRONT_LOOKUP_COLS));
-  return nebula.frontPc[FRONT_LOOKUP[row * FRONT_LOOKUP_COLS + col]];
+  return FRONT_LOOKUP[row * FRONT_LOOKUP_COLS + col];
 }
 
 /**
- * Where the front stands along each sample direction: the natal field
- * read in contracted coordinates, recombinations in the ray's own
- * solid angle summed until the group's photons are spent — the bake's
- * budget integral, one ray per direction. A ray that never spends its
- * budget within the reach a front can have stands at that reach.
+ * Where the front stands along each sample direction, and where the
+ * flow vents: the natal field read in contracted coordinates,
+ * recombinations in the ray's own solid angle summed until the group's
+ * photons are spent — the bake's budget integral, one ray per
+ * direction — and the last radius before the front at which the
+ * uncontracted cloud still confined the interior. A ray that never
+ * spends its budget within the reach a front can have stands at that
+ * reach.
  */
-function marchFront(nebula: Nebula): Float32Array {
+function marchFront(nebula: Nebula): { front: Float32Array; vent: Float32Array } {
   const front = new Float32Array(FRONT_DIRECTIONS);
+  const vent = new Float32Array(FRONT_DIRECTIONS);
   const source = nebula.sources[0];
-  if (!source || nebula.bubbleRadiusPc <= 0) return front;
+  if (!source || nebula.bubbleRadiusPc <= 0) return { front, vent };
   const { cloud } = nebula;
-  const { growth } = nebulaGrowth(nebula);
+  const { growth, dilution } = nebulaGrowth(nebula);
   const budget = nebula.photonRate / (4 * Math.PI);
   const reach = IONIZATION_REACH * nebula.bubbleRadiusPc;
   const ds = reach / FRONT_STEPS;
+  const confining = VENT_CONFINEMENT * nebula.sourceHydrogenDensity * dilution;
+  const hydrogenAt = (r: number, ux: number, uy: number, uz: number): number =>
+    hydrogenDensity(
+      cloudLocalDensity(cloud, source.dxPc + ux * r, source.dyPc + uy * r, source.dzPc + uz * r) *
+        nebula.dustFactor,
+      nebula.metallicity,
+    );
   for (let i = 0; i < FRONT_DIRECTIONS; i++) {
     const ux = FRONT_AXES[i * 3];
     const uy = FRONT_AXES[i * 3 + 1];
@@ -214,19 +228,16 @@ function marchFront(nebula: Nebula): Float32Array {
     for (let s = 0; s < FRONT_STEPS; s++) {
       const r = (s + 0.5) * ds;
       const rn = r / growth;
-      const n = hydrogenDensity(
-        cloudLocalDensity(cloud, source.dxPc + ux * rn, source.dyPc + uy * rn, source.dzPc + uz * rn) *
-          nebula.dustFactor,
-        nebula.metallicity,
-      );
+      const n = hydrogenAt(rn, ux, uy, uz);
       recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
       if (recombined >= budget) {
         front[i] = r;
         break;
       }
+      if (hydrogenAt(r, ux, uy, uz) >= confining) vent[i] = r;
     }
   }
-  return front;
+  return { front, vent };
 }
 
 /** The spread of the natal group about its cloud's centre, as a
@@ -275,7 +286,8 @@ export function nebulaGasAt(
   if (r > nebula.frontReachPc * 1.5) {
     return { dust: cloudLocalDensity(cloud, xPc, yPc, zPc) * dustFactor, ionized: 0 };
   }
-  const bubble = r > 0 ? nebulaFrontToward(nebula, dx / r, dy / r, dz / r) : nebula.bubbleRadiusPc;
+  const ray = r > 0 ? nebulaRayToward(dx / r, dy / r, dz / r) : -1;
+  const bubble = ray >= 0 ? nebula.frontPc[ray] : nebula.bubbleRadiusPc;
   const { growth, dilution } = nebulaGrowth(nebula);
   if (r < bubble) {
     const contracted = 1 / growth;
@@ -307,12 +319,13 @@ export function nebulaGasAt(
       r < cavity ? WIND_CAVITY_RESIDUAL : r <= cavity * (1 + WIND_WALL_WIDTH) ? WIND_WALL_BOOST : 1;
     // The champagne gate: the interior holds its density only where
     // the cloud at this very place could confine it, and streams to a
-    // residue where the bubble has outrun the body.
+    // residue where the bubble has outrun the body — a residue that
+    // thins past the opening this ray's flow left through.
     const confining = VENT_CONFINEMENT * nebula.sourceHydrogenDensity * dilution;
     const confinement =
       confining > 0
         ? Math.max(
-            VENT_RESIDUAL,
+            ventResidual(ray >= 0 ? nebula.ventPc[ray] : 0, r),
             Math.min(
               1,
               hydrogenDensity(
@@ -601,10 +614,13 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     halfExtentsPc,
     dustFactor: cloudDustFactor(cloud),
     frontPc: new Float32Array(),
+    ventPc: new Float32Array(),
     frontReachPc: 0,
     scatteredShare: 0,
   };
-  nebula.frontPc = marchFront(nebula);
+  const { front, vent } = marchFront(nebula);
+  nebula.frontPc = front;
+  nebula.ventPc = vent;
   nebula.frontReachPc = nebula.frontPc.reduce((best, front) => Math.max(best, front), 0);
   nebula.scatteredShare = interceptedShare(nebula);
   return nebula;
