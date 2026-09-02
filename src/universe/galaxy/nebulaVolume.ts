@@ -192,6 +192,49 @@ export function bakeOccupancy(data: Uint8Array, size: number): Uint8Array {
   return occupancy;
 }
 
+/**
+ * The occupancy a march through both of a volume's grids needs: the
+ * cloud-scale grid's own, with every block the bubble-scale grid holds
+ * gas in marked as well — inside the bubble box the march reads that
+ * grid, which resolves filaments and the diluted interior the coarse
+ * cells quantize to nothing, and a block skipped on the coarse grid's
+ * word would take the fine grid's gas with it in rectangular chunks.
+ * The fine box sits inside the coarse one, so each occupied fine block
+ * marks the coarse blocks its extent overlaps.
+ */
+export function combinedOccupancy(coarse: NebulaVolumeBake, fine: NebulaVolumeBake): Uint8Array {
+  const occupancy = Uint8Array.from(coarse.occupancy);
+  const coarseHalf = coarse.halfExtentsPc[0];
+  const fineHalf = fine.halfExtentsPc[0];
+  const fineBlockPc = (2 * fineHalf) / OCCUPANCY_SIZE;
+  const toCoarseBlock = (pc: number): number =>
+    Math.min(
+      OCCUPANCY_SIZE - 1,
+      Math.max(0, Math.floor(((pc + coarseHalf) / (2 * coarseHalf)) * OCCUPANCY_SIZE)),
+    );
+  for (let k = 0; k < OCCUPANCY_SIZE; k++) {
+    for (let j = 0; j < OCCUPANCY_SIZE; j++) {
+      for (let i = 0; i < OCCUPANCY_SIZE; i++) {
+        if (fine.occupancy[(k * OCCUPANCY_SIZE + j) * OCCUPANCY_SIZE + i] === 0) continue;
+        // The fine block's extent, in the coarse box's frame.
+        const lo = [i, j, k].map(
+          (b, axis) => fine.centrePc[axis] - coarse.centrePc[axis] - fineHalf + b * fineBlockPc,
+        );
+        const from = lo.map(toCoarseBlock);
+        const to = lo.map((v) => toCoarseBlock(v + fineBlockPc));
+        for (let z = from[2]; z <= to[2]; z++) {
+          for (let y = from[1]; y <= to[1]; y++) {
+            for (let x = from[0]; x <= to[0]; x++) {
+              occupancy[(z * OCCUPANCY_SIZE + y) * OCCUPANCY_SIZE + x] = 255;
+            }
+          }
+        }
+      }
+    }
+  }
+  return occupancy;
+}
+
 /** How much of the neutral wall around the ionized region the box
  *  keeps: enough to see the cavity it is carving out of. */
 const BOX_STROMGREN_RADII = 4;

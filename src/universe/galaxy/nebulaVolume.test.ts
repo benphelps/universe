@@ -8,9 +8,11 @@ import { nebulaEmissionColor, nebulaLines } from './nebulaLines';
 import {
   bakeNebulaVolume,
   bakeOccupancy,
+  combinedOccupancy,
   marchNebulaCpu,
   OCCUPANCY_SIZE,
   planNebulaBake,
+  type NebulaVolumeBake,
 } from './nebulaVolume';
 
 /** The brightest H II region near home whose group is still whole —
@@ -474,5 +476,32 @@ describe('the occupancy grid', () => {
     const occupied = bake.occupancy.reduce((n, value) => n + (value ? 1 : 0), 0);
     expect(occupied).toBeGreaterThan(0);
     expect(occupied).toBeLessThan(OCCUPANCY_SIZE ** 3);
+  });
+});
+
+describe('the combined occupancy', () => {
+  it('marks the coarse blocks a fine grid holds gas in', () => {
+    // A bubble-scale grid with one occupied block inside an otherwise
+    // empty cloud-scale box: the march reads the fine grid there, so
+    // the coarse blocks that block overlaps must count as occupied.
+    const empty = (half: number, centre: [number, number, number]): NebulaVolumeBake =>
+      ({
+        halfExtentsPc: [half, half, half],
+        centrePc: centre,
+        occupancy: new Uint8Array(OCCUPANCY_SIZE ** 3),
+      }) as unknown as NebulaVolumeBake;
+    const coarse = empty(100, [0, 0, 0]);
+    const fine = empty(25, [50, 0, 0]);
+    // A fine block near the fine box's +x face, mid y and z: x in
+    // [68.75, 71.875] pc, inside coarse block 13 (x 62.5–75 pc), and
+    // y, z in [0, 3.125] pc, inside coarse block 8.
+    fine.occupancy[(8 * OCCUPANCY_SIZE + 8) * OCCUPANCY_SIZE + 14] = 255;
+    const occupancy = combinedOccupancy(coarse, fine);
+    expect(occupancy[(8 * OCCUPANCY_SIZE + 8) * OCCUPANCY_SIZE + 13]).toBe(255);
+    expect(occupancy.reduce((n, value) => n + (value ? 1 : 0), 0)).toBe(1);
+    // One on the face marks the block across it too, as a read there
+    // could reach it.
+    fine.occupancy[(8 * OCCUPANCY_SIZE + 8) * OCCUPANCY_SIZE + 15] = 255;
+    expect(combinedOccupancy(coarse, fine).reduce((n, value) => n + (value ? 1 : 0), 0)).toBe(2);
   });
 });

@@ -30,6 +30,7 @@ import {
 } from '../../universe/galaxy/displayLaw';
 import { seatExtendedInstrument, TRANSFER_GLSL, transferUniforms } from '../displayTransfer';
 import {
+  combinedOccupancy,
   OCCUPANCY_SIZE,
   SCATTER_EMISSIVITY_PER_LSUN,
   type NebulaVolumeBake,
@@ -180,7 +181,10 @@ void main() {
       // A face already behind the ray — a zero direction component,
       // or the point sitting on the face — cannot be the exit.
       tFace = mix(tFace, vec3(far), lessThan(tFace, vec3(t)));
-      t = min(tFace.x, min(tFace.y, tFace.z)) + ds * 0.05;
+      // Resume past the face at this pixel's own jitter, as the march
+      // began: every ray resuming at the same offset from a face would
+      // line its samples up into slabs at every block boundary.
+      t = min(tFace.x, min(tFace.y, tFace.z)) + (0.05 + jitter) * ds;
       continue;
     }
     // The warp bends every texture read but never the geometry: flux
@@ -326,7 +330,7 @@ export class NebulaVolume {
 
     this.fineTexture = fine ? volumeTexture(fine) : emptyVolume();
     this.occupancyTexture = new Data3DTexture(
-      bake.occupancy,
+      fine ? combinedOccupancy(bake, fine) : bake.occupancy,
       OCCUPANCY_SIZE,
       OCCUPANCY_SIZE,
       OCCUPANCY_SIZE,

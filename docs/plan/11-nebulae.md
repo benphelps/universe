@@ -191,7 +191,15 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   only where there is gas. Same view, every volume standing: sky pass
   5.9 ms, frame 8.4 ms — the display's 120 Hz quantum, and the same frame as
   with no nebulae drawn at all. The rift volume went 20 → 2.6 ms, Musas
-  20 → 5.3. The carrier
+  20 → 5.3. Two artefacts the skip introduced, both caught by eye and both
+  fixed: gas missing in rectangular chunks (the occupancy came from the
+  cloud-scale grid alone while the march reads the bubble-scale grid inside
+  its box, and that grid holds filaments and the diluted interior the coarse
+  cells quantize to nothing — a volume's occupancy is now the union, each
+  occupied fine block marking the coarse blocks it overlaps), and volumes
+  rendering as stacked slabs (every ray resumed at a block face plus one
+  fixed nudge, so the per-pixel jitter was lost at every boundary and the
+  samples lined up — a skip now resumes at the pixel's own jitter). The carrier
   should still march all resident boxes in one pass, sorted front-to-back
   (§render pass), to tame the enclosing-overlap case. Per-axis box extents
   (the bake already stores a vec3; the shader assumes cubic) would also
