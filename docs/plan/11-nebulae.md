@@ -271,6 +271,18 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   are marched at all. A detailed sample is three fetches. Same view: the
   frame 26.6 ms, Musas 8.6 ms with the detail path 5 of it, 29 → ~57 fps.
   The step count matters less than it looks (131 → 64 saved 3 ms).
+- **The two display levers, A/B'd.** At the same view and frame state,
+  captured from the drawing buffer at 1:1 with a local receiver (the
+  screenshot tools downscale and cannot show the difference): the sky
+  layer at 0.35 of the buffer instead of 0.5 saved 6.3 ms (26.0 → 19.7 ms
+  GPU, 60 fps) at a mean pixel difference of 1.2/255 against the current
+  frame, indistinguishable at buffer resolution; bloom's targets at half
+  saved nothing at this view (26.1 vs 26.0 — its cost is the full-res
+  bright and composite passes, which do not shrink) at 0.6/255. The sky
+  layer's scale is now a sample pitch of 1.4 CSS pixels
+  (`SKY_SAMPLE_CSS_PX`, `skyResolutionScale`): 0.36 of the buffer at a
+  pixel ratio of two, the old 0.5 on a ratio-one display. Bloom is left
+  as it was.
 - **The sky's reaches taper — landed.** Pulled out, the sky field showed
   nested spheres: the near census (every star, whatever its light, to the
   neighbourhood's radius) ended on one, and each catalog row's sweep ended

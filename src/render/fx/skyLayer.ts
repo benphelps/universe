@@ -35,6 +35,20 @@ import {
  * foreground ones included.
  */
 export const SKY_RESOLUTION_SCALE = 0.5;
+/** The march's sample pitch on a dense display, in CSS pixels: the
+ *  layer never renders finer than this, so a device pixel ratio of two
+ *  does not quadruple the march for glow that carries nothing at pixel
+ *  frequency. Measured at the near grade over Musas on a 2564×1962
+ *  buffer: 26 → 20 ms of GPU, the difference invisible at buffer
+ *  resolution. */
+export const SKY_SAMPLE_CSS_PX = 1.4;
+
+/** The layer's scale against the drawing buffer at a pixel ratio:
+ *  half, or coarser where half of a dense buffer would be finer than
+ *  the sample pitch. */
+export function skyResolutionScale(pixelRatio: number): number {
+  return Math.min(SKY_RESOLUTION_SCALE, 1 / (SKY_SAMPLE_CSS_PX * pixelRatio));
+}
 
 /** Washout below which a stellar layer is not worth drawing at all. */
 export const SKY_VISIBILITY_FLOOR = 0.002;
@@ -114,9 +128,10 @@ export class SkyLayer {
 
   /** Track the drawing-buffer size; the target keeps its half scale. */
   setSize(width: number, height: number, pixelRatio: number): void {
+    const scale = skyResolutionScale(pixelRatio);
     this.target.setSize(
-      Math.max(1, Math.round(width * pixelRatio * SKY_RESOLUTION_SCALE)),
-      Math.max(1, Math.round(height * pixelRatio * SKY_RESOLUTION_SCALE)),
+      Math.max(1, Math.round(width * pixelRatio * scale)),
+      Math.max(1, Math.round(height * pixelRatio * scale)),
     );
   }
 
