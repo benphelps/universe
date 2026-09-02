@@ -283,6 +283,24 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   (`SKY_SAMPLE_CSS_PX`, `skyResolutionScale`): 0.36 of the buffer at a
   pixel ratio of two, the old 0.5 on a ratio-one display. Bloom is left
   as it was.
+- **Obvious levers, if the frame ever needs pulling back again.** In order
+  of what they buy, with what they cost, all measured on the 2564×1962
+  buffer at the near grade over Musas:
+  - `SKY_SAMPLE_CSS_PX` in `render/fx/skyLayer.ts` — the sky layer's
+    sample pitch. 1.0 → 1.4 was −6 ms at 1.2/255; 2.0 would be roughly
+    −3 ms more and the domes visibly softer. The one dial that is purely
+    display, and the first to turn.
+  - The near grade's step ceiling, `MAX_STEPS` in
+    `render/galaxy/nebulaVolume.ts`: 131 → 64 steps was −3 ms on the
+    volume that filled the view, at the cost of thin structure along the
+    ray.
+  - Bloom's targets — not worth it: half size was 0 ms here and −2.7 ms
+    at 1.5 kpc, since its cost is the full-resolution bright and
+    composite passes that do not shrink. Moving those to half resolution
+    would be the real lever, and a look change.
+  - The residency controller's budget, `NEBULA_FRAME_BUDGET_MS`, is not a
+    lever: it trims volumes only, and the arrival's near-grade subject is
+    what the frame is made of.
 - **The sky's reaches taper — landed.** Pulled out, the sky field showed
   nested spheres: the near census (every star, whatever its light, to the
   neighbourhood's radius) ended on one, and each catalog row's sweep ended

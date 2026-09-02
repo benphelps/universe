@@ -35,12 +35,16 @@ import {
  * foreground ones included.
  */
 export const SKY_RESOLUTION_SCALE = 0.5;
-/** The march's sample pitch on a dense display, in CSS pixels: the
- *  layer never renders finer than this, so a device pixel ratio of two
- *  does not quadruple the march for glow that carries nothing at pixel
- *  frequency. Measured at the near grade over Musas on a 2564×1962
- *  buffer: 26 → 20 ms of GPU, the difference invisible at buffer
- *  resolution. */
+/**
+ * The march's sample pitch on a dense display, in CSS pixels: the
+ * layer never renders finer than this, so a device pixel ratio of two
+ * does not quadruple the march for glow that carries nothing at pixel
+ * frequency. This is the frame's one obvious dial. Measured at the near
+ * grade over Musas on a 2564×1962 buffer, 1.0 → 1.4 took 26 → 20 ms of
+ * GPU at a mean pixel difference of 1.2 in 255; every step coarser buys
+ * more of the same at the same kind of price, and a step finer costs it
+ * back. Change it, look at the crops the ledger describes, decide.
+ */
 export const SKY_SAMPLE_CSS_PX = 1.4;
 
 /** The layer's scale against the drawing buffer at a pixel ratio:
