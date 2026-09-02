@@ -59,5 +59,8 @@ self.onmessage = (event: MessageEvent<NebulaBakeTask>) => {
     bake ??= bakeNebulaVolume(cloud, nebula, size, boxPc);
   }
   const result: NebulaBakeResult = { key, bake };
-  (self as unknown as Worker).postMessage(result, bake ? [bake.data.buffer] : []);
+  (self as unknown as Worker).postMessage(
+    result,
+    bake ? [bake.data.buffer, bake.occupancy.buffer] : [],
+  );
 };

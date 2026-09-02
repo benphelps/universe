@@ -68,6 +68,12 @@ export interface NebulaVolumeBake {
    * things the march needs and none of the cost of finding them.
    */
   data: Uint8Array;
+  /** Which blocks of the grid hold anything at all, OCCUPANCY_SIZE per
+   *  axis, 255 or 0: a march skips an empty block in one step instead
+   *  of sampling its way across it. A block counts as occupied if any
+   *  cell a trilinear read inside it could touch is non-zero, so the
+   *  skip is exact, not approximate. */
+  occupancy: Uint8Array;
   /** Dust density that R = 255 stands for. R holds the square root of
    *  the fraction: the clump peaks the reference is taken from stand
    *  orders of magnitude over the diffuse dust a sightline mostly
@@ -140,6 +146,50 @@ function sample(grid: Float32Array, size: number, x: number, y: number, z: numbe
   const y0 = x00 + (x10 - x00) * fy;
   const y1 = x01 + (x11 - x01) * fy;
   return y0 + (y1 - y0) * fz;
+}
+
+/** Blocks per axis of a bake's occupancy grid. A cloud-sized box is
+ *  mostly void — the carve fills a few percent of it — and the march's
+ *  cost is in the samples it takes there. */
+export const OCCUPANCY_SIZE = 16;
+
+/**
+ * Which blocks a march has to sample: any block holding a non-zero
+ * cell, and any block whose boundary layer a non-zero cell sits on
+ * from the far side — the cells a trilinear read just inside the
+ * block can reach. Exact for the grid as quantized.
+ */
+export function bakeOccupancy(data: Uint8Array, size: number): Uint8Array {
+  const occupancy = new Uint8Array(OCCUPANCY_SIZE ** 3);
+  const blockOf = (cell: number): number => Math.floor((cell * OCCUPANCY_SIZE) / size);
+  const mark = (bi: number, bj: number, bk: number): void => {
+    if (bi < 0 || bj < 0 || bk < 0) return;
+    if (bi >= OCCUPANCY_SIZE || bj >= OCCUPANCY_SIZE || bk >= OCCUPANCY_SIZE) return;
+    occupancy[(bk * OCCUPANCY_SIZE + bj) * OCCUPANCY_SIZE + bi] = 255;
+  };
+  for (let k = 0; k < size; k++) {
+    const bk = blockOf(k);
+    const bkLow = k > 0 ? blockOf(k - 1) : bk;
+    const bkHigh = k < size - 1 ? blockOf(k + 1) : bk;
+    for (let j = 0; j < size; j++) {
+      const bj = blockOf(j);
+      const bjLow = j > 0 ? blockOf(j - 1) : bj;
+      const bjHigh = j < size - 1 ? blockOf(j + 1) : bj;
+      for (let i = 0; i < size; i++) {
+        const at = ((k * size + j) * size + i) * 4;
+        if (data[at] === 0 && data[at + 1] === 0) continue;
+        const bi = blockOf(i);
+        const biLow = i > 0 ? blockOf(i - 1) : bi;
+        const biHigh = i < size - 1 ? blockOf(i + 1) : bi;
+        for (const x of biLow === biHigh ? [bi] : [biLow, bi, biHigh]) {
+          for (const y of bjLow === bjHigh ? [bj] : [bjLow, bj, bjHigh]) {
+            for (const z of bkLow === bkHigh ? [bk] : [bkLow, bk, bkHigh]) mark(x, y, z);
+          }
+        }
+      }
+    }
+  }
+  return occupancy;
 }
 
 /** How much of the neutral wall around the ionized region the box
@@ -635,6 +685,7 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
     ],
     halfExtentsPc: [boxPc, boxPc, boxPc],
     data,
+    occupancy: bakeOccupancy(data, size),
     dustRef,
     emissionCoefficient,
     densityRef,

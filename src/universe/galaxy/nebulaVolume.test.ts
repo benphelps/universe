@@ -5,7 +5,13 @@ import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity, spitzerRadiusPc } from './ionization';
 import { nebulaFor, type Nebula } from './nebula';
 import { nebulaEmissionColor, nebulaLines } from './nebulaLines';
-import { bakeNebulaVolume, marchNebulaCpu, planNebulaBake } from './nebulaVolume';
+import {
+  bakeNebulaVolume,
+  bakeOccupancy,
+  marchNebulaCpu,
+  OCCUPANCY_SIZE,
+  planNebulaBake,
+} from './nebulaVolume';
 
 /** The brightest H II region near home whose group is still whole —
  *  the classic subject these bake tests reason about. A group that has
@@ -438,5 +444,35 @@ describe('the volume bake', () => {
     expect(at(centre)).toBeGreaterThanOrEqual(at(0));
     expect(at(centre)).toBeGreaterThanOrEqual(at(size - 1));
     expect(half).toBeGreaterThan(0);
+  });
+});
+
+describe('the occupancy grid', () => {
+  it('marks a block, and the blocks a read beside it could reach', () => {
+    // A single lit cell in the middle of a block marks that block
+    // alone; one on a block's face also marks the block across the
+    // face, since a trilinear read just inside that block touches it.
+    const size = 64;
+    const data = new Uint8Array(size ** 3 * 4);
+    const at = (i: number, j: number, k: number): number => ((k * size + j) * size + i) * 4;
+    const block = (i: number, j: number, k: number): number =>
+      (k * OCCUPANCY_SIZE + j) * OCCUPANCY_SIZE + i;
+    data[at(5, 5, 5)] = 7;
+    let occupancy = bakeOccupancy(data, size);
+    expect(occupancy[block(1, 1, 1)]).toBe(255);
+    expect(occupancy.reduce((n, value) => n + (value ? 1 : 0), 0)).toBe(1);
+    data[at(5, 5, 5)] = 0;
+    data[at(8, 5, 5) + 1] = 1;
+    occupancy = bakeOccupancy(data, size);
+    expect(occupancy[block(2, 1, 1)]).toBe(255);
+    expect(occupancy[block(1, 1, 1)]).toBe(255);
+    expect(occupancy.reduce((n, value) => n + (value ? 1 : 0), 0)).toBe(2);
+  });
+
+  it('is empty where the bake is', () => {
+    const bake = bakeNebulaVolume(brightestNebula().cloud, brightestNebula(), 32);
+    const occupied = bake.occupancy.reduce((n, value) => n + (value ? 1 : 0), 0);
+    expect(occupied).toBeGreaterThan(0);
+    expect(occupied).toBeLessThan(OCCUPANCY_SIZE ** 3);
   });
 });

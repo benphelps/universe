@@ -6,7 +6,9 @@ import {
   LinearFilter,
   Matrix3,
   Mesh,
+  NearestFilter,
   NormalBlending,
+  RedFormat,
   RGBAFormat,
   ShaderMaterial,
   SphereGeometry,
@@ -28,6 +30,7 @@ import {
 } from '../../universe/galaxy/displayLaw';
 import { seatExtendedInstrument, TRANSFER_GLSL, transferUniforms } from '../displayTransfer';
 import {
+  OCCUPANCY_SIZE,
   SCATTER_EMISSIVITY_PER_LSUN,
   type NebulaVolumeBake,
 } from '../../universe/galaxy/nebulaVolume';
@@ -52,9 +55,12 @@ void main() {
 
 /** March budget: the base for a volume as an object in frame, the
  *  ceiling for one filling the sky, whose rays are longest and whose
- *  sub-cell detail is finest against them. */
+ *  sub-cell detail is finest against them. Samples are only spent in
+ *  occupied blocks; an empty block costs one iteration to cross, so
+ *  the loop carries room for the blocks a ray can meet on top. */
 const BASE_STEPS = 96;
 const MAX_STEPS = 160;
+const MAX_ITERATIONS = MAX_STEPS + 3 * OCCUPANCY_SIZE;
 
 export const NEBULA_FRAGMENT = /* glsl */ `
 precision highp sampler3D;
@@ -63,6 +69,7 @@ precision highp sampler3D;
 in vec3 vRay;
 out vec4 fragColor;
 uniform sampler3D uVolume;
+uniform sampler3D uOccupancy;
 uniform vec3 uCentrePc;
 uniform vec3 uCamPc;
 uniform mat3 uWorldToGalaxy;
@@ -158,14 +165,28 @@ void main() {
   // as transmitted starlight does. Green rides the V curve and is the
   // scalar the cover and the early-out read.
   vec3 transmittance = vec3(1.0);
-  for (int i = 0; i < ${MAX_STEPS}; i++) {
-    if (i >= uSteps) break;
-    vec3 p = rel + dir * (near + (float(i) + jitter) * ds);
+  bool detailed = uDetailAmp > 0.001;
+  float t = near + jitter * ds;
+  for (int i = 0; i < ${MAX_ITERATIONS}; i++) {
+    if (t >= far) break;
+    vec3 p = rel + dir * t;
+    // The box is mostly void. An empty block is crossed in one step:
+    // the ray runs to the block's far face and samples nothing in it.
+    vec3 g = p / (2.0 * uHalfPc) + 0.5;
+    if (texture(uOccupancy, g).r < 0.5) {
+      vec3 blocks = g * ${OCCUPANCY_SIZE}.0;
+      vec3 face = (floor(blocks) + step(vec3(0.0), dir)) * ${f(1 / OCCUPANCY_SIZE)};
+      vec3 tFace = ((face - 0.5) * 2.0 * uHalfPc - rel) * inv;
+      // A face already behind the ray — a zero direction component,
+      // or the point sitting on the face — cannot be the exit.
+      tFace = mix(tFace, vec3(far), lessThan(tFace, vec3(t)));
+      t = min(tFace.x, min(tFace.y, tFace.z)) + ds * 0.05;
+      continue;
+    }
     // The warp bends every texture read but never the geometry: flux
     // distances and the ray itself stay honest. Paid for only when
     // the volume is large in frame — the amp is zero otherwise and
     // the fetches are skipped.
-    bool detailed = uDetailAmp > 0.001;
     vec3 ps = detailed ? warped(p, uDetailFreq) : p;
     vec4 cell = texture(uVolume, ps / (2.0 * uHalfPc) + 0.5);
     // The dust byte is a square root, so the thin columns that dim
@@ -192,6 +213,11 @@ void main() {
       }
     }
 
+    // A void cell inside an occupied block costs nothing further.
+    if (dust <= 0.0 && ionized <= 0.0) {
+      t += ds;
+      continue;
+    }
     if (detailed) {
       float detail = subCellDetail(p, uDetailFreq);
       dust *= detail;
@@ -235,6 +261,7 @@ void main() {
       transmittance = vec3(0.0);
       break;
     }
+    t += ds;
   }
 
   // The march integrated physical radiance, L☉ pc⁻² sr⁻¹. What the
@@ -276,6 +303,7 @@ export class NebulaVolume {
   private readonly material: ShaderMaterial;
   private readonly texture: Data3DTexture;
   private readonly fineTexture: Data3DTexture;
+  private readonly occupancyTexture: Data3DTexture;
   private readonly sceneToGalaxy: Matrix3;
   private readonly cameraToGalaxy = new Matrix3();
 
@@ -297,6 +325,20 @@ export class NebulaVolume {
     this.sceneToGalaxy = new Matrix3().set(m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]);
 
     this.fineTexture = fine ? volumeTexture(fine) : emptyVolume();
+    this.occupancyTexture = new Data3DTexture(
+      bake.occupancy,
+      OCCUPANCY_SIZE,
+      OCCUPANCY_SIZE,
+      OCCUPANCY_SIZE,
+    );
+    this.occupancyTexture.format = RedFormat;
+    this.occupancyTexture.type = UnsignedByteType;
+    this.occupancyTexture.minFilter = NearestFilter;
+    this.occupancyTexture.magFilter = NearestFilter;
+    this.occupancyTexture.wrapS = ClampToEdgeWrapping;
+    this.occupancyTexture.wrapT = ClampToEdgeWrapping;
+    this.occupancyTexture.wrapR = ClampToEdgeWrapping;
+    this.occupancyTexture.needsUpdate = true;
     this.texture = new Data3DTexture(bake.data, bake.size, bake.size, bake.size);
     this.texture.format = RGBAFormat;
     this.texture.type = UnsignedByteType;
@@ -313,6 +355,7 @@ export class NebulaVolume {
       fragmentShader: NEBULA_FRAGMENT,
       uniforms: {
         uVolume: { value: this.texture },
+        uOccupancy: { value: this.occupancyTexture },
         uCentrePc: { value: new Vector3(...bake.centrePc) },
         uCamPc: { value: new Vector3() },
         uWorldToGalaxy: { value: new Matrix3() },
@@ -459,6 +502,7 @@ export class NebulaVolume {
     this.material.dispose();
     this.texture.dispose();
     this.fineTexture.dispose();
+    this.occupancyTexture.dispose();
   }
 }
 
