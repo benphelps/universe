@@ -119,8 +119,12 @@ march (scattered-only B/R runs ~3.3–4.4 against ~3.05 grey on the dusty
 subjects; a source buried deep enough reddens instead, and the direction
 belongs to the column). The sprite tier's scattered continuum wears the
 luminance-normalized ratio tilt (`SCATTER_TINT_RGB`), standing in for the
-per-λ march only the volume runs. The dense-core R_V ≈ 5 variant remains
-unmodelled.
+per-λ march only the volume runs, and its scattered *budget* is the
+model's own interception: the group's continuum marched from the
+illuminant through the region's re-plumbed dust with exact per-step
+capture, times the albedo (`Nebula.scatteredShare`, 0.002–0.2 across the
+home regions — the constant 0.3 it replaced overstated most clouds by an
+order of magnitude). The dense-core R_V ≈ 5 variant remains unmodelled.
 
 ## Not in scope
 
@@ -137,9 +141,11 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 5. Photoevaporative erosion pass and the line-ratio LUT — the step where the picture becomes physics rather than fog. **First slice landed**: the region gets its age — Spitzer D-type expansion scales the natal front by R(t)/R_s with the interior diluted n ∝ R^{-3/2} (budget-conserving exactly, pinned by test), a swept shell at the front, and the ionization march run in contracted coordinates so the carved directional shape survives the growth. An 11 Myr region is tens of parsecs, visible at cloud scale, which is what closed the sprite→volume "pink object vanishes into a blue dot" seam. Both renderers now colour from the same budgets — `nebulaEmissionShare` weighs line output against scattered continuum surface brightness, so O groups read pink and B groups read blue in sprite and volume alike, replacing the hand-mixed maxTeff hue ramp. **Second slice landed — the wind cavity**: the dominant source's line-driven wind (momentum snowplow, ṗ = ηL/c through the diluted interior; Weaver's energy-driven form overruns observed cavities and is deliberately not used) hollows the bubble and piles the displaced gas into a photoionized wall, so an evolved region reads as the limb-brightened ring it actually is instead of a filled disc — cavity/bubble ratios land at the surveys' 0.3–0.7, B-led groups whose hottest member cannot drive a line wind keep their filled cocoons, and the emission books stay closed because the finish renormalizes total line light to the ionizing budget wherever the density moves. Pinned by a ring test; mirrored in the GPU march and re-A/B'd (coefficients to 0.07%, ionized channel to 3/255). **Third slice — champagne venting**: ten-thousand-kelvin gas holds together only where the cloud around it can confine it, so the interior keeps its density gated by the natal field at each cell (quasi-static, like the rest of the bake) and streams to a residue where the bubble has outrun the cloud's body — the gate is the cloud's own carved boundary, so a face-blister opens into a horseshoe and rims go ragged along real filaments. Pinned by an A/B against the disarmed gate (thin-gas sectors lose ≥65% of their emission, fully confined cells pass untouched); the march itself supplied the deeper truth that dense front cells barely exist, since a dense direction stops its own ray. **Fourth slice — supernovae and the lit front**: members drawn past their model lifetime are struck from the group — no million-kelvin remnant sets the hue or sits in the source list any more (the ledgered "dead members as ionizers" oddity, resolved) — and each death feeds the swept cavity its terminal momentum (3×10⁴³ g cm/s, sixtyfold the whole wind's ṗt), so a group's first supernova blows its region toward the 0.9-bubble cap and an old region is a thin broken shell. And what finally killed the wrapped-on-a-sphere look: the swept shell's inner *skin* is now ionized — the front eating into the shell is where recombinations concentrate — so the glow follows the budget march's own carved, directional front instead of leaving all the light to the spherical wind wall. The march itself taught the tests two things on the way: dense cells at the front barely exist because a dense direction stops its own ray, and venting claims exactly the farthest-reaching thin channels. **Fifth slice — photoevaporative erosion**: the budget march fixes where the mean front got to, but what the front eats there is the *uncontracted* cloud at that radius — and it does not eat evenly. The local front is the mean modulated by (interior pivot / ambient)^⅓, bounded to [0.75, 1.3]: thin gas evaporates fast and lets the front bulge through, dense filaments stall it, which gives scalloped rims and trunks at clump scale and — because the ambient at tens of parsecs carries the cloud's resolved octaves — the large-scale directionality the contracted march alone could never see, which is what was keeping deeply-embedded regions spherical. The shell skin and swept band re-anchor to the eroded front, and the skin is floored at one bake cell so a sub-cell shell no longer aliases into stripes. Erosion carries its own pivot on the plan so it and the champagne gate can be disarmed independently (the tests do). **Sixth slice — the line grid (§Colour) — landed, which closes stage 5.** What remains of the wrapped-sphere family is one polish item: the wind wall is still a scalar-radius sphere; eroding it against the local interior the way the front now erodes against the ambient would break the last hollow dishes, if they ever grate.
 6. Nebulae as places. **Part landed**: a cloud is a destination — the gazetteer already derives a gateway system per cloud, so travelling to one puts the scene origin at the cloud centre and the ordinary orbit camera circles it, and arrival stands off 2.2 cloud reaches so the whole cloud is in frame rather than the usual fifteen-parsec hop. The volume follows the view: the resident nebula is chosen by projected angular size rather than distance (radii run 10–65 pc, so a great cloud far off outranks a small one near), and inside three cloud reaches the box holds the whole cloud instead of just the bubble. Bakes are keyed by cloud *and* scale, since a cloud is a different volume seen from outside than from within.
 
+   The impostor marches the same object the bake does: `nebulaGasAt` re-plumbs the cloud as the region has — the diluted interior hollowed by the wind, the swept shell and its ionized skin, the natal cloud beyond — with the front's radius along sixty-four rays marched by the bake's own budget integral, so a sprite carries the region's directional shape; lines go as n², scattered light as dust times flux, each closing on its own budget over what escapes toward the viewer. A tile now costs ~150 ms of worker time against ~90 for the heuristic it replaced.
+
    Open: the pick priority — seeded stars win the cursor over an extended object by design, which was right when nebulae were background decals and now makes a nebula hard to click in a dense field. The landmark list travels to the same clouds meanwhile. (In-shader detail octaves below cell size landed: two octaves of the tiling clump noise continue the cascade under whichever grid the ray reads, gated by apparent size so only a sky-filling volume pays.)
 
-7. Multi-volume marching, crossfade, streaming and eviction. **Landed** — sixty-four residents chosen by projected size, baked on the GPU in seconds, each dissolving in against its sprite (which carries the complement) and fading back out when residency moves on, with disposal only at zero and a swing-back simply fading up again. What remains of this stage is the one-pass multi-box march in the ledger.
+7. Multi-volume marching, crossfade, streaming and eviction. **Landed** — thirty-two residents chosen by projected size, baked on the GPU in seconds, each dissolving in against its sprite (which carries the complement) and fading back out when residency moves on, with disposal only at zero and a swing-back simply fading up again. What remains of this stage is the one-pass multi-box march in the ledger.
 8. Reflection scattering (**landed** — the multiple-scattering table and the
    chromatic march, §Reflection); display modes (**landed** — camera / eye /
    SHO as instrument seatings over one law, with an exposure dial).
@@ -153,10 +159,14 @@ Rough priority order. The residency dials live at the top of
 - **Multi-box march.** Each resident volume is its own full-screen dome;
   several *enclosing* volumes at a gateway complex each march the whole sky
   (~45 ms GPU measured with four). Non-enclosing residents are nearly free —
-  the cap now runs at 64 with no meaningful frame cost, since a dome only pays
+  the cap runs at 32, priced by the near grade (finer grid, deeper march,
+  detail octaves) rather than by the march itself, since a dome only pays
   for the pixels its box covers, and the GPU bake fills the whole set in
-  ~20 s from a cold arrival — so what a big cap costs is texture memory
-  (~3.4 MB per grid, two grids for a lit cloud), not the march. The carrier
+  seconds from a cold arrival — so what a big cap costs is memory (~3.4 MB
+  per grid on the heap and again on the GPU, two grids for a lit cloud,
+  16 MB per near-grade grid; the textures keep the bake buffers alive, so
+  a standing residency is a few hundred megabytes of heap), not the
+  march. The carrier
   should still march all resident boxes in one pass, sorted front-to-back
   (§render pass), to tame the enclosing-overlap case. Per-axis box extents
   (the bake already stores a vec3; the shader assumes cubic) would also
@@ -165,7 +175,7 @@ Rough priority order. The residency dials live at the top of
   them.
 - **Residency ranking.** Admission is by projected size alone, so a bright
   emission complex can in principle lose its slot to bigger dark rifts —
-  much blunter now that sixty-four stand at once, but the ranking is still
+  much blunter now that thirty-two stand at once, but the ranking is still
   brightness-blind. Weight by the object's light budgets if it ever bites.
 - **Systems embedded in dark clouds — decision pending.** Measured over 5.1 M
   catalog stars: 0.4% stand in cloud gas and 0.1% in dense gas, where reality
@@ -203,16 +213,24 @@ Rough priority order. The residency dials live at the top of
   *quantized* grid, the thing the renderer actually integrates. The harness
   (`displayLaw.test.ts`) pins the law against the star shader exactly, pins
   real-sky anchors (pole sky black, band ~0.05, Orion-core ~0.37), closes the
-  sprite tile's flux books to ±10%, and pins volume-vs-sprite total flux at
-  the measured ~0.14 with the multiple-scattering table in — the remaining gap
-  is the impostor's 0.3 continuum interception being a whole-cloud number
-  while the bubble-scale box holds only part of the cloud's dust to scatter
-  with, plus the impostor's fixed U against each grid's own hardness mix.
-  Residual refinements: the volumes and sprites use the constant pedestal
-  where the glow uses its own local minimum (plumbing the sky field's floor
-  through to them is a small follow-up); rift and dark-tile dimming of the
-  glow is display-space `T^γ`, exact for the pure law and ~1.5× steep at
-  mid-transmittance against the marginal form.
+  sprite tile's flux books to a tenth of a percent on the escaping light,
+  and pins volume-against-sprite total flux at 0.2–1.5 over the cloud-scale
+  box (measured 0.3–1.0 on the bright subjects). What closed the earlier
+  ~0.14: the volume was closing its books on the dominant member's photons
+  where the sprite spent the group's total (a median 54% of it); the
+  impostor's continuum interception was a constant 0.3 where the marched
+  first-order interception runs 0.002–0.2 by cloud; and the two were being
+  compared over different bodies. What remains is what the march resolves
+  and the impostor cannot — the front broken cell by cell, the champagne
+  gate and erosion, per-cell U, and the phase toward one viewpoint.
+  Residual refinement: rift and dark-tile dimming of the glow, and a
+  volume's cover of what stands behind it, are display-space `T^γ`, exact
+  for the pure law and ~1.5× steep at mid-transmittance against the
+  marginal form. Overlapping *sprites* now sum their radiance before the
+  law; a volume over the glow, or over another volume, still takes the
+  marginal law once per tier — compositing in linear radiance and
+  displaying once would need the sky target to carry radiance rather than
+  display energy.
 - **Display modes — landed.** The §Colour instrument split, as
   `DisplayInstrument` presets in `displayLaw.ts` seated onto the whole sky's
   uniforms (`render/displayTransfer.ts`, `viewer.setSkyInstrument`): **camera**
@@ -224,7 +242,8 @@ Rough priority order. The residency dials live at the top of
   cast on every tier; **SHO** swaps the emission endpoints to the mapped
   [S II]/Hα/[O III] palette — computed from the same line grid, carried on
   every bake and patch so the switch never re-bakes — and cuts continuum to
-  the sliver narrowband filters pass. One exposure dial (sky depth) slides
+  the sliver narrowband filters pass, the sky pedestal with it, which is
+  the suppression narrowband imaging exists for. One exposure dial (sky depth) slides
   pivot, cutoff and knee together, so it reads as integration time on the
   camera and dark adaptation on the eye. The 3D star tiers (neighbor, far,
   preview points) take the same seating as the backdrop points, so the two
@@ -243,11 +262,6 @@ Rough priority order. The residency dials live at the top of
   destination for all of them. If member-click ever wants to do something, the
   right something is routing to the parent cloud's gateway, not minting
   per-member systems.
-- **Dead members as ionizers.** A few nebula members report tEff ~10⁶ K —
-  `evolve()` returning remnant parameters for massive stars past their
-  lifetime, which then ionize as planetary-nebula-nucleus-like sources. Possibly
-  physics, never reviewed: decide what a dead member should contribute to Q,
-  luminosity, and the illuminant choice.
 - **Bake on the GPU — landed.** The worker now bakes on an OffscreenCanvas
   WebGL2 context (`render/galaxy/nebulaBakeGpu.ts`): the seeded simplex ported
   to GLSL with the galaxy's permutation as an R8UI texture, the carve filled
@@ -268,10 +282,14 @@ Rough priority order. The residency dials live at the top of
   exact step the budget runs out. The CPU walk in `nebulaVolume.ts` stays the
   physics authority and the fallback (no OffscreenCanvas, no float render
   targets, or a mid-bake GL failure demotes the worker to it); the pool of
-  three workers remains for that path. No automated CPU-vs-GPU test exists —
+  three workers remains for that path. The atlas comes home a row of tiles
+  at a time into a strip buffer, and the field and atlas textures are kept
+  per grid size for the baker's life. No automated CPU-vs-GPU test exists —
   vitest has no WebGL — so any change to the CPU march must re-run the
   in-browser A/B (bake both paths on one cloud from a page console, diff the
-  byte volumes) before trusting the GPU mirror.
+  byte volumes) before trusting the GPU mirror. Outstanding for that A/B:
+  the beam's dust depletion inside the ionized interior, mirrored in both
+  marches in the review pass but not yet re-diffed in the browser.
 - **Reach cap.** Residency searches 2 kpc of clouds; complexes beyond that lose
   their volumes once the backdrop fades (sub-6° at that range, so quiet — but it
   is a dial, not a law).
