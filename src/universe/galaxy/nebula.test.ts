@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CM_PER_PC } from '../../core/physics/constants';
 import { ionizingPhotonRate } from '../star/ionizing';
 import {
   CLOUD_DUST_WEIGHT,
@@ -8,8 +9,21 @@ import {
 } from './clouds';
 import { armBoost, dustDensity, DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
 import { AV_PER_TAU, cloudCentralExtinction, cloudMassSolar, hydrogenDensity } from './gas';
-import { stromgrenRadiusPc } from './ionization';
-import { FRONT_DIRECTIONS, nebulaeNear, nebulaFor, nebulaGasAt, type Nebula } from './nebula';
+import {
+  photoevaporatedColumn,
+  photoevaporationNorm,
+  spitzerRadiusPc,
+  stromgrenRadiusPc,
+  sweptCavityRadiusPc,
+} from './ionization';
+import {
+  FRONT_DIRECTIONS,
+  marchNebulaFront,
+  nebulaeNear,
+  nebulaFor,
+  nebulaGasAt,
+  type Nebula,
+} from './nebula';
 import { ismMetallicity } from './population';
 import { landmarkWeight } from './regions';
 
@@ -249,5 +263,90 @@ describe('the champagne residue', () => {
     expect(rays).toBeGreaterThan(20);
     expect(nearOpening).toBeGreaterThan(0);
     expect(nearFront / nearOpening).toBeLessThan(0.5);
+  });
+});
+
+describe('photoevaporation', () => {
+  it('takes a column off a stalled face set by the flux and the age', () => {
+    // Bertoldi & McKee's boundary layer: an O star's 10⁴⁹ photons a
+    // second at ten parsecs, a layer half a parsec thick, three
+    // million years — n_i ≈ 46 cm⁻³ streaming at the sound speed, a
+    // column of ~4.4 × 10²¹ cm⁻², two magnitudes of visual
+    // extinction's worth of neutral gas.
+    const norm = photoevaporationNorm(1e49, 3);
+    const column = photoevaporatedColumn(norm, 10, 0.5);
+    expect(column * CM_PER_PC).toBeGreaterThan(3.5e21);
+    expect(column * CM_PER_PC).toBeLessThan(5.5e21);
+    expect(photoevaporatedColumn(norm, 20, 1)).toBeCloseTo(column / (2 * Math.SQRT2), 6);
+    expect(photoevaporationNorm(1e49, 0)).toBe(0);
+  });
+
+  it('eats thin gas far and dense clumps barely, so trunks live about a megayear', () => {
+    // Along every ray a clump stopped short of the mean front, the
+    // face moves outward and never inward. Young, every stalled ray
+    // still stands as a trunk; by a megayear the thin ones have opened
+    // to the front and the densest survive; at the regions' own ages
+    // — the Pillars of Creation are a couple of megayears from gone —
+    // most have been eaten through. Over the lit regions within three
+    // kiloparsecs of home.
+    const lit = cloudsNear(HOME_POSITION, 3000)
+      .map((cloud) => nebulaFor(cloud))
+      .filter((n): n is Nebula => n !== null && n.photonRate > 0 && n.bubbleRadiusPc > 0);
+    const stalledRays = new Map<Nebula, number[]>();
+    let stalled = 0;
+    for (const nebula of lit) {
+      const budgetOnly = marchNebulaFront(nebula, 0).front;
+      const evaporated = marchNebulaFront(nebula).front;
+      const rays: number[] = [];
+      for (let i = 0; i < FRONT_DIRECTIONS; i++) {
+        expect(evaporated[i]).toBeGreaterThanOrEqual(budgetOnly[i] - 1e-9);
+        expect(nebula.frontPc[i]).toBe(evaporated[i]);
+        if (budgetOnly[i] < 0.5 * nebula.bubbleRadiusPc) rays.push(i);
+      }
+      if (rays.length) stalledRays.set(nebula, rays);
+      stalled += rays.length;
+    }
+    const survivorsAt = (ageMyr?: number): number => {
+      let count = 0;
+      for (const [nebula, rays] of stalledRays) {
+        const front = marchNebulaFront(nebula, ageMyr).front;
+        for (const i of rays) if (front[i] < 0.9 * nebula.bubbleRadiusPc) count++;
+      }
+      return count;
+    };
+    expect(stalled).toBeGreaterThan(50);
+    const young = survivorsAt(0.3);
+    const megayear = survivorsAt(1);
+    const aged = survivorsAt();
+    expect(young).toBeGreaterThan(0.9 * stalled);
+    expect(megayear).toBeGreaterThan(0.3 * stalled);
+    expect(megayear).toBeLessThan(young);
+    expect(aged).toBeLessThan(0.5 * stalled);
+  }, 30000);
+
+  it('lets winds and supernovae carry a region past the Spitzer front', () => {
+    // A region's edge is whichever has gone further: the ionized gas's
+    // own D-type expansion, or the shell its wind and supernovae have
+    // swept through the natal cloud. Every lit region stands at least
+    // at both, and somewhere near home a supernova has won.
+    const lit = cloudsNear(HOME_POSITION, 3000)
+      .map((cloud) => nebulaFor(cloud))
+      .filter((n): n is Nebula => n !== null && n.photonRate > 0 && n.stromgrenRadiusPc > 0);
+    let blown = 0;
+    for (const nebula of lit) {
+      const extent = Math.max(...nebula.halfExtentsPc);
+      const spitzer = spitzerRadiusPc(nebula.stromgrenRadiusPc, nebula.ageGyr * 1000);
+      const swept = sweptCavityRadiusPc(
+        nebula.sources[0].luminosity,
+        nebula.sources[0].tEff,
+        nebula.ageGyr * 1000,
+        nebula.sourceHydrogenDensity,
+        nebula.supernovae,
+      );
+      expect(nebula.bubbleRadiusPc).toBeCloseTo(Math.min(Math.max(spitzer, swept), extent), 6);
+      if (swept > spitzer && nebula.bubbleRadiusPc > spitzer) blown++;
+    }
+    expect(lit.length).toBeGreaterThan(20);
+    expect(blown).toBeGreaterThan(0);
   });
 });

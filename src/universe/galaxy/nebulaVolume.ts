@@ -23,6 +23,9 @@ import {
   sweptShellBoost,
   VENT_CONFINEMENT,
   ventResidual,
+  boundaryLayerPc,
+  photoevaporatedColumn,
+  photoevaporationNorm,
   WIND_CAVITY_RESIDUAL,
   WIND_REACH,
   WIND_STALL,
@@ -297,6 +300,12 @@ export interface NebulaBakePlan {
   /** The group's output, photons s⁻¹ — what closes the emission
    *  books in the finish. */
   photonRate: number;
+  /** The mean front, pc: the region's radius at its age. A ray a
+   *  clump stops short of it photoevaporates toward it. */
+  bubblePc: number;
+  /** photoevaporationNorm at this region's budget and age; zero
+   *  disarms the evaporation. */
+  evaporationNorm: number;
   /** The dominant source's temperature, K — the line grid's first
    *  axis, alongside the plan's metallicity and the cells' own U. */
   sourceTeff: number;
@@ -399,6 +408,8 @@ export function planNebulaBake(
     ionizePc,
     budget,
     photonRate,
+    bubblePc: nebula?.bubbleRadiusPc ?? 0,
+    evaporationNorm: nebula ? photoevaporationNorm(nebula.photonRate, nebula.ageGyr * 1000) : 0,
     sourceTeff: source?.tEff ?? 40000,
     growth,
     dilution,
@@ -490,26 +501,47 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         let recombined = 0;
         let tau = 0;
         let frontR = -1;
+        // The face: the front after the flux has eaten into whatever
+        // stopped it, or the front itself where nothing did.
+        let face = -1;
+        let column = 0;
         let ventR = 0;
         if (reachable) {
           // One walk in the evolved region's own space. While the
           // budget lasts, the gas here is the natal field read at
           // contracted radius r/growth and diluted — the Spitzer
           // interior — so the budget integral in those coordinates is
-          // exactly the natal one. Where it runs out the front stands,
-          // the swept shell just past it, the untouched cloud beyond.
+          // exactly the natal one. Where it runs out the front stands;
+          // short of the mean front a clump stopped it, and the flux
+          // photoevaporates the face by the column the age allows —
+          // the swept shell just past the face, the untouched cloud
+          // beyond.
           for (let s = 0; s < steps; s++) {
             const r = (s + 0.5) * ds;
-            if (frontR < 0) {
+            if (face < 0) {
               const rn = r / growth;
               const px = (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5;
               const py = (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5;
               const pz = (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5;
               const n = sample(gas, size, px, py, pz);
-              // Recombinations in this shell of the ray's own solid
-              // angle, in natal coordinates: dr' = dr / growth.
-              recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
-              if (recombined >= budget) frontR = r;
+              if (frontR < 0) {
+                // Recombinations in this shell of the ray's own solid
+                // angle, in natal coordinates: dr' = dr / growth.
+                recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
+                if (recombined >= budget) {
+                  frontR = r;
+                  column =
+                    r < plan.bubblePc
+                      ? photoevaporatedColumn(plan.evaporationNorm, r, boundaryLayerPc(r, cellPc))
+                      : 0;
+                  if (column <= 0) face = r;
+                }
+              } else {
+                // The clump the face eats is neutral natal gas: its
+                // density and its length are the cloud's own.
+                column -= n * (ds / growth);
+                if (column <= 0 || r >= plan.bubblePc) face = r;
+              }
               // The beam crosses the ionized interior's thinned dust —
               // the same depletion the stored dust carries there.
               tau +=
@@ -518,7 +550,7 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
               // The opening: the last place the uncontracted cloud
               // still held the interior in.
               if (
-                frontR < 0 &&
+                face < 0 &&
                 plan.ventConfineDensity > 0 &&
                 sample(
                   gas,
@@ -531,7 +563,7 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
                 ventR = r;
               }
             } else {
-              const swept = r <= frontR * (1 + SHELL_WIDTH) ? shellBoost : 1;
+              const swept = r <= face * (1 + SHELL_WIDTH) ? shellBoost : 1;
               const px = (ionizePc[0] + ux * r + boxPc) / cellPc - 0.5;
               const py = (ionizePc[1] + uy * r + boxPc) / cellPc - 0.5;
               const pz = (ionizePc[2] + uz * r + boxPc) / cellPc - 0.5;
@@ -577,17 +609,20 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         // eroded shape. The skin is never baked thinner than a cell,
         // or a sub-cell shell aliases into stripes.
         const spent = budget > 0 && reachable ? recombined / budget : Infinity;
-        let frontLoc = frontR;
-        if (frontR >= 0 && plan.erosionPivotDensity > 0) {
+        // A cell the walk reached while the face was still being eaten
+        // toward it stands inside the evaporated span: interior gas.
+        const evaporated = frontR >= 0 && face < 0;
+        let frontLoc = face;
+        if (face >= 0 && plan.erosionPivotDensity > 0) {
           const ambient = sample(
             gas,
             size,
-            (ionizePc[0] + ux * frontR + boxPc) / cellPc - 0.5,
-            (ionizePc[1] + uy * frontR + boxPc) / cellPc - 0.5,
-            (ionizePc[2] + uz * frontR + boxPc) / cellPc - 0.5,
+            (ionizePc[0] + ux * face + boxPc) / cellPc - 0.5,
+            (ionizePc[1] + uy * face + boxPc) / cellPc - 0.5,
+            (ionizePc[2] + uz * face + boxPc) / cellPc - 0.5,
           );
           frontLoc =
-            frontR *
+            face *
             Math.min(
               EROSION_REACH,
               Math.max(
@@ -597,22 +632,24 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
             );
         }
         const skin =
-          frontR >= 0
+          face >= 0
             ? distancePc <= frontLoc
               ? 1
               : Math.exp(
                   -(distancePc - frontLoc) /
                     Math.max(cellPc, SHELL_SKIN_SHARE * SHELL_WIDTH * frontLoc),
                 )
-            : 0;
+            : evaporated
+              ? 1
+              : 0;
         const ionized = Math.max(skin, Math.max(0, Math.min(1, (1 - spent) / FRONT_SOFTNESS)));
         const transmittance = Math.exp(-tau);
         // The gas standing at this cell now: the diluted interior read
         // from its natal position, the swept shell just past the
-        // eroded front, or the cloud as it was.
-        const inBubble = reachable && frontR < 0;
+        // eroded face, or the cloud as it was.
+        const inBubble = reachable && (frontR < 0 || evaporated);
         const inShell =
-          frontR >= 0 && distancePc > frontLoc && distancePc <= frontLoc * (1 + SHELL_WIDTH);
+          face >= 0 && distancePc > frontLoc && distancePc <= frontLoc * (1 + SHELL_WIDTH);
         const rn = distancePc / growth;
         // The star's wind has re-plumbed the interior: the cavity holds
         // an optically empty residue, its swept wall the mass the wind

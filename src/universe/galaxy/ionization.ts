@@ -69,13 +69,48 @@ const IONIZED_SOUND_SPEED_PC_PER_MYR = 10.2;
  * grows — ionization balance holds n ∝ R^{-3/2}, so the same photon
  * budget fills the whole expanded volume exactly — which is why an
  * evolved region is a great glowing shell and not a pinprick. Winds
- * and supernovae push harder still past a few Myr; this is the floor.
+ * and supernovae push harder still past a few Myr: the region stands
+ * at whichever of this and their swept shell has gone further.
  */
 export function spitzerRadiusPc(stromgrenPc: number, ageMyr: number): number {
   if (stromgrenPc <= 0) return 0;
   if (ageMyr <= 0) return stromgrenPc;
   const driven = (7 * IONIZED_SOUND_SPEED_PC_PER_MYR * ageMyr) / (4 * stromgrenPc);
   return stromgrenPc * (1 + driven) ** (4 / 7);
+}
+
+/**
+ * Photoevaporation of a face the front has stalled at. A dense clump
+ * inside the region stops its ray's budget, but the flux still falls on
+ * its face and drives an ionized boundary layer off it at the sound
+ * speed (Bertoldi & McKee): the layer's density is set by ionization
+ * balance in a layer one skin thick, n ≈ √(F / α_B ℓ), and the face
+ * loses that density at c_i for the region's whole age. What the face
+ * loses is a column, so thin gas is eaten far and a dense clump barely
+ * at all — which is the trunk pointing back at its star, and the
+ * cometary head. The norm carries everything but the geometry:
+ * √(Q / 4π α_B) · c_i · t, in the column units the marches sum
+ * (cm⁻³ · pc), leaving 1 / (r √ℓ) to the face.
+ */
+export function photoevaporationNorm(photonRate: number, ageMyr: number): number {
+  if (photonRate <= 0 || ageMyr <= 0) return 0;
+  const soundSpeedCmPerS = (IONIZED_SOUND_SPEED_PC_PER_MYR * CM_PER_PC) / MYR;
+  return (
+    (Math.sqrt(photonRate / (4 * Math.PI * ALPHA_B)) * soundSpeedCmPerS * ageMyr * MYR) /
+    CM_PER_PC ** 2.5
+  );
+}
+
+/** The column a face at radius rPc with a boundary layer layerPc thick
+ *  loses, cm⁻³ · pc, from the norm above. */
+export function photoevaporatedColumn(norm: number, rPc: number, layerPc: number): number {
+  return rPc > 0 && layerPc > 0 ? norm / (rPc * Math.sqrt(layerPc)) : 0;
+}
+
+/** The ionized boundary layer's thickness on a face at radius rPc: the
+ *  front's skin, never thinner than the resolution the march has. */
+export function boundaryLayerPc(rPc: number, floorPc: number): number {
+  return Math.max(floorPc, SHELL_SKIN_SHARE * SHELL_WIDTH * rPc);
 }
 
 /** Share of the star's radiative momentum its line-driven wind carries

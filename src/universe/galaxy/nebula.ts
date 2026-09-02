@@ -19,7 +19,10 @@ import { ismMetallicity } from './population';
 import {
   DUST_DEPLETION,
   hydrogenBetaLuminosity,
+  boundaryLayerPc,
   IONIZATION_REACH,
+  photoevaporatedColumn,
+  photoevaporationNorm,
   RECOMBINATION_SCALE,
   SHELL_SKIN_SHARE,
   SHELL_WIDTH,
@@ -197,12 +200,17 @@ function nebulaRayToward(ux: number, uy: number, uz: number): number {
  * flow vents: the natal field read in contracted coordinates,
  * recombinations in the ray's own solid angle summed until the group's
  * photons are spent — the bake's budget integral, one ray per
- * direction — and the last radius before the front at which the
- * uncontracted cloud still confined the interior. A ray that never
+ * direction — then, where a clump stopped the ray short of the mean
+ * front, the face photoevaporated by the column the flux takes off it
+ * over the region's age; and the last radius before the face at which
+ * the uncontracted cloud still confined the interior. A ray that never
  * spends its budget within the reach a front can have stands at that
- * reach.
+ * reach. An age of zero marches the budget alone.
  */
-function marchFront(nebula: Nebula): { front: Float32Array; vent: Float32Array } {
+export function marchNebulaFront(
+  nebula: Nebula,
+  ageMyr = nebula.ageGyr * 1000,
+): { front: Float32Array; vent: Float32Array } {
   const front = new Float32Array(FRONT_DIRECTIONS);
   const vent = new Float32Array(FRONT_DIRECTIONS);
   const source = nebula.sources[0];
@@ -213,6 +221,7 @@ function marchFront(nebula: Nebula): { front: Float32Array; vent: Float32Array }
   const reach = IONIZATION_REACH * nebula.bubbleRadiusPc;
   const ds = reach / FRONT_STEPS;
   const confining = VENT_CONFINEMENT * nebula.sourceHydrogenDensity * dilution;
+  const evaporationNorm = photoevaporationNorm(nebula.photonRate, ageMyr);
   const hydrogenAt = (r: number, ux: number, uy: number, uz: number): number =>
     hydrogenDensity(
       cloudLocalDensity(cloud, source.dxPc + ux * r, source.dyPc + uy * r, source.dzPc + uz * r) *
@@ -224,15 +233,28 @@ function marchFront(nebula: Nebula): { front: Float32Array; vent: Float32Array }
     const uy = FRONT_AXES[i * 3 + 1];
     const uz = FRONT_AXES[i * 3 + 2];
     let recombined = 0;
+    let spent = false;
+    let column = 0;
     front[i] = reach;
     for (let s = 0; s < FRONT_STEPS; s++) {
       const r = (s + 0.5) * ds;
       const rn = r / growth;
       const n = hydrogenAt(rn, ux, uy, uz);
-      recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
-      if (recombined >= budget) {
+      if (!spent) {
+        recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
+        if (recombined >= budget) {
+          spent = true;
+          front[i] = r;
+          if (r >= nebula.bubbleRadiusPc) break;
+          column = photoevaporatedColumn(evaporationNorm, r, boundaryLayerPc(r, ds));
+          if (column <= 0) break;
+        }
+      } else {
+        // The clump the face eats is neutral natal gas: its density
+        // and its length are the cloud's own, not the interior's.
+        column -= n * (ds / growth);
         front[i] = r;
-        break;
+        if (column <= 0 || r >= nebula.bubbleRadiusPc) break;
       }
       if (hydrogenAt(r, ux, uy, uz) >= confining) vent[i] = r;
     }
@@ -570,11 +592,28 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
   const stromgren = stromgrenRadiusPc(photonRate, sourceHydrogenDensity);
   const halfExtentsPc = cloudHalfExtentsPc(cloud);
   // An 11 Myr region is not its natal pinprick: the front has been
-  // driven out for its whole age. The cloud bounds what it can light.
-  const bubbleRadiusPc = Math.min(
-    spitzerRadiusPc(stromgren, ageGyr * 1000),
-    Math.max(...halfExtentsPc),
-  );
+  // driven out for its whole age, and where the wind and the group's
+  // supernovae have swept the natal cloud further than the ionized
+  // gas's own pressure could, the shell they ploughed is the region's
+  // edge — a superbubble, the front trapped in its wall. The cloud
+  // bounds what it can light.
+  const ageMyr = ageGyr * 1000;
+  const bubbleRadiusPc =
+    stromgren > 0
+      ? Math.min(
+          Math.max(
+            spitzerRadiusPc(stromgren, ageMyr),
+            sweptCavityRadiusPc(
+              lighting[0]?.luminosity ?? 0,
+              lighting[0]?.tEff ?? 0,
+              ageMyr,
+              sourceHydrogenDensity,
+              supernovae,
+            ),
+          ),
+          Math.max(...halfExtentsPc),
+        )
+      : 0;
   // The wind — and every supernova the group has had — ploughs the
   // *diluted* interior the expansion left behind. Capped just inside
   // the front: a supernova-driven shell catches the ionization front
@@ -585,7 +624,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     sweptCavityRadiusPc(
       lighting[0]?.luminosity ?? 0,
       lighting[0]?.tEff ?? 0,
-      ageGyr * 1000,
+      ageMyr,
       sourceHydrogenDensity * growth ** -1.5,
       supernovae,
     ),
@@ -618,7 +657,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     frontReachPc: 0,
     scatteredShare: 0,
   };
-  const { front, vent } = marchFront(nebula);
+  const { front, vent } = marchNebulaFront(nebula);
   nebula.frontPc = front;
   nebula.ventPc = vent;
   nebula.frontReachPc = nebula.frontPc.reduce((best, front) => Math.max(best, front), 0);

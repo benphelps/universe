@@ -118,6 +118,8 @@ uniform float uWindCavityPc;
 uniform float uWindPivotCarve;
 uniform float uVentConfineCarve;
 uniform float uErosionPivotCarve;
+uniform float uBubblePc;
+uniform float uEvapNorm;
 out vec4 outCell;
 
 float fieldAt(vec3 posPc) {
@@ -140,6 +142,10 @@ void main() {
   float recombined = 0.0;
   float tau = 0.0;
   float frontR = -1.0;
+  // The face: the front after the flux has eaten into whatever
+  // stopped it short of the mean front, mirroring the CPU march.
+  float face = -1.0;
+  float column = 0.0;
   float ventR = 0.0;
   if (reachable) {
     int steps = max(1, int(ceil(dist / uStepPc)));
@@ -147,16 +153,27 @@ void main() {
     for (int s = 0; s < 512; s++) {
       if (s >= steps) break;
       float r = (float(s) + 0.5) * ds;
-      if (frontR < 0.0) {
+      if (face < 0.0) {
         float rn = r / uGrowth;
         float carve = fieldAt(uIonizePc + dir * rn);
-        recombined += carve * carve * uRecombFrac * rn * rn * (ds / uGrowth);
-        if (recombined >= 1.0) frontR = r;
+        if (frontR < 0.0) {
+          recombined += carve * carve * uRecombFrac * rn * rn * (ds / uGrowth);
+          if (recombined >= 1.0) {
+            frontR = r;
+            column = r < uBubblePc
+              ? uEvapNorm / (r * sqrt(max(uCellPc, ${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * r)))
+              : 0.0;
+            if (column <= 0.0) face = r;
+          }
+        } else {
+          column -= carve * (ds / uGrowth);
+          if (column <= 0.0 || r >= uBubblePc) face = r;
+        }
         tau += carve * uDilution * uTauScale * ds * ${f(1 / DUST_DEPLETION)};
-        if (frontR < 0.0 && uVentConfineCarve > 0.0 &&
+        if (face < 0.0 && uVentConfineCarve > 0.0 &&
             fieldAt(uIonizePc + dir * r) >= uVentConfineCarve) ventR = r;
       } else {
-        float swept = r <= frontR * ${f(1 + SHELL_WIDTH)} ? uShellBoost : 1.0;
+        float swept = r <= face * ${f(1 + SHELL_WIDTH)} ? uShellBoost : 1.0;
         tau += fieldAt(uIonizePc + dir * r) * swept * uTauScale * ds;
       }
     }
@@ -174,28 +191,31 @@ void main() {
   }
 
   float spent = reachable ? recombined : 2.0;
-  // The eroded front and its ionized skin, mirroring the CPU march:
-  // the mean front modulated by the uncontracted ambient at its own
-  // radius, the rim glowing along the eroded shape, the skin never
-  // thinner than a cell.
-  float frontLoc = frontR;
-  if (frontR >= 0.0 && uErosionPivotCarve > 0.0) {
-    float ambient = fieldAt(uIonizePc + dir * frontR);
-    frontLoc = frontR * clamp(
+  // A cell reached while the face was still being eaten toward it
+  // stands inside the evaporated span: interior gas.
+  bool evaporated = frontR >= 0.0 && face < 0.0;
+  // The eroded face and its ionized skin, mirroring the CPU march:
+  // the face modulated by the uncontracted ambient at its own radius,
+  // the rim glowing along the eroded shape, the skin never thinner
+  // than a cell.
+  float frontLoc = face;
+  if (face >= 0.0 && uErosionPivotCarve > 0.0) {
+    float ambient = fieldAt(uIonizePc + dir * face);
+    frontLoc = face * clamp(
       pow(uErosionPivotCarve / max(1e-9, ambient), ${f(1 / 3)}),
       ${f(EROSION_STALL)}, ${f(EROSION_REACH)});
   }
-  float skin = frontR >= 0.0
+  float skin = face >= 0.0
     ? (dist <= frontLoc
         ? 1.0
         : exp(-(dist - frontLoc) /
             max(uCellPc, ${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * frontLoc)))
-    : 0.0;
+    : (evaporated ? 1.0 : 0.0);
   float ionized = max(skin, clamp((1.0 - spent) * ${f(1 / FRONT_SOFTNESS)}, 0.0, 1.0));
   float transmittance = exp(-tau);
-  bool inBubble = reachable && frontR < 0.0;
+  bool inBubble = reachable && (frontR < 0.0 || evaporated);
   bool inShell =
-    frontR >= 0.0 && dist > frontLoc && dist <= frontLoc * ${f(1 + SHELL_WIDTH)};
+    face >= 0.0 && dist > frontLoc && dist <= frontLoc * ${f(1 + SHELL_WIDTH)};
   float carveHere = inBubble
     ? fieldAt(uIonizePc + dir * (dist / uGrowth)) * uDilution
     : texelFetch(uField, cell, 0).r * (inShell ? uShellBoost : 1.0);
@@ -401,6 +421,10 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
       at(marchProgram, 'uErosionPivotCarve'),
       plan.erosionPivotDensity > 0 ? plan.erosionPivotDensity / scales.gasScale : 0,
     );
+    gl.uniform1f(at(marchProgram, 'uBubblePc'), plan.bubblePc);
+    // The evaporated column in carve units: the norm's cm⁻³·pc per
+    // unit carve, with 1 / (r √ℓ) left to the shader.
+    gl.uniform1f(at(marchProgram, 'uEvapNorm'), plan.evaporationNorm / scales.gasScale);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlasTexture, 0);
     // One draw for the whole atlas. Slicing it per layer with a flush
     // between — yield points for the frame renderer sharing this GPU —
