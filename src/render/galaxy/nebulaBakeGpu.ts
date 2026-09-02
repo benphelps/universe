@@ -50,8 +50,9 @@ import { glslFloat as f } from '../glsl/format';
  * doubles first, because the raw factors overflow the 32-bit floats a
  * shader runs on. The field texture holds the dimensionless carve and
  * leaves the per-cloud scale to a uniform for the same reason. Output
- * comes back as float grids and goes through the shared finish, so the
- * quantization and the emission books are the CPU path's own.
+ * comes home a strip of tiles at a time as float grids and goes
+ * through the shared finish, so the quantization and the emission
+ * books are the CPU path's own.
  */
 export interface NebulaGpuBaker {
   bake(
@@ -333,6 +334,33 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.getUniformLocation(program, name);
   const framebuffer = gl.createFramebuffer();
   let permTexture: WebGLTexture | null = null;
+  // Storage is immutable once allocated, so a grid's field and atlas
+  // textures are made once per size and kept for the baker's life: a
+  // residency of the same-sized bakes reuses them instead of
+  // allocating and freeing tens of megabytes of GPU memory each.
+  const storage = new Map<number, { field: WebGLTexture; atlas: WebGLTexture; cols: number; rows: number }>();
+  const texturesFor = (size: number): { field: WebGLTexture; atlas: WebGLTexture; cols: number; rows: number } => {
+    const kept = storage.get(size);
+    if (kept) return kept;
+    const field = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, field);
+    gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R16F, size, size, size);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_3D, null);
+    const cols = Math.ceil(Math.sqrt(size));
+    const rows = Math.ceil(size / cols);
+    const atlas = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, atlas);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, cols * size, rows * size);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    const made = { field, atlas, cols, rows };
+    storage.set(size, made);
+    return made;
+  };
 
   const bake = (
     cloud: MolecularCloud,
@@ -360,15 +388,7 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
 
     // The natal field, layer by layer. Half floats hold the carve
     // comfortably — it is dimensionless and order unity.
-    const fieldTexture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_3D, fieldTexture);
-    gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R16F, size, size, size);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-    gl.bindTexture(gl.TEXTURE_3D, null);
+    const { field: fieldTexture, atlas: atlasTexture, cols, rows } = texturesFor(size);
 
     gl.useProgram(fieldProgram);
     gl.activeTexture(gl.TEXTURE0);
@@ -392,14 +412,7 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    // The march, every cell at once, layers tiled onto one atlas so a
-    // single readback carries the whole volume home.
-    const cols = Math.ceil(Math.sqrt(size));
-    const rows = Math.ceil(size / cols);
-    const atlasTexture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
-    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, cols * size, rows * size);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    // The march, every cell at once, layers tiled onto one atlas.
     gl.useProgram(marchProgram);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_3D, fieldTexture);
@@ -440,16 +453,11 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.viewport(0, 0, cols * size, rows * size);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    const atlas = new Float32Array(cols * size * rows * size * 4);
-    gl.readPixels(0, 0, cols * size, rows * size, gl.RGBA, gl.FLOAT, atlas);
-    gl.bindTexture(gl.TEXTURE_3D, null);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteTexture(fieldTexture);
-    gl.deleteTexture(atlasTexture);
-    const error = gl.getError();
-    if (error !== gl.NO_ERROR) throw new Error(`GL error ${error}`);
-
-    // De-tile the atlas into the same grids the CPU march hands over.
+    // Home one row of tiles at a time, de-tiled straight into the same
+    // grids the CPU march hands over: the readback buffer is a strip a
+    // tile high rather than the whole atlas — a near-grade grid's atlas
+    // is seventy megabytes of floats, and the fields it fills are as
+    // large again.
     const cells = size ** 3;
     const fields: NebulaBakeFields = {
       dust: new Float32Array(cells),
@@ -458,26 +466,40 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
       transmittance: new Float32Array(cells),
     };
     const atlasWidth = cols * size;
-    for (let k = 0; k < size; k++) {
-      const tileX = (k % cols) * size;
-      const tileY = Math.floor(k / cols) * size;
-      for (let j = 0; j < size; j++) {
-        const row = ((tileY + j) * atlasWidth + tileX) * 4;
-        const out = (k * size + j) * size;
-        for (let i = 0; i < size; i++) {
-          fields.dust[out + i] = atlas[row + i * 4];
-          fields.ionized[out + i] = atlas[row + i * 4 + 1];
-          fields.hardness[out + i] = atlas[row + i * 4 + 2];
-          fields.transmittance[out + i] = atlas[row + i * 4 + 3];
+    const strip = new Float32Array(atlasWidth * size * 4);
+    for (let tileRow = 0; tileRow < rows; tileRow++) {
+      gl.readPixels(0, tileRow * size, atlasWidth, size, gl.RGBA, gl.FLOAT, strip);
+      for (let column = 0; column < cols; column++) {
+        const k = tileRow * cols + column;
+        if (k >= size) break;
+        const tileX = column * size;
+        for (let j = 0; j < size; j++) {
+          const row = (j * atlasWidth + tileX) * 4;
+          const out = (k * size + j) * size;
+          for (let i = 0; i < size; i++) {
+            fields.dust[out + i] = strip[row + i * 4];
+            fields.ionized[out + i] = strip[row + i * 4 + 1];
+            fields.hardness[out + i] = strip[row + i * 4 + 2];
+            fields.transmittance[out + i] = strip[row + i * 4 + 3];
+          }
         }
       }
     }
+    gl.bindTexture(gl.TEXTURE_3D, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) throw new Error(`GL error ${error}`);
     return finishNebulaBake(plan, fields);
   };
 
   return {
     bake,
     dispose: () => {
+      for (const { field, atlas } of storage.values()) {
+        gl.deleteTexture(field);
+        gl.deleteTexture(atlas);
+      }
+      storage.clear();
       gl.getExtension('WEBGL_lose_context')?.loseContext();
     },
   };
