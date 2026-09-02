@@ -6,19 +6,30 @@ import { evolve } from '../star/evolution';
 import { ionizingPhotonRate } from '../star/ionizing';
 import { NEBULA_MEAN_U, nebulaLineSum } from './nebulaLines';
 import {
+  cloudDustFactor,
   cloudHalfExtentsPc,
   cloudLocalDensity,
+  cloudReachPc,
   cloudsNear,
   type MolecularCloud,
 } from './clouds';
-import type { GalacticPosition } from './density';
-import { cloudHydrogenDensity } from './gas';
+import { DUST_ALBEDO, DUST_OPACITY_PER_PC, type GalacticPosition } from './density';
+import { cloudHydrogenDensity, hydrogenDensity } from './gas';
 import { ismMetallicity } from './population';
 import {
+  DUST_DEPLETION,
   hydrogenBetaLuminosity,
+  IONIZATION_REACH,
+  RECOMBINATION_SCALE,
+  SHELL_SKIN_SHARE,
+  SHELL_WIDTH,
   spitzerRadiusPc,
   stromgrenRadiusPc,
   sweptCavityRadiusPc,
+  sweptShellBoost,
+  WIND_CAVITY_RESIDUAL,
+  WIND_WALL_BOOST,
+  WIND_WALL_WIDTH,
 } from './ionization';
 
 /**
@@ -91,6 +102,204 @@ export interface Nebula {
   kind: NebulaKind;
   /** Half-extents of the density field, pc — the volume's bounds. */
   halfExtentsPc: [number, number, number];
+  /** Dust per unit of the cloud's local field where it sits — the
+   *  disk's dust at that place, constant over the cloud, lifted out of
+   *  every march through it. */
+  dustFactor: number;
+  /** The front's radius in each of FRONT_DIRECTIONS, pc: the group's
+   *  budget spent along that ray through the natal field in contracted
+   *  coordinates, exactly as the bake spends it, so the region's
+   *  directional shape — venting down thin channels, stalling against
+   *  dense ones — is known wherever a per-cell march is too dear.
+   *  Empty when nothing ionizes. */
+  frontPc: Float32Array;
+  /** The farthest any marched ray reaches, pc: beyond it the cloud
+   *  stands natal, and a read there need not ask which ray. */
+  frontReachPc: number;
+  /** The share of the group's continuum its dust catches and sends
+   *  back out, at first order: the cloud's re-plumbed dust marched
+   *  from the illuminant with the same flux floor the volume shines
+   *  with, times the grains' albedo. What decides whether the object
+   *  is a reflection nebula at all, and the scatter budget every
+   *  rendering of it spends. */
+  scatteredShare: number;
+}
+
+/** Directions the front and the interception are marched along, and
+ *  the steps each ray takes: a few thousand field reads per nebula,
+ *  comparable to drawing its group. */
+const FRONT_DIRECTIONS = 64;
+const FRONT_STEPS = 64;
+
+/** A Fibonacci sphere of unit vectors, xyz per direction. */
+const FRONT_AXES: Float32Array = (() => {
+  const axes = new Float32Array(FRONT_DIRECTIONS * 3);
+  for (let i = 0; i < FRONT_DIRECTIONS; i++) {
+    const z = 1 - (2 * i + 1) / FRONT_DIRECTIONS;
+    const ring = Math.sqrt(1 - z * z);
+    const azimuth = i * 2.399963;
+    axes[i * 3] = ring * Math.cos(azimuth);
+    axes[i * 3 + 1] = ring * Math.sin(azimuth);
+    axes[i * 3 + 2] = z;
+  }
+  return axes;
+})();
+
+/** Which marched ray is nearest each cell of a latitude–longitude
+ *  grid, so a lookup is one index rather than a search. */
+const FRONT_LOOKUP_COLS = 48;
+const FRONT_LOOKUP_ROWS = 24;
+const FRONT_LOOKUP: Uint8Array = (() => {
+  const lookup = new Uint8Array(FRONT_LOOKUP_COLS * FRONT_LOOKUP_ROWS);
+  for (let row = 0; row < FRONT_LOOKUP_ROWS; row++) {
+    const latitude = ((row + 0.5) / FRONT_LOOKUP_ROWS - 0.5) * Math.PI;
+    for (let col = 0; col < FRONT_LOOKUP_COLS; col++) {
+      const longitude = ((col + 0.5) / FRONT_LOOKUP_COLS) * 2 * Math.PI;
+      const ux = Math.cos(latitude) * Math.cos(longitude);
+      const uy = Math.cos(latitude) * Math.sin(longitude);
+      const uz = Math.sin(latitude);
+      let best = -2;
+      for (let i = 0; i < FRONT_DIRECTIONS; i++) {
+        const along =
+          ux * FRONT_AXES[i * 3] + uy * FRONT_AXES[i * 3 + 1] + uz * FRONT_AXES[i * 3 + 2];
+        if (along > best) {
+          best = along;
+          lookup[row * FRONT_LOOKUP_COLS + col] = i;
+        }
+      }
+    }
+  }
+  return lookup;
+})();
+
+/** The front's radius toward a direction from the source, pc: the
+ *  nearest marched ray's. */
+function nebulaFrontToward(nebula: Nebula, ux: number, uy: number, uz: number): number {
+  const row = Math.min(
+    FRONT_LOOKUP_ROWS - 1,
+    Math.floor((Math.asin(Math.max(-1, Math.min(1, uz))) / Math.PI + 0.5) * FRONT_LOOKUP_ROWS),
+  );
+  let longitude = Math.atan2(uy, ux);
+  if (longitude < 0) longitude += 2 * Math.PI;
+  const col = Math.min(FRONT_LOOKUP_COLS - 1, Math.floor((longitude / (2 * Math.PI)) * FRONT_LOOKUP_COLS));
+  return nebula.frontPc[FRONT_LOOKUP[row * FRONT_LOOKUP_COLS + col]];
+}
+
+/**
+ * Where the front stands along each sample direction: the natal field
+ * read in contracted coordinates, recombinations in the ray's own
+ * solid angle summed until the group's photons are spent — the bake's
+ * budget integral, one ray per direction. A ray that never spends its
+ * budget within the reach a front can have stands at that reach.
+ */
+function marchFront(nebula: Nebula): Float32Array {
+  const front = new Float32Array(FRONT_DIRECTIONS);
+  const source = nebula.sources[0];
+  if (!source || nebula.bubbleRadiusPc <= 0) return front;
+  const { cloud } = nebula;
+  const { growth } = nebulaGrowth(nebula);
+  const budget = nebula.photonRate / (4 * Math.PI);
+  const reach = IONIZATION_REACH * nebula.bubbleRadiusPc;
+  const ds = reach / FRONT_STEPS;
+  for (let i = 0; i < FRONT_DIRECTIONS; i++) {
+    const ux = FRONT_AXES[i * 3];
+    const uy = FRONT_AXES[i * 3 + 1];
+    const uz = FRONT_AXES[i * 3 + 2];
+    let recombined = 0;
+    front[i] = reach;
+    for (let s = 0; s < FRONT_STEPS; s++) {
+      const r = (s + 0.5) * ds;
+      const rn = r / growth;
+      const n = hydrogenDensity(
+        cloudLocalDensity(cloud, source.dxPc + ux * rn, source.dyPc + uy * rn, source.dzPc + uz * rn) *
+          nebula.dustFactor,
+        nebula.metallicity,
+      );
+      recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
+      if (recombined >= budget) {
+        front[i] = r;
+        break;
+      }
+    }
+  }
+  return front;
+}
+
+/** The spread of the natal group about its cloud's centre, as a
+ *  fraction of the cloud radius — where the members are drawn, and
+ *  the size the group's light shines from as a source. */
+export const MEMBER_SPREAD = 0.35;
+
+/** Spitzer growth: the front at the group's age is the natal front
+ *  scaled by this factor, its interior diluted by growth^{-3/2} —
+ *  which conserves the recombination budget exactly (n²V invariant),
+ *  so the natal march read in contracted coordinates IS the evolved
+ *  region. */
+export function nebulaGrowth(nebula: Nebula): { growth: number; dilution: number } {
+  const stromgren = nebula.stromgrenRadiusPc;
+  const growth = stromgren > 0 ? Math.max(1, nebula.bubbleRadiusPc / stromgren) : 1;
+  return { growth, dilution: growth ** -1.5 };
+}
+
+/**
+ * What stands at a point of the cloud's frame now that the region has
+ * re-plumbed it: the natal cloud outside the bubble, piled into a
+ * swept shell just past the front with the front's ionized skin eating
+ * into it; inside, the diluted interior read from its natal position,
+ * hollowed by the wind into a cavity and its wall, and thinned of dust
+ * as ionized gas is. The front stands where the marched ray toward
+ * this point put it; the bake breaks it finer against the real field,
+ * cell by cell — this is the same object where that is too dear.
+ */
+export function nebulaGasAt(
+  nebula: Nebula,
+  xPc: number,
+  yPc: number,
+  zPc: number,
+): { dust: number; ionized: number } {
+  const { cloud, dustFactor } = nebula;
+  const source = nebula.sources[0];
+  if (!source || nebula.bubbleRadiusPc <= 0) {
+    return { dust: cloudLocalDensity(cloud, xPc, yPc, zPc) * dustFactor, ionized: 0 };
+  }
+  const dx = xPc - source.dxPc;
+  const dy = yPc - source.dyPc;
+  const dz = zPc - source.dzPc;
+  const r = Math.hypot(dx, dy, dz);
+  // Past every ray's front and its shell, the skin has died away and
+  // the cloud is simply itself.
+  if (r > nebula.frontReachPc * 1.5) {
+    return { dust: cloudLocalDensity(cloud, xPc, yPc, zPc) * dustFactor, ionized: 0 };
+  }
+  const bubble = r > 0 ? nebulaFrontToward(nebula, dx / r, dy / r, dz / r) : nebula.bubbleRadiusPc;
+  const { growth, dilution } = nebulaGrowth(nebula);
+  if (r < bubble) {
+    const contracted = 1 / growth;
+    const natal =
+      cloudLocalDensity(
+        cloud,
+        source.dxPc + dx * contracted,
+        source.dyPc + dy * contracted,
+        source.dzPc + dz * contracted,
+      ) *
+      dustFactor *
+      dilution;
+    const wind =
+      r < nebula.windCavityPc
+        ? WIND_CAVITY_RESIDUAL
+        : r <= nebula.windCavityPc * (1 + WIND_WALL_WIDTH)
+          ? WIND_WALL_BOOST
+          : 1;
+    const dust = natal * wind;
+    return { dust: dust / DUST_DEPLETION, ionized: hydrogenDensity(dust, nebula.metallicity) };
+  }
+  const swept = r <= bubble * (1 + SHELL_WIDTH) ? sweptShellBoost(dilution) : 1;
+  const dust = cloudLocalDensity(cloud, xPc, yPc, zPc) * dustFactor * swept;
+  const skin = Math.exp(-(r - bubble) / (SHELL_SKIN_SHARE * SHELL_WIDTH * bubble));
+  return {
+    dust: dust / (1 + (DUST_DEPLETION - 1) * skin),
+    ionized: hydrogenDensity(dust, nebula.metallicity) * skin,
+  };
 }
 
 /** The star whose light the dust scatters: the ionizing star when one
@@ -117,9 +326,10 @@ export function nebulaLineLuminositySolar(nebula: Nebula): number {
   );
 }
 
-/** Fraction of the dust the group's light gets caught by and sent back
- *  out: optical albedo times an order-unity interception. */
-const SCATTERED_SHARE_OF_CONTINUUM = 0.3;
+/** The group's continuum the dust sends back out, L☉. */
+export function nebulaScatteredSolar(nebula: Nebula): number {
+  return nebula.scatteredShare * nebula.totalLuminosity;
+}
 
 /** Everything a lit cloud sends out, L☉: its lines plus the share of
  *  the group's continuum the dust catches and rescatters. The budget
@@ -127,7 +337,48 @@ const SCATTERED_SHARE_OF_CONTINUUM = 0.3;
  *  and the volume's emission and scatter books draw on the same two
  *  terms. */
 export function nebulaLightSolar(nebula: Nebula): number {
-  return nebulaLineLuminositySolar(nebula) + SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity;
+  return nebulaLineLuminositySolar(nebula) + nebulaScatteredSolar(nebula);
+}
+
+/**
+ * The share of the group's light its dust intercepts and scatters, at
+ * first order: from the illuminant outward, the re-plumbed dust's
+ * opacity through the beam's own attenuation, over the flux a source
+ * spread like the group delivers — the volume's scatter integrand,
+ * marched over the whole cloud rather than one box. The higher orders
+ * the volume's table adds are what its scatter can exceed this by.
+ */
+function interceptedShare(nebula: Nebula): number {
+  const source = nebulaIlluminant(nebula);
+  if (!source) return 0;
+  const reach =
+    cloudReachPc(nebula.cloud) + Math.hypot(source.dxPc, source.dyPc, source.dzPc);
+  const ds = reach / FRONT_STEPS;
+  const floorSq = (MEMBER_SPREAD * nebula.cloud.radiusPc) ** 2;
+  let caught = 0;
+  for (let i = 0; i < FRONT_DIRECTIONS; i++) {
+    const ux = FRONT_AXES[i * 3];
+    const uy = FRONT_AXES[i * 3 + 1];
+    const uz = FRONT_AXES[i * 3 + 2];
+    let tau = 0;
+    for (let s = 0; s < FRONT_STEPS; s++) {
+      const r = (s + 0.5) * ds;
+      const { dust } = nebulaGasAt(
+        nebula,
+        source.dxPc + ux * r,
+        source.dyPc + uy * r,
+        source.dzPc + uz * r,
+      );
+      if (dust <= 0) continue;
+      // What this step takes out of the beam, exactly — a clump can
+      // be many depths thick within one step and still catch no more
+      // than all of what arrives.
+      const depth = dust * DUST_OPACITY_PER_PC * ds;
+      caught += Math.exp(-tau) * -Math.expm1(-depth) * ((r * r) / Math.max(r * r, floorSq));
+      tau += depth;
+    }
+  }
+  return (DUST_ALBEDO * caught) / FRONT_DIRECTIONS;
 }
 
 /**
@@ -146,7 +397,7 @@ export function nebulaEmissionShare(nebula: Nebula): number {
     1,
     (nebula.bubbleRadiusPc / Math.max(...nebula.halfExtentsPc)) ** 2,
   );
-  const scattered = SCATTERED_SHARE_OF_CONTINUUM * nebula.totalLuminosity * concentration;
+  const scattered = nebulaScatteredSolar(nebula) * concentration;
   return lines / (lines + scattered + 1e-12);
 }
 
@@ -203,7 +454,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
 
   const ageGyr = rng.range(0.0015, 0.012);
   const tries = Math.min(240, Math.round(cloud.radiusPc ** 1.5 * rng.range(0.4, 1.1)));
-  const spreadPc = cloud.radiusPc * 0.35;
+  const spreadPc = cloud.radiusPc * MEMBER_SPREAD;
 
   const members: NebulaMember[] = [];
   const sources: IonizingSource[] = [];
@@ -295,7 +546,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     ),
     0.9 * bubbleRadiusPc,
   );
-  return {
+  const nebula: Nebula = {
     cloud,
     ageGyr,
     members,
@@ -316,5 +567,13 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
           ? 'emission'
           : 'reflection',
     halfExtentsPc,
+    dustFactor: cloudDustFactor(cloud),
+    frontPc: new Float32Array(),
+    frontReachPc: 0,
+    scatteredShare: 0,
   };
+  nebula.frontPc = marchFront(nebula);
+  nebula.frontReachPc = nebula.frontPc.reduce((best, front) => Math.max(best, front), 0);
+  nebula.scatteredShare = interceptedShare(nebula);
+  return nebula;
 }

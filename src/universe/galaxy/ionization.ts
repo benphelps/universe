@@ -14,6 +14,17 @@ import {
 
 /** Case B recombination coefficient at 10⁴ K, cm³ s⁻¹. */
 export const ALPHA_B = 2.59e-13;
+/** Recombinations per steradian carried by one cm⁻⁶ over a pc³ shell:
+ *  what a march spends its budget in, per step of ray. */
+export const RECOMBINATION_SCALE = ALPHA_B * CM_PER_PC ** 3;
+/**
+ * How far past the evolved bubble radius the front can possibly reach.
+ * Density only rises toward the source, so a ray runs furthest down
+ * the thinnest channel it can find — measured at three to four times
+ * the mean front, so five bounds it with margin — and a point beyond
+ * this is neutral without needing a march to say so.
+ */
+export const IONIZATION_REACH = 5;
 
 /**
  * Hβ luminosity of an ionization-bounded nebula, erg s⁻¹: every
@@ -117,3 +128,48 @@ export function sweptCavityRadiusPc(
   const radiusCm = ((3 * momentum * seconds) / (2 * Math.PI * density)) ** 0.25;
   return radiusCm / CM_PER_PC;
 }
+
+/**
+ * The structure an evolved region leaves in its cloud — shared by the
+ * model, the bake and the sprite so every rendering re-plumbs the
+ * cloud the same way.
+ */
+
+/** Fraction of the front radius the swept shell spans. */
+export const SHELL_WIDTH = 0.12;
+/**
+ * How deep the ionization front eats into its swept shell, as a share
+ * of the shell's own width. The skin is where most recombinations
+ * actually happen — the bright rim of every real region — and it is
+ * what puts the glow on the *directional* front the budget march
+ * carves, rather than leaving all the light to the spherical wind
+ * wall inside it.
+ */
+export const SHELL_SKIN_SHARE = 0.35;
+/** Peak overdensity of a fully swept shell: the mass the expansion
+ *  cleared from the bubble, spread over that width — R/(3ΔR) of it. */
+const SHELL_COMPRESSION = 3;
+
+/** How much a swept shell actually piles up: nothing when the region
+ *  has barely left its natal radius, the full compression once the
+ *  interior mass is gone. */
+export function sweptShellBoost(dilution: number): number {
+  return 1 + (SHELL_COMPRESSION - 1) * (1 - dilution);
+}
+
+/** How much thinner in dust an ionized region is than the neutral gas
+ *  around it. Models and infrared observations of H II regions put this
+ *  at a few, not the near-total removal a clean cavity would imply. */
+export const DUST_DEPLETION = 5;
+
+/** Fraction of the wind cavity's radius its swept wall spans. */
+export const WIND_WALL_WIDTH = 0.15;
+/** What the wind leaves behind it: shocked gas at millions of kelvin
+ *  and a hundredth the density — X-ray bright, optically nothing. */
+export const WIND_CAVITY_RESIDUAL = 0.02;
+/** The cavity's gas piled into its wall, by mass: what turns a filled
+ *  disc into the ring an evolved region actually is — the emission
+ *  goes as n², so the compressed wall is where the light concentrates
+ *  while the total stays pinned to the ionizing budget by the finish. */
+export const WIND_WALL_BOOST =
+  1 + (1 - WIND_CAVITY_RESIDUAL) / ((1 + WIND_WALL_WIDTH) ** 3 - 1);

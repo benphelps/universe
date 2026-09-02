@@ -12,9 +12,15 @@ import {
   cloudStretchAxis,
   type MolecularCloud,
 } from '../../universe/galaxy/clouds';
-import type { Nebula } from '../../universe/galaxy/nebula';
 import {
   DUST_DEPLETION,
+  SHELL_SKIN_SHARE,
+  SHELL_WIDTH,
+  WIND_CAVITY_RESIDUAL,
+  WIND_WALL_BOOST,
+} from '../../universe/galaxy/ionization';
+import type { Nebula } from '../../universe/galaxy/nebula';
+import {
   EROSION_REACH,
   EROSION_STALL,
   FRONT_SOFTNESS,
@@ -22,11 +28,7 @@ import {
   LOG_U_MIN,
   SCATTER_MAX_STEPS,
   SCATTER_STEP_FACTOR,
-  SHELL_SKIN_SHARE,
-  SHELL_WIDTH,
   VENT_RESIDUAL,
-  WIND_CAVITY_RESIDUAL,
-  WIND_WALL_BOOST,
   finishNebulaBake,
   nebulaMarchScales,
   planNebulaBake,

@@ -15,11 +15,13 @@ import {
   cloudLocalDensity,
   cloudReachPc,
   cloudsNear,
+  ENVELOPE_REACH,
   expectedCloudField,
   type MolecularCloud,
 } from './clouds';
 import {
   ARM_YOUNG_LIGHT,
+  DUST_OPACITY_PER_PC,
   dustDensity,
   HOME_POSITION,
   sightlineDensities,
@@ -27,10 +29,14 @@ import {
   type GalacticPosition,
 } from './density';
 import {
+  MEMBER_SPREAD,
   nebulaEmissionShare,
   nebulaFor,
+  nebulaGasAt,
   nebulaIlluminant,
   nebulaLightSolar,
+  nebulaLineLuminositySolar,
+  nebulaScatteredSolar,
   type Nebula,
 } from './nebula';
 import { NEBULA_MEAN_U, nebulaEmissionColor, nebulaNarrowbandColor } from './nebulaLines';
@@ -719,12 +725,16 @@ function nebulaDisplayColor(nebula: Nebula): [number, number, number] {
 }
 
 /**
- * Ray-march one lit cloud into an atlas tile: the cloud's own turbulent
- * density field, illuminated by the embedded group at its core with
- * self-extinction along the view path. Filaments, the bright core, dark
- * foreground lanes, and soft edges all come from the field itself. The
- * pixel hue slides from the ionized emission color near the stars to
- * scattered reflection light in the outskirts.
+ * Ray-march one lit cloud into an atlas tile: the cloud's field as the
+ * region has re-plumbed it — the diluted interior, the swept shell and
+ * its ionized skin, the natal cloud beyond — lit from the illuminant
+ * with the flux floor the volume shines with, self-extinguished along
+ * the view path at the dust's real opacity. Two mechanisms march
+ * side by side, lines going as the ionized density squared and
+ * scattered continuum as dust times flux, and each closes on its own
+ * budget, so the tile's per-pixel line share is a measured thing.
+ * Filaments, the bright rim, dark foreground lanes and soft edges all
+ * come from the field itself.
  */
 export function renderNebulaTile(
   atlas: Float32Array,
@@ -732,30 +742,44 @@ export function renderNebulaTile(
   cloud: MolecularCloud,
   view: [number, number, number],
   nebula: Nebula,
-): { right: [number, number, number]; up: [number, number, number]; peakRadiance: number } {
+): {
+  right: [number, number, number];
+  up: [number, number, number];
+  peakRadiance: number;
+  /** The share of the object's light that leaves it toward this
+   *  viewpoint, its own dust having eaten the rest. */
+  escaped: number;
+} {
   const axis: [number, number, number] =
     Math.abs(view[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
   const right = normalize(cross(view, axis));
   const up = cross(view, right);
 
-  const share = nebulaEmissionShare(nebula);
-
-  const extentPc = cloud.radiusPc * 1.6;
+  const extentPc = cloud.radiusPc * ENVELOPE_REACH;
   const steps = 16;
   const dt = (2 * extentPc) / steps;
-  const extinction = 0.9 / (cloud.amplitude * cloud.radiusPc);
+  const source = nebulaIlluminant(nebula);
+  const sx = source?.dxPc ?? 0;
+  const sy = source?.dyPc ?? 0;
+  const sz = source?.dzPc ?? 0;
+  const floorSq = (MEMBER_SPREAD * cloud.radiusPc) ** 2;
   const atlasWidth = NEBULA_ATLAS_COLS * NEBULA_TILE;
   const tileX = (tile % NEBULA_ATLAS_COLS) * NEBULA_TILE;
   const tileY = Math.floor(tile / NEBULA_ATLAS_COLS) * NEBULA_TILE;
 
   // The tile carries physics, not pixels: relative luminance and the
-  // local emission-vs-scattered mix, and the sky shader colours and
+  // local line-vs-scattered mix, and the sky shader colours and
   // exposes them under whatever instrument is standing — so a mode
   // change never re-bakes a sky.
-  let peak = 1e-6;
-  let integral = 0;
-  const lum = new Float32Array(NEBULA_TILE * NEBULA_TILE);
-  const mix = new Float32Array(NEBULA_TILE * NEBULA_TILE);
+  const lineY = new Float32Array(NEBULA_TILE * NEBULA_TILE);
+  const scatterY = new Float32Array(NEBULA_TILE * NEBULA_TILE);
+  // Each mechanism's integral with and without the view path's
+  // extinction: the budget is what the gas emits, and what the tile
+  // may show of it is what gets out.
+  let lineSum = 0;
+  let scatterSum = 0;
+  let lineFree = 0;
+  let scatterFree = 0;
   for (let j = 0; j < NEBULA_TILE; j++) {
     for (let i = 0; i < NEBULA_TILE; i++) {
       // Border stays empty so the atlas samples to zero at tile edges.
@@ -767,51 +791,68 @@ export function renderNebulaTile(
       const oz = (right[2] * u + up[2] * v) * extentPc;
 
       let tau = 0;
-      let y = 0;
-      let ion = 0;
+      let line = 0;
+      let scatter = 0;
       for (let s = 0; s < steps; s++) {
         const t = -extentPc + (s + 0.5) * dt;
         const px = ox + view[0] * t;
         const py = oy + view[1] * t;
         const pz = oz + view[2] * t;
-        const density = cloudLocalDensity(cloud, px, py, pz);
-        if (density <= 0) continue;
-        const coreSq = (px * px + py * py + pz * pz) / (0.35 * cloud.radiusPc) ** 2;
-        const illumination = 1 / (1 + coreSq);
-        const glow = density * illumination * Math.exp(-tau) * dt;
-        y += glow;
-        ion += glow * share * Math.min(1, illumination * 2.2);
-        tau += density * extinction * dt;
+        const { dust, ionized } = nebulaGasAt(nebula, px, py, pz);
+        if (dust <= 0 && ionized <= 0) continue;
+        const shineSq = (px - sx) ** 2 + (py - sy) ** 2 + (pz - sz) ** 2;
+        const scattering = (dust * dt) / Math.max(shineSq, floorSq);
+        const emitting = ionized * ionized * dt;
+        const transmitted = Math.exp(-tau);
+        scatter += scattering * transmitted;
+        line += emitting * transmitted;
+        scatterFree += scattering;
+        lineFree += emitting;
+        tau += dust * DUST_OPACITY_PER_PC * dt;
       }
       const at = j * NEBULA_TILE + i;
-      lum[at] = y;
-      mix[at] = y > 0 ? ion / y : 0;
-      integral += y;
-      if (y > peak) peak = y;
+      lineY[at] = line;
+      scatterY[at] = scatter;
+      lineSum += line;
+      scatterSum += scatter;
     }
   }
 
-  // The impostor's shape is the march above; its photometric scale is
-  // exact. The cloud's whole light budget crosses this tile, so the
-  // radiance at unit relative luminance follows from flux closure —
-  // luminosity over 4πd² spread by the tile's own luminance integral —
-  // and the distance cancels, as it must: surface brightness carries
-  // none.
-  const peakRadiance =
-    (nebulaLightSolar(nebula) * NEBULA_TILE ** 2 * peak) /
-    (16 * Math.PI * extentPc ** 2 * Math.max(integral, 1e-9));
-
+  // Each mechanism closes on its own budget: its whole light crosses
+  // this tile, so the radiance at a pixel follows from flux closure —
+  // luminosity over 4πd² spread by the tile's own integral — and the
+  // distance cancels, as it must: surface brightness carries none.
+  // Spread by the unextinguished integral, so what the tile shows is
+  // the budget less what the cloud's own dust took on the way out.
+  const closure = NEBULA_TILE ** 2 / (16 * Math.PI * extentPc ** 2);
+  const lineLum = nebulaLineLuminositySolar(nebula);
+  const scatterLum = nebulaScatteredSolar(nebula);
+  const lineScale = lineFree > 0 ? (lineLum * closure) / lineFree : 0;
+  const scatterScale = scatterFree > 0 ? (scatterLum * closure) / scatterFree : 0;
+  const escaped =
+    lineLum + scatterLum > 0
+      ? (lineLum * (lineFree > 0 ? lineSum / lineFree : 0) +
+          scatterLum * (scatterFree > 0 ? scatterSum / scatterFree : 0)) /
+        (lineLum + scatterLum)
+      : 0;
+  let peak = 1e-6;
+  for (let at = 0; at < lineY.length; at++) {
+    const radiance = lineScale * lineY[at] + scatterScale * scatterY[at];
+    if (radiance > peak) peak = radiance;
+  }
   for (let j = 0; j < NEBULA_TILE; j++) {
     for (let i = 0; i < NEBULA_TILE; i++) {
       const at = j * NEBULA_TILE + i;
       const dst = ((tileY + j) * atlasWidth + tileX + i) * 4;
-      atlas[dst] = lum[at] / peak;
-      atlas[dst + 1] = mix[at];
+      const lines = lineScale * lineY[at];
+      const radiance = lines + scatterScale * scatterY[at];
+      atlas[dst] = radiance / peak;
+      atlas[dst + 1] = radiance > 0 ? lines / radiance : 0;
       atlas[dst + 2] = 0;
       atlas[dst + 3] = 1;
     }
   }
-  return { right, up, peakRadiance };
+  return { right, up, peakRadiance: peak, escaped };
 }
 
 function cross(

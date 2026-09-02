@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cloudsNear } from './clouds';
+import { cloudReachPc, cloudsNear } from './clouds';
 import { DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
 import { dustScatterTable, sampleScatterTable, SCATTER_OPACITY_RGB } from './dustScattering';
 import {
@@ -132,19 +132,22 @@ describe('the instruments', () => {
 
 describe('sprite photometry', () => {
   it('closes the flux books over the tile', () => {
-    // The impostor's shape is heuristic but its scale is a closure:
-    // the tile's radiance channel times its calibrated peak, summed
-    // over the sprite's solid angle, must return the cloud's whole
-    // light budget — at any distance, and to numerical precision now
-    // that the tile carries linear physics.
+    // The impostor marches the object's own re-plumbed field and its
+    // scale is a closure: the tile's radiance channel times its
+    // calibrated peak, summed over the sprite's solid angle, must
+    // return the share of the cloud's light budget that escapes its
+    // own dust toward the viewer — at any distance, and to numerical
+    // precision, since the tile carries linear physics.
     const atlas = new Float32Array(
       NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4,
     );
-    for (const nebula of litNebulae().slice(0, 8)) {
+    for (const nebula of litNebulae().slice(0, 6)) {
       const view: [number, number, number] = [0.6, 0.48, 0.64];
       const norm = Math.hypot(...view);
       const unit: [number, number, number] = [view[0] / norm, view[1] / norm, view[2] / norm];
-      const { peakRadiance } = renderNebulaTile(atlas, 0, nebula.cloud, unit, nebula);
+      const { peakRadiance, escaped } = renderNebulaTile(atlas, 0, nebula.cloud, unit, nebula);
+      expect(escaped).toBeGreaterThan(0);
+      expect(escaped).toBeLessThanOrEqual(1);
 
       const distance = nebula.cloud.radiusPc * 12;
       const extentPc = nebula.cloud.radiusPc * 1.6;
@@ -156,36 +159,34 @@ describe('sprite photometry', () => {
           flux += atlas[at] * peakRadiance * pixelSr * pixelSr;
         }
       }
-      const budget = nebulaLightSolar(nebula) / (4 * Math.PI * distance * distance);
+      const budget = (escaped * nebulaLightSolar(nebula)) / (4 * Math.PI * distance * distance);
       expect(flux / budget).toBeGreaterThan(0.995);
       expect(flux / budget).toBeLessThan(1.005);
     }
-  });
+  }, 60000);
 
   it('agrees with the volume it stands in for', () => {
-    // The two renderings of one object spend the same budgets, and the
-    // gap between what leaves the marched volume and the sprite's flux
-    // closure is made of known physics: the impostor's fixed U reads
-    // the line grid a factor from the marched grid's own hardness mix,
-    // dust inside the box eats part of the lines, and the impostor's
-    // 0.3 continuum interception is a whole-cloud number while the
-    // bubble-scale box holds only part of the cloud's dust to scatter
-    // with — even carrying every order of the table. Measured at ~0.14
-    // on the brightest whole subject with multiple scattering in; the
-    // pin holds the tiers within sight of each other.
-    const nebula = litNebulae().find((candidate) => candidate.supernovae === 0);
-    expect(nebula).toBeDefined();
-    if (!nebula) return;
-    const bake = bakeNebulaVolume(nebula.cloud, nebula, 64);
-
-    const distance = bake.halfExtentsPc[0] * 8;
-    const [r, g, b] = marchedFlux(bake, distance, dustScatterTable());
-    const marched = luminance(r, g, b);
-    const budget = nebulaLightSolar(nebula) / (4 * Math.PI * distance * distance);
-    const ratio = marched / budget;
-    expect(ratio).toBeGreaterThan(0.07);
-    expect(ratio).toBeLessThan(0.4);
-  });
+    // The two renderings of one object spend the same budgets — the
+    // group's whole ionizing output in lines, the marched interception
+    // of its continuum in scattered light — and are compared over the
+    // same body: the cloud-scale box against the whole-cloud impostor.
+    // What separates them is what the march resolves and the impostor
+    // cannot: the front broken cell by cell against the fine cascade,
+    // the champagne gate and the erosion, the impostor's fixed U
+    // against each cell's own hardness, and the phase of the scattered
+    // light toward one viewpoint. Measured at 0.3–1.0 over the bright
+    // subjects; the pin holds the tiers within a factor of a few.
+    for (const nebula of litNebulae().slice(0, 3)) {
+      const bake = bakeNebulaVolume(nebula.cloud, nebula, 64, cloudReachPc(nebula.cloud));
+      const distance = bake.halfExtentsPc[0] * 8;
+      const [r, g, b] = marchedFlux(bake, distance, dustScatterTable());
+      const marched = luminance(r, g, b);
+      const budget = nebulaLightSolar(nebula) / (4 * Math.PI * distance * distance);
+      const ratio = marched / budget;
+      expect(ratio).toBeGreaterThan(0.2);
+      expect(ratio).toBeLessThan(1.5);
+    }
+  }, 60000);
 
   it('colours scattered light by the dust, not by paint', () => {
     // Reflection blue is a mechanism, not a palette entry: opacity

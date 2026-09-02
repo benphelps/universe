@@ -13,8 +13,19 @@ import {
 } from './clouds';
 import { DUST_ALBEDO, DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
-import { ALPHA_B, hydrogenBetaLuminosity } from './ionization';
-import { nebulaIlluminant, type Nebula } from './nebula';
+import {
+  DUST_DEPLETION,
+  hydrogenBetaLuminosity,
+  IONIZATION_REACH,
+  RECOMBINATION_SCALE,
+  SHELL_SKIN_SHARE,
+  SHELL_WIDTH,
+  sweptShellBoost,
+  WIND_CAVITY_RESIDUAL,
+  WIND_WALL_BOOST,
+  WIND_WALL_WIDTH,
+} from './ionization';
+import { MEMBER_SPREAD, nebulaGrowth, nebulaIlluminant, type Nebula } from './nebula';
 import { ismMetallicity } from './population';
 import { nebulaEmissionColor, nebulaLineSum, nebulaNarrowbandColor } from './nebulaLines';
 
@@ -105,8 +116,6 @@ export interface NebulaVolumeBake {
  *  and every higher order); this is the scale the table multiplies. */
 export const SCATTER_EMISSIVITY_PER_LSUN = (DUST_OPACITY_PER_PC * DUST_ALBEDO) / (16 * Math.PI ** 2);
 
-/** Recombinations per steradian carried by one cm⁻⁶ over a pc³ shell. */
-const RECOMBINATION_SCALE = ALPHA_B * CM_PER_PC ** 3;
 /** Where log₁₀ of the ionization parameter runs from and to: the range
  *  over which [O III] takes over from the hydrogen lines. */
 export const LOG_U_MIN = -3.5;
@@ -138,26 +147,6 @@ function sample(grid: Float32Array, size: number, x: number, y: number, z: numbe
 const BOX_STROMGREN_RADII = 4;
 /** Even an unlit cocoon gets a body worth looking at. */
 const BOX_MIN_PC = 5;
-/**
- * How far past the evolved bubble radius the front can possibly reach.
- * Density only rises toward the source, so a ray runs furthest down
- * the thinnest channel it can find — measured at three to four times
- * the mean front, so five bounds it with margin — and a cell beyond
- * this is neutral without needing the march to say so, which is what
- * keeps a box a hundred parsecs across affordable.
- */
-const IONIZATION_REACH = 5;
-/** Fraction of the front radius the swept shell spans. */
-export const SHELL_WIDTH = 0.12;
-/**
- * How deep the ionization front eats into its swept shell, as a share
- * of the shell's own width. The skin is where most recombinations
- * actually happen — the bright rim of every real region — and it is
- * what puts the glow on the *directional* front the budget march
- * carves, rather than leaving all the light to the spherical wind
- * wall inside it.
- */
-export const SHELL_SKIN_SHARE = 0.35;
 
 /**
  * Photoevaporative erosion at the front. The budget march fixes where
@@ -179,26 +168,6 @@ export const FRONT_SOFTNESS = 0.15;
  *  march's own step it may walk, and the most steps it ever takes. */
 export const SCATTER_STEP_FACTOR = 4;
 export const SCATTER_MAX_STEPS = 24;
-/** Peak overdensity of a fully swept shell: the mass the expansion
- *  cleared from the bubble, spread over that width — R/(3ΔR) of it. */
-const SHELL_COMPRESSION = 3;
-
-/** How much thinner in dust an ionized region is than the neutral gas
- *  around it. Models and infrared observations of H II regions put this
- *  at a few, not the near-total removal a clean cavity would imply. */
-export const DUST_DEPLETION = 5;
-
-/** Fraction of the wind cavity's radius its swept wall spans. */
-export const WIND_WALL_WIDTH = 0.15;
-/** What the wind leaves behind it: shocked gas at millions of kelvin
- *  and a hundredth the density — X-ray bright, optically nothing. */
-export const WIND_CAVITY_RESIDUAL = 0.02;
-/** The cavity's gas piled into its wall, by mass: what turns a filled
- *  disc into the ring an evolved region actually is — the emission
- *  goes as n², so the compressed wall is where the light concentrates
- *  while the total stays pinned to the ionizing budget by the finish. */
-export const WIND_WALL_BOOST =
-  1 + (1 - WIND_CAVITY_RESIDUAL) / ((1 + WIND_WALL_WIDTH) ** 3 - 1);
 
 /**
  * Champagne venting: ten-thousand-kelvin gas is held together by the
@@ -310,10 +279,7 @@ export function planNebulaBake(
   // which conserves the recombination budget exactly (n²V invariant),
   // so the natal march read in contracted coordinates IS the evolved
   // region.
-  const stromgren = nebula?.stromgrenRadiusPc ?? 0;
-  const growth =
-    stromgren > 0 ? Math.max(1, (nebula?.bubbleRadiusPc ?? stromgren) / stromgren) : 1;
-  const dilution = growth ** -1.5;
+  const { growth, dilution } = nebula ? nebulaGrowth(nebula) : { growth: 1, dilution: 1 };
   // What lights the dust. The whole group's light is assigned to one
   // star; the members huddle at the same clumps, and one origin is
   // what a single shadow ray serves.
@@ -349,10 +315,7 @@ export function planNebulaBake(
     sourceTeff: source?.tEff ?? 40000,
     growth,
     dilution,
-    // How much a swept shell actually piles up: nothing when the
-    // region has barely left its natal radius, the full compression
-    // once the interior mass is gone.
-    shellBoost: 1 + (SHELL_COMPRESSION - 1) * (1 - dilution),
+    shellBoost: sweptShellBoost(dilution),
     windCavityPc: nebula?.windCavityPc ?? 0,
     windWallPc: (nebula?.windCavityPc ?? 0) * (1 + WIND_WALL_WIDTH),
     ventConfineDensity:
@@ -689,7 +652,7 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
     scatterSourcePc: plan.scatterSourcePc,
     scatterLuminositySolar: plan.scatterLuminositySolar,
     // The same spread the members were drawn with, squared.
-    scatterFloorPc2: Math.max(cellPc ** 2, (0.35 * cloud.radiusPc) ** 2),
+    scatterFloorPc2: Math.max(cellPc ** 2, (MEMBER_SPREAD * cloud.radiusPc) ** 2),
   };
 }
 
