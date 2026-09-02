@@ -1,74 +1,71 @@
-import type { ReactNode } from 'react';
-import { host, markFor, setTab, stepBody, type AppSnapshot } from '../store';
-import { cloudPlateSpec, galaxyPlateSpec, GalaxyLevel } from './galaxyInfoPanel';
+import type { CSSProperties, ReactNode } from 'react';
+import { host, markFor, stepBody, type AppSnapshot } from '../store';
+import { ConsoleGrip } from './consoleGrip';
+import { galaxyPlateSpec } from './galaxyInfoPanel';
 import { GenerationIndicator } from './generationIndicator';
+import { Ladder } from './ladder';
+import { cloudPlateSpec } from './nebulaPanel';
+import { nucleusPlateSpec } from './nucleusPanel';
 import {
   asteroidPlateSpec,
   emptyPlateSpec,
   moonPlateSpec,
   planetPlateSpec,
-  PlanetLevel,
 } from './planetInfoPanel';
-import { nucleusPlateSpec } from './nucleusPanel';
 import { Plate, type PlateSpec } from './plate';
-import { PoiLevel } from './poiPanel';
-import { starPlateSpec, StarLevel } from './starInfoPanel';
-import { systemPlateSpec, SystemLevel } from './systemInfoPanel';
+import { starPlateSpec } from './starInfoPanel';
+import { systemPlateSpec } from './systemInfoPanel';
 
-export type ViewMode = 'star' | 'system' | 'planet' | 'galaxy';
-
-/** The last tab is not a camera level: it lists the marked POIs. */
-export type Tab = ViewMode | 'poi';
-
-// Descending scale: kpc, AU, R☉, R⊕ — then the address book.
-const TABS: Tab[] = ['galaxy', 'system', 'star', 'planet', 'poi'];
-
-/** The characteristic scale each level frames. */
-const TAB_UNIT: Record<Tab, string> = {
-  star: 'R☉',
-  system: 'AU',
-  planet: 'R⊕',
-  galaxy: 'kpc',
-  poi: '★',
-};
+const FOLD = (
+  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M10 3.5 5.5 8l4.5 4.5" />
+  </svg>
+);
 
 /**
- * The survey console beside the viewport: where you are (the sector
- * eyebrow), what you are looking at (the catalog plate), what the
- * current level holds (the scrolling table), and the four framing
- * scales along the bottom.
+ * The survey console beside the viewport: what you are looking at (the
+ * catalog plate), the ladder of levels you are standing inside, and
+ * the generation readout along the bottom.
  */
 export function Sidebar({
   snap,
   folded = false,
+  collapsed = false,
+  width,
+  onFold,
+  onWidth,
 }: {
   snap: AppSnapshot | null;
   /** Off-canvas on a narrow screen: out of reach, not merely out of sight. */
   folded?: boolean;
+  /** Folded away beside the view on a wide screen. */
+  collapsed?: boolean;
+  /** Its width beside the view, px — the drawer sets its own. */
+  width: number;
+  onFold: () => void;
+  onWidth: (width: number) => void;
 }): ReactNode {
   return (
-    <aside id="sidebar" className={snap?.consoleOpen ? 'open' : ''} inert={folded}>
-      <header id="address">
-        {snap && `${snap.address.sector} Sector · ${snap.address.zone.replace('-', ' ')}`}
-      </header>
+    <aside
+      id="sidebar"
+      className={`${snap?.consoleOpen ? 'open' : ''}${collapsed ? ' collapsed' : ''}`}
+      style={{ '--console-width': `${width}px` } as CSSProperties}
+      inert={folded || collapsed}
+    >
+      <ConsoleGrip onWidth={onWidth} />
+      <button
+        id="console-fold"
+        data-tip="fold the console away"
+        aria-label="fold the console away"
+        onClick={onFold}
+      >
+        {FOLD}
+      </button>
       <section id="focus">{snap && <FocusPlate snap={snap} />}</section>
-      <section id="level">{snap && <Level snap={snap} />}</section>
+      {snap && <Ladder snap={snap} />}
       <footer id="gen-panel">
         <GenerationIndicator />
       </footer>
-      <nav id="level-nav">
-        {TABS.map((tab) => (
-          <button
-            key={tab}
-            id={`view-${tab}`}
-            className={snap?.tab === tab ? 'active' : ''}
-            onClick={() => setTab(tab)}
-          >
-            <span className="name">{tab}</span>
-            <span className="unit">{TAB_UNIT[tab]}</span>
-          </button>
-        ))}
-      </nav>
     </aside>
   );
 }
@@ -114,20 +111,5 @@ function focusSpec(snap: AppSnapshot): PlateSpec {
         default:
           return planetPlateSpec(hostStar, hostPlanets, hostPlanets[snap.planetIndex], snap.planetIndex);
       }
-  }
-}
-
-function Level({ snap }: { snap: AppSnapshot }): ReactNode {
-  switch (snap.tab) {
-    case 'star':
-      return <StarLevel snap={snap} />;
-    case 'system':
-      return <SystemLevel snap={snap} />;
-    case 'planet':
-      return <PlanetLevel snap={snap} />;
-    case 'galaxy':
-      return <GalaxyLevel snap={snap} />;
-    case 'poi':
-      return <PoiLevel />;
   }
 }

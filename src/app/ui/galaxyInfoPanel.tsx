@@ -1,54 +1,13 @@
 import type { ReactNode } from 'react';
 import { NEIGHBOR_RADIUS_PC } from '../../universe/galaxy/neighborhood';
+import { galacticNucleus } from '../../universe/galaxy/nucleus';
 import type { GalacticAddress } from '../../universe/galaxy/regions';
 import type { Star } from '../../universe/star/types';
-import { travelToCloud, type AppSnapshot, type CloudSummary } from '../store';
-import { fmt } from './format';
-import { CoreDestination } from './nucleusPanel';
+import { travelToCloud, type AppSnapshot } from '../store';
 import { BodyRow } from './bodyRow';
+import { fmt } from './format';
+import { nucleusRowSpec } from './nucleusPanel';
 import { cssColor, type PlateSpec } from './plate';
-
-/**
- * A molecular cloud's plate. Travel to a cloud focuses the cloud, not
- * the star that happens to sit in it, so it introduces itself the way
- * any other body does — by what it is made of and what is happening
- * inside it.
- */
-export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
-  const lit = cloud.kind === 'emission';
-  const color = lit ? '#e08ac0' : cloud.kind === 'reflection' ? '#9fb6e0' : '#7d7a86';
-  const kind =
-    cloud.kind === 'emission'
-      ? 'emission nebula'
-      : cloud.kind === 'reflection'
-        ? 'reflection nebula'
-        : 'dark cloud';
-  return {
-    title: `the ${cloud.name} ${lit || cloud.kind === 'reflection' ? 'Nebula' : 'Rift'}`,
-    subtitle: `${kind} · ${fmt(cloud.spanPc, 3)} pc across`,
-    color,
-    row: {
-      color,
-      name: cloud.name,
-      kind,
-      figures: [[fmt(cloud.radiusPc, 3), 'pc']],
-    },
-    rows: [
-      ['Mass', `${fmt(cloud.massSolar, 3)} M☉`],
-      ['Mean density', `${fmt(cloud.meanDensity, 3)} H/cm³`],
-      ['Metallicity', `${cloud.metallicity >= 0 ? '+' : '−'}${Math.abs(cloud.metallicity).toFixed(2)} dex`],
-      ...(cloud.ionizingStars > 0
-        ? ([
-            ['Ionizing stars', `${cloud.ionizingStars}`],
-            ['Hottest', `${fmt(cloud.hottestTeff, 3)} K`],
-            ['Gas at those stars', `${fmt(cloud.sourceDensity, 3)} H/cm³`],
-            ['Ionized radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
-            ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
-          ] as Array<[string, string]>)
-        : ([['Star formation', 'none lit']] as Array<[string, string]>)),
-    ],
-  };
-}
 
 /** Galaxy level's plate: the current star's full galactic address. */
 export function galaxyPlateSpec(
@@ -77,14 +36,12 @@ export function galaxyPlateSpec(
 }
 
 /**
- * Galaxy level: the galaxy's landmark complexes as a travel table —
- * galactic-scale destinations; the stellar neighborhood lives on the
- * star tab.
+ * Galaxy level: the galaxy's landmarks as one travel table — the hole
+ * at its centre first, then every sector, nearest first, each visited
+ * at the complex it is named after.
  */
 export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
   const { landmarks, system } = snap;
-  // The galaxy's named complexes, nearest first: destinations far
-  // beyond the neighborhood — travel arrives at the landmark's gateway.
   const sorted = (landmarks ?? [])
     .map((landmark) => ({
       landmark,
@@ -99,29 +56,25 @@ export function GalaxyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
 
   return (
     <>
-      <CoreDestination active={snap.coreView} />
-      <h2>Landmarks</h2>
+      <BodyRow spec={nucleusRowSpec(galacticNucleus(), snap.coreView)} />
       {landmarks ? (
         sorted.map(({ landmark, kpc }) => (
           <BodyRow
             key={landmark.cloudSeedHex}
             spec={{
-              name: `${landmark.name} Complex`,
-              kind: 'complex',
-              figures: [
-                [fmt(landmark.radiusPc), 'pc'],
-                [fmt(kpc), 'kpc'],
-              ],
+              name: `${landmark.name} Sector`,
+              figures: [[fmt(kpc), 'kpc']],
+              here: !snap.coreView && landmark.sector === snap.address.sector,
               onClick: () =>
-                travelToCloud({
-                  cloudSeedHex: landmark.cloudSeedHex,
-                  positionPc: landmark.positionPc,
-                }),
+                travelToCloud(
+                  { cloudSeedHex: landmark.cloudSeedHex, positionPc: landmark.positionPc },
+                  'sector',
+                ),
             }}
           />
         ))
       ) : (
-        <div className="empty">charting the landmark complexes…</div>
+        <div className="empty">charting the sectors…</div>
       )}
     </>
   );

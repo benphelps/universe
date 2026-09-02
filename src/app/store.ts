@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { seedFromHex, seedToHex } from '../core/rng/hash';
 import type { GalacticPosition } from '../universe/galaxy/density';
-import { galaxySeed, PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy/galaxySeed';
+import { galaxySeed, setGalaxySeed } from '../universe/galaxy/galaxySeed';
 import type { Neighbor } from '../universe/galaxy/neighborhood';
 import {
   galacticAddress,
@@ -13,7 +13,7 @@ import { cloudReachPc, cloudsNear } from '../universe/galaxy/clouds';
 import { cloudGateway } from '../universe/galaxy/gateway';
 import { cloudMassSolar, cloudMeanHydrogenDensity } from '../universe/galaxy/gas';
 import { ismMetallicity } from '../universe/galaxy/population';
-import type { NebulaKind } from '../universe/galaxy/nebula';
+import type { IonizingSource, NebulaKind } from '../universe/galaxy/nebula';
 import {
   CAMERA_INSTRUMENT,
   EYE_INSTRUMENT,
@@ -35,17 +35,23 @@ import {
 import type { BodyRowSpec } from './ui/bodyRow';
 import type { PlateSpec } from './ui/plate';
 import { getGalacticLandmarks, landmarksNow } from './landmarkService';
-import { UnifiedViewer } from './unifiedViewer';
+import type { LocaleInventory } from './localeInventory';
+import { requestLocaleInventory } from './localeInventoryService';
+import { UnifiedViewer, type FocusedCloud, type HoverPreference } from './unifiedViewer';
 import type { DecalState } from './ui/decalToggles';
 import type { GenerationStatus } from './ui/generationIndicator';
+import type { Rung } from './ui/ladder';
 import type { PerfStats } from './ui/perfReadout';
-import type { Tab, ViewMode } from './ui/sidebar';
-import { GALAXY_KEY } from './ui/welcome';
+import { homeGalaxy, randomHex, setHomeGalaxy } from './home';
 
-/** The default pace until the surveyor speeds up: one minute a second. */
-export const DEFAULT_TIME_SCALE = 1 / 1440;
+/** The pace before the clock control has spoken: one minute a second. */
+const DEFAULT_TIME_SCALE = 1 / 1440;
 
-/** What the planet tab has resolved to focus, after index wrapping. */
+/** The preset the focus is framed at: a star at its limb, a system
+ *  from above, a world from orbit, or the galaxy around a place. */
+export type ViewMode = 'star' | 'system' | 'planet' | 'galaxy';
+
+/** What the planet focus has resolved to, after index wrapping. */
 export type PlanetFocus = 'planet' | 'moon' | 'asteroid' | 'empty';
 
 /**
@@ -58,8 +64,8 @@ export interface AppSnapshot {
   seedHex: string;
   address: GalacticAddress;
   viewMode: ViewMode;
-  /** The active sidebar tab — POI overlays the level, not the camera. */
-  tab: Tab;
+  /** The open rung of the ladder — browsing, never framing. */
+  rung: Rung;
   companionIndex: number;
   planetIndex: number;
   moonIndex: number;
@@ -74,9 +80,13 @@ export interface AppSnapshot {
   /** The molecular cloud the camera is standing off, when one is the
    *  focus rather than a body. */
   cloud: CloudSummary | null;
+  /** The cloud the locale itself stands inside, whatever is focused. */
+  standingCloud: CloudSummary | null;
+  /** The sector's holdings and the clouds nearby; null until the
+   *  chart of this locale lands. */
+  inventory: LocaleInventory | null;
   /** The current locale as the URL carries it. */
   at?: string;
-  ridingOut: boolean;
   /** Bumped when saved marks change, so mark UI re-reads storage. */
   marksEpoch: number;
   /** Narrow screens fold the console away; this is whether it stands open. */
@@ -86,6 +96,7 @@ export interface AppSnapshot {
 /** What the panels need to introduce a cloud, the way a plate
  *  introduces a planet. */
 export interface CloudSummary {
+  seedHex: string;
   name: string;
   kind: NebulaKind;
   radiusPc: number;
@@ -96,7 +107,8 @@ export interface CloudSummary {
   meanDensity: number;
   /** The denser gas the ionizing stars themselves sit in, cm⁻³. */
   sourceDensity: number;
-  ionizingStars: number;
+  /** The members hot enough to ionize the gas, brightest first. */
+  sources: IonizingSource[];
   hottestTeff: number;
   stromgrenRadiusPc: number;
   ageMyr: number;
@@ -108,14 +120,14 @@ export interface CloudSummary {
  *  cloud, not once per snapshot. */
 const cloudSummaryCache = new Map<bigint, CloudSummary>();
 
-function cloudSummary(): CloudSummary | null {
-  const focused = viewer?.focusedCloud ?? null;
+function cloudSummary(focused: FocusedCloud | null): CloudSummary | null {
   if (!focused) return null;
   const cached = cloudSummaryCache.get(focused.cloud.seed);
   if (cached) return cached;
   const { cloud, nebula } = focused;
   const metallicity = nebula?.metallicity ?? ismMetallicity(cloud.positionPc);
   const summary: CloudSummary = {
+    seedHex: seedToHex(cloud.seed),
     name: sectorNameForSeed(cloud.seed),
     kind: nebula?.kind ?? 'dark',
     radiusPc: cloud.radiusPc,
@@ -123,7 +135,7 @@ function cloudSummary(): CloudSummary | null {
     massSolar: cloudMassSolar(cloud, metallicity, 12),
     meanDensity: cloudMeanHydrogenDensity(cloud, metallicity),
     sourceDensity: nebula?.sourceHydrogenDensity ?? 0,
-    ionizingStars: nebula?.sources.length ?? 0,
+    sources: nebula?.sources ?? [],
     hottestTeff: nebula?.maxTeff ?? 0,
     stromgrenRadiusPc: nebula?.stromgrenRadiusPc ?? 0,
     ageMyr: (nebula?.ageGyr ?? 0) * 1000,
@@ -135,6 +147,7 @@ function cloudSummary(): CloudSummary | null {
 }
 
 let viewMode: ViewMode = 'star';
+let rung: Rung = 'system';
 let seedHex = '';
 let planetIndex = 0;
 /** −1 = the planet itself; otherwise which of its moons is focused. */
@@ -143,12 +156,11 @@ let companionIndex = 0;
 let viewer: UnifiedViewer | null = null;
 let system: StarSystem | null = null;
 let address: GalacticAddress | null = null;
+let inventory: LocaleInventory | null = null;
 let currentLocaleKey = '';
 let exposure = 1;
 let timeScale = DEFAULT_TIME_SCALE;
 let localePc: GalacticPosition | undefined;
-/** Whether the POI tab currently owns the level section. */
-let poiOpen = false;
 let planetFocus: PlanetFocus = 'planet';
 let beltPick: Asteroid | null = null;
 let coreView = false;
@@ -158,7 +170,6 @@ let cloudFocus = false;
 /** The focused cloud's seed, hex, when travel named it; null leaves the
  *  viewer to take the cloud the locale stands off. */
 let cloudSubjectHex: string | null = null;
-let ridingOut = false;
 let marksEpoch = 0;
 let consoleOpen = false;
 
@@ -173,7 +184,7 @@ function notify(): void {
           seedHex,
           address,
           viewMode,
-          tab: poiOpen ? 'poi' : viewMode,
+          rung,
           companionIndex,
           planetIndex,
           moonIndex,
@@ -183,9 +194,10 @@ function notify(): void {
           neighbors: viewer.neighbors,
           asteroids: viewer.asteroids,
           landmarks: landmarksNow(),
-          cloud: cloudFocus ? cloudSummary() : null,
+          cloud: cloudFocus ? cloudSummary(viewer.focusedCloud) : null,
+          standingCloud: coreView ? null : cloudSummary(viewer.standingCloud),
+          inventory,
           at: localePc ? localeParam(localePc) : undefined,
-          ridingOut,
           marksEpoch,
           consoleOpen,
         }
@@ -219,12 +231,6 @@ export function host(snap: AppSnapshot): {
     : { star: snap.system.star, planets: snap.system.planets, companion: null };
 }
 
-function randomSeedHex(): string {
-  const words = new Uint32Array(2);
-  crypto.getRandomValues(words);
-  return words[0].toString(16).padStart(8, '0') + words[1].toString(16).padStart(8, '0');
-}
-
 /** Round-trips a galactic position through the URL without drift. */
 function localeParam(locale: GalacticPosition): string {
   return `${locale.xPc.toFixed(4)}_${locale.yPc.toFixed(4)}_${locale.zPc.toFixed(4)}`;
@@ -244,13 +250,12 @@ function parseLocale(value: string | null): GalacticPosition | undefined {
  * the renderer. Travel to a catalog star carries its true galactic
  * position, so the destination is built where the star actually is;
  * bare seeds settle at their seed-derived locale. The locale is part
- * of the system's identity: reloads of the same seed (tab switches,
- * body steps) must keep it, or the same hex regenerates as a
- * different star somewhere else.
+ * of the system's identity: reloads of the same seed (body steps)
+ * must keep it, or the same hex regenerates as a different star
+ * somewhere else.
  */
 function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
   if (!viewer) return;
-  poiOpen = false;
   beltPick = null;
   // The core view tore the system down to stand at the centre; any
   // move back into a system has to rebuild it from scratch.
@@ -278,6 +283,13 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
     if (system) companionIndex = 0;
     system = generateSystem(seed, localePc);
     viewer.setSystem(system);
+    // The surroundings are charted off the frame loop; the ladder's
+    // rungs read their counts once the chart lands.
+    inventory = null;
+    requestLocaleInventory(system.localePc, (charted) => {
+      inventory = charted;
+      notify();
+    });
   }
   address = galacticAddress(system.localePc);
   companionIndex = Math.max(0, Math.min(companionIndex, system.companions.length));
@@ -393,17 +405,7 @@ export function boot(viewElement: HTMLElement): void {
   // wherever you had last been sent, so the same seed named a different
   // star for every reader. Home is now set in one place only, by the
   // traveler choosing it; a link decides nothing but the trip.
-  const galaxyParam = params.get('galaxy');
-  if (galaxyParam) {
-    setGalaxySeed(seedFromHex(galaxyParam));
-  } else {
-    try {
-      const home = localStorage.getItem(GALAXY_KEY);
-      if (home) setGalaxySeed(seedFromHex(home));
-    } catch {
-      // Storage unavailable: the prime galaxy, which is the default.
-    }
-  }
+  setGalaxySeed(seedFromHex(params.get('galaxy') ?? homeGalaxy()));
   const viewParam = params.get('view');
   viewMode =
     viewParam === 'system' || viewParam === 'planet' || viewParam === 'galaxy'
@@ -417,21 +419,28 @@ export function boot(viewElement: HTMLElement): void {
   planetIndex = Number(params.get('planet') ?? 0) || 0;
   moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
   companionIndex = Number(params.get('companion') ?? 0) || 0;
+  // The ladder opens at the level the link's focus lives on.
+  rung =
+    params.get('core') !== null
+      ? 'galaxy'
+      : cloudFocus
+        ? 'nebula'
+        : viewMode === 'planet'
+          ? 'world'
+          : 'system';
 
   viewer = new UnifiedViewer(viewElement);
-  viewer.onRideOutChange = (active) => {
-    ridingOut = active;
-    notify();
-  };
+  viewer.hoverPreference = HOVER_PREFERENCE[rung];
   // Dev/test hook: inspection access to the live viewer.
   (window as unknown as { __sim: unknown }).__sim = {
     get viewer() {
       return viewer;
     },
     viewCore,
-    setTab,
+    setRung,
   };
-  // Universal picking: a click on any hoverable body acts on it.
+  // Universal picking: a click on any body frames that body at its
+  // own scale, whatever was framed before.
   viewer.onPick = (target) => {
     if (!viewer || !system) return;
     if (target.kind === 'planet') {
@@ -447,21 +456,13 @@ export function boot(viewElement: HTMLElement): void {
       beltPick = target.asteroid;
       notify();
     } else if (target.kind === 'cloud') {
-      arriveAtCloud(target.cloudSeedHex, target.positionPc);
+      arriveAtCloud(target.cloudSeedHex, target.positionPc, 'nebula');
     } else if (target.kind === 'neighbor') {
-      cloudFocus = false;
-      cloudSubjectHex = null;
-      // Travel arrives at the destination star, not at whatever the
-      // previous system had focused; the galaxy map keeps its own
-      // framing so neighbor-hopping stays on the map.
-      if (viewMode !== 'galaxy') viewMode = 'star';
-      planetIndex = 0;
-      moonIndex = -1;
-      load(target.seedHex, target.positionPc);
+      travelTo(target);
     }
   };
 
-  load(params.get('seed') ?? randomSeedHex(), parseLocale(params.get('at')));
+  load(params.get('seed') ?? randomHex(), parseLocale(params.get('at')));
   // The centre is a place a link can name, so it has to be a place a
   // link can restore.
   if (params.get('core') !== null) viewCore();
@@ -485,26 +486,41 @@ export function closeConsole(): void {
 /**
  * Choosing a body is the end of a console errand: on a narrow screen
  * the drawer folds away so the thing you picked is what you see.
- * Switching levels is browsing, and leaves it standing.
+ * Opening a rung is browsing, and leaves it standing.
  */
 function acted(): void {
   consoleOpen = false;
 }
 
-export function setTab(tab: Tab): void {
-  // Picking a level is asking about the system again.
-  if (tab !== 'poi') {
-    cloudFocus = false;
-    cloudSubjectHex = null;
-  }
-  if (tab === 'poi') {
-    poiOpen = true;
-    notify();
-    return;
-  }
-  if (tab === viewMode && !poiOpen && !coreView) return;
-  viewMode = tab;
-  load(seedHex);
+/** What each rung is about, which is what the cursor reaches for in
+ *  the sky while it stands open. */
+const HOVER_PREFERENCE: Record<Rung, HoverPreference> = {
+  universe: null,
+  galaxy: null,
+  sector: 'clouds',
+  nebula: 'clouds',
+  nearby: 'stars',
+  system: 'bodies',
+  world: 'bodies',
+  marks: null,
+};
+
+/** Open a rung of the ladder. Browsing only: the camera stays where
+ *  it is, and nothing is framed until something is clicked — but the
+ *  hover in the sky prefers what the open rung is about. */
+export function setRung(next: Rung): void {
+  rung = next;
+  if (viewer) viewer.hoverPreference = HOVER_PREFERENCE[next];
+  notify();
+}
+
+/** Every body pick frames that body, and opens the rung the body's
+ *  own level lists it under: a cloud focus ends here. */
+function focusBody(mode: ViewMode, level: Rung): void {
+  cloudFocus = false;
+  cloudSubjectHex = null;
+  viewMode = mode;
+  setRung(level);
 }
 
 /**
@@ -516,16 +532,16 @@ export function setTab(tab: Tab): void {
 export function viewCore(): void {
   acted();
   if (coreView) return;
-  poiOpen = false;
   beltPick = null;
   coreView = true;
-  viewMode = 'galaxy';
+  focusBody('galaxy', 'galaxy');
   viewer?.setCoreView();
   syncAddress();
 }
 
 export function stepBody(delta: number): void {
   acted();
+  focusBody('planet', 'world');
   planetIndex += delta;
   moonIndex = -1;
   load(seedHex);
@@ -533,7 +549,7 @@ export function stepBody(delta: number): void {
 
 export function selectPlanet(index: number, hostIndex = companionIndex): void {
   acted();
-  viewMode = 'planet';
+  focusBody('planet', 'world');
   planetIndex = index;
   moonIndex = -1;
   companionIndex = hostIndex;
@@ -542,7 +558,7 @@ export function selectPlanet(index: number, hostIndex = companionIndex): void {
 
 export function selectMoon(planet: number, moon: number): void {
   acted();
-  viewMode = 'planet';
+  focusBody('planet', 'world');
   planetIndex = planet;
   moonIndex = moon;
   load(seedHex);
@@ -551,6 +567,7 @@ export function selectMoon(planet: number, moon: number): void {
 /** The moon plate's stepper walks the parent's moons, wrapping. */
 export function stepMoon(delta: number): void {
   acted();
+  focusBody('planet', 'world');
   moonIndex += delta;
   load(seedHex);
 }
@@ -558,16 +575,26 @@ export function stepMoon(delta: number): void {
 /** Focus one of the system's stars: 0 the primary, then the companions. */
 export function selectStar(index: number): void {
   acted();
-  viewMode = 'star';
+  focusBody('star', 'system');
   companionIndex = index;
   load(seedHex);
 }
 
-/** Travel to a neighbor star or landmark at its true galactic position. */
+/** Frame the focused host's whole system from above. */
+export function selectSystemMap(): void {
+  acted();
+  focusBody('system', 'system');
+  load(seedHex);
+}
+
+/** Travel to a star at its true galactic position, arriving at the
+ *  star itself: a destination is framed as what it is, not through
+ *  whatever the last system had focused. */
 export function travelTo(destination: { seedHex: string; positionPc: GalacticPosition }): void {
   acted();
-  cloudFocus = false;
-  cloudSubjectHex = null;
+  focusBody('star', 'system');
+  planetIndex = 0;
+  moonIndex = -1;
   load(destination.seedHex, destination.positionPc);
 }
 
@@ -575,18 +602,19 @@ export function travelTo(destination: { seedHex: string; positionPc: GalacticPos
  * Travel to a molecular cloud. The destination is a place rather than a
  * body: it is visited from its gateway — the nearest star outside its
  * gas, off its thinnest side — and arrives on the galaxy map looking at
- * the cloud, not in a system view looking at that star.
+ * the cloud, not in a system view looking at that star. A sector's
+ * anchor opens the sector it names; any other cloud, the nebula rung.
  */
-export function travelToCloud(destination: {
-  cloudSeedHex: string;
-  positionPc: GalacticPosition;
-}): void {
+export function travelToCloud(
+  destination: { cloudSeedHex: string; positionPc: GalacticPosition },
+  level: Rung = 'nebula',
+): void {
   acted();
-  arriveAtCloud(destination.cloudSeedHex, destination.positionPc);
+  arriveAtCloud(destination.cloudSeedHex, destination.positionPc, level);
 }
 
 /** Stand off the cloud with this seed, found again by its position. */
-function arriveAtCloud(cloudSeedHex: string, positionPc: GalacticPosition): void {
+function arriveAtCloud(cloudSeedHex: string, positionPc: GalacticPosition, level: Rung): void {
   const seed = seedFromHex(cloudSeedHex);
   const cloud = cloudsNear(positionPc, 5).find((candidate) => candidate.seed === seed);
   if (!cloud) return;
@@ -596,6 +624,7 @@ function arriveAtCloud(cloudSeedHex: string, positionPc: GalacticPosition): void
   moonIndex = -1;
   cloudFocus = true;
   cloudSubjectHex = cloudSeedHex;
+  setRung(level);
   load(gateway.seedHex, gateway.positionPc);
 }
 
@@ -619,9 +648,21 @@ export function travelToGalaxy(destination: { galaxy: string; seed?: string }): 
   location.href = url.toString();
 }
 
+/** A random system of this galaxy, framed the way the current one is. */
 export function randomSeed(): void {
   acted();
-  load(randomSeedHex());
+  load(randomHex());
+}
+
+/** A galaxy nobody has stood in: a fresh seed, entered at its centre. */
+export function travelToNewGalaxy(): void {
+  travelToGalaxy({ galaxy: randomHex(), seed: randomHex() });
+}
+
+/** Make the galaxy this session stands in the one bare visits boot into. */
+export function makeHome(): void {
+  setHomeGalaxy(seedToHex(galaxySeed()));
+  notify();
 }
 
 /**
@@ -649,7 +690,7 @@ export function travelToMark(mark: Bookmark): void {
     viewCore();
     return;
   }
-  viewMode = mark.view;
+  focusBody(mark.view, mark.view === 'planet' ? 'world' : mark.view === 'galaxy' ? 'nebula' : 'system');
   planetIndex = mark.planet ?? 0;
   moonIndex = mark.moon ?? -1;
   companionIndex = mark.companion ?? 0;
@@ -756,12 +797,18 @@ export function setDecal(key: keyof DecalState, visible: boolean): void {
   else viewer.markersVisible = visible;
 }
 
-/** The ride-out chip: press to start the slow pull-back to the galaxy
- *  frame, press again (or roll the wheel, or travel) to take it back. */
-export function toggleRideOut(): void {
+/** The view as it stands, drawn at twice the screen's pixels and
+ *  handed to the browser as a download. */
+export async function captureView(): Promise<void> {
   if (!viewer) return;
-  if (viewer.ridingOut) viewer.stopRideOut();
-  else viewer.startRideOut();
+  const blob = await viewer.capture(2);
+  if (!blob) return;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `universe-${seedHex}-${coreView ? 'core' : viewMode}.png`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function generationStatus(): GenerationStatus | null {

@@ -65,7 +65,7 @@ export function DecalToggles(): ReactNode {
     orbits: true,
     zones: true,
     markers: true,
-    chart: true,
+    chart: false,
   });
 
   return (
@@ -74,7 +74,7 @@ export function DecalToggles(): ReactNode {
         <button
           key={key}
           className={visible[key] ? 'active' : ''}
-          title={title}
+          data-tip={title}
           aria-label={title}
           aria-pressed={visible[key]}
           onClick={() => {

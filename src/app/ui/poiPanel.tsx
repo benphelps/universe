@@ -1,37 +1,33 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import { seedToHex } from '../../core/rng/hash';
 import { galaxySeed } from '../../universe/galaxy/galaxySeed';
-import { galacticNucleus } from '../../universe/galaxy/nucleus';
 import { bookmarkKey, savedMarks, type Bookmark } from '../bookmarks';
-import { poiFolders, type GalaxyFolder } from '../poiFolders';
-import { removeSavedMark, saveCaption, travelToGalaxy, travelToMark } from '../store';
+import { poiFolders } from '../poiFolders';
+import { removeSavedMark, saveCaption, travelToMark } from '../store';
 import { BodyRow, type BodyRowSpec } from './bodyRow';
-import { fmt, fmtSolarMasses } from './format';
-import { FLOW_SHORT } from './nucleusPanel';
-import { cssColor } from './plate';
+import { galaxyRowSpec } from './universePanel';
 
 /**
- * The POI tab: one folder per galaxy, each holding the marks saved
- * inside it. The galaxy is the folder because a mark cannot cross one
- * — the same system seed names a different star in every galaxy — so
- * the address book is grouped the way the universe is.
+ * The marks tray: the marks saved, one folder per galaxy. The galaxy
+ * is the folder because a mark cannot cross one — the same system
+ * seed names a different star in every galaxy — so the address book
+ * is grouped the way the universe is; a galaxy with nothing marked in
+ * it has its row on the galaxy rung instead.
  *
  * Nothing here has a look of its own. A marked planet is the row that
  * planet has in the system list, and a galaxy is the row its centre
  * has in the galaxy list, because both ask the same BodyRow the rest
- * of the sidebar does. What ships is the folders themselves: four
- * galactic centres chosen across the two things that decide what a
- * hole looks like, and the traveler fills the rest.
+ * of the sidebar does.
  */
 export function PoiLevel(): ReactNode {
   const here = seedToHex(galaxySeed());
-  const folders = poiFolders(here, savedMarks());
+  const folders = poiFolders(here, savedMarks()).filter(
+    (folder) => folder.here || folder.marks.length > 0,
+  );
   const [editingKey, setEditingKey] = useState<string | null>(null);
 
   return (
     <>
-      <h2>Galaxies · {folders.length}</h2>
       {folders.map((folder) => (
         <div key={folder.galaxy} className="body-group">
           <BodyRow spec={galaxyRowSpec(folder)} />
@@ -58,50 +54,6 @@ export function PoiLevel(): ReactNode {
       ))}
     </>
   );
-}
-
-/**
- * A galaxy as the row its own centre would have: the hole's mark is
- * the colour its flow actually is, its kind is the shape that flow
- * takes, and its figures are the two that decide what standing there
- * looks like.
- *
- * The galaxy this session materialized answers from the live nucleus.
- * Any other cannot — the galaxy seed locks at first use — so the
- * catalogue answers for it, and a galaxy the traveler reached on their
- * own has no answer either way.
- */
-function galaxyRowSpec(folder: GalaxyFolder): BodyRowSpec {
-  const spec: BodyRowSpec = {
-    name: folder.name,
-    here: folder.here,
-    badges: folder.here ? [{ tone: 'here', label: 'here' }] : [],
-    onClick: () => travelToGalaxy(folder),
-  };
-  const core = folder.here ? galacticNucleus() : null;
-  if (core) {
-    return {
-      ...spec,
-      color: cssColor(blackbodyLinearRgb(core.flow.innerTemperatureK)),
-      kind: FLOW_SHORT[core.flow.regime],
-      figures: [
-        [fmtSolarMasses(core.massSolar), 'M☉'],
-        [fmt(core.flow.innerTemperatureK), 'K'],
-      ],
-    };
-  }
-  if (folder.entry) {
-    return {
-      ...spec,
-      color: cssColor(blackbodyLinearRgb(folder.entry.innerTemperatureK)),
-      kind: FLOW_SHORT[folder.entry.regime],
-      figures: [
-        [fmtSolarMasses(folder.entry.massSolar), 'M☉'],
-        [fmt(folder.entry.innerTemperatureK), 'K'],
-      ],
-    };
-  }
-  return { ...spec, kind: 'unsurveyed' };
 }
 
 /**

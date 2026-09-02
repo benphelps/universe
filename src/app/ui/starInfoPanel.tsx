@@ -4,7 +4,7 @@ import { NEIGHBOR_RADIUS_PC, type Neighbor } from '../../universe/galaxy/neighbo
 import { generateStar } from '../../universe/star/generate';
 import { shortDesignation } from '../../universe/star/naming';
 import type { Star } from '../../universe/star/types';
-import { selectStar, travelTo, type AppSnapshot } from '../store';
+import { travelTo, type AppSnapshot } from '../store';
 import { AU } from '../../core/physics/constants';
 import { radiativeEfficiency } from '../../core/physics/blackHole';
 import { solarMassesPerYear, type Donor } from '../../universe/star/compactAccretion';
@@ -173,13 +173,11 @@ function massLossNote(star: Star): string {
 }
 
 /**
- * Star level: the system's own stars pinned first — primary, then
- * companions, each row a click away — and under them the stellar
- * neighborhood as a travel table.
+ * Nearby level: the stellar neighborhood as a travel table, nearest
+ * first — every row a star at its true position, arrived at as itself.
  */
-export function StarLevel({ snap }: { snap: AppSnapshot }): ReactNode {
-  const primary = snap.system.star;
-  const { neighbors, companionIndex } = snap;
+export function NearbyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
+  const { neighbors } = snap;
   const shown = neighbors.slice(0, TRAVEL_ROWS);
   // Each neighbor's star at its true position — the same locale the
   // sky point used and travel will carry.
@@ -196,59 +194,19 @@ export function StarLevel({ snap }: { snap: AppSnapshot }): ReactNode {
     [neighbors],
   );
 
-  const starRow = (
-    rowStar: Star,
-    index: number,
-    orbit: { semiMajorAxisAu: number; periodDays: number; eccentricity: number } | null,
-  ): ReactNode => (
-    <BodyRow
-      key={index}
-      spec={starRowSpec(rowStar, {
-        figures: orbit
-          ? [
-              [fmt(rowStar.mass), 'M☉'],
-              [fmt(orbit.semiMajorAxisAu), 'AU'],
-            ]
-          : [[fmt(rowStar.mass), 'M☉']],
-        here: index === companionIndex,
-        onClick: () => selectStar(index),
-      })}
-    />
-  );
-
+  if (neighbors.length === 0) return <div className="empty">nothing within {NEIGHBOR_RADIUS_PC} pc</div>;
   return (
     <>
-      <h2>System stars · {primary.companions.length + 1}</h2>
-      {primary.companions.length > 0 ? (
-        <>
-          {starRow(primary, 0, null)}
-          {primary.companions.map(({ star: companion, orbit }, i) =>
-            starRow(companion, i + 1, orbit),
-          )}
-        </>
-      ) : (
-        <div className="empty">a single star — no companions</div>
-      )}
-      {neighbors.length > 0 && (
-        <>
-          <h2>Travel to · within {NEIGHBOR_RADIUS_PC} pc</h2>
-          {shown.map((neighbor, i) => (
-            <BodyRow
-              key={neighbor.seedHex}
-              spec={starRowSpec(shownStars[i], {
-                name: shortDesignation(shownStars[i].designation),
-                figures: [[fmt(neighbor.distancePc, 3), 'pc']],
-                onClick: () => travelTo(neighbor),
-              })}
-            />
-          ))}
-          {neighbors.length > shown.length && (
-            <div className="empty">
-              nearest {shown.length} of {neighbors.length} — glints in the sky travel too
-            </div>
-          )}
-        </>
-      )}
+      {shown.map((neighbor, i) => (
+        <BodyRow
+          key={neighbor.seedHex}
+          spec={starRowSpec(shownStars[i], {
+            name: shortDesignation(shownStars[i].designation),
+            figures: [[fmt(neighbor.distancePc, 3), 'pc']],
+            onClick: () => travelTo(neighbor),
+          })}
+        />
+      ))}
     </>
   );
 }

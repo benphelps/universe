@@ -258,6 +258,10 @@ const CORE_EXPOSURE = 0.22;
 /** The galaxy's own centre — where the hole is, by definition. */
 const GALACTIC_CENTRE: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
 
+/** The longest side a capture's drawing buffer may reach, px: past
+ *  it the render targets outgrow what a GPU will allocate. */
+const CAPTURE_MAX_PX = 8192;
+
 /** Point stars snap the hover only from this close (px), so the space
  *  between glints stays hoverable for nebulae, rifts, and the other
  *  extended sky objects; solid pickables keep their generous reach. */
@@ -281,6 +285,10 @@ export interface FocusedCloud {
   nebula: Nebula | null;
 }
 export type ScenePreset = 'star' | 'system' | 'planet' | 'galaxy';
+
+/** What the cursor reaches for first in a crowded sky: the bodies of
+ *  the scene, the glints, or the clouds behind them. */
+export type HoverPreference = 'bodies' | 'stars' | 'clouds' | null;
 
 /** What a pick resolved to; main decides how to act on it. */
 export type PickTarget =
@@ -536,7 +544,7 @@ export class UnifiedViewer {
   private galaxyFade = 0;
   private sectorChart: SectorChart | null = null;
   /** User toggle: sector borders, sky-region borders, and their names. */
-  chartVisible = true;
+  chartVisible = false;
   /** User toggle: planet, moon, and stellar orbit lines. */
   orbitsVisible = true;
   /** User toggle: habitable-zone rings and belt annuli. */
@@ -601,6 +609,10 @@ export class UnifiedViewer {
 
   /** Free flight: right-shift + drag pans the camera through space. */
   private rightShiftHeld = false;
+  /** The console's standing preference — what the open rung is about. */
+  hoverPreference: HoverPreference = null;
+  /** A held modifier's, which overrides it: Shift for stars, Alt for clouds. */
+  private modifierPreference: HoverPreference = null;
   /** Plain right-drag pan in progress (space altitudes only). */
   private panHeld = false;
   /** Wheel ride input, applied to the altitude during the next frame. */
@@ -608,13 +620,16 @@ export class UnifiedViewer {
   /** Auto wheel ride: >0 while the slow pull-back to the galaxy runs. */
   private rideOutRate = 0;
   /** Fired when the automatic ride out starts, ends, or is cut short. */
-  onRideOutChange: ((active: boolean) => void) | null = null;
   private readonly onKeyChange = (e: KeyboardEvent): void => {
+    const down = e.type === 'keydown';
+    if (e.key === 'Shift') this.modifierPreference = down ? 'stars' : null;
+    else if (e.key === 'Alt') this.modifierPreference = down ? 'clouds' : null;
     if (e.code !== 'ShiftRight') return;
-    this.rightShiftHeld = e.type === 'keydown';
+    this.rightShiftHeld = down;
   };
   private readonly onWindowBlur = (): void => {
     this.rightShiftHeld = false;
+    this.modifierPreference = null;
     this.panHeld = false;
     this.controls.enabled = true;
   };
@@ -1020,6 +1035,7 @@ export class UnifiedViewer {
   onPick: ((target: PickTarget) => void) | null = null;
   private lastFrameMs = performance.now();
   private readonly onResize = () => this.resize();
+  private containerObserver: ResizeObserver | null = null;
 
   constructor(private readonly container: HTMLElement) {
     this.camera = new PerspectiveCamera(55, 1, 0.01, 1e6);
@@ -1313,8 +1329,30 @@ export class UnifiedViewer {
     });
 
     window.addEventListener('resize', this.onResize);
+    // The console folding beside the view resizes it without a window
+    // resize; the observer catches that.
+    this.containerObserver = new ResizeObserver(this.onResize);
+    this.containerObserver.observe(container);
     this.resize();
     requestAnimationFrame(() => this.frame());
+  }
+
+  /**
+   * The view as an image, drawn at more pixels than the screen has:
+   * the same frame the last render showed, at `scale` times the
+   * display's own density, bounded by what a drawing buffer can hold.
+   */
+  async capture(scale = 2): Promise<Blob | null> {
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+    const display = Math.min(window.devicePixelRatio, 2);
+    const ratio = Math.min(display * scale, CAPTURE_MAX_PX / Math.max(width, height));
+    this.pipeline.setSize(width, height, ratio);
+    this.pipeline.render();
+    const canvas = this.pipeline.renderer.domElement;
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+    this.pipeline.setSize(width, height);
+    return blob;
   }
 
   /** Build the system-wide content: stars, planets, belts, comets, overlay. */
@@ -2174,6 +2212,11 @@ export class UnifiedViewer {
     return this.focusCloud;
   }
 
+  /** The cloud the locale itself stands inside, focused or not. */
+  get standingCloud(): FocusedCloud | null {
+    return this.system ? this.localCloud() : null;
+  }
+
   /** Unit direction from the viewpoint to the focused cloud's centre,
    *  in the scene frame, or null with nothing focused. */
   private focusedCloudSceneDir(): Vector3 | null {
@@ -2399,13 +2442,11 @@ export class UnifiedViewer {
   startRideOut(): void {
     if (this.rideOutRate > 0) return;
     this.rideOutRate = RIDE_OUT_DECADES_PER_SEC;
-    this.onRideOutChange?.(true);
   }
 
   stopRideOut(): void {
     if (this.rideOutRate === 0) return;
     this.rideOutRate = 0;
-    this.onRideOutChange?.(false);
   }
 
   get ridingOut(): boolean {
@@ -2432,6 +2473,11 @@ export class UnifiedViewer {
     this.camera.updateMatrixWorld();
     const width = this.hoverViewportWidth;
     const height = this.hoverViewportHeight;
+    // What wins a crowded patch of sky. Left alone, the nearest body
+    // beats a glint beats a cloud; asked for clouds, the cloud under
+    // the cursor beats any glint over it; asked for stars, the clouds
+    // stand down; asked for bodies, only the scene's own answer.
+    const prefer = this.modifierPreference ?? this.hoverPreference;
     let best: Pickable | null = null;
     let softStarBest = false;
     // In flight the cursor is the head, not a probe.
@@ -2455,7 +2501,7 @@ export class UnifiedViewer {
 
       // Neighborhood stars: the point index reduces the full 3D field
       // to the narrow cone around the cursor before exact projection.
-      if (this.neighborPoints && this.neighborPointIndex && this.system) {
+      if (prefer !== 'bodies' && this.neighborPoints && this.neighborPointIndex && this.system) {
         const positions = this.neighborPoints.geometry.getAttribute('position') as BufferAttribute;
         this.pcGroup.updateWorldMatrix(true, false);
         const matrix = this.pcGroup.matrixWorld;
@@ -2624,8 +2670,11 @@ export class UnifiedViewer {
     // never steal a clickable hover — but an anonymous cluster member
     // yields to the named cloud it lights, keeping the nebula's face
     // hoverable, and stands only where no cloud claims the cursor.
+    const glintBest = best?.target?.kind === 'neighbor';
     if (
-      (!best || softStarBest) &&
+      prefer !== 'bodies' &&
+      prefer !== 'stars' &&
+      (!best || softStarBest || (prefer === 'clouds' && glintBest)) &&
       this.cursor &&
       !this.dragging &&
       // On foot the cursor is the head, not a probe — the same rule the
@@ -3022,6 +3071,7 @@ export class UnifiedViewer {
     this.clearCore();
     this.disposed = true;
     window.removeEventListener('resize', this.onResize);
+    this.containerObserver?.disconnect();
     window.removeEventListener('keydown', this.onKeyChange);
     window.removeEventListener('keyup', this.onKeyChange);
     window.removeEventListener('blur', this.onWindowBlur);

@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
  *  read without a column header above it. */
 export type Figure = readonly [value: string, unit?: string];
 
-export type BadgeTone = 'hz' | 'lock' | 'res' | 'bio' | 'here' | 'far';
+export type BadgeTone = 'hz' | 'lock' | 'res' | 'bio' | 'here' | 'home' | 'far';
 
 export interface Badge {
   tone: BadgeTone;

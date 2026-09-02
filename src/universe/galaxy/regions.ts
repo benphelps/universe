@@ -69,7 +69,7 @@ function armNamesOf(): string[] {
   ));
 }
 
-interface SectorSite {
+export interface SectorSite {
   xPc: number;
   yPc: number;
   zPc: number;
@@ -187,14 +187,15 @@ function warped(xPc: number, yPc: number, zPc: number): [number, number, number]
   ];
 }
 
-/** The territory a locale belongs to: the anchor whose weighted reach
- *  wins in the warped metric — a power diagram over the landmarks. */
-export function sectorSeedAt(positionPc: GalacticPosition): bigint {
+/** The anchor whose territory a locale belongs to: the site whose
+ *  weighted reach wins in the warped metric — a power diagram over the
+ *  landmarks. */
+export function sectorSiteAt(positionPc: GalacticPosition): SectorSite {
   const [wx, wy, wz] = warped(positionPc.xPc, positionPc.yPc, positionPc.zPc);
   const cx = Math.floor(wx / SECTOR_SITE_SPAN_PC);
   const cy = Math.floor(wy / SECTOR_SITE_SPAN_PC);
   const cz = Math.floor(wz / SECTOR_SITE_SPAN_PC);
-  let best = 0n;
+  let best: SectorSite | null = null;
   let bestCost = Infinity;
   for (let ix = cx - 1; ix <= cx + 1; ix++) {
     for (let iy = cy - 1; iy <= cy + 1; iy++) {
@@ -205,13 +206,18 @@ export function sectorSeedAt(positionPc: GalacticPosition): bigint {
             site.weight;
           if (cost < bestCost) {
             bestCost = cost;
-            best = site.seed;
+            best = site;
           }
         }
       }
     }
   }
-  return best;
+  return best ?? { ...positionPc, seed: 0n, weight: 1, radiusPc: 0 };
+}
+
+/** The territory a locale belongs to. */
+export function sectorSeedAt(positionPc: GalacticPosition): bigint {
+  return sectorSiteAt(positionPc).seed;
 }
 
 /**

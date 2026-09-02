@@ -53,7 +53,8 @@ export function SettingsMenu(): ReactNode {
       <button
         id="settings-toggle"
         className={open ? 'open' : ''}
-        title="settings"
+        data-tip="instrument settings"
+        aria-label="instrument settings"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
@@ -79,7 +80,7 @@ export function SettingsMenu(): ReactNode {
               <button
                 key={name}
                 className={skyMode === name ? 'active' : ''}
-                title={title}
+                data-tip={title}
                 role="radio"
                 aria-checked={skyMode === name}
                 onClick={() => {

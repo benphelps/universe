@@ -3,9 +3,8 @@ import { AU, SOLAR_LUMINOSITY } from '../../core/physics/constants';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import type { FlowRegime } from '../../universe/galaxy/accretionFlow';
 import { galacticNucleus, type GalacticNucleus } from '../../universe/galaxy/nucleus';
-import { centralSpheroid } from '../../universe/galaxy/spheroid';
 import { viewCore } from '../store';
-import { BodyRow, type BodyRowSpec } from './bodyRow';
+import type { BodyRowSpec } from './bodyRow';
 import { fmt, fmtSolarMasses } from './format';
 import { cssColor, type PlateSpec } from './plate';
 
@@ -20,10 +19,6 @@ export const FLOW_SHORT: Record<FlowRegime, string> = {
   'thin-disc': 'thin disc',
   riaf: 'hot torus',
 };
-
-/** The old-gold of a relaxed stellar cluster — no single body's light,
- *  so it stands for the whole population rather than measuring one. */
-const CLUSTER_COLOR = 'rgb(201, 185, 138)';
 
 /**
  * The hole as a row. Its mark is the colour its flow actually is: a
@@ -72,38 +67,4 @@ export function nucleusPlateSpec(): PlateSpec {
       ['Inner flow T', `${fmt(flow.innerTemperatureK)} K`],
     ],
   };
-}
-
-/**
- * The centre as a destination. The row states plainly what a traveller
- * is going to: how much mass, how it is feeding, and how wide the
- * shadow will look — because from anywhere else in the galaxy it is a
- * few micro-arcseconds and there is nothing to see.
- */
-export function CoreDestination({ active }: { active: boolean }): ReactNode {
-  const n = galacticNucleus();
-  const spheroid = centralSpheroid();
-  return (
-    <>
-      <h2>The centre</h2>
-      <BodyRow spec={nucleusRowSpec(n, active)} />
-      <BodyRow
-        spec={{
-          color: CLUSTER_COLOR,
-          name: 'Nuclear cluster',
-          kind: 'cluster',
-          figures: [
-            [fmtSolarMasses(n.cluster.massSolar), 'M☉'],
-            [fmt(n.cluster.effectiveRadiusPc), 'pc'],
-          ],
-          here: active,
-          onClick: viewCore,
-        }}
-      />
-      <div className="empty">
-        {spheroid.kind === 'pseudo' ? 'A pseudobulge' : 'A classical bulge'} of{' '}
-        {fmt(spheroid.massSolar)} M☉, σ {fmt(spheroid.dispersionKmS)} km/s — and the hole it grew.
-      </div>
-    </>
-  );
 }

@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { boot, closeConsole, toggleConsole, toggleRideOut, useApp } from '../store';
-import { DecalToggles } from './decalToggles';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { boot, closeConsole, toggleConsole, useApp } from '../store';
+import { useConsoleWidth } from './consoleGrip';
+import { InstrumentBar } from './instrumentBar';
 import { PerfReadout } from './perfReadout';
-import { SettingsMenu } from './settingsMenu';
 import { Sidebar } from './sidebar';
-import { TimeSeedControls } from './timeSeedControls';
 import { Welcome } from './welcome';
 
-// The console's own glyph: the plate, its rows, and the framing
-// scales along the bottom — the panel in miniature.
+// The console's own glyph: the plate, its rows, and the ladder down
+// the side — the panel in miniature.
 const CONSOLE = (
   <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
     <rect x="2.6" y="3.2" width="14.8" height="13.6" rx="1.6" />
@@ -26,6 +25,9 @@ const CLOSE = (
  *  the layout can also ask about. */
 const NARROW = '(max-width: 860px)';
 
+/** Whether the wide-screen console was folded away last time. */
+const FOLDED_KEY = 'console-folded';
+
 function useNarrow(): boolean {
   const subscribe = useCallback((onChange: () => void) => {
     const query = matchMedia(NARROW);
@@ -37,15 +39,24 @@ function useNarrow(): boolean {
 
 /**
  * The whole console: the sidebar beside the viewport, the instrument
- * chrome in the viewport's corners, and the first-visit cover page.
+ * bar along its foot, and the first-visit cover page.
  * On a narrow screen the sidebar folds into a drawer behind the
- * toggle up in the corner. The unified viewer itself stays outside
- * React — it mounts into #view once and owns its own canvas and
- * overlays.
+ * toggle up in the corner; on a wide one it stands beside the view
+ * until folded away, and the same toggle brings it back. The unified
+ * viewer itself stays outside React — it mounts into #view once and
+ * owns its own canvas and overlays.
  */
 export function App(): ReactNode {
   const snap = useApp();
   const view = useRef<HTMLElement>(null);
+  const [width, setWidth] = useConsoleWidth();
+  const [folded, setFolded] = useState(() => {
+    try {
+      return localStorage.getItem(FOLDED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     boot(view.current!);
@@ -61,37 +72,51 @@ export function App(): ReactNode {
 
   const narrow = useNarrow();
   const open = snap?.consoleOpen ?? false;
+  const collapsed = !narrow && folded;
+  // The corner readouts step aside for the toggle once the console
+  // is gone from beside them.
+  useEffect(() => {
+    document.body.classList.toggle('console-collapsed', collapsed);
+  }, [collapsed]);
+
+  const fold = (next: boolean): void => {
+    setFolded(next);
+    try {
+      localStorage.setItem(FOLDED_KEY, next ? '1' : '0');
+    } catch {
+      // Fine: the console will stand again next visit.
+    }
+  };
   // Folded away, the drawer is gone for the keyboard and the screen
   // reader too, not merely off the side of the screen.
-  const folded = narrow && !open;
+  const hidden = narrow ? !open : collapsed;
+  const toggle = narrow ? toggleConsole : () => fold(!folded);
+  const toggleTip = hidden ? 'open the console' : 'close the console';
   return (
     <>
       <button
         id="console-toggle"
-        className={open ? 'open' : ''}
-        title={open ? 'close the console' : 'open the console'}
-        aria-label={open ? 'close the console' : 'open the console'}
-        aria-expanded={open}
-        onClick={toggleConsole}
+        className={`${open ? 'open' : ''}${collapsed ? ' show' : ''}`}
+        data-tip={toggleTip}
+        aria-label={toggleTip}
+        aria-expanded={!hidden}
+        onClick={toggle}
       >
-        {open ? CLOSE : CONSOLE}
+        {hidden ? CONSOLE : CLOSE}
       </button>
-      <Sidebar snap={snap} folded={folded} />
+      <Sidebar
+        snap={snap}
+        folded={narrow && !open}
+        collapsed={collapsed}
+        width={width}
+        onFold={() => fold(true)}
+        onWidth={setWidth}
+      />
       <div id="console-scrim" hidden={!open} onClick={closeConsole} />
       <main id="view" ref={view}>
-        <TimeSeedControls seedHex={snap?.seedHex ?? ''} />
+        <InstrumentBar snap={snap} />
         <PerfReadout />
       </main>
-      <SettingsMenu />
-      <DecalToggles />
-      <button
-        id="ride"
-        className={snap?.ridingOut ? 'active' : ''}
-        title="slow pull-back to the galaxy frame"
-        onClick={toggleRideOut}
-      >
-        ride out
-      </button>
       <Welcome />
     </>
   );

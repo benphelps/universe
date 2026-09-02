@@ -59,8 +59,9 @@ export class RenderPipeline {
       .getExtension('EXT_disjoint_timer_query_webgl2') as TimerExtension | null;
   }
 
-  setSize(width: number, height: number): void {
-    const ratio = Math.min(window.devicePixelRatio, 2);
+  /** Size the drawing buffer to the view. The ratio defaults to the
+   *  display's own; a capture asks for more pixels per CSS pixel. */
+  setSize(width: number, height: number, ratio = Math.min(window.devicePixelRatio, 2)): void {
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(width, height);
     // The composer owns its own targets and inherits nothing from the

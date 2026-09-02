@@ -46,6 +46,7 @@ body {
   position: relative;
   flex: 1;
   min-width: 0;
+  container-type: inline-size;
 }
 
 /* The scene owns every gesture over it: no page pan, no double-tap
@@ -90,7 +91,8 @@ body {
 /* ---- console frame ---- */
 
 #sidebar {
-  width: 390px;
+  position: relative;
+  width: var(--console-width, 390px);
   flex: none;
   display: flex;
   flex-direction: column;
@@ -98,21 +100,64 @@ body {
   border-right: 1px solid var(--line);
 }
 
-#address {
-  flex: none;
-  padding: 9px 16px 7px;
-  border-bottom: 1px solid var(--line);
-  font: 600 11px/1.4 var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
+/* The grip along the console's outer edge sets its width. */
+#console-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  z-index: 3;
+  cursor: col-resize;
+}
+
+#console-grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+#console-grip:hover::after,
+#console-grip.dragging::after {
+  background: var(--accent);
+}
+
+body.console-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* The fold in the console's top corner takes it off the screen on a
+   wide display; the corner toggle over the view brings it back. */
+#sidebar #console-fold {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-color: transparent;
   color: var(--faint);
+}
+
+#sidebar #console-fold:hover {
+  border-color: var(--line);
+  color: var(--ink);
 }
 
 /* ---- catalog plate ---- */
 
 #focus {
   flex: none;
-  padding: 12px 16px 14px;
+  padding: 12px 44px 14px 16px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -314,6 +359,23 @@ body {
   color: #b5aee0;
 }
 
+.badge.home {
+  background: rgba(201, 185, 138, 0.18);
+  color: #d8c990;
+}
+
+/* A link-like action inside a line of text. */
+#sidebar button.inline {
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+#sidebar button.inline:hover {
+  color: var(--accent-hi);
+}
+
 /* ---- measurements ---- */
 
 table.props {
@@ -411,11 +473,7 @@ table.props td:first-child {
 /* ---- corner instruments ---- */
 
 #settings-corner {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  z-index: 6;
-  font: 13px/1.5 var(--mono);
+  position: relative;
 }
 
 /* The frame's instruments, top-left of the viewport. */
@@ -469,7 +527,7 @@ table.props td:first-child {
 
 #settings-menu {
   position: absolute;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 8px);
   right: 0;
   width: 272px;
   padding: 12px 14px;
@@ -516,10 +574,7 @@ table.props td:first-child {
 }
 
 #sidebar button,
-#settings-corner button,
-#decals button,
-#timeseed button,
-#ride {
+#instrument-bar button {
   background: none;
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -531,10 +586,6 @@ table.props td:first-child {
 }
 
 #decals {
-  position: fixed;
-  right: 12px;
-  bottom: 12px;
-  z-index: 6;
   display: flex;
   gap: 6px;
 }
@@ -551,134 +602,7 @@ table.props td:first-child {
   display: block;
 }
 
-#ride {
-  position: fixed;
-  right: 196px;
-  bottom: 12px;
-  z-index: 6;
-  font: 600 12px/1.4 var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  height: 38px;
-  padding: 2px 14px;
-}
-
-#decals button.active,
-#ride.active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-/* The generation readout: one row per background producer, under the
- * framing scales. Rows fold away when their queue drains. */
-#gen-panel {
-  flex: none;
-  padding: 0 14px;
-}
-
-#gen-panel .gen-row {
-  display: grid;
-  grid-template-columns: 1fr 150px;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 0 6px;
-  border-top: 1px solid var(--line);
-}
-
-#gen-panel .gen-row[hidden] {
-  display: none;
-}
-
-/* A stage line under its parent row: the step the worker is on. */
-#gen-panel .gen-row.gen-sub {
-  border-top: none;
-  padding-top: 0;
-  margin-top: -3px;
-}
-
-#gen-panel .gen-row.gen-sub .gen-label {
-  padding-left: 14px;
-  color: var(--dim);
-}
-
-#gen-panel .gen-row.gen-sub .gen-fill {
-  background: var(--accent-hi);
-  opacity: 0.55;
-}
-
-#gen-panel .gen-label {
-  font: 600 10px/1.4 var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#gen-panel .gen-bar {
-  height: 3px;
-  background: var(--panel-raised);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-#gen-panel .gen-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 0.25s;
-}
-
-#gen-panel .gen-fill.sweep {
-  width: 30%;
-  animation: gen-sweep 1.1s ease-in-out infinite alternate;
-}
-
-@keyframes gen-sweep {
-  from {
-    margin-left: 0;
-  }
-  to {
-    margin-left: 70%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  #gen-panel .gen-fill.sweep {
-    animation: none;
-    width: 100%;
-    opacity: 0.45;
-  }
-}
-
-#settings-corner button,
-#decals button,
-#timeseed button,
-#ride {
-  background: rgba(10, 14, 20, 0.8);
-  backdrop-filter: blur(6px);
-}
-
-/* ---- the clock-and-seed strip ---- */
-
-#timeseed {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  z-index: 6;
-  display: flex;
-  gap: 6px;
-  align-items: stretch;
-}
-
-#timeseed button:hover {
-  border-color: var(--accent);
-  color: var(--ink);
-}
-
-#time-pause,
-#seed-dice {
+#capture {
   display: grid;
   place-items: center;
   width: 38px;
@@ -686,106 +610,180 @@ table.props td:first-child {
   padding: 0;
 }
 
-#time-pause.active {
+#decals button.active {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-#time-slider {
+/* The status line: one row along the foot of the console, always
+   there, with a hairline fill under it for the busiest producer. */
+#gen-panel {
+  flex: none;
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px 7px;
+  border-top: 1px solid var(--line);
+  overflow: hidden;
+}
+
+#gen-panel .gen-label {
+  flex: none;
+  font: 600 10px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+}
+
+#gen-panel .gen-text {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#gen-panel .gen-text.idle {
+  color: var(--faint);
+}
+
+#gen-panel .gen-fill {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transition: width 0.25s;
+}
+
+
+#instrument-bar button {
+  background: rgba(10, 14, 20, 0.8);
+  backdrop-filter: blur(6px);
+}
+
+/* ---- the instrument bar ---- */
+
+/* Every dial in one panel along the foot of the view, in three
+   captioned groups: the clock, the address, the instruments. */
+#instrument-bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  pointer-events: none;
+}
+
+#instrument-bar .group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+#instrument-bar .group > .eyebrow {
+  padding-left: 2px;
+  font: 600 10px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+
+#instrument-bar .row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+#instrument-bar .gap {
+  width: 6px;
+}
+
+/* The clock: which of the focus's clocks runs, and how long one turn
+   takes on screen. Label and choices share one 22 px line so their
+   text sits level. */
+#time-clocks {
   display: flex;
   align-items: center;
   gap: 8px;
   height: 38px;
-  padding: 0 18px 0 14px;
+  padding: 0 8px;
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
   border: 1px solid var(--line);
   border-radius: 3px;
 }
 
-#time-rate {
-  width: 74px;
-  flex: none;
-  font: 12px/1.2 var(--mono);
-  color: var(--accent);
-  white-space: nowrap;
-}
-
-#time-rate.paused {
-  color: var(--faint);
-}
-
-#time-slider .track-wrap {
-  width: 300px;
-  margin: 0 12px;
-}
-
-#time-range {
-  appearance: none;
-  -webkit-appearance: none;
-  display: block;
-  width: 100%;
-  height: 12px;
-  margin: 0;
-  background: transparent;
-  cursor: pointer;
-}
-
-#time-range::-webkit-slider-runnable-track {
-  height: 2px;
-  background: rgba(170, 210, 255, 0.22);
-  border-radius: 1px;
-}
-
-#time-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 11px;
-  height: 11px;
-  margin-top: -4.5px;
-  border: none;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-#time-range:hover::-webkit-slider-thumb {
-  background: var(--accent-hi);
-}
-
-#time-range::-moz-range-track {
-  height: 2px;
-  background: rgba(170, 210, 255, 0.22);
-  border-radius: 1px;
-}
-
-#time-range::-moz-range-thumb {
-  width: 11px;
-  height: 11px;
-  border: none;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-#time-slider .ticks {
-  position: relative;
-  height: 13px;
-  font: 10px/1 var(--mono);
-  color: var(--faint);
-  pointer-events: none;
-}
-
-#time-slider .ticks i {
-  position: absolute;
-  top: -9px;
-  width: 1px;
-  height: 6px;
-  background: rgba(170, 210, 255, 0.28);
-}
-
-#time-slider .ticks span {
-  position: absolute;
-  top: 3px;
-  transform: translateX(-50%);
+#instrument-bar .group > .eyebrow .owner {
+  color: var(--dim);
+  text-transform: none;
   letter-spacing: 0.04em;
+}
+
+#time-clocks .still {
+  font: 12px/22px var(--mono);
+  color: var(--faint);
+}
+
+#time-clocks .tag {
+  font: 600 10px/22px var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+}
+
+#time-clocks .seg {
+  display: flex;
+  gap: 2px;
+}
+
+#instrument-bar #time-clocks .seg button {
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  backdrop-filter: none;
+  font: 12px/22px var(--mono);
+  color: var(--dim);
+}
+
+#instrument-bar #time-clocks .seg button:hover {
+  color: var(--ink);
+}
+
+#instrument-bar #time-clocks .seg button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+#instrument-bar #time-clocks .seg.idle button {
+  color: var(--faint);
+  cursor: default;
+}
+
+/* A narrower view closes the bar's ranks before it wraps: the seed
+   sheds its hex, which the URL carries. */
+@container (max-width: 900px) {
+  #instrument-bar {
+    gap: 8px 12px;
+  }
+
+  #seed-chip {
+    padding: 0 11px;
+  }
+
+  #seed-chip #seed-text {
+    display: none;
+  }
 }
 
 #seed-chip {
@@ -802,67 +800,216 @@ table.props td:first-child {
 }
 
 #sidebar button:hover,
-#settings-corner button:hover,
-#decals button:hover,
-#ride:hover {
+#instrument-bar button:hover {
   border-color: var(--accent);
   color: var(--ink);
 }
 
 #sidebar button:focus-visible,
-#settings-corner button:focus-visible,
-#decals button:focus-visible,
-#ride:focus-visible,
+#instrument-bar button:focus-visible,
 #settings-menu input:focus-visible {
   outline: 1px solid var(--accent-hi);
   outline-offset: 1px;
 }
 
-/* ---- the four framing scales ---- */
+/* ---- the ladder ---- */
 
-#level-nav {
-  flex: none;
-  display: flex;
-  border-top: 1px solid var(--line);
-}
-
-#level-nav button {
-  flex: 1;
+/* One rung per containment level, outermost first, joined by a
+   hairline down the left; the open rung's list takes the height the
+   plate leaves, and the rungs below it sit under that list. */
+#ladder {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  background: none;
+  padding-top: 4px;
+}
+
+#ladder::before {
+  content: '';
+  position: absolute;
+  left: 21px;
+  top: 12px;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+
+#sidebar #ladder .rung {
+  position: relative;
+  display: grid;
+  grid-template-columns: 11px 52px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0 8px;
+  padding: 6px 12px 6px 16px;
   border: none;
   border-radius: 0;
-  padding: 8px 0 7px;
-  box-shadow: inset 0 2px 0 transparent;
+  background: none;
+  text-align: left;
+  font: 11.5px/1.5 var(--mono);
+  color: var(--dim);
 }
 
-#level-nav button .name {
-  font: 600 12px/1.3 var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-}
-
-#level-nav button .unit {
-  font: 10px/1.3 var(--mono);
-  color: var(--faint);
-}
-
-#level-nav button:hover {
-  box-shadow: inset 0 2px 0 rgba(70, 174, 198, 0.45);
+#sidebar #ladder .rung:hover {
+  background: var(--accent-soft);
   color: var(--ink);
 }
 
-#level-nav button.active {
-  box-shadow: inset 0 2px 0 var(--accent);
-  color: var(--accent);
+#ladder .rung .dot {
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  align-self: center;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--faint);
+}
+
+#ladder .rung .lv {
+  font: 600 11px/1.4 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+
+#ladder .rung .cur {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#ladder .rung .cur.empty,
+#ladder .rung .kind {
+  color: var(--faint);
+}
+
+#ladder .rung .kind {
+  font-size: 10.5px;
+  margin-left: 6px;
+}
+
+#ladder .rung .ct {
+  color: var(--dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The level the focus lives on. */
+#ladder .rung.here .cur {
+  color: var(--accent-hi);
+}
+
+#ladder .rung.here .dot {
+  box-shadow: inset 0 0 0 1px var(--accent-hi);
+}
+
+#sidebar #ladder .rung.open {
   background: var(--accent-soft);
 }
 
-#level-nav button.active .unit {
+#ladder .rung.open .dot {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+#ladder .rung.open .lv,
+#ladder .rung.open .ct {
   color: var(--accent);
+}
+
+/* The address book is no level: it stands under the ladder, and the
+   hairline stops above it. */
+#sidebar #ladder .rung.tray {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+#sidebar #ladder .rung.tray.open {
+  background: var(--accent-soft);
+}
+
+#sidebar #ladder .rung.tray + #level {
+  flex: 1 1 auto;
+}
+
+#sidebar #ladder .rung.tray + #level + .rung.tray {
+  margin-top: 0;
+}
+
+#ladder #level {
+  padding: 4px 16px 8px 40px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The list is under its rung, so the tray's list has no rung under
+   it to close against. */
+#ladder .rung.tray + #level {
+  border-bottom: none;
+}
+
+/* ---- tooltips ---- */
+
+/* The corner instruments name themselves on hover at once, in the
+   console's own type, each corner's tip opening away from its edge. */
+[data-tip] {
+  position: relative;
+}
+
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: 20;
+  padding: 4px 8px;
+  background: rgba(10, 14, 20, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink);
+  font: 11px/1.4 var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0s linear 0.12s;
+}
+
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0.08s, 0s;
+}
+
+#instrument-bar [data-tip]::after {
+  bottom: calc(100% + 8px);
+  left: 0;
+}
+
+#instrument-bar .instruments [data-tip]::after {
+  left: auto;
+  right: 0;
+}
+
+#settings-menu [data-tip]::after {
+  top: auto;
+  right: auto;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+#console-toggle[data-tip]::after {
+  top: calc(100% + 8px);
+  left: 0;
+}
+
+#sidebar #console-fold[data-tip]::after {
+  top: calc(100% + 6px);
+  right: 0;
 }
 
 /* ---- scrollbars ---- */
@@ -939,11 +1086,16 @@ table.props td:first-child {
   border-color: var(--accent-hi);
 }
 
+#welcome-card .galaxy-choices {
+  display: flex;
+  gap: 10px;
+}
+
 #welcome-card .galaxy-choice {
   display: block;
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   text-align: left;
-  margin-top: 10px;
   padding: 12px 14px;
   background: var(--panel-raised);
   border: 1px solid var(--line);
@@ -1153,9 +1305,29 @@ table.props td:first-child {
 
 /* ---- narrow screens: the console folds into a drawer ---- */
 
+@media (min-width: 861px) {
+  #sidebar.collapsed {
+    display: none;
+  }
+
+  #console-toggle.show {
+    display: grid;
+  }
+
+  /* The frame readout steps aside for the toggle. */
+  body.console-collapsed #perf {
+    left: 58px;
+  }
+}
+
 @media (max-width: 860px) {
   #console-toggle {
     display: grid;
+  }
+
+  #sidebar #console-fold,
+  #console-grip {
+    display: none;
   }
 
   /* Off-canvas, and over the viewport rather than beside it. */
@@ -1190,14 +1362,22 @@ table.props td:first-child {
     display: none;
   }
 
-  /* The catalog plate is the drawer's headline; the level table below
-     it gets whatever height is left. */
+  /* The catalog plate is the drawer's headline; the ladder below it
+     gets whatever height is left. */
   #focus {
     padding: 10px 14px 12px;
   }
 
-  #level {
-    padding: 0 14px 10px;
+  #sidebar #ladder .rung {
+    padding: 6px 14px;
+  }
+
+  #ladder::before {
+    left: 19px;
+  }
+
+  #ladder #level {
+    padding: 4px 14px 8px 36px;
   }
 
   #level h2 {
@@ -1205,44 +1385,21 @@ table.props td:first-child {
     padding: 8px 14px 6px;
   }
 
-  /* ---- corner instruments, restacked for one thumb ---- */
+  /* ---- the instrument bar, for one thumb ---- */
 
-  /* The clock strip takes the full width along the bottom; the seed
-     keeps its copy button but sheds the hex, which the URL carries. */
-  #timeseed {
+  #instrument-bar {
     left: calc(8px + env(safe-area-inset-left));
     right: calc(8px + env(safe-area-inset-right));
     bottom: calc(8px + env(safe-area-inset-bottom));
-    gap: 5px;
+    gap: 8px;
   }
 
-  #timeseed #time-slider {
-    flex: 1;
-    min-width: 0;
-    padding: 0 12px 0 10px;
-  }
-
-  #time-rate {
-    width: 56px;
-    font-size: 11px;
-  }
-
-  #time-slider .track-wrap {
-    width: auto;
-    flex: 1;
-    min-width: 0;
-    margin: 0 0 0 8px;
-  }
-
-  /* The detent labels do not survive the narrower track; the marks do. */
-  #time-slider .ticks span {
+  #instrument-bar .group > .eyebrow {
     display: none;
   }
 
-  #time-slider .ticks {
-    height: 0;
-  }
-
+  /* The seed keeps its copy button but sheds the hex, which the URL
+     carries. */
   #seed-chip {
     padding: 0 11px;
   }
@@ -1251,29 +1408,11 @@ table.props td:first-child {
     display: none;
   }
 
-  /* Decals and the ride chip share the row above the clock. */
-  #decals {
-    right: calc(8px + env(safe-area-inset-right));
-    bottom: calc(54px + env(safe-area-inset-bottom));
-    gap: 5px;
-  }
-
-  #ride {
-    left: calc(8px + env(safe-area-inset-left));
-    right: auto;
-    bottom: calc(54px + env(safe-area-inset-bottom));
-  }
-
-  /* Clear of the decal row once the home indicator pushes it up. */
+  /* Clear of the bar once the home indicator pushes it up. */
   #drag-mode,
   #fly-stick {
     right: calc(16px + env(safe-area-inset-right));
     bottom: calc(104px + env(safe-area-inset-bottom));
-  }
-
-  #settings-corner {
-    top: calc(12px + env(safe-area-inset-top));
-    right: calc(12px + env(safe-area-inset-right));
   }
 
   #settings-menu {
@@ -1306,16 +1445,18 @@ table.props td:first-child {
   }
 
   #sidebar button:hover:not(.active),
-  #settings-corner button:hover:not(.open),
-  #decals button:hover:not(.active),
-  #timeseed button:hover:not(.active),
-  #ride:hover:not(.active) {
+  #instrument-bar button:hover:not(.active):not(.open) {
     border-color: var(--line);
     color: var(--dim);
   }
 
-  #level-nav button:hover:not(.active) {
-    box-shadow: inset 0 2px 0 transparent;
+  #sidebar #ladder .rung:hover:not(.open) {
+    background: none;
     color: var(--dim);
+  }
+
+  /* A finger has no hover to show a tip on. */
+  [data-tip]::after {
+    display: none;
   }
 }

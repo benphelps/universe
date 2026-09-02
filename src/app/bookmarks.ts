@@ -1,5 +1,5 @@
 import type { Badge, Figure } from './ui/bodyRow';
-import type { ViewMode } from './ui/sidebar';
+import type { ViewMode } from './store';
 
 /**
  * How a body's own row read at the moment it was marked.

@@ -5,7 +5,7 @@ import { asteroidDesignation } from '../../universe/smallbody/notable';
 import type { Asteroid } from '../../universe/smallbody/types';
 import type { Star } from '../../universe/star/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
-import { host, selectMoon, selectPlanet, stepBody, stepMoon, type AppSnapshot } from '../store';
+import { host, selectMoon, stepBody, stepMoon, type AppSnapshot } from '../store';
 import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
 import { fmt, fmtDays } from './format';
 import type { PlateSpec } from './plate';
@@ -212,10 +212,6 @@ export function emptyPlateSpec(hostStar: Star): PlateSpec {
 }
 
 /**
- * Planet level: the focused planet's moons listed below the plate, or
- * a focused moon's parent one click up.
- */
-/**
  * A moon as a row. Its tidal state, its air and any resonance are what
  * distinguish one from another, so they ride as badges rather than as
  * a sentence in a trailing column nobody could scan.
@@ -254,24 +250,21 @@ export function moonRowSpec(
  *  ice alike, and the figures carry the difference. */
 const MOON_COLOR = 'rgb(154, 164, 174)';
 
-export function PlanetLevel({ snap }: { snap: AppSnapshot }): ReactNode {
+/**
+ * World level: the focused world's moons — or, at a moon, its
+ * siblings. With no world focused there is nothing to list.
+ */
+export function WorldLevel({ snap }: { snap: AppSnapshot }): ReactNode {
   const { planets } = host(snap);
-  if (snap.planetFocus === 'moon') {
-    const parent = planets[snap.planetIndex];
-    return (
-      <>
-        <h2>Parent</h2>
-        <BodyRow
-          spec={planetRowSpec(parent, { onClick: () => selectPlanet(snap.planetIndex) })}
-        />
-      </>
-    );
+  if (snap.coreView || snap.cloud || snap.viewMode !== 'planet') {
+    return <div className="empty">no world focused — pick one from the system rung</div>;
   }
-  if (snap.planetFocus !== 'planet') return null;
-  const moons = planets[snap.planetIndex].moons;
+  if (snap.planetFocus === 'empty') return <div className="empty">this star hosts no worlds</div>;
+  if (snap.planetFocus !== 'planet' && snap.planetFocus !== 'moon') return null;
+  const parent = planets[snap.planetIndex];
+  const moons = parent.moons;
   return (
     <>
-      <h2>Moons · {moons.length}</h2>
       {moons.length > 0 ? (
         moons.map((moon, moonIndex) => (
           <BodyRow

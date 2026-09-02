@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react';
 import { AU } from '../../core/physics/constants';
+import type { Star } from '../../universe/star/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
-import { host, selectPlanet, type AppSnapshot } from '../store';
+import { host, selectPlanet, selectStar, selectSystemMap, type AppSnapshot } from '../store';
+import { starRowSpec } from './starInfoPanel';
 import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
 import { fmt } from './format';
 import { cssColor, type PlateSpec } from './plate';
 
-const CLASS_LABEL: Record<Planet['class'], string> = {
+export const CLASS_LABEL: Record<Planet['class'], string> = {
   rocky: 'rocky',
   'super-earth': 'super-Earth',
   'mini-neptune': 'mini-Neptune',
@@ -92,24 +94,71 @@ export function systemPlateSpec(system: StarSystem, hostIndex: number): PlateSpe
   };
 }
 
+/** How far out the system reaches, AU: its outermost planet or belt. */
+function extentAu(planets: Planet[], belts: StarSystem['belts']): number {
+  return Math.max(
+    0,
+    ...planets.map((planet) => planet.elements.semiMajorAxis / AU),
+    ...belts.map((belt) => belt.outerAu),
+  );
+}
+
 /**
- * System level: the planet inventory of the focused host. Clicking a
- * planet row focuses that planet.
+ * System level: the system's own stars, the map of the whole retinue
+ * from above, and the focused host's planets and belts. Every row is
+ * a click away from being the focus.
  */
 export function SystemLevel({ snap }: { snap: AppSnapshot }): ReactNode {
-  const { system, companionIndex } = snap;
-  const { planets, companion } = host(snap);
+  const { system, companionIndex, viewMode, coreView } = snap;
+  const { star, planets, companion } = host(snap);
   const belts = companion ? companion.belts : system.belts;
+  const primary = system.star;
+  const bodyFocused = !coreView && !snap.cloud;
+
+  const starRow = (
+    rowStar: Star,
+    index: number,
+    orbit: { semiMajorAxisAu: number } | null,
+  ): ReactNode => (
+    <BodyRow
+      key={index}
+      spec={starRowSpec(rowStar, {
+        figures: orbit
+          ? [
+              [fmt(rowStar.mass), 'M☉'],
+              [fmt(orbit.semiMajorAxisAu), 'AU'],
+            ]
+          : [[fmt(rowStar.mass), 'M☉']],
+        here: bodyFocused && viewMode === 'star' && index === companionIndex,
+        onClick: () => selectStar(index),
+      })}
+    />
+  );
 
   return (
     <>
+      <h2>Stars · {primary.companions.length + 1}</h2>
+      {starRow(primary, 0, null)}
+      {primary.companions.map(({ star: other, orbit }, i) => starRow(other, i + 1, orbit))}
+      <BodyRow
+        spec={{
+          name: `${star.designation} system`,
+          kind: 'map',
+          figures: [
+            [String(planets.length), 'planets'],
+            [fmt(extentAu(planets, belts)), 'AU'],
+          ],
+          here: bodyFocused && viewMode === 'system',
+          onClick: selectSystemMap,
+        }}
+      />
       <h2>Planets · {planets.length}</h2>
       {planets.length > 0 ? (
         planets.map((planet, index) => (
           <BodyRow
             key={index}
             spec={planetRowSpec(planet, {
-              here: snap.planetIndex === index && snap.viewMode === 'planet',
+              here: bodyFocused && viewMode === 'planet' && snap.planetIndex === index,
               onClick: () => selectPlanet(index, companionIndex),
             })}
           />
@@ -119,13 +168,6 @@ export function SystemLevel({ snap }: { snap: AppSnapshot }): ReactNode {
           {companion ? 'no room for planets this close to the primary' : 'no planets formed here'}
         </div>
       )}
-      {belts.map((belt, index) => (
-        <div key={index} className="belt-row">
-          {belt.kind === 'main' ? 'asteroid belt' : 'debris belt'} {fmt(belt.innerAu)}–
-          {fmt(belt.outerAu)} AU
-          {belt.gaps.length > 0 && ` · ${belt.gaps.length} resonance gaps`}
-        </div>
-      ))}
     </>
   );
 }

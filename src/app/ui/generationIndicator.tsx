@@ -34,55 +34,23 @@ class BurstTrack {
   }
 }
 
-const KEYS = ['survey', 'terrain', 'worlds', 'nebulae', 'sky', 'skyStage'] as const;
-type Key = (typeof KEYS)[number];
-
-interface RowView {
-  hidden: boolean;
+interface StatusLine {
   text: string;
-  sweep: boolean;
-  width: string;
-  linger: number;
+  /** How far the busiest producer has come, 0..1; null when idle. */
+  fill: number | null;
 }
 
-const FOLDED: RowView = { hidden: true, text: '', sweep: false, width: '', linger: 99 };
-
-/** −1 marks an indeterminate task: known to run, unknown how far along. */
-function stepRow(prev: RowView, text: string, state: number | null): RowView {
-  if (state === null) {
-    // Freshly drained: hold the bar at full for a beat, then fold.
-    if (!prev.hidden && prev.linger < 2) {
-      const linger = prev.linger + 1;
-      return { ...prev, linger, sweep: false, width: '100%', hidden: linger >= 2 };
-    }
-    return prev;
-  }
-  return {
-    hidden: false,
-    text,
-    linger: 0,
-    sweep: state < 0,
-    width: state < 0 ? '' : `${Math.round(state * 100)}%`,
-  };
-}
+const IDLE: StatusLine = { text: 'idle', fill: null };
 
 /**
- * The generation readout under the sidebar's framing scales: one row
- * per background producer — the focused world's climate survey, the
- * terrain tiles the view still wants, distant-world bakes, and sky
- * fields — each with a label and a thin progress bar. Countable queues
- * fill as they drain; one-shot builds sweep. A finished bar holds at
- * full for a beat before the row folds away.
+ * The status line along the foot of the console: one row, always
+ * there, naming whatever is being built — the focused world's climate
+ * survey, terrain tiles, distant-world bakes, nebula volumes, the sky
+ * field — with a hairline fill under it for the busiest of them, and
+ * the word idle when nothing is.
  */
 export function GenerationIndicator(): ReactNode {
-  const [rows, setRows] = useState<Record<Key, RowView>>({
-    survey: FOLDED,
-    terrain: FOLDED,
-    worlds: FOLDED,
-    nebulae: FOLDED,
-    sky: FOLDED,
-    skyStage: FOLDED,
-  });
+  const [line, setLine] = useState<StatusLine>(IDLE);
   const tracks = useRef({
     terrain: new BurstTrack(),
     worlds: new BurstTrack(),
@@ -94,50 +62,36 @@ export function GenerationIndicator(): ReactNode {
       const status = generationStatus();
       if (!status) return;
       const { terrain, worlds, nebulae } = tracks.current;
-      setRows((prev) => ({
-        survey: stepRow(prev.survey, 'climate survey', status.surveying ? -1 : null),
-        terrain: stepRow(prev.terrain, `terrain · ${status.terrain}`, terrain.update(status.terrain)),
-        worlds: stepRow(prev.worlds, `worlds · ${status.worlds}`, worlds.update(status.worlds)),
-        nebulae: stepRow(
-          prev.nebulae,
-          `nebulae · ${status.nebulae}`,
-          nebulae.update(status.nebulae),
-        ),
-        sky: stepRow(prev.sky, 'sky field', status.skies > 0 ? status.skyProgress : null),
-        skyStage: stepRow(
-          prev.skyStage,
-          status.skyStage,
-          status.skies > 0 && status.skyStage !== ''
-            ? status.skyStageProgress < 0
-              ? -1
-              : status.skyStageProgress
-            : null,
-        ),
-      }));
+      const parts: string[] = [];
+      const fills: number[] = [];
+      const note = (label: string, count: number, fill: number | null): void => {
+        if (count <= 0) return;
+        parts.push(`${label} ${count}`);
+        if (fill !== null) fills.push(fill);
+      };
+      if (status.surveying) parts.push('climate survey');
+      if (status.skies > 0) {
+        const stage = status.skyStage ? ` · ${status.skyStage}` : '';
+        parts.push(`sky ${Math.round(status.skyProgress * 100)}%${stage}`);
+        fills.push(status.skyProgress);
+      }
+      note('nebulae', status.nebulae, nebulae.update(status.nebulae));
+      note('terrain', status.terrain, terrain.update(status.terrain));
+      note('worlds', status.worlds, worlds.update(status.worlds));
+      setLine(
+        parts.length
+          ? { text: parts.join(' · '), fill: fills.length ? Math.min(...fills) : null }
+          : IDLE,
+      );
     }, 250);
     return () => window.clearInterval(id);
   }, []);
 
   return (
     <>
-      {KEYS.map((key) => {
-        const row = rows[key];
-        return (
-          <div
-            key={key}
-            className={key === 'skyStage' ? 'gen-row gen-sub' : 'gen-row'}
-            hidden={row.hidden}
-          >
-            <span className="gen-label">{row.text}</span>
-            <div className="gen-bar">
-              <div
-                className={row.sweep ? 'gen-fill sweep' : 'gen-fill'}
-                style={{ width: row.width }}
-              />
-            </div>
-          </div>
-        );
-      })}
+      <span className="gen-label">status</span>
+      <span className={`gen-text${line.text === 'idle' ? ' idle' : ''}`}>{line.text}</span>
+      <span className="gen-fill" style={{ width: line.fill === null ? 0 : `${line.fill * 100}%` }} />
     </>
   );
 }
