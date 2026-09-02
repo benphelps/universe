@@ -98,7 +98,7 @@ import type { PerfStats } from './ui/perfReadout';
 import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
 import { bubbleNeedsOwnBake, type NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
-import { NebulaVolume } from '../render/galaxy/nebulaVolume';
+import { MAX_BOXES, NebulaCarrier, NebulaVolume } from '../render/galaxy/nebulaVolume';
 import { NuclearCluster } from '../render/galaxy/nuclearCluster';
 import { SectorChart } from '../render/galaxy/sectorChart';
 import {
@@ -477,6 +477,12 @@ export class UnifiedViewer {
    *  the sky keeps its sprites, and a sprite stands back up whenever
    *  its volume leaves residency. */
   private nebulaVolumes = new Map<bigint, NebulaVolume>();
+  /** The one carrier that marches the volumes the camera stands
+   *  inside together, so their gas interleaves along every ray; stood
+   *  up for the viewpoint and orientation the volumes were. */
+  private enclosingCarrier: NebulaCarrier | null = null;
+  private enclosingCarrierFrame: Float32Array | null = null;
+  private readonly enclosingVolumes: NebulaVolume[] = [];
   /** The clouds residency has asked for — a bake landing for any other
    *  cloud is kept in the cache but never stood up. */
   private wantedNebulae = new Set<bigint>();
@@ -1579,6 +1585,53 @@ export class UnifiedViewer {
         this.requestVolumeFor(cloud, this.viewpointPc, orientation, NEBULA_VOLUME_FIRST_SIZE);
       }
     }
+  }
+
+  /**
+   * The volumes the camera stands inside have gas before and behind
+   * each other's along every ray, and no order of whole-volume
+   * compositing is right for them: one carrier marches them together.
+   * Only volumes fully stood up join — a dissolve is a display-space
+   * fade of a whole volume, which a merged march cannot carry — and
+   * the largest boxes first when more enclose the camera than the
+   * carrier has slots. Their own domes stand down while they ride it.
+   */
+  private marchEnclosingTogether(worldToScene: Matrix3): void {
+    const members = this.enclosingVolumes;
+    members.length = 0;
+    for (const volume of this.volumesByDistance) {
+      if (volume.enclosing && !volume.retiring && volume.fade >= 1) members.push(volume);
+    }
+    members.sort((a, b) => b.box.halfPc - a.box.halfPc);
+    members.length = Math.min(members.length, MAX_BOXES);
+    const frame = this.skyPreviewFrame;
+    if (members.length < 2 || !frame) {
+      if (this.enclosingCarrier) this.enclosingCarrier.mesh.visible = false;
+      return;
+    }
+    if (!this.enclosingCarrier || this.enclosingCarrierFrame !== frame) {
+      this.retireEnclosingCarrier();
+      this.enclosingCarrier = new NebulaCarrier(this.viewpointPc, frame, this.skyFloorRadiance);
+      this.enclosingCarrier.setInstrument(this.skyInstrument, this.skyExposure);
+      this.enclosingCarrierFrame = frame;
+      this.pipeline.sky.scene.add(this.enclosingCarrier.mesh);
+    }
+    const carrier = this.enclosingCarrier;
+    carrier.assign(members.map((volume) => volume.box));
+    carrier.update(this.camera.position, worldToScene, PC_KM, Math.min(this.camera.far * 0.3, 3e15));
+    carrier.opacity = 1;
+    // The merged march takes the nearest member's slot: the nearest
+    // draws last, over everything farther.
+    carrier.mesh.renderOrder = Math.min(...members.map((volume) => volume.mesh.renderOrder));
+    for (const volume of members) volume.mesh.visible = false;
+  }
+
+  private retireEnclosingCarrier(): void {
+    if (!this.enclosingCarrier) return;
+    this.pipeline.sky.scene.remove(this.enclosingCarrier.mesh);
+    this.enclosingCarrier.dispose();
+    this.enclosingCarrier = null;
+    this.enclosingCarrierFrame = null;
   }
 
   /** The grid a standing volume deserves at its apparent size. */
@@ -3538,6 +3591,7 @@ export class UnifiedViewer {
       this.nebulaVolumes.clear();
       setStarNebulaExtinction([]);
     }
+    this.retireEnclosingCarrier();
     this.wantedNebulae.clear();
     this.coarseBakes.clear();
     this.fineBakes.clear();
@@ -3583,6 +3637,7 @@ export class UnifiedViewer {
     for (const volume of this.nebulaVolumes.values()) {
       volume.setInstrument(instrument, exposure, this.skyFloorRadiance);
     }
+    this.enclosingCarrier?.setInstrument(instrument, exposure, this.skyFloorRadiance);
     for (const points of [
       this.starSprites,
       this.farPoints,
@@ -4038,6 +4093,7 @@ export class UnifiedViewer {
         byDistance.forEach((volume, index) => {
           volume.mesh.renderOrder = -6 - index;
         });
+        this.marchEnclosingTogether(worldToScene);
         // Every star behind a cloud dims and reddens through it. The
         // depth buffer cannot say which stars those are — the points
         // are additive and write no depth — so each one asks the

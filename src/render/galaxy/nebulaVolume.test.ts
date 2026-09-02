@@ -22,7 +22,7 @@ describe('the volume shader', () => {
     // The bubble is sampled from its own texture, with its own
     // reference densities and its own emission coefficient — not the
     // cloud-scale ones, which carry no ionized gas at all.
-    expect(NEBULA_FRAGMENT).toMatch(/texture\(\s*uFine\s*,/);
+    expect(NEBULA_FRAGMENT).toMatch(/texture\(\s*uFine\[0\]\s*,/);
     expect(NEBULA_FRAGMENT).toContain('uFineDensityRef');
     expect(NEBULA_FRAGMENT).toContain('uFineEmissionCoefficient');
   });

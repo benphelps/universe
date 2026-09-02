@@ -199,13 +199,30 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   occupied fine block marking the coarse blocks it overlaps), and volumes
   rendering as stacked slabs (every ray resumed at a block face plus one
   fixed nudge, so the per-pixel jitter was lost at every boundary and the
-  samples lined up — a skip now resumes at the pixel's own jitter). The carrier
-  should still march all resident boxes in one pass, sorted front-to-back
-  (§render pass), to tame the enclosing-overlap case. Per-axis box extents
-  (the bake already stores a vec3; the shader assumes cubic) would also
-  shrink footprints for stretched clouds. The star-extinction shader carries
-  `MAX_STAR_NEBULAE` slots, filled nearest-first when residents outnumber
-  them.
+  samples lined up — a skip now resumes at the pixel's own jitter). **The enclosing
+  boxes march together — landed.** A carrier (`NebulaCarrier`) marches up
+  to three boxes per pixel, each at its own pitch — its own step count,
+  its own empty blocks leapt — the ray servicing whichever box's next
+  sample comes first, so gas in one box that lies before or behind
+  another's along the ray takes its true place in the integral; with one
+  box it is exactly the single march, and every volume carries its own.
+  The viewer hands one more carrier the volumes the camera stands inside
+  (fully stood up, the largest first), whose gas lies before and behind
+  each other's along every ray and for which no whole-volume compositing
+  order is right; their own domes stand down while they ride it. Three
+  boxes keeps the carrier's samplers — three grids per box, the detail
+  tile, the scattering table — under the sixteen a fragment shader is
+  guaranteed. Measured inside the Musas complex with two 200 pc boxes
+  enclosing the camera: 26.8 ms of GPU merged against 26.8 separate (a
+  first cut that stepped every box at the finest pitch and skipped only
+  where all were empty read 40 against 34.5), and the image identical to
+  the bit at three two-box placements — the ordering only tells where one
+  box's gas stands in front of another's along a ray, which cloud-scale
+  boxes with their gas at their centres rarely arrange. Per-axis box
+  extents (the bake already stores a vec3; the shader assumes cubic) would
+  still shrink footprints for stretched clouds. The star-extinction shader
+  carries `MAX_STAR_NEBULAE` slots, filled nearest-first when residents
+  outnumber them.
 - **Glints at the galaxy frame — measured, and the floor released.** The
   star tiers were suspected of the pulled-out frame's cost at 400–500k
   points. Timed in a visible tab at a 2564×2074 canvas, with the far
