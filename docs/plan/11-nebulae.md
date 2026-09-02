@@ -372,10 +372,17 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   shell between was drawn by neither — the split now follows the
   neighbourhood's own radius. Cost: the home sweep runs ~30 s single-
   threaded in the test (it is pooled across workers in the app).
-- **Residency ranking.** Admission is by projected size alone, so a bright
-  emission complex can in principle lose its slot to bigger dark rifts —
-  much blunter with dozens standing at once, but the ranking is still
-  brightness-blind. Weight by the object's light budgets if it ever bites.
+- **Residency ranking — landed.** Admission was by projected size alone,
+  so a bright emission complex could lose its slot to bigger dark rifts.
+  `residencyWeight` ranks by what is at stake on the sky: the cloud's
+  solid angle times the radiance it puts there — a lit cloud's own
+  surface brightness (its light budget over its disc) over the sky
+  pedestal it stands against, a dark cloud only the pedestal, the band it
+  blots out — so a complex outranks a rift of its size, a great rift
+  outranks a faint smudge, and rifts still rank by size among themselves.
+  The focused cloud stays resident whatever its weight. Pinned on the
+  home population: the brightest complex outranks a rift half again its
+  size at the same distance.
 - **Systems embedded in dark clouds — settled, in the galaxy plan's
   placement ledger.** The field is uncorrelated with the gas and stands in
   it at the filling factor, which is the science; what was wrong was the

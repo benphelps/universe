@@ -94,6 +94,7 @@ import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
 import { pendingNebulaBakes, requestNebulaVolume, resetNebulaBakes } from './nebulaService';
+import { residencyWeight } from '../universe/galaxy/residency';
 import type { PerfStats } from './ui/perfReadout';
 import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
@@ -1550,21 +1551,30 @@ export class UnifiedViewer {
    * not vanish for no reason better than a handoff.
    */
   private updateNebulaResidency(positionPc: GalacticPosition, orientation: Float32Array): void {
-    const candidates: { cloud: MolecularCloud; angular: number }[] = [];
+    // Ranked by what is at stake on the sky: a cloud's solid angle
+    // times the radiance it puts there — its own light for a lit one,
+    // the band it blots out for a rift — so a bright complex is not
+    // outranked by a larger dark cloud, and rifts still rank by size.
+    const candidates: { cloud: MolecularCloud; weight: number }[] = [];
     for (const cloud of cloudsNear(positionPc, NEBULA_VOLUME_REACH_PC)) {
       const dx = cloud.positionPc.xPc - positionPc.xPc;
       const dy = cloud.positionPc.yPc - positionPc.yPc;
       const dz = cloud.positionPc.zPc - positionPc.zPc;
-      const angular = cloudReachPc(cloud) / Math.max(1, Math.hypot(dx, dy, dz));
-      if (angular >= NEBULA_VOLUME_MIN_ANGULAR) candidates.push({ cloud, angular });
+      const distance = Math.hypot(dx, dy, dz);
+      const angular = cloudReachPc(cloud) / Math.max(1, distance);
+      if (angular < NEBULA_VOLUME_MIN_ANGULAR) continue;
+      candidates.push({
+        cloud,
+        weight: residencyWeight(cloud, nebulaFor(cloud), distance, this.skyFloorRadiance),
+      });
     }
-    candidates.sort((a, b) => b.angular - a.angular);
+    candidates.sort((a, b) => b.weight - a.weight);
     const chosen = candidates.slice(0, this.nebulaResidents);
-    // The focused cloud is the subject: resident whatever its size.
+    // The focused cloud is the subject: resident whatever its weight.
     const focused = this.focusCloud?.cloud;
     if (focused && !chosen.some((c) => c.cloud.seed === focused.seed)) {
       if (chosen.length === this.nebulaResidents) chosen.pop();
-      chosen.push({ cloud: focused, angular: 1 });
+      chosen.push({ cloud: focused, weight: Infinity });
     }
     this.wantedNebulae = new Set(chosen.map((c) => c.cloud.seed));
     this.residentClouds = new Map(chosen.map((c) => [c.cloud.seed, c.cloud]));

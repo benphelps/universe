@@ -161,6 +161,12 @@ export function displaySurfaceBrightness(
   );
 }
 
+/** Display energy of the smooth sky itself at one reference beam: what
+ *  a silhouette against it takes away. */
+export function displayPedestal(pedestalLsunPc2Sr = SKY_PEDESTAL_LSUN_PC2_SR): number {
+  return displayEnergy(4 * Math.PI * BEAM_SR * pedestalLsunPc2Sr);
+}
+
 /** The radiance above the sky a display energy stands for — the
  *  marginal law inverted, for tests and probes that decode a map. */
 export function radianceFromDisplay(
