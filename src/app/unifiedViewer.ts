@@ -1580,25 +1580,40 @@ export class UnifiedViewer {
     return apparent >= NEBULA_NEAR_ANGULAR ? NEBULA_VOLUME_NEAR_SIZE : NEBULA_VOLUME_SIZE;
   }
 
-  /**
-   * Raise one standing volume toward its grade — the most apparent one
-   * still below it — and say whether a bake was asked for. A standing
-   * volume is re-baked only upward: approaching a cloud takes it to
-   * the near grid, leaving keeps the finer one.
-   */
-  private climbNebulaGrade(orientation: Float32Array): boolean {
-    let best: { volume: NebulaVolume; cloud: MolecularCloud; apparent: number } | null = null;
+  /** The standing volume most deserving a climb — the most apparent
+   *  one still below its grade — or null when every one is at grade. */
+  private nextGradeClimb(): { cloud: MolecularCloud; size: number } | null {
+    let best: { cloud: MolecularCloud; size: number; apparent: number } | null = null;
     for (const [seed, volume] of this.nebulaVolumes) {
       const cloud = this.residentClouds.get(seed);
-      if (!cloud || volume.retiring || volume.bakedSize >= this.nebulaGrade(volume)) continue;
+      const size = this.nebulaGrade(volume);
+      if (!cloud || volume.retiring || volume.bakedSize >= size) continue;
       const apparent =
         (volume.mesh.material as ShaderMaterial).uniforms.uHalfPc.value /
         Math.max(1, volume.cameraDistancePc);
-      if (!best || apparent > best.apparent) best = { volume, cloud, apparent };
+      if (!best || apparent > best.apparent) best = { cloud, size, apparent };
     }
-    if (!best) return false;
-    this.requestVolumeFor(best.cloud, this.viewpointPc, orientation, this.nebulaGrade(best.volume));
-    return true;
+    return best;
+  }
+
+  /** Whether every requested bake has landed and been stood up. */
+  private nebulaBakesSettled(): boolean {
+    return pendingNebulaBakes() === 0 && this.coarseBakes.size === 0 && this.fineBakes.size === 0;
+  }
+
+  /**
+   * Raise one standing volume toward its grade the moment nothing else
+   * is baking: one bake at a time is the metering, and asking at once
+   * rather than on the controller's tick means the finer grid lands
+   * while the first grade is still dissolving in, so the upgrade is
+   * never seen as a swap. A standing volume is re-baked only upward:
+   * approaching a cloud takes it to the near grid, leaving keeps the
+   * finer one.
+   */
+  private climbNebulaGrade(orientation: Float32Array): void {
+    if (!this.nebulaBakesSettled()) return;
+    const climb = this.nextGradeClimb();
+    if (climb) this.requestVolumeFor(climb.cloud, this.viewpointPc, orientation, climb.size);
   }
 
   /**
@@ -1641,26 +1656,17 @@ export class UnifiedViewer {
     }
     this.residencyTunedAtMs = nowMs;
     const before = this.nebulaResidents;
-    const settled =
-      pendingNebulaBakes() === 0 && this.coarseBakes.size === 0 && this.fineBakes.size === 0;
     if (this.frameMsSmoothed > NEBULA_FRAME_BUDGET_MS) {
       this.nebulaResidents = Math.max(
         NEBULA_RESIDENTS_MIN,
         Math.floor(this.nebulaResidents * NEBULA_SHRINK_FACTOR),
       );
-    }
-    // The standing volumes climb to their grade one bake at a time
-    // whenever nothing else is baking, whatever the frame: a volume's
-    // grade costs its bake, not its frame, and a residency the frame
-    // has already trimmed still deserves its resolution. Only a
-    // residency at its grade, with headroom, admits more.
-    if (settled && this.skyPreviewFrame && this.climbNebulaGrade(this.skyPreviewFrame)) {
-      return this.nebulaResidents !== before;
-    }
-    if (
-      settled &&
-      this.frameMsSmoothed < NEBULA_FRAME_BUDGET_MS * NEBULA_FRAME_HEADROOM
+    } else if (
+      this.frameMsSmoothed < NEBULA_FRAME_BUDGET_MS * NEBULA_FRAME_HEADROOM &&
+      this.nebulaBakesSettled() &&
+      this.nextGradeClimb() === null
     ) {
+      // Only a residency at its grade, with headroom, admits more.
       this.nebulaResidents = Math.min(NEBULA_RESIDENTS_MAX, this.nebulaResidents + NEBULA_GROW_BY);
     }
     return this.nebulaResidents !== before;
@@ -4027,6 +4033,7 @@ export class UnifiedViewer {
             this.residencyAt = camPc;
             this.updateNebulaResidency(camPc, this.skyPreviewFrame);
           }
+          this.climbNebulaGrade(this.skyPreviewFrame);
         }
         this.coreTransmission = Math.exp(
           -dustOpticalDepth(
