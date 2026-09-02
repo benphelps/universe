@@ -10,6 +10,7 @@ import {
   LinearFilter,
   Matrix3,
   Mesh,
+  NearestFilter,
   Points,
   RedFormat,
   RepeatWrapping,
@@ -17,7 +18,6 @@ import {
   ShaderMaterial,
   SphereGeometry,
   Vector2,
-  Vector3,
   Vector4,
 } from 'three';
 import { rotateToScene } from '../../universe/galaxy/orientation';
@@ -45,21 +45,34 @@ import {
 const MAX_NEBULAE = NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS;
 const MAX_DARK = DARK_ATLAS_COLS * DARK_ATLAS_ROWS;
 
+/** Per-sprite data rides in a small float texture, one row per
+ *  sprite, rather than seven uniform arrays: at forty-eight sprites
+ *  those ran past the uniform budget some GPUs guarantee a fragment
+ *  shader. The columns, RGBA each. */
+const SPRITE_DIR = 0; // dir.xyz, tangent half-extent
+const SPRITE_RIGHT = 1; // right.xyz, peak radiance
+const SPRITE_UP = 2; // up.xyz, tile index
+const SPRITE_HUE_LINE = 3;
+const SPRITE_HUE_NARROW = 4;
+const SPRITE_HUE_SCATTER = 5;
+const SPRITE_FADE = 6; // x: the crossfade against the standing volume
+const SPRITE_COLUMNS = 8;
+
 const NEBULA_FRAGMENT = /* glsl */ `
 varying vec3 vDir;
 
 uniform sampler2D uNebulaAtlas;
-uniform vec4 uNebulaA[${MAX_NEBULAE}]; // dir.xyz, tangent half-extent
-uniform vec4 uNebulaB[${MAX_NEBULAE}]; // right.xyz, peak radiance
-uniform vec4 uNebulaC[${MAX_NEBULAE}]; // up.xyz, tile index
-uniform vec3 uNebulaHueE[${MAX_NEBULAE}];
-uniform vec3 uNebulaHueEN[${MAX_NEBULAE}];
-uniform vec3 uNebulaHueR[${MAX_NEBULAE}];
-uniform float uNebulaFade[${MAX_NEBULAE}];
+uniform sampler2D uSprites;
 uniform int uNebulaCount;
 uniform float uIntensity;
 uniform float uNarrowband;
 ${TRANSFER_GLSL}
+
+vec4 sprite(int i, int column) {
+  return texture2D(uSprites, vec2(
+    (float(column) + 0.5) / ${SPRITE_COLUMNS}.0,
+    (float(i) + 0.5) / ${MAX_NEBULAE}.0));
+}
 
 void main() {
   vec3 dir = normalize(vDir);
@@ -73,15 +86,17 @@ void main() {
   vec3 tint = vec3(0.0);
   for (int i = 0; i < ${MAX_NEBULAE}; i++) {
     if (i >= uNebulaCount) break;
-    vec4 a = uNebulaA[i];
+    vec4 a = sprite(i, ${SPRITE_DIR});
     float cosD = dot(dir, a.xyz);
     if (cosD < 0.2) continue;
     // Project onto the sprite's tangent plane (matches the ray-march).
     vec3 rel = dir / cosD - a.xyz;
-    float u = dot(rel, uNebulaB[i].xyz) / a.w * 0.5 + 0.5;
-    float v = dot(rel, uNebulaC[i].xyz) / a.w * 0.5 + 0.5;
+    vec4 b = sprite(i, ${SPRITE_RIGHT});
+    vec4 c = sprite(i, ${SPRITE_UP});
+    float u = dot(rel, b.xyz) / a.w * 0.5 + 0.5;
+    float v = dot(rel, c.xyz) / a.w * 0.5 + 0.5;
     if (u <= 0.0 || u >= 1.0 || v <= 0.0 || v >= 1.0) continue;
-    float tile = uNebulaC[i].w;
+    float tile = c.w;
     vec2 tileOrigin = vec2(mod(tile, ${NEBULA_ATLAS_COLS}.0), floor(tile / ${NEBULA_ATLAS_COLS}.0));
     vec2 uv = (tileOrigin + vec2(u, v)) / vec2(${NEBULA_ATLAS_COLS}.0, ${NEBULA_ATLAS_ROWS}.0);
     // The tile carries physics — relative luminance and the local
@@ -91,13 +106,15 @@ void main() {
     // standing volume, all uniforms.
     vec2 cell = texture2D(uNebulaAtlas, uv).rg;
     float pass = mix(uContinuumShare, 1.0, cell.g);
-    float here = cell.r * uNebulaB[i].w * pass;
+    float here = cell.r * b.w * pass;
     float lineShare = cell.g / max(pass, 1e-6);
-    vec3 hue = mix(uNebulaHueR[i],
-      mix(uNebulaHueE[i], uNebulaHueEN[i], uNarrowband), lineShare);
+    vec3 hue = mix(sprite(i, ${SPRITE_HUE_SCATTER}).xyz,
+      mix(sprite(i, ${SPRITE_HUE_LINE}).xyz, sprite(i, ${SPRITE_HUE_NARROW}).xyz, uNarrowband),
+      lineShare);
+    float fade = sprite(i, ${SPRITE_FADE}).x;
     radiance += here;
-    shownShare += here * uNebulaFade[i];
-    tint += hue * here * uNebulaFade[i];
+    shownShare += here * fade;
+    tint += hue * here * fade;
   }
   vec3 shown = shownShare > 0.0
     ? scotopic(tint / shownShare, radiance) * displayRadiance(radiance) * (shownShare / radiance)
@@ -310,7 +327,10 @@ export class StarfieldBackdrop {
    *  cloud it stands for is drawn as the volume it really is, and
    *  stand back up when the volume leaves. */
   private nebulaSeeds: bigint[] = [];
-  private nebulaFades: number[] = [];
+  /** The per-sprite table's texels; the fade column is rewritten as
+   *  volumes come and go. */
+  private spriteTable: Float32Array = new Float32Array();
+  private spriteTexture: DataTexture | null = null;
   private volumeFades: ReadonlyMap<bigint, number> = new Map();
   private readonly pedestalRadiance: number;
   private pointsMaterial!: ShaderMaterial;
@@ -460,30 +480,38 @@ export class StarfieldBackdrop {
 
     if (sky.nebulae.length > 0) {
       const patches = sky.nebulae.slice(0, MAX_NEBULAE);
-      const nebulaA = Array.from({ length: MAX_NEBULAE }, (_, i) => {
-        const patch = patches[i];
-        return patch ? toScene(patch.dir, patch.angularRadius * 1.6) : new Vector4(0, 1, 0, 1);
+      const table = new Float32Array(MAX_NEBULAE * SPRITE_COLUMNS * 4);
+      const put = (i: number, column: number, x: number, y: number, z: number, w: number): void => {
+        const at = (i * SPRITE_COLUMNS + column) * 4;
+        table[at] = x;
+        table[at + 1] = y;
+        table[at + 2] = z;
+        table[at + 3] = w;
+      };
+      patches.forEach((patch, i) => {
+        const dir = toScene(patch.dir, patch.angularRadius * 1.6);
+        const right = toScene(patch.right, patch.peakRadiance);
+        const up = toScene(patch.up, patch.tile);
+        put(i, SPRITE_DIR, dir.x, dir.y, dir.z, dir.w);
+        put(i, SPRITE_RIGHT, right.x, right.y, right.z, right.w);
+        put(i, SPRITE_UP, up.x, up.y, up.z, up.w);
+        put(i, SPRITE_HUE_LINE, ...patch.emissionHue, 0);
+        put(i, SPRITE_HUE_NARROW, ...patch.emissionHueNarrow, 0);
+        put(i, SPRITE_HUE_SCATTER, ...patch.reflectionHue, 0);
+        put(i, SPRITE_FADE, 1, 0, 0, 0);
       });
-      const nebulaB = Array.from({ length: MAX_NEBULAE }, (_, i) => {
-        const patch = patches[i];
-        return patch ? toScene(patch.right, patch.peakRadiance) : new Vector4(1, 0, 0, 0);
-      });
-      const nebulaC = Array.from({ length: MAX_NEBULAE }, (_, i) => {
-        const patch = patches[i];
-        return patch ? toScene(patch.up, patch.tile) : new Vector4(0, 0, 1, 0);
-      });
-      const hueE = Array.from({ length: MAX_NEBULAE }, (_, i) => {
-        const patch = patches[i];
-        return new Vector3(...(patch?.emissionHue ?? [1, 1, 1]));
-      });
-      const hueEN = Array.from({ length: MAX_NEBULAE }, (_, i) => {
-        const patch = patches[i];
-        return new Vector3(...(patch?.emissionHueNarrow ?? [1, 1, 1]));
-      });
-      const hueR = Array.from({ length: MAX_NEBULAE }, (_, i) => {
-        const patch = patches[i];
-        return new Vector3(...(patch?.reflectionHue ?? [1, 1, 1]));
-      });
+      const spriteTexture = new DataTexture(
+        table,
+        SPRITE_COLUMNS,
+        MAX_NEBULAE,
+        RGBAFormat,
+        FloatType,
+      );
+      spriteTexture.minFilter = NearestFilter;
+      spriteTexture.magFilter = NearestFilter;
+      spriteTexture.needsUpdate = true;
+      this.spriteTable = table;
+      this.spriteTexture = spriteTexture;
       const atlas = new DataTexture(
         sky.nebulaAtlas,
         NEBULA_ATLAS_COLS * NEBULA_TILE,
@@ -496,19 +524,12 @@ export class StarfieldBackdrop {
       atlas.wrapS = ClampToEdgeWrapping;
       atlas.wrapT = ClampToEdgeWrapping;
       atlas.needsUpdate = true;
-      const fades = Array.from({ length: MAX_NEBULAE }, () => 1);
       const nebulaMaterial = new ShaderMaterial({
         vertexShader: GLOW_VERTEX,
         fragmentShader: NEBULA_FRAGMENT,
         uniforms: {
           uNebulaAtlas: { value: atlas },
-          uNebulaA: { value: nebulaA },
-          uNebulaB: { value: nebulaB },
-          uNebulaC: { value: nebulaC },
-          uNebulaHueE: { value: hueE },
-          uNebulaHueEN: { value: hueEN },
-          uNebulaHueR: { value: hueR },
-          uNebulaFade: { value: fades },
+          uSprites: { value: spriteTexture },
           uNebulaCount: { value: patches.length },
           uIntensity: { value: 1 },
           uNarrowband: { value: 0 },
@@ -522,7 +543,6 @@ export class StarfieldBackdrop {
       this.materials.push(nebulaMaterial);
       this.nebulaMaterial = nebulaMaterial;
       this.nebulaSeeds = patches.map((patch) => patch.seed);
-      this.nebulaFades = fades;
       this.applyNebulaSuppression();
       const nebulaDome = new Mesh(new SphereGeometry(radius * 1.02, 48, 24), nebulaMaterial);
       nebulaDome.frustumCulled = false;
@@ -540,9 +560,16 @@ export class StarfieldBackdrop {
   }
 
   private applyNebulaSuppression(): void {
+    let changed = false;
     for (let i = 0; i < this.nebulaSeeds.length; i++) {
-      this.nebulaFades[i] = 1 - (this.volumeFades.get(this.nebulaSeeds[i]) ?? 0);
+      const fade = 1 - (this.volumeFades.get(this.nebulaSeeds[i]) ?? 0);
+      const at = (i * SPRITE_COLUMNS + SPRITE_FADE) * 4;
+      if (this.spriteTable[at] !== fade) {
+        this.spriteTable[at] = fade;
+        changed = true;
+      }
     }
+    if (changed && this.spriteTexture) this.spriteTexture.needsUpdate = true;
   }
 
   /** Seat an instrument on every tier of the backdrop — points, glow,
