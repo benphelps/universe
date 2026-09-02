@@ -1,4 +1,9 @@
-import { PARSEC } from '../../core/physics/constants';
+import {
+  CM_PER_PC,
+  CM_PER_S_LIGHT,
+  ERG_PER_SOLAR_LUMINOSITY,
+  MYR,
+} from '../../core/physics/constants';
 
 /**
  * Photoionization equilibrium: the scale on which a hot star's ionizing
@@ -36,7 +41,7 @@ export function stromgrenRadiusPc(photonRate: number, hydrogenDensity: number): 
   if (photonRate <= 0 || hydrogenDensity <= 0) return 0;
   const radiusCm =
     ((3 * photonRate) / (4 * Math.PI * ALPHA_B * hydrogenDensity * hydrogenDensity)) ** (1 / 3);
-  return radiusCm / (PARSEC * 100);
+  return radiusCm / CM_PER_PC;
 }
 
 /** Sound speed of 10⁴ K ionized gas, the piston of the expansion:
@@ -71,10 +76,6 @@ function windMomentumShare(tEff: number): number {
 
 /** g cm⁻³ per hydrogen nucleus per cm³, helium included. */
 const GRAMS_PER_HYDROGEN = 1.4 * 1.6726e-24;
-const ERG_PER_SOLAR_LUMINOSITY = 3.828e33;
-const CM_PER_S_LIGHT = 2.998e10;
-const SECONDS_PER_MYR = 3.156e13;
-const CM_PER_PC = PARSEC * 100;
 
 /** Terminal momentum one core-collapse supernova hands its
  *  surroundings once the remnant goes radiative, g cm s⁻¹ — nearly
@@ -109,7 +110,7 @@ export function sweptCavityRadiusPc(
     share > 0 && luminositySolar > 0
       ? (share * luminositySolar * ERG_PER_SOLAR_LUMINOSITY) / CM_PER_S_LIGHT
       : 0;
-  const seconds = ageMyr * SECONDS_PER_MYR;
+  const seconds = ageMyr * MYR;
   const momentum = windFlux * seconds + supernovae * SUPERNOVA_MOMENTUM;
   if (momentum <= 0) return 0;
   const density = hydrogenDensity * GRAMS_PER_HYDROGEN;

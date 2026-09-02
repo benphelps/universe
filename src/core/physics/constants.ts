@@ -28,3 +28,10 @@ export const GYR = (1e9 * YEAR) as Seconds;
 /** Particle and radiative-transfer constants (SI). */
 export const PROTON_MASS = 1.67262192e-27 as Kilograms;
 export const THOMSON_CROSS_SECTION = 6.6524587e-29; // m²
+
+/** The same anchors in CGS, for the photoionization and dust books
+ *  that are written in the units their literature uses. */
+export const CM_PER_PC = PARSEC * 100;
+export const ERG_PER_SOLAR_LUMINOSITY = SOLAR_LUMINOSITY * 1e7;
+export const CM_PER_S_LIGHT = C_LIGHT * 100;
+export const MYR = (1e6 * YEAR) as Seconds;

@@ -1,4 +1,4 @@
-import { SOLAR_LUMINOSITY } from '../../core/physics/constants';
+import { ERG_PER_SOLAR_LUMINOSITY } from '../../core/physics/constants';
 import { powerLaw } from '../../core/rng/distributions';
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
@@ -15,9 +15,6 @@ import {
 import type { GalacticPosition } from './density';
 import { cloudHydrogenDensity } from './gas';
 import { spitzerRadiusPc, stromgrenRadiusPc, sweptCavityRadiusPc } from './ionization';
-
-/** erg s⁻¹ per L☉ — the constants file carries watts. */
-const ERG_PER_SOLAR_LUMINOSITY = SOLAR_LUMINOSITY * 1e7;
 
 /** The star whose light the dust scatters: the ionizing star when one
  *  stands, else the brightest of the natal group — every renderer's

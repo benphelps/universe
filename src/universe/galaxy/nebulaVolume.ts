@@ -1,4 +1,8 @@
-import { PARSEC } from '../../core/physics/constants';
+import {
+  CM_PER_PC,
+  CM_PER_S_LIGHT,
+  ERG_PER_SOLAR_LUMINOSITY,
+} from '../../core/physics/constants';
 import type { LinearRgb } from '../../core/color/srgb';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import {
@@ -9,8 +13,7 @@ import {
 } from './clouds';
 import { DUST_ALBEDO, DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
-import { hydrogenBetaLuminosity } from './ionization';
-import { ALPHA_B } from './ionization';
+import { ALPHA_B, hydrogenBetaLuminosity } from './ionization';
 import { nebulaIlluminant, type Nebula } from './nebula';
 import { ismMetallicity } from './population';
 import { nebulaEmissionColor, nebulaLineSum, nebulaNarrowbandColor } from './nebulaLines';
@@ -91,9 +94,6 @@ export interface NebulaVolumeBake {
   scatterFloorPc2: number;
 }
 
-const CM_PER_PC = PARSEC * 100;
-/** erg s⁻¹ in one solar luminosity. */
-const ERG_PER_SOLAR_LUMINOSITY = 3.828e33;
 /** Scattered emissivity per L☉ per unit dust at unit distance,
  *  L☉ pc⁻³ sr⁻¹: the flux L/(4πr²) times the dust's opacity per
  *  parsec, times albedo over the 4π sr it rescatters into — isotropic
@@ -564,7 +564,7 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
         // Ionization parameter: ionizing flux over gas density, the
         // ratio that decides how far oxygen is taken.
         const flux = budget > 0 ? (budget * transmittance) / (distancePc * distancePc) : 0;
-        const u = n > 0 ? flux / (n * 2.998e10 * CM_PER_PC * CM_PER_PC) : 0;
+        const u = n > 0 ? flux / (n * CM_PER_S_LIGHT * CM_PER_PC * CM_PER_PC) : 0;
         const hardness =
           u > 0 ? (Math.log10(u) - LOG_U_MIN) / (LOG_U_MAX - LOG_U_MIN) : 0;
 
@@ -702,7 +702,7 @@ export function nebulaMarchScales(plan: NebulaBakePlan): NebulaMarchScales {
     gasScale,
     tauScale: dustScale * DUST_OPACITY_PER_PC,
     recombFrac: plan.budget > 0 ? (gasScale * gasScale * RECOMBINATION_SCALE) / plan.budget : 0,
-    fluxScale: plan.budget / (2.998e10 * CM_PER_PC * CM_PER_PC),
+    fluxScale: plan.budget / (CM_PER_S_LIGHT * CM_PER_PC * CM_PER_PC),
   };
 }
 

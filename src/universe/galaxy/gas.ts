@@ -1,4 +1,4 @@
-import { PARSEC, PROTON_MASS, SOLAR_MASS } from '../../core/physics/constants';
+import { CM_PER_PC, PROTON_MASS, SOLAR_MASS } from '../../core/physics/constants';
 import {
   cloudDustDensity,
   cloudHalfExtentsPc,
@@ -28,7 +28,6 @@ export const HYDROGEN_PER_AV = 1.87e21;
 /** Gas mass per hydrogen nucleus, in proton masses — helium included. */
 export const MASS_PER_HYDROGEN = 1.4;
 
-const CM_PER_PC = PARSEC * 100;
 /** Solar masses in one cm⁻³ of hydrogen filling one cubic parsec. */
 const SOLAR_MASSES_PER_UNIT =
   (CM_PER_PC ** 3 * MASS_PER_HYDROGEN * PROTON_MASS) / SOLAR_MASS;

@@ -15,8 +15,10 @@ import {
   Vector4,
 } from 'three';
 import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
+import { SCATTER_OPACITY_RGB } from '../../universe/galaxy/dustScattering';
 import type { Neighborhood } from '../../universe/galaxy/neighborhood';
 import { fieldPointUniforms } from '../displayTransfer';
+import { glslFloat as f } from '../glsl/format';
 
 /**
  * A resident nebula extinguishes the star field behind it.
@@ -201,7 +203,7 @@ void main() {
     + nebulaOpticalDepth(uNebulaVolume1, uNebulaBoxes[1], uNebulaDustRefs[1], relPc)
     + nebulaOpticalDepth(uNebulaVolume2, uNebulaBoxes[2], uNebulaDustRefs[2], relPc)
     + nebulaOpticalDepth(uNebulaVolume3, uNebulaBoxes[3], uNebulaDustRefs[3], relPc);
-  vec3 extinction = exp(-tauV * vec3(0.748, 1.0, 1.324));
+  vec3 extinction = exp(-tauV * vec3(${f(SCATTER_OPACITY_RGB[0])}, 1.0, ${f(SCATTER_OPACITY_RGB[2])}));
   float sat = uPointColorKnee > 0.0 ? clamp(energy / uPointColorKnee, 0.0, 1.0) : 1.0;
   vec3 hue = mix(
     vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
