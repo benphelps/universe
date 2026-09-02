@@ -82,6 +82,41 @@ float cloudClump(vec3 p) {
 }
 
 /**
+ * One stretch of the disk crossing: emission with running dust
+ * extinction, at a step the caller sizes to what the stretch holds.
+ * Dust opacity is 0.045 per pc of unit density: 45 per kpc. One arm
+ * profile per step feeds the thin disk and the inner-edge dust lane;
+ * clump patchiness stays arm-neutral so arms shine over their own
+ * dust the way face-on spirals do. The wave profile and the clump
+ * noise are smooth at step scale: the wave holds for four steps and
+ * the clump for two — the texture-fetch budget of the march.
+ */
+void marchDisk(vec3 cam, vec3 dir, float from, float to, int steps, inout float light, inout float tau) {
+  float span = to - from;
+  if (span <= 0.0005 || steps < 1) return;
+  float step = span / float(steps);
+  vec2 arm = vec2(0.0);
+  float clumpNoise = 0.0;
+  for (int i = 0; i < 72; i++) {
+    if (i >= steps) break;
+    float s = from + (float(i) + 0.5) * step;
+    vec3 p = cam + dir * s;
+    float radius = length(p.xy);
+    if ((i & 3) == 0) arm = armProfile(radius, atan(p.y, p.x));
+    if ((i & 1) == 0) clumpNoise = cloudClump(p);
+    // Smooth count-level arms only: the particle layer carries the
+    // young light and every grain of texture.
+    float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) * (1.0 + arm.x);
+    float thick = 0.0943516 * exp(-radius / 3.6) * exp(-abs(p.z) / 0.9);
+    float halo = 0.0008 * pow(max(length(p), 0.5) / 8.0, -3.5);
+    float dust = exp(-radius / 2.6) * exp(-abs(p.z) / 0.12) * (1.0 + 1.4 * arm.y);
+    float clump = s > 1.5 ? (0.45 + 1.6 * clumpNoise) * (1.0 + 0.5 * arm.y) : 0.45;
+    tau += dust * clump * 45.0 * step;
+    light += (thin + thick + halo) * step * exp(-tau);
+  }
+}
+
+/**
  * Radiance reaching camKpc from direction dir, in the galaxy's own
  * frame. The ray's passage: a bounding sphere for the halo, and inside
  * it the disk slab where nearly all light and all dust live. Sampling
@@ -124,35 +159,40 @@ vec3 galaxyRadiance(vec3 camKpc, vec3 dir, float meanLum) {
     }
   }
 
-  // The disk crossing: emission with running dust extinction. Dust
-  // opacity is 0.045 per pc of unit density: 45 per kpc. One arm
-  // profile per step feeds the thin disk and the inner-edge dust
-  // lane; clump patchiness stays arm-neutral so arms shine over
-  // their own dust the way face-on spirals do.
-  float diskStep = (slab1 - slab0) / 72.0;
-  if (diskStep > 0.0005) {
-    // The wave profile and the clump noise are smooth at step scale:
-    // hold the wave for four steps and the clump for two — the
-    // texture-fetch budget of the march.
-    vec2 arm = vec2(0.0);
-    float clumpNoise = 0.0;
-    for (int i = 0; i < 72; i++) {
-      float s = slab0 + (float(i) + 0.5) * diskStep;
-      vec3 p = cam + dir * s;
-      float radius = length(p.xy);
-      if ((i & 3) == 0) arm = armProfile(radius, atan(p.y, p.x));
-      if ((i & 1) == 0) clumpNoise = cloudClump(p);
-      // Smooth count-level arms only: the particle layer carries the
-      // young light and every grain of texture.
-      float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) * (1.0 + arm.x);
-      float thick = 0.0943516 * exp(-radius / 3.6) * exp(-abs(p.z) / 0.9);
-      float halo = 0.0008 * pow(max(length(p), 0.5) / 8.0, -3.5);
-      float dust = exp(-radius / 2.6) * exp(-abs(p.z) / 0.12) * (1.0 + 1.4 * arm.y);
-      float clump = s > 1.5 ? (0.45 + 1.6 * clumpNoise) * (1.0 + 0.5 * arm.y) : 0.45;
-      tau += dust * clump * 45.0 * diskStep;
-      light += (thin + thick + halo) * diskStep * exp(-tau);
-    }
+  // The disk crossing, sampled by where the light is. The thin disk's
+  // own slab, |z| below half a kiloparsec, holds the dust and nearly
+  // all the light; the thick disk either side is smooth on a
+  // kiloparsec. Seventy-two steps are shared between them by length,
+  // the thick disk's counting a third — and neither takes more steps
+  // than sixty parsecs of thin disk or a hundred and eighty of thick
+  // call for. A ray running along the plane keeps all seventy-two in
+  // the thin disk, as it always had; a ray from above crosses the
+  // slab in forty, most of the old seventy-two having sampled
+  // near-empty thick disk.
+  float zThin = 0.5;
+  float thin0;
+  float thin1;
+  if (abs(dir.z) < 1.0e-5) {
+    thin0 = abs(cam.z) < zThin ? slab0 : slab1;
+    thin1 = abs(cam.z) < zThin ? slab1 : slab0;
+  } else {
+    float ta = (-zThin - cam.z) / dir.z;
+    float tb = (zThin - cam.z) / dir.z;
+    thin0 = clamp(min(ta, tb), slab0, slab1);
+    thin1 = clamp(max(ta, tb), slab0, slab1);
   }
+  float lenThin = thin1 - thin0;
+  float lenBefore = thin0 - slab0;
+  float lenAfter = slab1 - thin1;
+  float lenThick = lenBefore + lenAfter;
+  float weightThick = lenThick / 3.0;
+  float shareThin = lenThin + weightThick > 0.0 ? lenThin / (lenThin + weightThick) : 1.0;
+  int stepsThin = min(int(round(72.0 * shareThin)), int(ceil(lenThin / 0.06)));
+  int stepsThick = min(72 - stepsThin, int(ceil(lenThick / 0.18)));
+  int stepsBefore = lenThick > 0.0 ? int(round(float(stepsThick) * lenBefore / lenThick)) : 0;
+  marchDisk(cam, dir, slab0, thin0, stepsBefore, light, tau);
+  marchDisk(cam, dir, thin0, thin1, stepsThin, light, tau);
+  marchDisk(cam, dir, thin1, slab1, stepsThick - stepsBefore, light, tau);
 
   // Halo behind, seen through the disk's dust.
   float postStep = (t1 - slab1) / 16.0;
