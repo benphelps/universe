@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { boot, closeConsole, toggleConsole, toggleRideOut, useApp } from '../store';
 import { DecalToggles } from './decalToggles';
+import { PerfReadout } from './perfReadout';
 import { SettingsMenu } from './settingsMenu';
 import { Sidebar } from './sidebar';
 import { TimeSeedControls } from './timeSeedControls';
@@ -79,6 +80,7 @@ export function App(): ReactNode {
       <div id="console-scrim" hidden={!open} onClick={closeConsole} />
       <main id="view" ref={view}>
         <TimeSeedControls seedHex={snap?.seedHex ?? ''} />
+        <PerfReadout />
       </main>
       <SettingsMenu />
       <DecalToggles />

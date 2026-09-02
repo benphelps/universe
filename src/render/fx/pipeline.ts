@@ -42,6 +42,7 @@ export class RenderPipeline {
     // same far-plane depth and z-fighting in shards. Needs
     // EXT_clip_control; three falls back (with a warning) without it.
     this.renderer = new WebGLRenderer({ antialias: true, reversedDepthBuffer: true });
+    this.renderer.info.autoReset = false;
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
     container.appendChild(this.renderer.domElement);
@@ -92,6 +93,9 @@ export class RenderPipeline {
   private readonly timerQueries: WebGLQuery[] = [];
 
   render(): void {
+    // The counters cover the whole frame — every pass of the composer
+    // and the sky layer — rather than whichever pass drew last.
+    this.renderer.info.reset();
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     if (this.timer) {
       for (let i = this.timerQueries.length - 1; i >= 0; i--) {

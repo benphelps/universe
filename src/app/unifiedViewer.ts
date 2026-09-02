@@ -94,6 +94,7 @@ import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
 import { pendingNebulaBakes, requestNebulaVolume, resetNebulaBakes } from './nebulaService';
+import type { PerfStats } from './ui/perfReadout';
 import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
 import { bubbleNeedsOwnBake, type NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
@@ -482,8 +483,10 @@ export class UnifiedViewer {
   private nebulaResidents = NEBULA_RESIDENTS_START;
   private frameMsSmoothed = 0;
   private residencyTunedAtMs = 0;
-  /** How long the last frame's script ran, ms. */
+  /** How long the last frame's script ran, ms, and the smoothed
+   *  interval between frames — the rate the display actually shows. */
   private frameScriptMs = 0;
+  private frameIntervalMs = 0;
   /** Per-frame scratch for the volume pass, so a frame allocates
    *  nothing for it: the standing volumes by distance, their sprite
    *  fades, the camera's rotation, and the nearest few for the star
@@ -522,6 +525,35 @@ export class UnifiedViewer {
   zonesVisible = true;
   /** User toggle: the marker spheres carrying subpixel bodies. */
   markersVisible = true;
+
+  /**
+   * What the frame costs and what it draws, for the corner readout:
+   * the display's rate and the smoothed cost behind it, the pipeline's
+   * GPU time where the timer extension gives it, the script's share,
+   * the renderer's whole-frame counters, the star points standing as
+   * glints, and the nebula tiers — volumes standing against the cap
+   * the controller has settled on, sprites in the sky, bakes queued.
+   */
+  get perfStats(): PerfStats {
+    const count = (points: Points | null): number =>
+      points ? points.geometry.getAttribute('position').count : 0;
+    const info = this.pipeline.renderer.info;
+    return {
+      fps: this.frameIntervalMs > 0 ? 1000 / this.frameIntervalMs : 0,
+      frameMs: this.frameIntervalMs,
+      costMs: this.frameMsSmoothed,
+      gpuMs: this.pipeline.gpuFrameMs,
+      scriptMs: this.frameScriptMs,
+      drawCalls: info.render.calls,
+      triangles: info.render.triangles,
+      glints: count(this.neighborPoints) + count(this.farPoints) + count(this.starSprites),
+      volumes: this.nebulaVolumes.size,
+      volumeCap: this.nebulaResidents,
+      sprites: this.skyData?.nebulae.length ?? 0,
+      bakes: pendingNebulaBakes(),
+      terrain: this.chunkManager?.outstanding ?? 0,
+    };
+  }
 
   /** What the background generators are working on right now: terrain
    *  tiles in flight, distant-world bakes queued, the focused world's
@@ -1531,6 +1563,32 @@ export class UnifiedViewer {
         this.requestVolumeFor(cloud, this.viewpointPc, orientation, size);
       }
     }
+  }
+
+  /**
+   * Smooth what a frame costs and how often one comes. The cost is
+   * the GPU's own timing of the draw where the timer extension gives
+   * it, against the script's share of the frame — an interval alone
+   * is quantized to the display's refresh and cannot show headroom
+   * under it. Without the timer the interval is what there is. A
+   * frame long enough to be a hitch counts for neither, and nor does
+   * any frame drawn while the document is hidden — a background tab's
+   * throttled frames say nothing about the march, and a controller
+   * that read them would strip the sky while nobody was looking.
+   */
+  private smoothFrame(frameMs: number): void {
+    if (document.visibilityState !== 'visible') return;
+    if (!(frameMs > 0) || frameMs >= NEBULA_FRAME_OUTLIER_MS) return;
+    const cost =
+      this.pipeline.gpuFrameMs !== null
+        ? Math.max(this.pipeline.gpuFrameMs, this.frameScriptMs)
+        : frameMs;
+    this.frameMsSmoothed = this.frameMsSmoothed
+      ? this.frameMsSmoothed + (cost - this.frameMsSmoothed) * 0.05
+      : cost;
+    this.frameIntervalMs = this.frameIntervalMs
+      ? this.frameIntervalMs + (frameMs - this.frameIntervalMs) * 0.1
+      : frameMs;
   }
 
   /**
@@ -3602,6 +3660,7 @@ export class UnifiedViewer {
     if (this.disposed) return;
     const now = performance.now();
     const dtSeconds = Math.min((now - this.lastFrameMs) / 1000, 0.1);
+    this.smoothFrame(now - this.lastFrameMs);
     this.lastFrameMs = now;
     // OrbitControls decays its leftover motion once per frame, so a
     // fixed damping factor eases for three times as long at twenty
@@ -3849,23 +3908,9 @@ export class UnifiedViewer {
         // where residency wants it, its sprite carrying the complement,
         // and one that finishes fading out is only then let go.
         const nowMs = performance.now();
-        const frameMs = nowMs - (this.nebulaFadeAtMs || nowMs);
-        const fadeStep = Math.min(0.1, frameMs / 1000) / NEBULA_FADE_SECONDS;
+        const fadeStep =
+          Math.min(0.1, (nowMs - (this.nebulaFadeAtMs || nowMs)) / 1000) / NEBULA_FADE_SECONDS;
         this.nebulaFadeAtMs = nowMs;
-        // What a frame costs: the GPU's own timing of the draw where
-        // the timer extension gives it, against the script's share of
-        // the frame — an interval alone is quantized to the display's
-        // refresh and cannot show headroom under it. Without the timer
-        // the interval is what there is.
-        const cost =
-          this.pipeline.gpuFrameMs !== null
-            ? Math.max(this.pipeline.gpuFrameMs, this.frameScriptMs)
-            : frameMs;
-        if (cost > 0 && frameMs > 0 && frameMs < NEBULA_FRAME_OUTLIER_MS) {
-          this.frameMsSmoothed = this.frameMsSmoothed
-            ? this.frameMsSmoothed + (cost - this.frameMsSmoothed) * 0.05
-            : cost;
-        }
         const byDistance = this.volumesByDistance;
         byDistance.length = 0;
         for (const [seed, volume] of this.nebulaVolumes) {

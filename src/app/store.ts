@@ -37,6 +37,7 @@ import { getGalacticLandmarks, landmarksNow } from './landmarkService';
 import { UnifiedViewer } from './unifiedViewer';
 import type { DecalState } from './ui/decalToggles';
 import type { GenerationStatus } from './ui/generationIndicator';
+import type { PerfStats } from './ui/perfReadout';
 import type { Tab, ViewMode } from './ui/sidebar';
 import { GALAXY_KEY } from './ui/welcome';
 
@@ -750,4 +751,8 @@ export function toggleRideOut(): void {
 
 export function generationStatus(): GenerationStatus | null {
   return viewer ? viewer.generationStatus : null;
+}
+
+export function perfStats(): PerfStats | null {
+  return viewer ? viewer.perfStats : null;
 }
