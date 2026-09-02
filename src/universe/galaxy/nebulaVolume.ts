@@ -459,7 +459,11 @@ export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
               // angle, in natal coordinates: dr' = dr / growth.
               recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
               if (recombined >= budget) frontR = r;
-              tau += sample(dust, size, px, py, pz) * dilution * DUST_OPACITY_PER_PC * ds;
+              // The beam crosses the ionized interior's thinned dust —
+              // the same depletion the stored dust carries there.
+              tau +=
+                (sample(dust, size, px, py, pz) * dilution * DUST_OPACITY_PER_PC * ds) /
+                DUST_DEPLETION;
             } else {
               const swept = r <= frontR * (1 + SHELL_WIDTH) ? shellBoost : 1;
               const px = (ionizePc[0] + ux * r + boxPc) / cellPc - 0.5;

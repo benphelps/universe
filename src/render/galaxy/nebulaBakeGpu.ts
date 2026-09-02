@@ -206,7 +206,7 @@ void main() {
         float carve = fieldAt(uIonizePc + dir * rn);
         recombined += carve * carve * uRecombFrac * rn * rn * (ds / uGrowth);
         if (recombined >= 1.0) frontR = r;
-        tau += carve * uDilution * uTauScale * ds;
+        tau += carve * uDilution * uTauScale * ds * ${f(1 / DUST_DEPLETION)};
       } else {
         float swept = r <= frontR * ${f(1 + SHELL_WIDTH)} ? uShellBoost : 1.0;
         tau += fieldAt(uIonizePc + dir * r) * swept * uTauScale * ds;
