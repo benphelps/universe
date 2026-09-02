@@ -178,12 +178,34 @@ const NEBULA_VOLUME_NEAR_SIZE = 160;
 /** Apparent size (reach over distance) above which a volume earns the
  *  near grid. */
 const NEBULA_NEAR_ANGULAR = 0.6;
-/** How many nebulae stand as volumes at once; the rest stay sprites.
- *  A small resident is nearly free — a dome only pays for the pixels
- *  its box covers — but the near-grade ones (finer grid, deeper march,
- *  detail octaves) are not, so the cap is set by frame feel with a few
- *  of those standing, not by texture memory. */
-const NEBULA_VOLUME_RESIDENTS = 32;
+/**
+ * How many nebulae stand as volumes at once; the rest stay sprites.
+ * A resident's cost is the pixels its box covers times the occupied
+ * gas it marches, which no constant can price across machines and
+ * viewpoints — so the cap is a controller. It starts here, grows while
+ * the frame stays comfortably under budget and every requested bake
+ * has landed, and shrinks the moment the frame runs over; the floor
+ * keeps the subject and its neighbours standing on any machine, the
+ * ceiling bounds memory (each resident holds up to two grids, 3.5 MB
+ * each at the far grade and 16 MB at the near).
+ */
+const NEBULA_RESIDENTS_START = 32;
+const NEBULA_RESIDENTS_MIN = 12;
+const NEBULA_RESIDENTS_MAX = 64;
+/** The frame the residency controller answers to, ms: sixty frames a
+ *  second. Over it the cap shrinks; under this much of it, it grows. */
+const NEBULA_FRAME_BUDGET_MS = 16.7;
+const NEBULA_FRAME_HEADROOM = 0.7;
+/** How often the controller moves, ms, and how far: a quarter off on
+ *  a slow frame, a few more on a fast one, so a cap that overshoots
+ *  comes back faster than it climbed. */
+const NEBULA_TUNE_INTERVAL_MS = 1500;
+const NEBULA_GROW_BY = 8;
+const NEBULA_SHRINK_FACTOR = 0.75;
+/** Frames longer than this are hitches or a hidden tab, not the
+ *  march's cost, and do not count. */
+const NEBULA_FRAME_OUTLIER_MS = 250;
+
 /** Projected size below which a sprite is enough, radians. Low, so
  *  the sprite→volume handoff happens while the object is still small
  *  on screen; the resident cap is what bounds the cost. */
@@ -455,6 +477,13 @@ export class UnifiedViewer {
   private residencyAt: GalacticPosition | null = null;
   /** Last frame's clock, for the volume crossfades' rate limit. */
   private nebulaFadeAtMs = 0;
+  /** The residency controller: how many volumes may stand, the
+   *  smoothed frame it answers to, and when it last moved. */
+  private nebulaResidents = NEBULA_RESIDENTS_START;
+  private frameMsSmoothed = 0;
+  private residencyTunedAtMs = 0;
+  /** How long the last frame's script ran, ms. */
+  private frameScriptMs = 0;
   /** Per-frame scratch for the volume pass, so a frame allocates
    *  nothing for it: the standing volumes by distance, their sprite
    *  fades, the camera's rotation, and the nearest few for the star
@@ -1475,11 +1504,11 @@ export class UnifiedViewer {
       if (angular >= NEBULA_VOLUME_MIN_ANGULAR) candidates.push({ cloud, angular });
     }
     candidates.sort((a, b) => b.angular - a.angular);
-    const chosen = candidates.slice(0, NEBULA_VOLUME_RESIDENTS);
+    const chosen = candidates.slice(0, this.nebulaResidents);
     // The focused cloud is the subject: resident whatever its size.
     const focused = this.focusCloud?.cloud;
     if (focused && !chosen.some((c) => c.cloud.seed === focused.seed)) {
-      if (chosen.length === NEBULA_VOLUME_RESIDENTS) chosen.pop();
+      if (chosen.length === this.nebulaResidents) chosen.pop();
       chosen.push({ cloud: focused, angular: 1 });
     }
     this.wantedNebulae = new Set(chosen.map((c) => c.cloud.seed));
@@ -1502,6 +1531,36 @@ export class UnifiedViewer {
         this.requestVolumeFor(cloud, this.viewpointPc, orientation, size);
       }
     }
+  }
+
+  /**
+   * Move the residency cap against the frame, and say whether it
+   * moved. Shrinks whenever the smoothed frame runs over budget; grows
+   * only when the frame sits well under it and no requested bake is
+   * still on its way, since a volume's cost shows only once it stands
+   * — a cap that grew on the strength of grids not yet drawn would
+   * overshoot and have to fall back.
+   */
+  private tuneNebulaResidency(nowMs: number): boolean {
+    if (nowMs - this.residencyTunedAtMs < NEBULA_TUNE_INTERVAL_MS || !this.frameMsSmoothed) {
+      return false;
+    }
+    this.residencyTunedAtMs = nowMs;
+    const before = this.nebulaResidents;
+    if (this.frameMsSmoothed > NEBULA_FRAME_BUDGET_MS) {
+      this.nebulaResidents = Math.max(
+        NEBULA_RESIDENTS_MIN,
+        Math.floor(this.nebulaResidents * NEBULA_SHRINK_FACTOR),
+      );
+    } else if (
+      this.frameMsSmoothed < NEBULA_FRAME_BUDGET_MS * NEBULA_FRAME_HEADROOM &&
+      pendingNebulaBakes() === 0 &&
+      this.coarseBakes.size === 0 &&
+      this.fineBakes.size === 0
+    ) {
+      this.nebulaResidents = Math.min(NEBULA_RESIDENTS_MAX, this.nebulaResidents + NEBULA_GROW_BY);
+    }
+    return this.nebulaResidents !== before;
   }
 
   /**
@@ -3790,9 +3849,23 @@ export class UnifiedViewer {
         // where residency wants it, its sprite carrying the complement,
         // and one that finishes fading out is only then let go.
         const nowMs = performance.now();
-        const fadeStep =
-          Math.min(0.1, (nowMs - (this.nebulaFadeAtMs || nowMs)) / 1000) / NEBULA_FADE_SECONDS;
+        const frameMs = nowMs - (this.nebulaFadeAtMs || nowMs);
+        const fadeStep = Math.min(0.1, frameMs / 1000) / NEBULA_FADE_SECONDS;
         this.nebulaFadeAtMs = nowMs;
+        // What a frame costs: the GPU's own timing of the draw where
+        // the timer extension gives it, against the script's share of
+        // the frame — an interval alone is quantized to the display's
+        // refresh and cannot show headroom under it. Without the timer
+        // the interval is what there is.
+        const cost =
+          this.pipeline.gpuFrameMs !== null
+            ? Math.max(this.pipeline.gpuFrameMs, this.frameScriptMs)
+            : frameMs;
+        if (cost > 0 && frameMs > 0 && frameMs < NEBULA_FRAME_OUTLIER_MS) {
+          this.frameMsSmoothed = this.frameMsSmoothed
+            ? this.frameMsSmoothed + (cost - this.frameMsSmoothed) * 0.05
+            : cost;
+        }
         const byDistance = this.volumesByDistance;
         byDistance.length = 0;
         for (const [seed, volume] of this.nebulaVolumes) {
@@ -3860,7 +3933,7 @@ export class UnifiedViewer {
                 camPc.zPc - this.residencyAt.zPc,
               )
             : Infinity;
-          if (moved > NEBULA_RESIDENCY_STRIDE_PC) {
+          if (moved > NEBULA_RESIDENCY_STRIDE_PC || this.tuneNebulaResidency(nowMs)) {
             this.residencyAt = camPc;
             this.updateNebulaResidency(camPc, this.skyPreviewFrame);
           }
@@ -3900,6 +3973,7 @@ export class UnifiedViewer {
     }
 
     this.pipeline.render();
+    this.frameScriptMs = performance.now() - now;
     requestAnimationFrame(() => this.frame());
   }
 

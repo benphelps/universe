@@ -6,6 +6,12 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { DiagramPass } from './diagramLayer';
 import { SkyLayer } from './skyLayer';
 
+/** The GPU timer extension's two tokens, which the DOM typings lack. */
+interface TimerExtension {
+  TIME_ELAPSED_EXT: number;
+  GPU_DISJOINT_EXT: number;
+}
+
 /**
  * HDR render pipeline: linear half-float rendering → threshold bloom →
  * ACES tone mapping + sRGB encode in the output pass. Bloom is the only
@@ -47,6 +53,9 @@ export class RenderPipeline {
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new DiagramPass(scene, camera));
     scene.add(this.sky.quad);
+    this.timer = this.renderer
+      .getContext()
+      .getExtension('EXT_disjoint_timer_query_webgl2') as TimerExtension | null;
   }
 
   setSize(width: number, height: number): void {
@@ -72,9 +81,37 @@ export class RenderPipeline {
     return this.renderer.toneMappingExposure;
   }
 
+  /**
+   * GPU time of the most recent frame whose query has resolved, ms —
+   * what the frame actually costs to draw, which a frame *interval*
+   * quantized to the display's refresh cannot show. Null where the
+   * timer extension is missing; callers fall back to the interval.
+   */
+  gpuFrameMs: number | null = null;
+  private readonly timer: TimerExtension | null;
+  private readonly timerQueries: WebGLQuery[] = [];
+
   render(): void {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    if (this.timer) {
+      for (let i = this.timerQueries.length - 1; i >= 0; i--) {
+        const query = this.timerQueries[i];
+        if (!gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) continue;
+        if (!gl.getParameter(this.timer.GPU_DISJOINT_EXT)) {
+          this.gpuFrameMs = (gl.getQueryParameter(query, gl.QUERY_RESULT) as number) / 1e6;
+        }
+        gl.deleteQuery(query);
+        this.timerQueries.splice(i, 1);
+      }
+      const query = gl.createQuery();
+      if (query) {
+        gl.beginQuery(this.timer.TIME_ELAPSED_EXT, query);
+        this.timerQueries.push(query);
+      }
+    }
     this.sky.render(this.renderer, this.camera);
     this.composer.render();
+    if (this.timer && this.timerQueries.length) gl.endQuery(this.timer.TIME_ELAPSED_EXT);
   }
 
   dispose(): void {

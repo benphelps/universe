@@ -145,7 +145,7 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 
    Open: the pick priority — seeded stars win the cursor over an extended object by design, which was right when nebulae were background decals and now makes a nebula hard to click in a dense field. The landmark list travels to the same clouds meanwhile. (In-shader detail octaves below cell size landed: two octaves of the tiling clump noise continue the cascade under whichever grid the ray reads, gated by apparent size so only a sky-filling volume pays.)
 
-7. Multi-volume marching, crossfade, streaming and eviction. **Landed** — thirty-two residents chosen by projected size, baked on the GPU in seconds, each dissolving in against its sprite (which carries the complement) and fading back out when residency moves on, with disposal only at zero and a swing-back simply fading up again. What remains of this stage is the one-pass multi-box march in the ledger.
+7. Multi-volume marching, crossfade, streaming and eviction. **Landed** — residents chosen by projected size under a cap the frame itself sets (a controller from 12 to 64, starting at 32), baked on the GPU in seconds, each dissolving in against its sprite (which carries the complement) and fading back out when residency moves on, with disposal only at zero and a swing-back simply fading up again. What remains of this stage is the one-pass multi-box march in the ledger.
 8. Reflection scattering (**landed** — the multiple-scattering table and the
    chromatic march, §Reflection); display modes (**landed** — camera / eye /
    SHO as instrument seatings over one law, with an exposure dial).
@@ -153,16 +153,26 @@ Radiation-MHD at any point. Runtime photoionization solving. Planetary nebulae a
 ## Ledger — open items as of the galaxy-march branch (Sep 2026)
 
 Rough priority order. The residency dials live at the top of
-`src/app/unifiedViewer.ts` (`NEBULA_VOLUME_RESIDENTS`, `NEBULA_VOLUME_REACH_PC`,
+`src/app/unifiedViewer.ts` (`NEBULA_RESIDENTS_START/MIN/MAX` and the frame
+budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
 `NEBULA_VOLUME_MIN_ANGULAR`, `NEBULA_RESIDENCY_STRIDE_PC`).
 
 - **Multi-box march.** Each resident volume is its own full-screen dome;
   several *enclosing* volumes at a gateway complex each march the whole sky
   (~45 ms GPU measured with four — before empty-space skipping; see below). Non-enclosing residents are nearly free —
-  the cap runs at 32, priced by the near grade (finer grid, deeper march,
-  detail octaves) rather than by the march itself, since a dome only pays
-  for the pixels its box covers, and the GPU bake fills the whole set in
-  seconds from a cold arrival — so what a big cap costs is memory (~3.4 MB
+  the cap is a controller (`tuneNebulaResidency`): it starts at 32, grows
+  by eight every 1.5 s while the frame's cost sits under 70% of a 60 fps
+  budget and every requested bake has landed, and shrinks by a quarter the
+  moment the smoothed cost runs over, between a floor of 12 and a ceiling
+  of 64. The cost it reads is the pipeline's own GPU time
+  (`EXT_disjoint_timer_query_webgl2` around `pipeline.render`, against the
+  script's share of the frame) where the extension exists, and the frame
+  interval otherwise — an interval is quantized to the display's refresh
+  and cannot show headroom under it, which is why the interval-only version
+  stalled at 48 on a 120 Hz display reading a 12 ms average of 8 and 17 ms
+  frames. Measured at the Musas gateway: the cap climbs to 64 within ten
+  seconds of arrival at ~11 ms of GPU per frame. What a big cap costs is
+  memory (~3.4 MB
   per grid on the heap and again on the GPU, two grids for a lit cloud,
   16 MB per near-grade grid; the textures keep the bake buffers alive, so
   a standing residency is a few hundred megabytes of heap), not the
@@ -190,7 +200,7 @@ Rough priority order. The residency dials live at the top of
   them.
 - **Residency ranking.** Admission is by projected size alone, so a bright
   emission complex can in principle lose its slot to bigger dark rifts —
-  much blunter now that thirty-two stand at once, but the ranking is still
+  much blunter with dozens standing at once, but the ranking is still
   brightness-blind. Weight by the object's light budgets if it ever bites.
 - **Systems embedded in dark clouds — decision pending.** Measured over 5.1 M
   catalog stars: 0.4% stand in cloud gas and 0.1% in dense gas, where reality
