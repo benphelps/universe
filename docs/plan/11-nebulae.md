@@ -225,6 +225,24 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   The star count itself is the sweep's brightness threshold against the
   local density — 63k at Musas, several hundred thousand in the inner
   disk — and a budget on it would be a display choice, not made here.
+- **The sky's reaches taper — landed.** Pulled out, the sky field showed
+  nested spheres: the near census (every star, whatever its light, to the
+  neighbourhood's radius) ended on one, and each catalog row's sweep ended
+  on another at its budgeted radius — 90, 150, 600, 2500 pc — well inside
+  where its brightest members still clear the magnitude-9 limit, so the
+  A–F stars simply stopped at 150 pc and the B stars at 600. Each reach now
+  tapers past its radius (1.5× for a row, 2× for the census), the sweep
+  thinning candidates by a unit fixed by their position before the density
+  test that costs the most, and consuming the cell generator's draws
+  exactly as before so every star inside a reach keeps its identity.
+  Measured in shells at home: 790 → 504 → 260 stars per 10⁶ pc³ across the
+  old 150 pc cut, 29 → 20 → 4 across 600, the census falling from 10⁵ to
+  the sky's 2×10³ over 30–60 pc; pinned in `galaxy.test.ts`. The same pass
+  fixed a hole: the neighbourhood shrinks its radius below 30 pc where the
+  disk is dense, while the sky split near from far at a fixed 30, and the
+  shell between was drawn by neither — the split now follows the
+  neighbourhood's own radius. Cost: the home sweep runs ~30 s single-
+  threaded in the test (it is pooled across workers in the app).
 - **Residency ranking.** Admission is by projected size alone, so a bright
   emission complex can in principle lose its slot to bigger dark rifts —
   much blunter with dozens standing at once, but the ranking is still

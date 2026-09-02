@@ -463,6 +463,30 @@ describe('sky field', () => {
     expect(nakedEye).toBeLessThan(40000);
   });
 
+  it('thins toward every edge of its reach instead of stopping on a sphere', () => {
+    // The near census ends where the neighbourhood does and each
+    // catalog row's sweep ends at a budgeted radius, none of which is
+    // a distance any instrument knows. Counted in shells, the star
+    // density must fall across each of those edges rather than drop:
+    // the census into the magnitude-limited sky over the near taper,
+    // and the A–F row's reach at 150 pc and the B row's at 600 pc,
+    // which used to end as spheres a pulled-out view drew plainly.
+    const density = (a: number, b: number): number => {
+      let n = 0;
+      for (let i = 0; i < sky.starCount; i++) {
+        const d = sky.starDistances[i];
+        if (d >= a && d < b) n++;
+      }
+      return n / ((4 / 3) * Math.PI * (b ** 3 - a ** 3));
+    };
+    expect(density(30, 40) / density(40, 50)).toBeLessThan(3);
+    expect(density(40, 50) / density(50, 60)).toBeLessThan(4);
+    expect(density(130, 150) / density(150, 170)).toBeLessThan(2.5);
+    expect(density(150, 170) / density(170, 190)).toBeLessThan(3);
+    expect(density(550, 600) / density(600, 650)).toBeLessThan(2.5);
+    expect(density(600, 650) / density(700, 800)).toBeLessThan(8);
+  });
+
   it('every far glint with a seed mirrors the star behind it', () => {
     let seeded = 0;
     const step = Math.max(1, Math.floor((sky.starCount - sky.nearStarCount) / 60));

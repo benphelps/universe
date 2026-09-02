@@ -164,6 +164,39 @@ export type StarVisitor = (
  * realize their full slot stream regardless of the query ball, so any
  * overlapping sweep sees the same stars.
  */
+/**
+ * A unit in [0, 1) fixed by a position alone: what a sweep thins by
+ * where it must not touch the cell's own generator, since every draw
+ * from that stream is a star's identity.
+ */
+export function unitAtPosition(xPc: number, yPc: number, zPc: number): number {
+  let h =
+    Math.imul((xPc * 8192) | 0, 0x9e3779b1) ^
+    Math.imul((yPc * 8192) | 0, 0x85ebca77) ^
+    Math.imul((zPc * 8192) | 0, 0xc2b2ae3d);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h ^= h >>> 12;
+  return (h >>> 0) / 4294967296;
+}
+
+/**
+ * How a sweep's reach ends: everything inside innerPc, thinning to
+ * nothing at outerPc in proportion to the distance left. A row's reach
+ * is a compute budget, not a limit any instrument has, and a budget
+ * that stops on a sphere draws that sphere in the sky.
+ */
+export interface SweepTaper {
+  innerPc: number;
+  outerPc: number;
+}
+
+/** The share of stars a taper keeps at a distance, 1 inside it. */
+export function taperKeep(taper: SweepTaper, distancePc: number): number {
+  if (distancePc <= taper.innerPc) return 1;
+  if (distancePc >= taper.outerPc) return 0;
+  return (taper.outerPc - distancePc) / (taper.outerPc - taper.innerPc);
+}
+
 export function sweepRowStars(
   row: CatalogRow,
   center: GalacticPosition,
@@ -175,6 +208,12 @@ export function sweepRowStars(
    *  to a band of iy. A row whose ix span is only a few cells wide has
    *  nowhere near enough columns to feed a pool otherwise. */
   slab?: { ixLo: number; ixHi: number; iyLo?: number; iyHi?: number },
+  /** Thin the sweep toward its edge. Stars past the taper's inner
+   *  radius are dropped by a unit fixed by their position, before the
+   *  density test that costs the most, and the cell's generator draws
+   *  exactly what it always drew — every star inside the inner radius
+   *  keeps its identity. */
+  taper?: SweepTaper,
 ): void {
   const { cellPc } = row;
   const massSpan = row.massBitsHi - row.massBitsLo;
@@ -217,15 +256,28 @@ export function sweepRowStars(
           const x = (ix + rng.float()) * cellPc;
           const y = (iy + rng.float()) * cellPc;
           const z = (iz + rng.float()) * cellPc;
+          const dx = x - center.xPc;
+          const dy = y - center.yPc;
+          const dz = z - center.zPc;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (
+            d2 > radiusSq ||
+            (taper && unitAtPosition(x, y, z) >= taperKeep(taper, Math.sqrt(d2)))
+          ) {
+            // Out of reach, or thinned away: the stream still takes the
+            // draws this star would have taken, so its neighbours in
+            // the cell stay who they are.
+            rng.float();
+            rng.int(massSpan);
+            rng.int(ageSpan);
+            rng.int(1 << ENTROPY_BITS);
+            continue;
+          }
           // Thin against the true density; the ceiling only overdraws.
           if (rng.float() * ceiling > stellarDensity({ xPc: x, yPc: y, zPc: z })) continue;
           const massBits = row.massBitsLo + rng.int(massSpan);
           const ageBits = row.ageBitsLo + rng.int(ageSpan);
           const entropy = rng.int(1 << ENTROPY_BITS);
-          const dx = x - center.xPc;
-          const dy = y - center.yPc;
-          const dz = z - center.zPc;
-          if (dx * dx + dy * dy + dz * dz > radiusSq) continue;
           visit(x, y, z, massBits, ageBits, entropy);
         }
       }

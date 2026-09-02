@@ -9,7 +9,16 @@ import { powerLaw } from '../../core/rng/distributions';
 import { initialMassFromUnit, KROUPA_SEGMENTS } from '../star/imf';
 import { evolve } from '../star/evolution';
 import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
-import { CATALOG_ROWS, luminosityCeiling, sweepRowStars, type CatalogRow } from './catalog';
+import {
+  CATALOG_ROWS,
+  luminosityCeiling,
+  sweepRowStars,
+  taperKeep,
+  unitAtPosition,
+  type CatalogRow,
+  type SweepTaper,
+} from './catalog';
+import { neighborRadiusPc } from './neighborhood';
 import {
   cloudDustFactor,
   cloudLocalDensity,
@@ -188,7 +197,31 @@ export interface SectorLabel {
 /** Keep far stars down to apparent magnitude ≈ 9. */
 const MIN_FAR_IRRADIANCE = 1.5e-4;
 
+/** The furthest the near census — every star, whatever its light —
+ *  ever reaches; the neighbourhood shrinks it where the disk is dense,
+ *  and the sky's own split follows the neighbourhood exactly, so the
+ *  far field begins where the 3D points end and no shell goes undrawn. */
 const NEAR_RADIUS_PC = 30;
+/**
+ * How far past its reach a sweep tapers, as a factor of that reach. A
+ * row's sky radius is a compute budget well inside where its brightest
+ * members are still visible, and the near census ends where the
+ * neighbourhood does — each a sphere the sky would otherwise show as
+ * a step in its star density. The band beyond thins to nothing in
+ * proportion to the distance left, so the sky's density falls off
+ * rather than dropping.
+ */
+const SWEEP_TAPER = 1.5;
+/** The census taper runs further: a census of every star is a
+ *  hundred times the magnitude-limited sky's density, and a fall that
+ *  steep needs the room. */
+const NEAR_TAPER = 2;
+
+/** How far a row's sweep actually runs: its reach and the taper past
+ *  it, or the census taper for a row with no reach of its own. */
+function rowSweepRadiusPc(row: CatalogRow): number {
+  return Math.max(NEAR_RADIUS_PC * NEAR_TAPER, row.skyRadiusPc * SWEEP_TAPER);
+}
 
 /** Fraction of stars above a mass cut under the Kroupa IMF. */
 export function imfFractionAbove(massCut: number): number {
@@ -339,7 +372,7 @@ export function rowSlabSpan(
   row: CatalogRow,
   viewpoint: GalacticPosition,
 ): { lo: number; hi: number } {
-  const radius = Math.max(NEAR_RADIUS_PC, row.skyRadiusPc);
+  const radius = rowSweepRadiusPc(row);
   return {
     lo: Math.floor((viewpoint.xPc - radius) / row.cellPc),
     hi: Math.floor((viewpoint.xPc + radius) / row.cellPc),
@@ -389,7 +422,7 @@ export function rowSlabPlan(
     return bounds;
   }
 
-  const radius = Math.max(NEAR_RADIUS_PC, row.skyRadiusPc);
+  const radius = rowSweepRadiusPc(row);
   const iyLo = Math.floor((viewpoint.yPc - radius) / row.cellPc);
   const iyHi = Math.floor((viewpoint.yPc + radius) / row.cellPc);
   const height = iyHi - iyLo + 1;
@@ -423,29 +456,42 @@ export function sweepRowSlab(
   const lut = buildTemperatureLut(96);
   const near = makeAccum();
   const far = makeAccum();
-  const nearSq = NEAR_RADIUS_PC * NEAR_RADIUS_PC;
-  const skySq = row.skyRadiusPc * row.skyRadiusPc;
+  // The near census reaches exactly as far as the neighbourhood's 3D
+  // points do, then tapers: past it every star is kept by the taper's
+  // share, drawn among the far points whatever its light, so the
+  // census thins into the magnitude-limited sky instead of ending on
+  // a sphere.
+  const nearPc = neighborRadiusPc(viewpoint);
+  const nearSq = nearPc * nearPc;
+  const nearTaper: SweepTaper = { innerPc: nearPc, outerPc: nearPc * NEAR_TAPER };
+  const reachTaper: SweepTaper = {
+    innerPc: row.skyRadiusPc,
+    outerPc: row.skyRadiusPc * SWEEP_TAPER,
+  };
   sweepRowStars(
     row,
     viewpoint,
-    Math.max(NEAR_RADIUS_PC, row.skyRadiusPc),
+    rowSweepRadiusPc(row),
     (x, y, z, massBits, ageBits, entropy) => {
       const dx = x - viewpoint.xPc;
       const dy = y - viewpoint.yPc;
       const dz = z - viewpoint.zPc;
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 < 2.5e-5) return;
-      if (d2 <= nearSq) {
+      const distance = Math.sqrt(d2);
+      const censused =
+        d2 <= nearSq || unitAtPosition(x, y, z) < taperKeep(nearTaper, distance);
+      if (censused) {
         const starSeed = seedForIdentity(massBits, ageBits, entropy);
         const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
         if (physical.luminosity <= 0) return;
         // Unresolved binaries glint with the pair's combined light.
         const luminosity =
           physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
-        pushTo(near, lut, dx, dy, dz, luminosity, physical.tEff, starSeed);
+        pushTo(d2 <= nearSq ? near : far, lut, dx, dy, dz, luminosity, physical.tEff, starSeed);
         return;
       }
-      if (d2 > skySq) return;
+      if (distance > reachTaper.outerPc) return;
       const mass = initialMassFromUnit(unitFromBits(massBits, MASS_BIT_SPAN));
       if (luminosityCeiling(mass) / d2 < MIN_FAR_IRRADIANCE) return;
       const starSeed = seedForIdentity(massBits, ageBits, entropy);
@@ -457,6 +503,11 @@ export function sweepRowSlab(
     },
     onProgress,
     bounds,
+    // The generator's own thinning past the row's reach: the near
+    // census taper is decided above, so only the reach tapers here —
+    // and a near-only row, with no reach, is swept to its census
+    // taper untouched.
+    row.skyRadiusPc > 0 ? reachTaper : undefined,
   );
   return { near: packAccum(near), far: packAccum(far) };
 }
