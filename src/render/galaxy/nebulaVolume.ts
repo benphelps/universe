@@ -284,7 +284,7 @@ export class NebulaVolume {
     fine: NebulaVolumeBake | null,
     private readonly viewpointPc: GalacticPosition,
     sceneFromGalaxy: Float32Array,
-    private readonly skyFloorRadiance = SKY_PEDESTAL_LSUN_PC2_SR,
+    private skyFloorRadiance = SKY_PEDESTAL_LSUN_PC2_SR,
   ) {
     this.palettes = {
       line: [bake.emissionHot, bake.emissionCool],
@@ -391,10 +391,16 @@ export class NebulaVolume {
     [readonly number[], readonly number[]]
   >;
 
-  /** Seat an instrument: the shared transfer over this sky's pedestal,
-   *  and the line palette the mode asks for. */
-  setInstrument(instrument: DisplayInstrument, exposure: number): void {
-    seatExtendedInstrument(this.material.uniforms, this.skyFloorRadiance, instrument, exposure);
+  /** Seat an instrument: the shared transfer over the sky's pedestal —
+   *  the measured floor once the sky has one, which a volume stood up
+   *  before then takes here — and the line palette the mode asks for. */
+  setInstrument(
+    instrument: DisplayInstrument,
+    exposure: number,
+    pedestalRadiance = this.skyFloorRadiance,
+  ): void {
+    this.skyFloorRadiance = pedestalRadiance;
+    seatExtendedInstrument(this.material.uniforms, pedestalRadiance, instrument, exposure);
     const [hot, cool] = this.palettes[instrument.palette];
     (this.material.uniforms.uEmissionHot.value as Vector3).set(hot[0], hot[1], hot[2]);
     (this.material.uniforms.uEmissionCool.value as Vector3).set(cool[0], cool[1], cool[2]);

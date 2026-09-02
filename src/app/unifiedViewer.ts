@@ -1371,9 +1371,12 @@ export class UnifiedViewer {
           { ...background, starCount: 0, starDirs: EMPTY_F32, starColors: EMPTY_F32, starBrightness: EMPTY_F32 },
           2000,
         );
-        // Sprite fades for standing volumes arrive with the next frame.
-        this.backdrop.setInstrument(this.skyInstrument, this.skyExposure);
         this.scene.add(this.backdrop.group);
+        // The sky now has a measured floor: every tier, including any
+        // volume that stood up on the typical dark column before it
+        // landed, is seated over it. Sprite fades for standing volumes
+        // arrive with the next frame.
+        this.setSkyInstrument(this.skyInstrument, this.skyExposure);
       },
     );
 
@@ -3353,7 +3356,9 @@ export class UnifiedViewer {
     this.skyInstrument = instrument;
     this.skyExposure = exposure;
     this.backdrop?.setInstrument(instrument, exposure);
-    for (const volume of this.nebulaVolumes.values()) volume.setInstrument(instrument, exposure);
+    for (const volume of this.nebulaVolumes.values()) {
+      volume.setInstrument(instrument, exposure, this.skyFloorRadiance);
+    }
     for (const points of [
       this.starSprites,
       this.farPoints,
