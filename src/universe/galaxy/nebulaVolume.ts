@@ -22,8 +22,8 @@ import { nebulaEmissionColor, nebulaLineSum, nebulaNarrowbandColor } from './neb
  * A nebula baked into a volume the renderer can march.
  *
  * The expensive, physical half of the picture is done here, once: the
- * cloud's own density field sampled onto a grid, and the ionizing
- * budget of its hottest star spent through that field ray by ray. What
+ * cloud's own density field sampled onto a grid, and the natal group's
+ * ionizing budget spent through that field ray by ray. What
  * the front leaves behind is the structure — gas in the shadow of a
  * dense clump stays neutral, which is the beginning of the trunks and
  * cavities a real H II region carves. The shader then only integrates
@@ -233,10 +233,13 @@ export interface NebulaBakePlan {
   originPc: [number, number, number];
   /** Where the ionizing budget radiates from, box frame, pc. */
   ionizePc: [number, number, number];
-  /** Photons s⁻¹ sr⁻¹ from the dominant source. */
+  /** Photons s⁻¹ sr⁻¹ radiated from the source point: the whole
+   *  group's output, since its Strömgren and Spitzer radii and the
+   *  sprite's flux closure are all drawn on that total and the tiers
+   *  must spend the same budget. */
   budget: number;
-  /** The dominant source's output, photons s⁻¹ — what closes the
-   *  emission books in the finish. */
+  /** The group's output, photons s⁻¹ — what closes the emission
+   *  books in the finish. */
   photonRate: number;
   /** The dominant source's temperature, K — the line grid's first
    *  axis, alongside the plan's metallicity and the cells' own U. */
@@ -324,7 +327,11 @@ export function planNebulaBake(
     boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * (nebula?.bubbleRadiusPc ?? 0)),
   );
   const cellPc = (2 * boxPc) / size;
-  const budget = (source?.photonRate ?? 0) / (4 * Math.PI);
+  // The whole group's photons leave from its dominant member's place:
+  // the members huddle at the same clumps, and one origin is what a
+  // single shadow ray serves.
+  const photonRate = source ? (nebula?.photonRate ?? 0) : 0;
+  const budget = photonRate / (4 * Math.PI);
   return {
     cloud,
     metallicity,
@@ -334,7 +341,7 @@ export function planNebulaBake(
     originPc,
     ionizePc,
     budget,
-    photonRate: source?.photonRate ?? 0,
+    photonRate,
     sourceTeff: source?.tEff ?? 40000,
     growth,
     dilution,
