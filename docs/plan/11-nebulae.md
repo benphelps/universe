@@ -225,6 +225,20 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   The star count itself is the sweep's brightness threshold against the
   local density — 63k at Musas, several hundred thousand in the inner
   disk — and a budget on it would be a display choice, not made here.
+  The mid-range frame, measured clean (no bakes in flight) at 1.5 kpc
+  above Musas on a 2564×1962 canvas, 15 volumes standing: 23.4 ms GPU,
+  ~39 fps; the galaxy dome ~11 ms (72 disk steps + 32 halo steps per
+  half-res pixel), bloom ~12 ms by removal (its full-resolution bright and
+  composite passes), nebulae ~4, particles ~2, stars ~0, everything off
+  4 ms. Levers, with their measured savings: the sky layer at 0.35 of the
+  buffer instead of 0.5 (−6 ms; the domes are smooth glow and the layer
+  is upsampled bilinearly), bloom's targets at half (−2.7 ms), and the
+  dome's step placement — 72 uniform steps across a ±2.6 kpc slab put
+  most samples in near-empty thick disk when the light lives in the thin
+  one; midplane-weighted spacing would keep the integral at fewer steps.
+  Bake contention is the transient on top: right after an arrival or a
+  pull-out the worker's GPU bakes stretch frames to ~90 ms until the
+  queue drains.
 - **The sky's reaches taper — landed.** Pulled out, the sky field showed
   nested spheres: the near census (every star, whatever its light, to the
   neighbourhood's radius) ended on one, and each catalog row's sweep ended
