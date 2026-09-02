@@ -1516,9 +1516,11 @@ export class UnifiedViewer {
     const nebula = nebulaFor(cloud);
     const lit = nebula !== null && bubbleNeedsOwnBake(nebula, cloudReachPc(cloud));
     // Once the standing volume carries every grid it will ever get,
-    // the source bakes have nothing left to serve — the textures hold
-    // the data now, and at a full residency the copies are hundreds of
-    // megabytes of heap.
+    // the source bakes have nothing left to serve: a later upgrade
+    // must wait for fresh grids rather than reinstall these. The
+    // textures reference the same buffers, so this frees no memory —
+    // a standing residency's grids live on the heap for as long as the
+    // textures do.
     const settled = (): void => {
       const volume = this.nebulaVolumes.get(seed);
       if (volume && (!lit || volume.hasFine)) {
@@ -1537,15 +1539,19 @@ export class UnifiedViewer {
       this.installNebulaVolume(seed, viewpoint, orientation);
       settled();
     };
+    // A bake landing for a cloud residency has since let go stays on
+    // the service's shelf for the next visit; holding it here as well
+    // would keep a grid nobody stands up.
+    const landed = (): boolean => !stale() && this.wantedNebulae.has(seed);
     const coarse = requestNebulaVolume(cloud, size, cloudReachPc(cloud), (ready) => {
-      if (stale()) return;
+      if (!landed()) return;
       this.coarseBakes.set(seed, ready);
       tryInstall();
     });
     if (coarse) this.coarseBakes.set(seed, coarse);
     if (lit) {
       const fine = requestNebulaVolume(cloud, size, undefined, (ready) => {
-        if (stale()) return;
+        if (!landed()) return;
         this.fineBakes.set(seed, ready);
         tryInstall();
       });

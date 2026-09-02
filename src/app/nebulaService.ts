@@ -22,7 +22,13 @@ let nextWorker = 0;
 const queued = new Set<string>();
 /** Who is still interested in each one. */
 const waiting = new Map<string, (bake: NebulaVolumeBake) => void>();
+/** Landed bakes by key, oldest first — a shelf for clouds the camera
+ *  may swing back to, bounded by what it holds rather than how many:
+ *  a near-grade grid is sixteen megabytes where a coarse one is
+ *  three and a half. */
 const cache = new Map<string, NebulaVolumeBake>();
+const CACHE_BYTES = 96 << 20;
+let cachedBytes = 0;
 
 /**
  * Drop every bake the old locale was still waiting on, workers and all.
@@ -53,9 +59,12 @@ function onBake(event: MessageEvent<NebulaBakeResult>): void {
   queued.delete(event.data.key);
   if (!event.data.bake) return;
   cache.set(event.data.key, event.data.bake);
-  // Room for a full residency of volumes at both scales, plus a few
-  // recently-left clouds the camera may swing back to.
-  if (cache.size > 12) cache.delete(cache.keys().next().value as string);
+  cachedBytes += event.data.bake.data.byteLength;
+  while (cachedBytes > CACHE_BYTES && cache.size > 1) {
+    const [oldest, gone] = cache.entries().next().value as [string, NebulaVolumeBake];
+    cache.delete(oldest);
+    cachedBytes -= gone.data.byteLength;
+  }
   // A bake the camera has moved on from is still worth keeping — it
   // is the answer for a cloud that may come back into view — but only
   // the request that is still waiting hears about it.
