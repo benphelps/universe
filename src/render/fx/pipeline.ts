@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { guardBloomInput } from './bloomGuard';
 import { DiagramPass } from './diagramLayer';
 import { SkyLayer } from './skyLayer';
 
@@ -50,6 +51,7 @@ export class RenderPipeline {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(scene, camera));
     this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.45, 0.6, 0.9);
+    guardBloomInput(this.bloom);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new DiagramPass(scene, camera));

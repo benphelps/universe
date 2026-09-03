@@ -2,25 +2,33 @@ import { AdditiveBlending, ShaderMaterial } from 'three';
 import type { Star } from '../../universe/star/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { seedOffset } from './seedOffset';
+import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 
 /** Corona billboard extent as a multiple of the stellar radius. */
 export const CORONA_SIZE_FACTOR = 8;
 
 const VERTEX = /* glsl */ `
 varying vec3 vRel;
+varying vec3 vAirDir;
+
+${AIR_REFRACT_GLSL}
 
 void main() {
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
+  vAirDir = normalize(worldPos.xyz - cameraPosition);
   // Normalized billboard offset, scale-free: the world half-width comes
   // from the model matrix, so the shader works in any scene unit.
   float halfWidth = 0.5 * length(vec3(modelMatrix[0]));
   vRel = (worldPos.xyz - (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz) / halfWidth;
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
+  gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
 }
 `;
 
 const FRAGMENT = /* glsl */ `
 varying vec3 vRel;
+varying vec3 vAirDir;
+
+${AIR_VIEW_GLSL}
 
 uniform vec3 uColor;
 uniform vec3 uSeedOffset;
@@ -117,7 +125,7 @@ void main() {
   glow *= smoothstep(uDiscRadius * 0.85, uDiscRadius * 1.02, r);
   glow *= 1.0 - smoothstep(0.5, 0.9, r);
 
-  gl_FragColor = vec4(uColor * glow * uIntensity, 1.0);
+  gl_FragColor = vec4(uColor * glow * uIntensity * airTransmittance(vAirDir), 1.0);
 }
 `;
 
@@ -131,6 +139,7 @@ export function createCoronaMaterial(star: Star): ShaderMaterial {
       uColor: { value: [r * 0.5 + 0.5, g * 0.5 + 0.5, b * 0.5 + 0.5] },
       uSeedOffset: { value: seedOffset(star) },
       uDiscRadius: { value: 2 / CORONA_SIZE_FACTOR },
+      ...airViewUniforms(),
       uIntensity: { value: 0.2 },
       uAxialTilt: { value: star.activity.axialTiltRad },
       uRotationPhase: { value: 0 },

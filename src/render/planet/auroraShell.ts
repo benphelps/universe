@@ -9,19 +9,25 @@ import {
 import type { Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { WORLD_NORMAL_GLSL } from '../glsl/worldNormal';
 import { planetSeedOffset } from './solidPlanetMaterial';
+import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
 varying vec3 vWorldNormal;
 varying vec3 vWorldPos;
 
+${WORLD_NORMAL_GLSL}
+
+${AIR_REFRACT_GLSL}
+
 void main() {
   vObjPos = position;
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPos = worldPos.xyz;
-  vWorldNormal = normalize(mat3(modelMatrix) * normal);
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
+  vWorldNormal = worldNormal(modelMatrix, normal);
+  gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
 }
 `;
 
@@ -37,6 +43,7 @@ uniform vec4 uAurora;                   // strength, tiltRad, azimuthRad, ovalCo
 uniform float uLayerFade;
 
 ${SIMPLEX_NOISE_GLSL}
+${AIR_VIEW_GLSL}
 
 void main() {
   vec3 p = normalize(vObjPos);
@@ -71,11 +78,12 @@ void main() {
   // path when viewed face-on. Keeping that geometry in the brightness
   // stops the oval from painting an opaque donut over the polar weather.
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
-  float faceOn = abs(dot(normal, viewDir));
+  float faceOn = min(abs(dot(normal, viewDir)), 1.0);
   float curtainPath = 0.008 + 0.992 * pow(1.0 - faceOn, 1.7);
   vec3 color = vec3(0.5, 0.32, 0.85) * (core * rays + glow * (0.5 + 0.5 * rays))
     * uAurora.x * uLayerFade * (0.05 + 0.75 * night) * curtainPath;
   gl_FragColor = vec4(color, 1.0);
+  gl_FragColor.rgb *= airTransmittanceTo(vWorldPos);
 }
 `;
 
@@ -107,6 +115,7 @@ export function createAuroraShells(
       vertexShader: VERTEX,
       fragmentShader: FRAGMENT,
       uniforms: {
+        ...airViewUniforms(),
         uLightDir: { value: [0, 0, 1] },
         uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
         uTimeDays: { value: 0 },

@@ -9,12 +9,14 @@ import {
   NormalBlending,
   Scene,
   ShaderMaterial,
+  Matrix4,
   Vector3,
   WebGLRenderTarget,
   type Camera,
   type Object3D,
   type WebGLRenderer,
 } from 'three';
+import { AIR_VIEW_GLSL, airViewUniforms, applyAirView, type AirView } from '../lighting/airView';
 
 /**
  * The layer the volume marches live on.
@@ -72,12 +74,20 @@ in vec2 vUv;
 out vec4 fragColor;
 uniform sampler2D uSky;
 uniform float uIntensity;
+uniform mat4 uProjectionInverse;
+uniform mat4 uCameraWorld;
+${AIR_VIEW_GLSL}
 void main() {
+  // The sightline behind this pixel, for the air it crosses.
+  vec4 clip = vec4(vUv * 2.0 - 1.0, 1.0, 1.0);
+  vec4 eye = uProjectionInverse * clip;
+  vec3 dir = normalize(mat3(uCameraWorld) * (eye.xyz / eye.w));
   // Premultiplied, so one factor washes the domes out of a daytime
   // sky the way the star points wash out: the light fades and the
   // occlusion fades with it — a rift cannot darken an atmosphere
   // that shines in front of it.
   fragColor = texture(uSky, vUv) * uIntensity;
+  fragColor.rgb *= airTransmittance(dir);
 }
 `;
 
@@ -113,7 +123,13 @@ export class SkyLayer {
         glslVersion: GLSL3,
         vertexShader: VERTEX,
         fragmentShader: FRAGMENT,
-        uniforms: { uSky: { value: this.target.texture }, uIntensity: { value: 1 } },
+        uniforms: {
+          uSky: { value: this.target.texture },
+          uIntensity: { value: 1 },
+          uProjectionInverse: { value: new Matrix4() },
+          uCameraWorld: { value: new Matrix4() },
+          ...airViewUniforms(),
+        },
         // Premultiplied over: the galaxy half is pure added light with
         // zero alpha, the nebula half carries its own occlusion.
         blending: NormalBlending,
@@ -148,8 +164,10 @@ export class SkyLayer {
       this.scene.children.some((child) => child.visible);
     this.quad.visible = anything;
     if (!anything) return;
-    ((this.quad.material as ShaderMaterial).uniforms.uIntensity as { value: number }).value =
-      this.intensity;
+    const uniforms = (this.quad.material as ShaderMaterial).uniforms;
+    uniforms.uIntensity.value = this.intensity;
+    (uniforms.uProjectionInverse.value as Matrix4).copy(camera.projectionMatrixInverse);
+    (uniforms.uCameraWorld.value as Matrix4).copy(camera.matrixWorld);
     const previousTarget = renderer.getRenderTarget();
     renderer.getClearColor(this.savedColor);
     const previousAlpha = renderer.getClearAlpha();
@@ -162,6 +180,11 @@ export class SkyLayer {
     renderer.autoClear = previousAutoClear;
     renderer.setRenderTarget(previousTarget);
     renderer.setClearColor(this.savedColor, previousAlpha);
+  }
+
+  /** The air the composite is seen through from a ground. */
+  setAirView(air: AirView | null): void {
+    applyAirView(this.quad.material as ShaderMaterial, air);
   }
 
   /**

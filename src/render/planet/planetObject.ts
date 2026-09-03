@@ -4,9 +4,7 @@ import {
   Quaternion,
   ShaderMaterial,
   SphereGeometry,
-  Vector2,
   Vector3,
-  Vector4,
   type WebGLCubeRenderTarget,
   type WebGLRenderer,
 } from 'three';
@@ -14,14 +12,15 @@ import { seedFromHex } from '../../core/rng/hash';
 import { deriveCirculation, type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import type { RingSystem } from '../../universe/rings/types';
-import { applySecondSun } from '../lighting/secondSun';
+import { applyAirView, type AirView } from '../lighting/airView';
+import { applySecondSun, type SecondSun } from '../lighting/secondSun';
 import { foldShaderTime } from '../shaderTime';
 import { createAtmosphereShell } from './atmosphereShell';
 import { createAuroraShells } from './auroraShell';
 import { DeckBaker } from './deckBaker';
 import { createGiantMaterial } from './giantMaterial';
-import { createRingMesh, ringPatternSeed } from './ringMaterial';
-import { applyOccluders, type ShadowCaster } from './shadows';
+import { createRingMesh } from './ringMaterial';
+import { applyOccluders, applyRingShadow, type ShadowCaster } from './shadows';
 import { createSolidPlanetMaterial } from './solidPlanetMaterial';
 import { requestSurfaceBake } from './surfaceBakeQueue';
 import { uploadSurfaceCube } from './surfaceCube';
@@ -163,9 +162,8 @@ export class PlanetObject {
   update(
     simTimeDays: number,
     lightDirWorld: Vector3,
-    lightColor: [number, number, number],
-    light2Dir: Vector3 | null = null,
-    light2Color: readonly [number, number, number] | null = null,
+    lightColor: readonly [number, number, number],
+    second: SecondSun | null = null,
     renderer?: WebGLRenderer,
   ): void {
     this.body.rotation.y = simTimeDays * this.spinRadPerDay;
@@ -182,10 +180,16 @@ export class PlanetObject {
       uniforms.uLightDir.value = [lightDirWorld.x, lightDirWorld.y, lightDirWorld.z];
       if (uniforms.uLightColor) uniforms.uLightColor.value.setRGB(...lightColor);
       if (uniforms.uTimeDays) uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
-      applySecondSun(material, light2Dir, light2Color);
+      applySecondSun(material, second);
     }
     if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld, renderer);
     if (this.rings) this.updateRingShadow();
+  }
+
+  /** The air between the eye and this body, when the eye stands on a
+   *  ground with a sky. */
+  setAirView(air: AirView | null): void {
+    for (const material of this.materials) applyAirView(material, air);
   }
 
   /** Equatorial planet radius in world units (the group carries the
@@ -204,28 +208,12 @@ export class PlanetObject {
    *  when the viewer supplies moons as well). */
   private updateRingShadow(): void {
     const rings = this.rings!;
-    const uniforms = this.materials[0].uniforms;
     const self = this.selfCaster();
     const ringNormal = new Vector3(0, 1, 0)
       .applyQuaternion(this.group.getWorldQuaternion(new Quaternion()));
+    applyRingShadow(this.materials[0], rings, self.position, self.radius, ringNormal);
     for (const material of this.materials) {
       if (material.uniforms.uRingNormal) material.uniforms.uRingNormal.value.copy(ringNormal);
-    }
-    (uniforms.uRingShadow.value as Vector4).set(
-      rings.innerPlanetRadii * self.radius,
-      rings.outerPlanetRadii * self.radius,
-      rings.opticalDepth,
-      1,
-    );
-    (uniforms.uRingCenter.value as Vector3).copy(self.position);
-    uniforms.uRingSeed.value = ringPatternSeed(rings);
-    const gaps = rings.gaps.slice(0, 6);
-    uniforms.uRingGapCount.value = gaps.length;
-    for (let i = 0; i < gaps.length; i++) {
-      (uniforms.uRingGaps.value as Vector2[])[i].set(
-        gaps[i].radiusPlanetRadii * self.radius,
-        gaps[i].widthPlanetRadii * self.radius,
-      );
     }
     applyOccluders(
       this.ringMaterial!,

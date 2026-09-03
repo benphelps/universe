@@ -1,20 +1,24 @@
 import { ShaderMaterial, type DataTexture } from 'three';
 import type { Star } from '../../universe/star/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { ADAPTATION_EXPONENT } from '../lighting/starlight';
 import { seedOffset } from './seedOffset';
 import { stellarSurfaceModel, stellarSurfaceStateAt } from './surfaceModel';
+import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
 varying vec3 vWorldNormal;
 varying vec3 vViewDir;
 
+${AIR_REFRACT_GLSL}
+
 void main() {
   vObjPos = position;
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldNormal = normalize(mat3(modelMatrix) * normal);
   vViewDir = normalize(cameraPosition - worldPos.xyz);
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
+  gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
 }
 `;
 
@@ -22,6 +26,8 @@ const FRAGMENT = /* glsl */ `
 varying vec3 vObjPos;
 varying vec3 vWorldNormal;
 varying vec3 vViewDir;
+
+${AIR_VIEW_GLSL}
 
 uniform sampler2D uLut;
 uniform float uTeff;
@@ -216,7 +222,12 @@ void main() {
   float radiance = pow(localT / uTeff, 4.0);
   float limb = 1.0 - uLimbU * (1.0 - mu);
 
-  vec3 hdr = color * radiance * limb * uIntensity * uLuminosityMultiplier;
+  // The disc's seat is the adapted power of its radiance, so the air's
+  // extinction goes in under the same power: a setting sun dims and
+  // reddens to a bounded disc still brighter than its sky, not to a
+  // dark spot on it.
+  vec3 hdr = color * radiance * limb * uIntensity * uLuminosityMultiplier
+    * pow(airTransmittance(-vViewDir), vec3(${ADAPTATION_EXPONENT}));
   gl_FragColor = vec4(hdr, 1.0);
 }
 `;
@@ -228,6 +239,7 @@ export function createPhotosphereMaterial(star: Star, lut: DataTexture): ShaderM
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      ...airViewUniforms(),
       uLut: { value: lut },
       uTeff: { value: star.tEff },
       uRotationPhase: { value: state.rotationPhase },
@@ -246,7 +258,7 @@ export function createPhotosphereMaterial(star: Star, lut: DataTexture): ShaderM
       uFaculaTemperatureExcessK: { value: model.faculaTemperatureExcessK },
       uCloudPatchiness: { value: star.activity.cloudPatchiness },
       uLimbU: { value: star.activity.limbDarkeningU },
-      uIntensity: { value: 0.78 },
+      uIntensity: { value: 0 },
       uLuminosityMultiplier: { value: 1 },
       uDetailFade: { value: 1 },
       uSeedOffset: { value: seedOffset(star) },

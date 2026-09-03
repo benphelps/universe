@@ -19,6 +19,7 @@ import { SCATTER_OPACITY_RGB } from '../../universe/galaxy/dustScattering';
 import type { Neighborhood } from '../../universe/galaxy/neighborhood';
 import { fieldPointUniforms } from '../displayTransfer';
 import { glslFloat as f } from '../glsl/format';
+import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 
 /**
  * A resident nebula extinguishes the star field behind it.
@@ -127,6 +128,9 @@ uniform vec4 uNebulaBoxes[${MAX_STAR_NEBULAE}];
 uniform float uNebulaDustRefs[${MAX_STAR_NEBULAE}];
 uniform mat3 uCameraToGalaxy;
 
+${AIR_VIEW_GLSL}
+${AIR_REFRACT_GLSL}
+
 out vec3 vColor;
 out float vAlpha;
 
@@ -221,10 +225,12 @@ void main() {
   vec3 hue = mix(
     vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
     starColor, sat);
-  vColor = hue * energy * extinction;
+  vColor = hue * energy * extinction
+    * airTransmittance(normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition));
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   gl_PointSize = drawn;
-  gl_Position = projectionMatrix * mvPosition;
+  gl_Position = projectionMatrix * viewMatrix
+    * vec4(airRefractPosition((modelMatrix * vec4(position, 1.0)).xyz), 1.0);
   // Sky points sit far beyond the camera's far plane at low altitude,
   // and the far plane cuts on view depth — a camera-rotation-dependent
   // filter that has no business editing the sky. Under the reversed-Z
@@ -263,6 +269,7 @@ export function createStarPointsMaterial(kmPerPc: number, zeroPoint = 17): Shade
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      ...airViewUniforms(),
       uKmPerPc: { value: kmPerPc },
       uIntensity: { value: 1 },
       uZeroPoint: { value: zeroPoint },

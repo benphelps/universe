@@ -13,6 +13,8 @@ import {
 } from 'three';
 import type { Star } from '../../universe/star/types';
 import { luminosityMultiplierAt } from '../../universe/star/variability';
+import { applyAirView, type AirView } from '../lighting/airView';
+import { ADAPTATION_EXPONENT, adapted, instellation } from '../lighting/starlight';
 import { CORONA_SIZE_FACTOR, createCoronaMaterial } from './coronaMaterial';
 import { createPhotosphereMaterial } from './photosphereMaterial';
 import {
@@ -20,6 +22,11 @@ import {
   stellarSurfaceStateAt,
   type StellarSurfaceModel,
 } from './surfaceModel';
+
+/** The resolved disc's display seat, where granulation and spots read. */
+const RESOLVED_DISC_INTENSITY = 0.78;
+/** The K-corona at the limb stands about a millionth of the disc. */
+const CORONA_RATIO = 1e-6;
 
 /**
  * Renderable star: photosphere shader sphere plus a camera-facing corona
@@ -84,7 +91,8 @@ export class StarObject {
     this.coronaMesh = corona;
   }
 
-  /** Advance shader time and photometric variability; billboard the corona. */
+  /** Advance shader time and photometric variability; billboard the
+   *  corona; seat the disc against everything it lights. */
   update(simTimeDays: number, camera: Camera): void {
     // Surface detail and corona fade with apparent size: subpixel
     // granulation and wisps only alias, so the disc steps down to its
@@ -94,6 +102,21 @@ export class StarObject {
     const angular = worldRadiusUnits / distance;
     const t = Math.max(0, Math.min(1, (angular - 0.004) / (0.05 - 0.004)));
     const detail = t * t * (3 - 2 * t);
+    // The disc on the same adapted scale as the ground it lights: its
+    // radiance against a white ground under Earth sunlight is F/θ², so
+    // it displays at adapted(F)·θ^(−2k) — about nine times the ground
+    // under our own Sun, reddening with the air at sunset and standing
+    // over the sky's glow. Once the disc fills a few degrees the eye
+    // settles on the disc itself and it comes down to its resolved seat.
+    // World units are kilometres here, as the system view scales them.
+    const level = adapted(instellation(this.star.luminosity, distance));
+    const physical = level * Math.max(angular, 1e-6) ** (-2 * ADAPTATION_EXPONENT);
+    const disc = physical + (RESOLVED_DISC_INTENSITY - physical) * detail;
+    // The corona keeps its true ratio to the ground the disc lights,
+    // a millionth of F/θ² — under our Sun a twentieth of a white
+    // ground, which a daytime sky outshines and a shadowed one shows.
+    const coronaLinear = (level * CORONA_RATIO) / Math.max(angular * angular, 1e-12);
+    const corona = coronaLinear + (this.coronaIntensity - coronaLinear) * detail;
     const surfaceState = this.surfaceModel
       ? stellarSurfaceStateAt(this.star, this.surfaceModel, simTimeDays)
       : null;
@@ -107,6 +130,7 @@ export class StarObject {
       this.photosphere.uniforms.uGranuleEpoch.value = surfaceState.granuleEpoch;
       this.photosphere.uniforms.uGranulePhase.value = surfaceState.granulePhase;
       this.photosphere.uniforms.uDetailFade.value = detail;
+      this.photosphere.uniforms.uIntensity.value = disc;
       this.photosphere.uniforms.uLuminosityMultiplier.value = luminosityMultiplierAt(
         this.star,
         simTimeDays,
@@ -116,12 +140,19 @@ export class StarObject {
       this.corona.uniforms.uRotationPhase.value = surfaceState.spotRotationPhase;
       this.corona.uniforms.uEvolutionEpoch.value = surfaceState.spotPreviousEpoch;
       this.corona.uniforms.uEvolutionPhase.value = surfaceState.spotPhase;
-      this.corona.uniforms.uIntensity.value = this.coronaIntensity * detail;
+      this.corona.uniforms.uIntensity.value = corona;
     }
     if (this.coronaMesh) {
-      this.coronaMesh.visible = detail > 0.01;
+      this.coronaMesh.visible = corona > 1e-3;
       this.coronaMesh.quaternion.copy(camera.quaternion);
     }
+  }
+
+  /** The air between the eye and this star: a sun seen through an
+   *  atmosphere sets dim and red. */
+  setAirView(air: AirView | null): void {
+    if (this.photosphere) applyAirView(this.photosphere, air);
+    if (this.corona) applyAirView(this.corona, air);
   }
 
   dispose(): void {

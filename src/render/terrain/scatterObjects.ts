@@ -9,6 +9,9 @@ import {
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { TreeSpecies } from '../../universe/surface/flora';
 import { secondSunUniforms } from '../lighting/secondSun';
+import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
+import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
 
 const VERTEX = /* glsl */ `
 attribute vec3 color;
@@ -16,6 +19,7 @@ attribute vec3 color;
 varying vec3 vColor;
 varying vec3 vNormal;
 varying vec3 vViewPos;
+varying vec3 vWorldPos;
 
 void main() {
   vec4 local = vec4(position, 1.0);
@@ -32,6 +36,8 @@ void main() {
   #endif
   // Chunk-anchored groups never rotate: model rotation is identity.
   vNormal = normalize(n);
+  // Directions and shadow rays only — see terrainMaterial.
+  vWorldPos = (modelMatrix * local).xyz;
   // Through modelViewMatrix (CPU-composed camera-relative in f64), never
   // via a materialized f32 world position — see terrainMaterial.
   vec4 mvPosition = modelViewMatrix * local;
@@ -44,20 +50,38 @@ const FRAGMENT = /* glsl */ `
 varying vec3 vColor;
 varying vec3 vNormal;
 varying vec3 vViewPos;
+varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
-uniform vec3 uFogColor;
-uniform float uFogDensity;
+
+${SIMPLEX_NOISE_GLSL}
+${SHADOW_GLSL}
+${SURFACE_LIGHT_GLSL}
 
 void main() {
-  float diffuse = max(dot(normalize(vNormal), uLightDir), 0.0);
-  float diffuse2 = max(dot(normalize(vNormal), uLight2Dir), 0.0);
-  vec3 color = vColor * (uLightColor * (diffuse + 0.02) + uLight2Color * diffuse2);
-  float fog = 1.0 - exp(-length(vViewPos) * uFogDensity);
-  gl_FragColor = vec4(mix(color, uFogColor, fog), 1.0);
+  vec3 normal = normalize(vNormal);
+  vec3 up = normalize(vWorldPos);
+  float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
+  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, up, shadow)
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, up, shadow2);
+  vec3 color = vColor * (light + uNightFloor);
+  // Aerial perspective: the air along the run to the eye keeps some of
+  // the ground's light and adds the sunlight it scatters — blue by day,
+  // red under a low sun, nothing in a vacuum.
+  float eyeAlt = length(cameraPosition) - uPlanetRadius;
+  float pointAlt = length(vWorldPos) - uPlanetRadius;
+  float run = length(vViewPos);
+  vec3 column = airSegmentColumn(eyeAlt, pointAlt, run);
+  vec3 midUp = normalize(0.5 * (cameraPosition + vWorldPos));
+  vec3 toEye = normalize(cameraPosition - vWorldPos);
+  vec3 seen = color * exp(-column)
+    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * shadow
+    + uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * shadow2;
+  gl_FragColor = vec4(seen, 1.0);
 }
 `;
 
@@ -67,11 +91,11 @@ export function createScatterMaterial(): ShaderMaterial {
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      ...createShadowUniforms(),
+      ...surfaceLightUniforms(),
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
-      uFogColor: { value: new Color(0, 0, 0) },
-      uFogDensity: { value: 0 },
     },
   });
 }

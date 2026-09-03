@@ -41,6 +41,7 @@ import {
   type DarkCloudPatch,
   type NebulaPatch,
 } from '../../universe/galaxy/skyfield';
+import { AIR_VIEW_GLSL, airViewUniforms, applyAirView, type AirView } from '../lighting/airView';
 
 const MAX_NEBULAE = NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS;
 const MAX_DARK = DARK_ATLAS_COLS * DARK_ATLAS_ROWS;
@@ -60,6 +61,7 @@ const SPRITE_COLUMNS = 8;
 
 const NEBULA_FRAGMENT = /* glsl */ `
 varying vec3 vDir;
+varying vec3 vAirDir;
 
 uniform sampler2D uNebulaAtlas;
 uniform sampler2D uSprites;
@@ -67,6 +69,7 @@ uniform int uNebulaCount;
 uniform float uIntensity;
 uniform float uNarrowband;
 ${TRANSFER_GLSL}
+${AIR_VIEW_GLSL}
 
 vec4 sprite(int i, int column) {
   return texture2D(uSprites, vec2(
@@ -119,7 +122,7 @@ void main() {
   vec3 shown = shownShare > 0.0
     ? scotopic(tint / shownShare, radiance) * displayRadiance(radiance) * (shownShare / radiance)
     : vec3(0.0);
-  gl_FragColor = vec4(shown * uIntensity, 1.0);
+  gl_FragColor = vec4(shown * uIntensity * airTransmittance(vAirDir), 1.0);
 }
 `;
 
@@ -135,6 +138,8 @@ uniform float uCeil;
 uniform float uLogPivot;
 uniform float uCutoff;
 uniform float uPointColorKnee;
+
+${AIR_VIEW_GLSL}
 
 varying vec3 vColor;
 varying float vAlpha;
@@ -163,7 +168,9 @@ void main() {
   vec3 hue = mix(
     vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
     starColor, sat);
-  vColor = hue * energy;
+  // The backdrop rides the eye, so a point's world direction is its
+  // position turned by the group.
+  vColor = hue * energy * airTransmittance(normalize(mat3(modelMatrix) * position));
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = size;
@@ -189,9 +196,11 @@ void main() {
 
 const GLOW_VERTEX = /* glsl */ `
 varying vec3 vDir;
+varying vec3 vAirDir;
 
 void main() {
   vDir = normalize(position);
+  vAirDir = normalize(mat3(modelMatrix) * position);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   // The dome is angular data, not a foreground shell. Pin it just inside
   // the reversed-Z far plane so planets and terrain always win the depth
@@ -202,6 +211,7 @@ void main() {
 
 const GLOW_FRAGMENT = /* glsl */ `
 varying vec3 vDir;
+varying vec3 vAirDir;
 
 uniform mat3 uSceneToGalaxy;
 uniform sampler2D uGlow;
@@ -213,6 +223,7 @@ uniform vec4 uDarkB[${MAX_DARK}]; // right.xyz, tile index
 uniform vec4 uDarkC[${MAX_DARK}]; // up.xyz, unused
 uniform int uDarkCount;
 uniform float uIntensity;
+${AIR_VIEW_GLSL}
 uniform float uPedestalRadiance;
 ${TRANSFER_GLSL}
 
@@ -289,7 +300,8 @@ void main() {
     1.0,
     0.93 * (0.75 + 0.25 * column.g),
     0.85 * (0.55 + 0.45 * column.g));
-  gl_FragColor = vec4(scotopic(hue * displayRadiance(radiance), radiance) * uIntensity, 1.0);
+  gl_FragColor = vec4(scotopic(hue * displayRadiance(radiance), radiance) * uIntensity
+    * airTransmittance(vAirDir), 1.0);
 }
 `;
 
@@ -387,6 +399,7 @@ export class StarfieldBackdrop {
       fragmentShader: POINTS_FRAGMENT,
       uniforms: {
         uIntensity: { value: 1 },
+        ...airViewUniforms(),
         ...pointUniforms(),
       },
       blending: AdditiveBlending,
@@ -471,6 +484,7 @@ export class StarfieldBackdrop {
         uDarkC: { value: darkC },
         uDarkCount: { value: sky.darkClouds.length },
         uIntensity: { value: 1 },
+        ...airViewUniforms(),
         uPedestalRadiance: { value: sky.skyFloorRadiance },
         ...transferUniforms(sky.skyFloorRadiance),
       },
@@ -540,6 +554,7 @@ export class StarfieldBackdrop {
           uSprites: { value: spriteTexture },
           uNebulaCount: { value: patches.length },
           uIntensity: { value: 1 },
+        ...airViewUniforms(),
           uNarrowband: { value: 0 },
           ...transferUniforms(sky.skyFloorRadiance),
         },
@@ -594,6 +609,11 @@ export class StarfieldBackdrop {
       );
       this.nebulaMaterial.uniforms.uNarrowband.value = instrument.palette === 'narrowband' ? 1 : 0;
     }
+  }
+
+  /** The air between the eye and the whole sky, on every tier. */
+  setAirView(air: AirView | null): void {
+    for (const material of this.materials) applyAirView(material, air);
   }
 
   /** 1 = full night sky; approaches 0 under bright daylight. */

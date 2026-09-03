@@ -3,22 +3,34 @@ import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import { type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { WORLD_NORMAL_GLSL } from '../glsl/worldNormal';
 import { secondSunUniforms } from '../lighting/secondSun';
+import {
+  horizonAirmass,
+  SURFACE_LIGHT_GLSL,
+  surfaceLightUniforms,
+} from '../lighting/surfaceLight';
+import { deckOpticalDepth } from '../../universe/planet/atmosphere';
 import { HEIGHT_SCALE } from './giantPattern';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 import { planetSeedOffset } from './solidPlanetMaterial';
+import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
 varying vec3 vWorldNormal;
 varying vec3 vWorldPos;
 
+${WORLD_NORMAL_GLSL}
+
+${AIR_REFRACT_GLSL}
+
 void main() {
   vObjPos = position;
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPos = worldPos.xyz;
-  vWorldNormal = normalize(mat3(modelMatrix) * normal);
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
+  vWorldNormal = worldNormal(modelMatrix, normal);
+  gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
 }
 `;
 
@@ -40,9 +52,6 @@ uniform float uContrast;
 uniform float uChurnPerDay;
 uniform vec2 uPolarCaps;                // north/south cap boundary latitude
 uniform float uCloudReliefKm;
-uniform float uHazeAmount;
-uniform vec3 uHazeColor;
-uniform vec3 uRimColor;
 uniform float uRegime;                  // 0 banded, 1 locked
 uniform vec3 uHotspotDirObj;
 uniform vec3 uThermalColor;
@@ -50,6 +59,8 @@ uniform float uThermalStrength;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
+${SURFACE_LIGHT_GLSL}
+${AIR_VIEW_GLSL}
 
 void main() {
   vec3 p = normalize(vObjPos);
@@ -91,30 +102,24 @@ void main() {
   vec3 bumped = normalize(normal - clamp(slopeX, -0.6, 0.6) * tx - clamp(slopeY, -0.6, 0.6) * ty);
 
   float ndotl = dot(normal, uLightDir);
-  float diffuse = max(dot(bumped, uLightDir), 0.0) * shadowFactor(vWorldPos, uLightDir);
+  float ndotl2 = dot(normal, uLight2Dir);
+  float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
+  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
-  float mu = clamp(dot(normal, viewDir), 0.0, 1.0);
-  float limb = 1.0 - 0.45 * (1.0 - mu);
 
-  // The high haze veil: nearly clear overhead, thickening with the
-  // slant path toward the limb, drifting on its own.
-  if (uHazeAmount > 0.01) {
-    float lat = asin(clamp(p.y, -1.0, 1.0));
-    float hazeLon = atan(p.z, p.x) + uTimeDays * 0.35;
-    vec3 hp = vec3(cos(lat) * cos(hazeLon), sin(lat) * 1.6, cos(lat) * sin(hazeLon));
-    float hazeN = fbm(hp * 1.9 + uSeedOffset.zyx + vec3(0.0, 0.0, uTimeDays * uChurnPerDay * 0.15));
-    float slant = 1.0 - mu * 0.85;
-    float cover = uHazeAmount * clamp(0.35 + 0.65 * hazeN, 0.0, 1.0) * slant * slant;
-    surface = mix(surface, uHazeColor, clamp(cover, 0.0, 0.85));
-    diffuse = mix(diffuse, max(ndotl, 0.0), clamp(cover, 0.0, 0.85));
-  }
-
-  float diffuse2 = max(dot(bumped, uLight2Dir), 0.0) * shadowFactor(vWorldPos, uLight2Dir);
-  vec3 color = surface * (uLightColor * (diffuse + 0.004) + uLight2Color * diffuse2) * limb;
-
-  // Stratospheric haze: a forward-scattering bright rim on the lit limb.
-  float rimGlow = pow(1.0 - mu, 4.0);
-  color += uLightColor * uRimColor * rimGlow * (0.1 + 0.5 * max(ndotl, 0.0));
+  // The deck is lit through the clear column above it and seen back
+  // through the same column: the limb darkens as the slant lengthens,
+  // and the column's own scattering veils the limb blue and rims the
+  // lit edge — what the painted haze and rim once stood in for.
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow)
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2);
+  vec3 color = surface * (light + uNightFloor);
+  float xv = airmass(dot(normal, viewDir));
+  color = color * airColumnThrough(vec3(0.0), uOpticalDepth, xv)
+    + uLightColor * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl), -dot(viewDir, uLightDir))
+      * twilight(ndotl) * shadow
+    + uLight2Color * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl2), -dot(viewDir, uLight2Dir))
+      * twilight(ndotl2) * shadow2;
 
   // Hot giants radiate their own heat; the locked hotspot rides east
   // of the substellar point and carries into the night.
@@ -122,10 +127,10 @@ void main() {
     float glow = uRegime > 0.5
       ? 0.25 + 0.75 * pow(clamp(dot(p, uHotspotDirObj), 0.0, 1.0), 3.0)
       : mix(0.35, 1.0, 1.0 - smoothstep(-0.1, 0.2, ndotl));
-    color += uThermalColor * uThermalStrength * glow * limb;
+    color += uThermalColor * uThermalStrength * glow;
   }
 
-  gl_FragColor = vec4(color, 1.0);
+  gl_FragColor = vec4(color * airTransmittanceTo(vWorldPos), 1.0);
 }
 `;
 
@@ -136,14 +141,20 @@ export function createGiantMaterial(
   circulation: Circulation,
 ): ShaderMaterial {
   const glowing = circulation.thermalGlowK > 700;
-  const rim = circulation.bands[Math.floor(circulation.bands.length / 2)]?.color ?? [
-    0.6, 0.6, 0.6,
-  ];
+  const radiusKm = physical.bulk.radiusEarth * 6371;
+  const { atmosphere, bulk } = physical;
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
       ...createShadowUniforms(),
+      ...airViewUniforms(),
+      ...surfaceLightUniforms({
+        ...deckOpticalDepth(atmosphere, bulk),
+        horizon: horizonAirmass(radiusKm, atmosphere.scaleHeightKm),
+        radius: radiusKm,
+        scaleHeight: atmosphere.scaleHeightKm,
+      }),
       uDeckA: { value: null },
       uDeckB: { value: null },
       uDeckMix: { value: 0 },
@@ -158,9 +169,6 @@ export function createGiantMaterial(
         value: [circulation.polar.north.capStartRad, circulation.polar.south.capStartRad],
       },
       uCloudReliefKm: { value: physical.bulk.radiusEarth * 6371 * 0.008 },
-      uHazeAmount: { value: 0.12 + 0.4 * (1 - circulation.contrast) },
-      uHazeColor: { value: new Color(...circulation.stormFresh).multiplyScalar(1.04) },
-      uRimColor: { value: new Color(...rim) },
       uRegime: { value: circulation.regime === 'locked' ? 1 : 0 },
       uHotspotDirObj: { value: new Vector3(0, 0, 1) },
       uThermalColor: {

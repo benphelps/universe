@@ -1,6 +1,8 @@
 import { Color, DoubleSide, ShaderMaterial } from 'three';
 import { secondSunUniforms } from '../lighting/secondSun';
+import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
 
 const VERTEX = /* glsl */ `
 attribute vec3 color;
@@ -52,10 +54,10 @@ uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
-uniform vec3 uFogColor;
-uniform float uFogDensity;
 
 ${SIMPLEX_NOISE_GLSL}
+${SHADOW_GLSL}
+${SURFACE_LIGHT_GLSL}
 
 void main() {
   // Per-fragment ground mottling: color detail beyond vertex resolution,
@@ -80,13 +82,28 @@ void main() {
     + bumpFade * 0.12 * (tangentA * snoise(dir * 17000.0 + 3.0) + tangentB * snoise(dir * 17000.0 + 29.0))
   );
 
-  float diffuse = max(dot(normal, uLightDir), 0.0);
-  float diffuse2 = max(dot(normal, uLight2Dir), 0.0);
-  vec3 color = ground * (uLightColor * (diffuse + 0.015) + uLight2Color * diffuse2);
+  // Each sun through the column above this ground, eclipsed by any
+  // moon or ring standing in its way; the night keeps the sky's own
+  // glow as the viewer's adaptation allows.
+  float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
+  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, dir, shadow)
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, dir, shadow2);
+  vec3 color = ground * (light + uNightFloor);
 
-  // Aerial perspective toward the sky's horizon tint.
-  float fog = 1.0 - exp(-length(vViewPos) * uFogDensity);
-  gl_FragColor = vec4(mix(color, uFogColor, fog), 1.0);
+  // Aerial perspective: the air along the run to the eye keeps some of
+  // the ground's light and adds the sunlight it scatters — blue by day,
+  // red under a low sun, nothing in a vacuum.
+  float eyeAlt = length(cameraPosition) - uPlanetRadius;
+  float pointAlt = length(vWorldPos) - uPlanetRadius;
+  float run = length(vViewPos);
+  vec3 column = airSegmentColumn(eyeAlt, pointAlt, run);
+  vec3 midUp = normalize(0.5 * (cameraPosition + vWorldPos));
+  vec3 toEye = normalize(cameraPosition - vWorldPos);
+  vec3 seen = color * exp(-column)
+    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * shadow
+    + uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * shadow2;
+  gl_FragColor = vec4(seen, 1.0);
 }
 `;
 
@@ -98,12 +115,12 @@ export function createTerrainMaterial(splitRatio: number): ShaderMaterial {
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      ...createShadowUniforms(),
+      ...surfaceLightUniforms(),
       uSplitRatio: { value: splitRatio },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
-      uFogColor: { value: new Color(0, 0, 0) },
-      uFogDensity: { value: 0 },
     },
     side: DoubleSide,
   });

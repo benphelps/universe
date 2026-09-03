@@ -43,12 +43,29 @@ import { createTemperatureLutTexture } from '../render/color/temperatureLut';
 import { createAtmosphereShell } from '../render/planet/atmosphereShell';
 import { PlanetObject } from '../render/planet/planetObject';
 import { createRingMesh } from '../render/planet/ringMaterial';
-import { applyOccluders } from '../render/planet/shadows';
+import { applyOccluders, applyRingShadow, clearRingShadow, shadowAt } from '../render/planet/shadows';
 import { planetSeedOffset } from '../render/planet/solidPlanetMaterial';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { SKY_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
 import { StarObject } from '../render/star/starObject';
-import { applySecondSun } from '../render/lighting/secondSun';
+import { applyAirView, type AirView } from '../render/lighting/airView';
+import { applySecondSun, type SecondSun } from '../render/lighting/secondSun';
+import {
+  ADAPTATION_EXPONENT,
+  adapted,
+  instellation,
+  SKYGLOW_FLUX_RATIO,
+  starlight,
+} from '../render/lighting/starlight';
+import {
+  applySurfaceLight,
+  horizonAirmass,
+  skyRadiance,
+  totalDepth,
+  VACUUM,
+} from '../render/lighting/surfaceLight';
+import { atmosphereColumn } from '../universe/planet/atmosphere';
+import { luminosityMultiplierAt } from '../universe/star/variability';
 import { foldShaderTime } from '../render/shaderTime';
 import {
   reflectedFluxRatio,
@@ -925,6 +942,20 @@ export class UnifiedViewer {
   private bodyObject: PlanetObject | null = null;
   private skyDome: Mesh | null = null;
   private moonGroup: Group | null = null;
+  /** The focused solid body's air as the light crosses it: vertical
+   *  optical depth per channel, scale height, and the horizon's air
+   *  mass. Null for a vacuum, an envelope, or no body at all. */
+  private focusAir: {
+    /** The whole column, gas and haze. */
+    tau: [number, number, number];
+    /** The haze's share of the green column. */
+    aerosolFraction: number;
+    scaleHeightKm: number;
+    horizon: number;
+    /** Ground air density against Earth's sea level: pressure over
+     *  temperature, which is what bends a sightline. */
+    refraction: number;
+  } | null = null;
   private moons: MoonEntry[] = [];
   private field: SurfaceField | null = null;
   /** True while the focused world's climate/river survey is still in a
@@ -2244,6 +2275,16 @@ export class UnifiedViewer {
       : GALAXY_ARRIVAL_ALTITUDE_KM;
   }
 
+  /** Every material standing on the focused solid body's ground: they
+   *  share its air, its eclipses, and its night. */
+  private groundMaterials(): ShaderMaterial[] {
+    const materials = [this.terrainMaterial, this.scatterMaterial];
+    if (this.oceanMaterial) materials.push(this.oceanMaterial);
+    if (this.cloudShell) materials.push(this.cloudShell.material as ShaderMaterial);
+    if (this.skyDome) materials.push(this.skyDome.material as ShaderMaterial);
+    return materials;
+  }
+
   /** Focus-specific content for any solid terrain body — planet or moon:
    *  the streamed surface, its air and clouds, and the depth globe. */
   private applySolidBodyFocus(physical: Characterization, rings: RingSystem | null): void {
@@ -2275,7 +2316,7 @@ export class UnifiedViewer {
       },
     );
     if (physical.atmosphere.class !== 'none') {
-      this.skyDome = createSkyDome(physical.atmosphere.scatteringColor);
+      this.skyDome = createSkyDome(this.radiusKm, physical.atmosphere.scaleHeightKm);
       this.scene.add(this.skyDome);
     }
     this.atmosphereShell = createAtmosphereShell(physical, this.radiusKm);
@@ -2287,6 +2328,37 @@ export class UnifiedViewer {
       this.field.params.reliefM / 1000,
     );
     if (this.cloudShell) this.scene.add(this.cloudShell);
+    // The ground materials take this body's air; the shared ones
+    // (terrain, scatter) drop the last body's ring band unless this
+    // one brings its own, standing in the ground frame's XZ plane.
+    const horizon = horizonAirmass(this.radiusKm, physical.atmosphere.scaleHeightKm);
+    const air = {
+      ...atmosphereColumn(physical.atmosphere, physical.bulk),
+      horizon,
+      radius: this.radiusKm,
+      scaleHeight: Math.max(physical.atmosphere.scaleHeightKm, 0.1),
+    };
+    const tau = totalDepth(air);
+    this.focusAir =
+      physical.atmosphere.class === 'none'
+        ? null
+        : {
+            tau,
+            aerosolFraction: tau[1] > 0 ? air.aerosol[1] / tau[1] : 0,
+            scaleHeightKm: physical.atmosphere.scaleHeightKm,
+            horizon,
+            refraction:
+              (physical.atmosphere.surfacePressureBar / 1.013) *
+              (283 / Math.max(physical.climate.surfaceMeanK, 50)),
+          };
+    for (const material of this.groundMaterials()) {
+      applySurfaceLight(material, air);
+      if (rings) {
+        applyRingShadow(material, rings, ORIGIN, this.radiusKm, new Vector3(0, 1, 0));
+      } else {
+        clearRingShadow(material);
+      }
+    }
     if (rings) {
       this.ringMesh = createRingMesh(rings, this.radiusKm);
       this.ringMesh.rotation.x = -Math.PI / 2;
@@ -3091,23 +3163,20 @@ export class UnifiedViewer {
 
   /**
    * Strongest other-star light at a world position, relative to the
-   * host star's flux there: direction written into `out`, color
-   * premultiplied by the flux ratio. Null when nothing contributes —
-   * single-star systems pay one cheap loop.
+   * host star's flux there: direction toward it, color premultiplied
+   * by the flux ratio on the host's adapted level (one eye, settled on
+   * the host's light, sees both suns), and its angular radius for the
+   * penumbrae it casts. Null when nothing contributes — single-star
+   * systems pay one cheap loop.
    */
-  private otherSunAt(
-    worldPos: Vector3,
-    hostIndex: number,
-    out: Vector3,
-  ): [number, number, number] | null {
+  private otherSunAt(worldPos: Vector3, hostIndex: number, simTimeDays: number): SecondSun | null {
     if (!this.system || this.starNodes.length < 2) return null;
     const hostNode = this.starNodes[hostIndex];
     const hostStar =
       hostIndex === 0 ? this.system.star : this.system.companions[hostIndex - 1]?.star;
     if (!hostNode || !hostStar) return null;
-    const hostFlux =
-      hostStar.luminosity /
-      Math.max(hostNode.object.group.position.distanceToSquared(worldPos), 1);
+    const hostDistanceKm = Math.max(hostNode.object.group.position.distanceTo(worldPos), 1);
+    const hostFlux = hostStar.luminosity / hostDistanceKm ** 2;
     let bestRatio = 0.004;
     let bestIndex = -1;
     for (let i = 0; i < this.starNodes.length; i++) {
@@ -3124,11 +3193,21 @@ export class UnifiedViewer {
       }
     }
     if (bestIndex < 0) return null;
-    out.copy(this.starNodes[bestIndex].object.group.position).sub(worldPos).normalize();
-    const scale = Math.min(bestRatio, 4);
+    const dir = this.starNodes[bestIndex].object.group.position.clone().sub(worldPos);
+    const distanceKm = Math.max(dir.length(), 1);
+    dir.normalize();
     const star =
       bestIndex === 0 ? this.system.star : this.system.companions[bestIndex - 1].star;
-    return [star.linearRgb[0] * scale, star.linearRgb[1] * scale, star.linearRgb[2] * scale];
+    const scale =
+      Math.min(bestRatio, 4) *
+      adapted(instellation(hostStar.luminosity, hostDistanceKm)) *
+      luminosityMultiplierAt(star, simTimeDays);
+    return {
+      dir,
+      color: [star.linearRgb[0] * scale, star.linearRgb[1] * scale, star.linearRgb[2] * scale],
+      angularRadius: (star.radius * SOLAR_RADIUS_KM) / distanceKm,
+      reach: Infinity,
+    };
   }
 
   private buildMoons(planet: Planet): void {
@@ -3483,6 +3562,14 @@ export class UnifiedViewer {
     this.oceanMaterial?.dispose();
     this.oceanMaterial = null;
     this.field = null;
+    this.focusAir = null;
+    // The shared ground materials go back to vacuum, or the next
+    // airless body would be lit through this one's sky.
+    for (const material of [this.terrainMaterial, this.scatterMaterial]) {
+      applySurfaceLight(material, VACUUM);
+      clearRingShadow(material);
+      material.uniforms.uNightFloor.value = 0;
+    }
     this.surveying = false;
     for (const mesh of [
       this.atmosphereShell,
@@ -4231,6 +4318,22 @@ export class UnifiedViewer {
     requestAnimationFrame(() => this.frame());
   }
 
+  /** The air between the eye and everything in the sky: the focused
+   *  body's column above the camera's altitude, or none at all from a
+   *  vacuum, an envelope, or orbit. */
+  private airView(up: Vector3): AirView | null {
+    if (!this.focusAir) return null;
+    const fraction = Math.exp(-this.altitudeKm / this.focusAir.scaleHeightKm);
+    if (fraction < 1e-4) return null;
+    const { tau, horizon, refraction } = this.focusAir;
+    return {
+      tau: [tau[0] * fraction, tau[1] * fraction, tau[2] * fraction],
+      up,
+      horizon,
+      refraction: refraction * fraction,
+    };
+  }
+
   private updateWorld(up: Vector3): void {
     if (!this.system) return;
     this.pickables.length = 0;
@@ -4308,6 +4411,13 @@ export class UnifiedViewer {
     // The stars at their true positions and radii: angular size, phase
     // light, parallax, and eclipses all come out right by construction.
     const starPositions = this.stellarPositionsKm(tSeconds);
+    // Everything in the sky is seen through the same air.
+    const air = this.airView(up);
+    this.backdrop?.setAirView(air);
+    this.pipeline.sky.setAirView(air);
+    for (const points of [this.starSprites, this.farPoints, this.neighborPoints]) {
+      if (points) applyAirView(points.material as ShaderMaterial, air);
+    }
     const spritePositions = this.starSprites?.geometry.getAttribute('position') as
       | BufferAttribute
       | undefined;
@@ -4315,6 +4425,7 @@ export class UnifiedViewer {
       const node = this.starNodes[i];
       node.object.group.position.copy(toFocusWorld(starPositions[i]));
       node.object.update(this.simTimeDays, this.camera);
+      node.object.setAirView(air);
       if (node.hole) this.updateStellarHole(node, node.object.group.position);
       spritePositions?.setXYZ(
         i,
@@ -4361,14 +4472,12 @@ export class UnifiedViewer {
     const sunDir =
       hostWorld.lengthSq() > 1 ? hostWorld.clone().normalize() : new Vector3(0, 0, 1);
     const angularRadius = (hostStar.radius * SOLAR_RADIUS_KM) / Math.max(this.starDistanceKm, 1);
-    const lightColor = hostStar.linearRgb;
-    const light2Dir = new Vector3(0, 0, 1);
-    const light2Color = this.otherSunAt(ORIGIN, hostIndex, light2Dir);
+    const lightColor = starlight(hostStar, this.starDistanceKm, this.simTimeDays);
+    const light2 = this.otherSunAt(ORIGIN, hostIndex, this.simTimeDays);
 
     // Planets on their orbits. The focused one is rendered at the origin
     // by terrain or the envelope sphere, so its node hides; the rest are
     // true-scale spheres with adaptive markers once they fall subpixel.
-    const node2Dir = new Vector3();
     for (let i = 0; i < this.planetNodes.length; i++) {
       const node = this.planetNodes[i];
       const isFocus =
@@ -4380,9 +4489,12 @@ export class UnifiedViewer {
       const positionKm = toWorld(state.position).divideScalar(1000).add(hostPos);
       node.object.group.position.copy(positionKm);
       const worldPos = toFocusWorld(positionKm);
-      const lightDir = hostWorld.clone().sub(worldPos).normalize();
-      const node2Color = this.otherSunAt(worldPos, hostIndex, node2Dir);
-      node.object.update(this.simTimeDays, lightDir, lightColor, node2Dir, node2Color, this.pipeline.renderer);
+      const lightDir = hostWorld.clone().sub(worldPos);
+      const nodeLight = starlight(hostStar, lightDir.length(), this.simTimeDays);
+      lightDir.normalize();
+      const node2 = this.otherSunAt(worldPos, hostIndex, this.simTimeDays);
+      node.object.update(this.simTimeDays, lightDir, nodeLight, node2, this.pipeline.renderer);
+      node.object.setAirView(air);
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
       const bodyRadiusKm = node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
@@ -4431,7 +4543,7 @@ export class UnifiedViewer {
     }
     this.updateBeltRegion(tSeconds, focusPos, hostPos);
 
-    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color, this.pipeline.renderer);
+    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer);
 
     // Moons on their true orbits; the focus planet eclipses them. Their
     // group carries the ground frame's diurnal sweep — equatorial
@@ -4467,7 +4579,8 @@ export class UnifiedViewer {
       : [{ position: new Vector3(0, 0, 0), radius: this.radiusKm }];
     const shineBodies: ShineBody[] = [];
     if (this.parentObject && this.focusPlanet) {
-      this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color, this.pipeline.renderer);
+      this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer);
+      this.parentObject.setAirView(air);
       shineBodies.push({
         positionKm: groupShift.clone(),
         radiusKm: parentRadiusKm,
@@ -4498,8 +4611,8 @@ export class UnifiedViewer {
       const state = elementsToState(moon.elements, mu, tSeconds);
       object.group.position.copy(toWorld(state.position)).divideScalar(1000);
       moonWorld.copy(object.group.position).applyAxisAngle(yAxis, spin).add(groupShift);
-      object.update(this.simTimeDays, sunDir, lightColor, light2Dir, light2Color,
-        this.pipeline.renderer);
+      object.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer);
+      object.setAirView(air);
       object.setOccluders(casters, angularRadius);
 
       const cameraDistance = this.camera.position.distanceTo(moonWorld);
@@ -4531,6 +4644,17 @@ export class UnifiedViewer {
     if (this.bodyObject && moonCasters.length > 0) {
       this.bodyObject.setOccluders(moonCasters, angularRadius);
     }
+    // A focused solid body's ground takes the same casters — and, for
+    // a moon, its parent planet: the eclipse that darkens the whole
+    // sky from the ground.
+    const groundCasters = focusEntry
+      ? [{ position: groupShift, radius: parentRadiusKm }, ...moonCasters]
+      : moonCasters;
+    if (solid) {
+      for (const material of this.groundMaterials()) {
+        applyOccluders(material, groundCasters, angularRadius);
+      }
+    }
 
     if (!focusBody) {
       this.setSkyIntensity(1);
@@ -4558,17 +4682,16 @@ export class UnifiedViewer {
     );
     const nightness =
       (1 - Math.min(1, sunElevation / 0.03)) * grounded * grounded * (3 - 2 * grounded);
-    let surf2Dir = light2Dir;
-    let surf2Color = light2Color;
-    let bestLum = surf2Color
-      ? surf2Color[0] * 0.2126 + surf2Color[1] * 0.7152 + surf2Color[2] * 0.0722
+    let surf2 = light2;
+    let bestLum = surf2
+      ? surf2.color[0] * 0.2126 + surf2.color[1] * 0.7152 + surf2.color[2] * 0.0722
       : 0;
     const sunAtBody = new Vector3();
     for (const body of shineBodies) {
       sunAtBody.copy(hostWorld).sub(body.positionKm).normalize();
       const ratio = reflectedFluxRatio(body, sunAtBody);
       if (ratio <= 0) continue;
-      const scale = ratio + (ratio ** 0.2 - ratio) * nightness;
+      const scale = ratio + (adapted(ratio) - ratio) * nightness;
       const color: [number, number, number] = [
         lightColor[0] * body.tint[0] * scale,
         lightColor[1] * body.tint[1] * scale,
@@ -4577,47 +4700,66 @@ export class UnifiedViewer {
       const lum = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
       if (lum > bestLum) {
         bestLum = lum;
-        surf2Dir = body.positionKm.clone().normalize();
-        surf2Color = color;
+        const distanceKm = body.positionKm.length();
+        surf2 = {
+          dir: body.positionKm.clone().divideScalar(distanceKm),
+          color,
+          angularRadius: body.radiusKm / distanceKm,
+          reach: distanceKm - body.radiusKm,
+        };
       }
     }
-    const scaleHeightKm = Math.max(atmosphere.scaleHeightKm, 3);
-    const immersion = Math.exp(-this.altitudeKm / (8 * scaleHeightKm));
-    const density =
-      !solid || atmosphere.class === 'none'
-        ? 0
-        : 0.005 *
-          Math.min(2, atmosphere.surfacePressureBar ** 0.6) *
-          (0.3 + 0.7 * sunElevation) *
-          immersion;
-    const fog = new Color(...atmosphere.scatteringColor).multiply(
-      new Color(...lightColor).multiplyScalar(0.35 + 0.65 * sunElevation),
+    // The same eye on a moonless ground: the sky's own glow, lifted
+    // as the moonlight is, gone from orbit where the day limb keeps
+    // the eye light-adapted. One floor for ground, sea, and cloud.
+    const nightFloor = adapted(SKYGLOW_FLUX_RATIO) * nightness;
+    for (const material of this.groundMaterials()) {
+      if (material.uniforms.uNightFloor) material.uniforms.uNightFloor.value = nightFloor;
+    }
+    // The stars by day: the sky display law seats the points for an eye
+    // settled on the night sky, and everything on screen scales with
+    // the level the eye has settled on. What settles it is the sky
+    // itself — the column above the eye scattering this sun toward it,
+    // over the eclipse shadow at the eye — so the same points display
+    // at the night seat over the adapted ratio: nothing at noon, still
+    // nothing through civil twilight, the whole sky once the air goes
+    // dark or the sun is covered. The column thins with altitude, so
+    // from orbit the sky is black and every star stands, day side or
+    // night; a sunlit disc in the view is a thing the eye looks at,
+    // not a sky it stands under. The envelope and the vacuum have no
+    // sky to wash anything out.
+    let daylight = 0;
+    if (this.focusAir && solid) {
+      const fraction = Math.exp(-this.altitudeKm / this.focusAir.scaleHeightKm);
+      const column = this.focusAir.tau.map((t) => t * fraction) as [number, number, number];
+      const muSun = sunDir.dot(up);
+      const zenith = skyRadiance(column, 1, muSun, muSun, this.focusAir.horizon)[1];
+      const shadow = shadowAt(this.camera.position, sunDir, groundCasters, angularRadius);
+      daylight = lightColor[1] * zenith * shadow;
+    }
+    this.setSkyIntensity(
+      (SKYGLOW_FLUX_RATIO / Math.max(SKYGLOW_FLUX_RATIO, daylight)) ** (1 - ADAPTATION_EXPONENT),
     );
-
-    const dayWash =
-      atmosphere.class === 'none' || !solid
-        ? 0
-        : Math.min(1, sunElevation * Math.min(1, atmosphere.surfacePressureBar) * immersion * 3);
-    this.setSkyIntensity(1 - dayWash * 0.97);
 
     if (this.atmosphereShell) {
       const material = this.atmosphereShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, surf2Dir, surf2Color);
+      applySecondSun(material, surf2);
     }
     if (this.cloudShell) {
       const material = this.cloudShell.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
       material.uniforms.uTimeDays.value = foldShaderTime(this.simTimeDays);
-      applySecondSun(material, surf2Dir, surf2Color);
+      applySecondSun(material, surf2);
     }
     if (this.ringMesh) {
       const material = this.ringMesh.material as ShaderMaterial;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, surf2Dir, surf2Color);
+      applySecondSun(material, surf2);
+      applyAirView(material, air);
       applyOccluders(material, casters, angularRadius);
     }
 
@@ -4625,9 +4767,7 @@ export class UnifiedViewer {
       if (!material) continue;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, surf2Dir, surf2Color);
-      material.uniforms.uFogColor.value.copy(fog);
-      material.uniforms.uFogDensity.value = density;
+      applySecondSun(material, surf2);
       if (material.uniforms.uTimeDays) {
         material.uniforms.uTimeDays.value = foldShaderTime(this.simTimeDays);
       }
@@ -4639,11 +4779,12 @@ export class UnifiedViewer {
       material.uniforms.uSunDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uUp.value = [up.x, up.y, up.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
-      applySecondSun(material, surf2Dir, surf2Color);
-      // Sky radiance tracks optical depth: thin atmospheres barely glow.
-      material.uniforms.uStrength.value =
-        Math.exp(-this.altitudeKm / (10 * scaleHeightKm)) *
-        Math.min(1, 3 * Math.sqrt(atmosphere.surfacePressureBar));
+      applySecondSun(material, surf2);
+      // The column above the eye: the surface depth thinned by the
+      // scale height, so the sky goes black on the way to orbit.
+      material.uniforms.uColumnFraction.value = Math.exp(
+        -this.altitudeKm / Math.max(atmosphere.scaleHeightKm, 0.1),
+      );
     }
   }
 }

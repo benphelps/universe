@@ -1,7 +1,14 @@
 import { Color, DoubleSide, Mesh, ShaderMaterial, SphereGeometry } from 'three';
 import { secondSunUniforms } from '../lighting/secondSun';
+import {
+  horizonAirmass,
+  SURFACE_LIGHT_GLSL,
+  surfaceLightUniforms,
+} from '../lighting/surfaceLight';
+import { atmosphereColumn, columnAbove } from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
+import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
 import { planetSeedOffset } from '../planet/solidPlanetMaterial';
 
 const VERTEX = /* glsl */ `
@@ -29,8 +36,11 @@ uniform vec3 uSeedOffset;
 uniform vec3 uCloudColor;
 uniform float uCloudCoverage;
 uniform float uTimeDays;
+uniform vec3 uSurfaceDepth;             // the whole column, below the deck too
 
 ${SIMPLEX_NOISE_GLSL}
+${SHADOW_GLSL}
+${SURFACE_LIGHT_GLSL}
 
 vec3 rotateY(vec3 p, float a) {
   float c = cos(a);
@@ -53,10 +63,26 @@ void main() {
   float detailWeight = 1.0 - smoothstep(300.0, 3000.0, distance(cameraPosition, vWorldPos));
   mask = clamp(mask * mix(1.0, 0.35 + 1.1 * detail, detailWeight), 0.0, 1.0);
 
-  // Radially-lit tops: bright day decks, near-black night ones.
-  float diffuse = max(dot(p, uLightDir), 0.0);
-  float diffuse2 = max(dot(p, uLight2Dir), 0.0);
-  vec3 color = uCloudColor * (uLightColor * (0.05 + 0.95 * diffuse) + uLight2Color * diffuse2 * 0.95);
+  // Radially-lit tops through the thin air above the deck: bright by
+  // day, reddened at the terminator, eclipsed under a moon's shadow.
+  float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
+  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, p, p, shadow)
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, p, p, shadow2);
+  vec3 color = uCloudColor * (light + uNightFloor);
+  // Seen through the air between the eye and the deck.
+  float eyeAlt = length(cameraPosition) - uPlanetRadius;
+  float pointAlt = length(vWorldPos) - uPlanetRadius;
+  vec3 column = uSurfaceDepth * (exp(-max(min(eyeAlt, pointAlt), 0.0) / max(uScaleHeight, 1e-4))
+    - exp(-max(max(eyeAlt, pointAlt), 0.0) / max(uScaleHeight, 1e-4)));
+  float dh = max(abs(eyeAlt - pointAlt), 1e-3 * uScaleHeight);
+  column *= min(distance(cameraPosition, vWorldPos) / dh, uHorizonAirmass);
+  vec3 midUp = normalize(0.5 * (cameraPosition + vWorldPos));
+  vec3 toEye = normalize(cameraPosition - vWorldPos);
+  vec3 midTau = uSurfaceDepth * exp(-max(0.5 * (eyeAlt + pointAlt), 0.0) / max(uScaleHeight, 1e-4));
+  vec3 scatter = uLightColor * phaseWeight(-dot(toEye, uLightDir))
+    * exp(-midTau * airmass(dot(midUp, uLightDir))) * (1.0 - exp(-column)) * twilight(dot(midUp, uLightDir)) * shadow;
+  color = color * exp(-column) + scatter;
 
   // Fade out around the camera so descending through the deck never
   // crosses a hard sheet.
@@ -76,17 +102,31 @@ export function createCloudShell(
   seaLevelKm: number,
   reliefKm: number,
 ): Mesh | null {
-  const { appearance, atmosphere } = physical;
+  const { appearance, atmosphere, bulk } = physical;
   if (atmosphere.class === 'none' || appearance.cloudCoverage < 0.02) return null;
   // The deck must clear the highest terrain by more than its own
   // triangulation sag, or quad centers dip below mountaintops and the
   // depth test punches a grid of holes through the clouds.
   const deckKm =
     Math.max(seaLevelKm, 0) + reliefKm + Math.max(3, atmosphere.scaleHeightKm * 0.9);
+  const column = atmosphereColumn(atmosphere, bulk);
+  const surfaceTau = [
+    column.rayleigh[0] + column.aerosol[0],
+    column.rayleigh[1] + column.aerosol[1],
+    column.rayleigh[2] + column.aerosol[2],
+  ] as [number, number, number];
   const material = new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
+      ...createShadowUniforms(),
+      ...surfaceLightUniforms({
+        ...columnAbove(column, atmosphere, deckKm),
+        horizon: horizonAirmass(radiusKm, atmosphere.scaleHeightKm),
+        radius: radiusKm,
+        scaleHeight: atmosphere.scaleHeightKm,
+      }),
+      uSurfaceDepth: { value: new Color(...surfaceTau) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),

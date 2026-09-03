@@ -2,19 +2,27 @@ import { Color, DoubleSide, Mesh, RingGeometry, ShaderMaterial, Vector2, Vector4
 import { secondSunUniforms } from '../lighting/secondSun';
 import type { RingSystem } from '../../universe/rings/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
-import { createShadowUniforms, SHADOW_GLSL } from './shadows';
+import { WORLD_NORMAL_GLSL } from '../glsl/worldNormal';
+import { createShadowUniforms, ringPatternSeed, SHADOW_GLSL } from './shadows';
+import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
+
+export { ringPatternSeed } from './shadows';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
 varying vec3 vWorldNormal;
 varying vec3 vWorldPos;
 
+${WORLD_NORMAL_GLSL}
+
+${AIR_REFRACT_GLSL}
+
 void main() {
   vObjPos = position;
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPos = worldPos.xyz;
-  vWorldNormal = normalize(mat3(modelMatrix) * normal);
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
+  vWorldNormal = worldNormal(modelMatrix, normal);
+  gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
 }
 `;
 
@@ -33,6 +41,7 @@ uniform float uForwardScatter;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
+${AIR_VIEW_GLSL}
 
 // One light's contribution to the slab. The unlit face keeps only
 // what leaks through — dense ringlets go dark while gaps and dusty
@@ -79,22 +88,16 @@ void main() {
   float forward = pow(max(dot(viewToFrag, uLightDir), 0.0), 8.0) * uForwardScatter;
   float forward2 = pow(max(dot(viewToFrag, uLight2Dir), 0.0), 8.0) * uForwardScatter;
 
-  float shadow = shadowFactor(vWorldPos, uLightDir);
-  float shadow2 = shadowFactor(vWorldPos, uLight2Dir);
+  float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
+  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   vec3 color = uHue
     * (uLightColor * (slabShade(nView, uLightDir, density) * shadow
         + forward * (0.3 + 0.7 * shadow))
       + uLight2Color * (slabShade(nView, uLight2Dir, density) * shadow2
         + forward2 * (0.3 + 0.7 * shadow2)));
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(color * airTransmittanceTo(vWorldPos), alpha);
 }
 `;
-
-/** The seeded radial pattern is shared with the shadow band the rings
- *  cast on the planet, so gaps line up with their bright lanes. */
-export function ringPatternSeed(rings: RingSystem): number {
-  return (rings.innerPlanetRadii * 137.3) % 100;
-}
 
 /** Ring mesh in scene units, lying in the local XY plane (rotate into place). */
 export function createRingMesh(rings: RingSystem, planetRadiusUnits: number): Mesh {
@@ -112,6 +115,7 @@ export function createRingMesh(rings: RingSystem, planetRadiusUnits: number): Me
     fragmentShader: FRAGMENT,
     uniforms: {
       ...createShadowUniforms(),
+      ...airViewUniforms(),
       uHue: { value: new Color(...rings.hue) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },

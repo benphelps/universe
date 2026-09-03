@@ -1,7 +1,34 @@
 import { Camera, Object3D, Scene, WebGLRenderer, type WebGLRenderTarget } from 'three';
 import { Pass } from 'three/addons/postprocessing/Pass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { CopyShader } from 'three/addons/shaders/CopyShader.js';
+
+/**
+ * The copy to the screen is where the frame drops from half-float to
+ * eight bits, and a hazy disc or a twilight sky is a gradient a few
+ * levels deep across the whole view: quantized flat it bands, and a
+ * capture turns the bands into blocks. Three's own dither breaks the
+ * steps up before they are taken.
+ */
+const DITHERED_COPY = {
+  uniforms: { tDiffuse: { value: null }, opacity: { value: 1 } },
+  vertexShader: /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+  fragmentShader: /* glsl */ `
+#define DITHERING
+#include <common>
+#include <dithering_pars_fragment>
+uniform sampler2D tDiffuse;
+uniform float opacity;
+varying vec2 vUv;
+void main() {
+  vec4 texel = texture2D(tDiffuse, vUv);
+  gl_FragColor = vec4(dithering(texel.rgb), texel.a) * opacity;
+}`,
+};
 
 /**
  * The layer diagrams live on.
@@ -45,7 +72,7 @@ export class DiagramPass extends Pass {
   ) {
     super();
     this.needsSwap = false;
-    this.copy = new ShaderPass(CopyShader);
+    this.copy = new ShaderPass(DITHERED_COPY);
   }
 
   override render(
