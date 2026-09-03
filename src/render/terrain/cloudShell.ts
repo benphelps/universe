@@ -36,7 +36,8 @@ uniform vec3 uSeedOffset;
 uniform vec3 uCloudColor;
 uniform float uCloudCoverage;
 uniform float uTimeDays;
-uniform vec3 uSurfaceDepth;             // the whole column, below the deck too
+uniform vec3 uSurfaceRayleighDepth;     // the whole column, below the deck too
+uniform vec3 uSurfaceAerosolDepth;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
@@ -67,21 +68,33 @@ void main() {
   // day, reddened at the terminator, eclipsed under a moon's shadow.
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, p, p, shadow)
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, p, p, shadow2);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, p, p, shadow, diffuseShadow(shadow))
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, p, p, shadow2, diffuseShadow(shadow2));
   vec3 color = uCloudColor * (light + uNightFloor);
   // Seen through the air between the eye and the deck.
   float eyeAlt = length(cameraPosition) - uPlanetRadius;
   float pointAlt = length(vWorldPos) - uPlanetRadius;
-  vec3 column = uSurfaceDepth * (exp(-max(min(eyeAlt, pointAlt), 0.0) / max(uScaleHeight, 1e-4))
-    - exp(-max(max(eyeAlt, pointAlt), 0.0) / max(uScaleHeight, 1e-4)));
-  float dh = max(abs(eyeAlt - pointAlt), 1e-3 * uScaleHeight);
-  column *= min(distance(cameraPosition, vWorldPos) / dh, uHorizonAirmass);
+  float viewDistance = distance(cameraPosition, vWorldPos);
+  vec3 column = airSegmentComponent(
+      uSurfaceRayleighDepth, uScaleHeight, uHorizonAirmass,
+      eyeAlt, pointAlt, viewDistance
+    ) + airSegmentComponent(
+      uSurfaceAerosolDepth, uAerosolScaleHeight, uAerosolHorizonAirmass,
+      eyeAlt, pointAlt, viewDistance
+    );
   vec3 midUp = normalize(0.5 * (cameraPosition + vWorldPos));
+  vec3 midPoint = 0.5 * (cameraPosition + vWorldPos);
   vec3 toEye = normalize(cameraPosition - vWorldPos);
-  vec3 midTau = uSurfaceDepth * exp(-max(0.5 * (eyeAlt + pointAlt), 0.0) / max(uScaleHeight, 1e-4));
+  float midAlt = max(0.5 * (eyeAlt + pointAlt), 0.0);
+  float airShadow = shadowFactor(midPoint, uLightDir, uStarAngularRadius, 1e30);
   vec3 scatter = uLightColor * phaseWeight(-dot(toEye, uLightDir))
-    * exp(-midTau * airmass(dot(midUp, uLightDir))) * (1.0 - exp(-column)) * twilight(dot(midUp, uLightDir)) * shadow;
+    * exp(
+      -uSurfaceRayleighDepth * exp(-midAlt / max(uScaleHeight, 1e-4))
+        * airmassFor(dot(midUp, uLightDir), uHorizonAirmass)
+      -uSurfaceAerosolDepth * exp(-midAlt / max(uAerosolScaleHeight, 1e-4))
+        * airmassFor(dot(midUp, uLightDir), uAerosolHorizonAirmass)
+    ) * (1.0 - exp(-column))
+    * twilight(dot(midUp, uLightDir)) * airShadow;
   color = color * exp(-column) + scatter;
 
   // Fade out around the camera so descending through the deck never
@@ -110,11 +123,6 @@ export function createCloudShell(
   const deckKm =
     Math.max(seaLevelKm, 0) + reliefKm + Math.max(3, atmosphere.scaleHeightKm * 0.9);
   const column = atmosphereColumn(atmosphere, bulk);
-  const surfaceTau = [
-    column.rayleigh[0] + column.aerosol[0],
-    column.rayleigh[1] + column.aerosol[1],
-    column.rayleigh[2] + column.aerosol[2],
-  ] as [number, number, number];
   const material = new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -126,7 +134,8 @@ export function createCloudShell(
         radius: radiusKm,
         scaleHeight: atmosphere.scaleHeightKm,
       }),
-      uSurfaceDepth: { value: new Color(...surfaceTau) },
+      uSurfaceRayleighDepth: { value: new Color(...column.rayleigh) },
+      uSurfaceAerosolDepth: { value: new Color(...column.aerosolExtinction) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),

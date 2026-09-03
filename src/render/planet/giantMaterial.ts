@@ -111,8 +111,8 @@ void main() {
   // through the same column: the limb darkens as the slant lengthens,
   // and the column's own scattering veils the limb blue and rims the
   // lit edge — what the painted haze and rim once stood in for.
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow)
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow, diffuseShadow(shadow))
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, diffuseShadow(shadow2));
   vec3 color = surface * (light + uNightFloor);
   float xv = airmass(dot(normal, viewDir));
   color = color * airColumnThrough(vec3(0.0), uOpticalDepth, xv)

@@ -113,8 +113,8 @@ void main() {
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   vec3 tau = mix(uOpticalDepth, uCloudOpticalDepth, cloudMask);
-  vec3 light = surfaceLight(tau, uLightDir, uLightColor, normal, normal, shadow)
-    + surfaceLight(tau, uLight2Dir, uLight2Color, normal, normal, shadow2);
+  vec3 light = surfaceLight(tau, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
+    + surfaceLight(tau, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   // Chilled crust is matte; only the hot open melt keeps a sheen.
@@ -173,9 +173,9 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       }),
       uCloudOpticalDepth: {
         value: new Color(
-          above.rayleigh[0] + above.aerosol[0],
-          above.rayleigh[1] + above.aerosol[1],
-          above.rayleigh[2] + above.aerosol[2],
+          above.rayleigh[0] + above.aerosolExtinction[0],
+          above.rayleigh[1] + above.aerosolExtinction[1],
+          above.rayleigh[2] + above.aerosolExtinction[2],
         ),
       },
       uLightDir: { value: [0, 0, 1] },

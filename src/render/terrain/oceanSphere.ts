@@ -56,8 +56,8 @@ void main() {
 
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow)
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
   vec3 color = uColor * (light + uNightFloor)
     + sunSheen(normal, viewDir, uLightDir, uLightColor, shadow)
     + sunSheen(normal, viewDir, uLight2Dir, uLight2Color, shadow2);
@@ -70,10 +70,13 @@ void main() {
   float run = length(vViewPos);
   vec3 column = airSegmentColumn(eyeAlt, pointAlt, run);
   vec3 midUp = normalize(0.5 * (cameraPosition + vWorldPos));
+  vec3 midPoint = 0.5 * (cameraPosition + vWorldPos);
   vec3 toEye = normalize(cameraPosition - vWorldPos);
+  float airShadow = shadowFactor(midPoint, uLightDir, uStarAngularRadius, 1e30);
+  float airShadow2 = shadowFactor(midPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   vec3 seen = color * exp(-column)
-    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * shadow
-    + uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * shadow2;
+    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * airShadow
+    + uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * airShadow2;
   gl_FragColor = vec4(seen, 1.0);
 }
 `;
@@ -165,8 +168,8 @@ void main() {
   float hot = smoothstep(0.2, 0.9, lum);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow)
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
   vec3 color = uColor * (light + uNightFloor)
     + meltSheen(bumped, normal, viewDir, uLightDir, uLightColor, hot, shadow)
     + meltSheen(bumped, normal, viewDir, uLight2Dir, uLight2Color, hot, shadow2)

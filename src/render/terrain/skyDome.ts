@@ -21,7 +21,6 @@ uniform vec3 uSunDir;
 uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
 uniform vec3 uUp;
-uniform float uColumnFraction;          // of the surface column, above the eye
 uniform vec2 uColumn;                   // scale height km, √(H/2R)
 
 ${SIMPLEX_NOISE_GLSL}
@@ -37,16 +36,19 @@ ${SURFACE_LIGHT_GLSL}
 // Rayleigh's phase puts twice the light forward and back as sideways;
 // after sunset the lit column's fraction is the same twilight the
 // ground sees. τ = 0 is a vacuum: the sky is black.
-vec3 scattered(vec3 dir, vec3 tau, float xv, vec3 lightDir, vec3 lightColor) {
+vec3 scattered(vec3 dir, float eyeAlt, vec3 tau, vec3 lightDir, vec3 lightColor) {
   float mus = dot(lightDir, uUp);
-  float xs = airmass(mus);
+  vec3 xv = opticalSlantAt(eyeAlt, dot(dir, uUp)) / max(tau, vec3(1e-6));
+  vec3 xs = opticalSlantAt(eyeAlt, mus) / max(tau, vec3(1e-6));
   vec3 tv = tau * xv;
   vec3 ts = tau * xs;
-  float den = xs - xv;
-  vec3 integral = abs(den) > 1e-3
-    ? xv * (exp(-tv) - exp(-ts)) / den
-    : tv * exp(-tv);
-  return lightColor * phaseWeight(dot(dir, lightDir)) * max(integral, vec3(0.0)) * twilight(mus);
+  vec3 den = xs - xv;
+  vec3 safeDen = mix(vec3(-1.0), vec3(1.0), step(vec3(0.0), den))
+    * max(abs(den), vec3(1e-3));
+  vec3 regular = xv * (exp(-tv) - exp(-ts)) / safeDen;
+  vec3 integral = mix(tv * exp(-tv), regular, step(vec3(1e-3), abs(den)));
+  vec3 single = phaseWeight(dot(dir, lightDir)) * max(integral, vec3(0.0)) * twilight(mus);
+  return lightColor * (single + multipleScatterAt(eyeAlt, mus, dot(dir, uUp)));
 }
 
 void main() {
@@ -55,8 +57,8 @@ void main() {
   // facets into a diamond unless the direction is renormalized here.
   vec3 dir = normalize(vDir);
   float elevation = dot(dir, uUp);
-  vec3 tau = uOpticalDepth * uColumnFraction;
-  float xv = airmass(elevation);
+  float eyeAlt = max(length(cameraPosition) - uPlanetRadius, 0.0);
+  vec3 tau = opticalDepthAt(eyeAlt);
   // The air that scatters along this sightline sits about a scale
   // height up overhead and out at the horizon column near the limb;
   // an eclipse shadows the sky where that air stands, so the umbra
@@ -66,9 +68,9 @@ void main() {
   vec3 air = cameraPosition + dir * reach;
   // Scattering adds light; it never occludes, so the sun's disc (and
   // anything else bright enough) blazes through the daytime sky.
-  vec3 sky = scattered(dir, tau, xv, uSunDir, uLightColor)
+  vec3 sky = scattered(dir, eyeAlt, tau, uSunDir, uLightColor)
       * shadowFactor(air, uSunDir, uStarAngularRadius, 1e30)
-    + scattered(dir, tau, xv, uLight2Dir, uLight2Color)
+    + scattered(dir, eyeAlt, tau, uLight2Dir, uLight2Color)
       * shadowFactor(air, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   gl_FragColor = vec4(sky, 1.0);
 }
@@ -91,7 +93,6 @@ export function createSkyDome(radiusKm: number, scaleHeightKm: number): Mesh {
       ...createShadowUniforms(),
       ...surfaceLightUniforms(),
       uColumn: { value: [h, Math.sqrt(h / (2 * Math.max(radiusKm, 1)))] },
-      uColumnFraction: { value: 1 },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
       uSunDir: { value: [0, 0, 1] },

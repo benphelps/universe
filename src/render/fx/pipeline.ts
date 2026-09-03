@@ -50,7 +50,10 @@ export class RenderPipeline {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(scene, camera));
-    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.45, 0.6, 0.9);
+    // Keep glare as a compact optical cue around HDR emitters. A broad
+    // radius turned the physically small solar disc into a white bank
+    // across the horizon, hiding sunset color and eclipse contacts.
+    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.3, 0.28, 1.0);
     guardBloomInput(this.bloom);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());

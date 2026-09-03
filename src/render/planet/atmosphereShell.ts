@@ -15,7 +15,10 @@ import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 const VERTEX = /* glsl */ `
 varying vec3 vWorldPos;
 varying vec3 vCenter;
-varying float vBodyRadius;
+varying vec3 vObjPos;
+varying vec3 vAxisX;
+varying vec3 vAxisY;
+varying vec3 vAxisZ;
 
 uniform float uInflation;
 
@@ -27,7 +30,10 @@ void main() {
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPos = worldPos.xyz;
   vCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-  vBodyRadius = length(vec3(modelMatrix[0])) / uInflation;
+  vObjPos = position;
+  vAxisX = vec3(modelMatrix[0]);
+  vAxisY = vec3(modelMatrix[1]);
+  vAxisZ = vec3(modelMatrix[2]);
   gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
 }
 `;
@@ -35,12 +41,16 @@ void main() {
 const FRAGMENT = /* glsl */ `
 varying vec3 vWorldPos;
 varying vec3 vCenter;
-varying float vBodyRadius;
+varying vec3 vObjPos;
+varying vec3 vAxisX;
+varying vec3 vAxisY;
+varying vec3 vAxisZ;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
+uniform float uInflation;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
@@ -54,25 +64,43 @@ ${AIR_VIEW_GLSL}
 vec3 limbScatter(vec3 lightDir, vec3 lightColor, vec3 tangent, float tangentAlt, vec3 viewDir, float reach) {
   vec3 up = normalize(tangent - vCenter);
   float mus = dot(up, lightDir);
-  float depthAtHeight = exp(-max(tangentAlt, 0.0) / max(uScaleHeight, 1e-4));
-  vec3 tau = uOpticalDepth * depthAtHeight;
-  vec3 beam = exp(-tau * airmass(mus));
-  vec3 column = 2.0 * tau * uHorizonAirmass;
+  vec3 tau = opticalDepthAt(tangentAlt);
+  vec3 beam = beamTransmittanceAt(tangentAlt, mus);
+  vec3 column = tangentColumnAt(tangentAlt);
   float shadow = shadowFactor(tangent, lightDir, uStarAngularRadius, reach);
-  return lightColor * phaseWeight(dot(viewDir, lightDir)) * beam * (1.0 - exp(-column))
-    * twilight(mus) * shadow;
+  vec3 single = phaseWeight(dot(viewDir, lightDir)) * beam * (1.0 - exp(-column))
+    * twilight(mus);
+  vec3 multi = multipleScatterAt(tangentAlt, mus, 0.0);
+  return lightColor * (single + multi) * shadow;
 }
 
 void main() {
-  // The sightline's closest approach to the body: over the disc the
-  // body's own shader carries the air; beyond it the air alone shows.
+  // Transform the sightline into the shell ellipsoid's unit space.
+  // Its closest approach then tests the matching oblate body rather
+  // than an equatorial sphere that clips the polar atmosphere.
+  vec3 axisLength = vec3(length(vAxisX), length(vAxisY), length(vAxisZ));
+  vec3 axisX = vAxisX / axisLength.x;
+  vec3 axisY = vAxisY / axisLength.y;
+  vec3 axisZ = vAxisZ / axisLength.z;
+  vec3 cameraRel = cameraPosition - vCenter;
+  vec3 cameraUnit = vec3(
+    dot(cameraRel, axisX) / axisLength.x,
+    dot(cameraRel, axisY) / axisLength.y,
+    dot(cameraRel, axisZ) / axisLength.z
+  );
+  vec3 rayUnit = vObjPos - cameraUnit;
+  float along = -dot(cameraUnit, rayUnit) / max(dot(rayUnit, rayUnit), 1e-9);
+  vec3 tangentUnit = cameraUnit + rayUnit * along;
+  float miss = length(tangentUnit);
+  float bodyUnit = 1.0 / uInflation;
+  if (miss <= bodyUnit || along <= 0.0) discard;
+  vec3 tangent = vCenter
+    + vAxisX * tangentUnit.x + vAxisY * tangentUnit.y + vAxisZ * tangentUnit.z;
+  vec3 surfaceUnit = normalize(tangentUnit) * bodyUnit;
+  vec3 surfacePoint = vCenter
+    + vAxisX * surfaceUnit.x + vAxisY * surfaceUnit.y + vAxisZ * surfaceUnit.z;
+  float tangentAlt = distance(tangent, surfacePoint);
   vec3 viewDir = normalize(vWorldPos - cameraPosition);
-  vec3 rel = vCenter - cameraPosition;
-  float along = dot(rel, viewDir);
-  vec3 tangent = cameraPosition + viewDir * along;
-  float miss = length(tangent - vCenter);
-  if (miss <= vBodyRadius || along <= 0.0) discard;
-  float tangentAlt = miss - vBodyRadius;
   vec3 scatter = limbScatter(uLightDir, uLightColor, tangent, tangentAlt, viewDir, 1e30)
     + limbScatter(uLight2Dir, uLight2Color, tangent, tangentAlt, viewDir, uLight2Reach);
   gl_FragColor = vec4(scatter * airTransmittanceTo(vWorldPos), 1.0);

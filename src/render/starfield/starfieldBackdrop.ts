@@ -122,7 +122,7 @@ void main() {
   vec3 shown = shownShare > 0.0
     ? scotopic(tint / shownShare, radiance) * displayRadiance(radiance) * (shownShare / radiance)
     : vec3(0.0);
-  gl_FragColor = vec4(shown * uIntensity * airTransmittance(vAirDir), 1.0);
+  gl_FragColor = vec4(shown * uIntensity * skyVisibility(vAirDir) * airTransmittance(vAirDir), 1.0);
 }
 `;
 
@@ -170,7 +170,8 @@ void main() {
     starColor, sat);
   // The backdrop rides the eye, so a point's world direction is its
   // position turned by the group.
-  vColor = hue * energy * airTransmittance(normalize(mat3(modelMatrix) * position));
+  vec3 skyDir = normalize(mat3(modelMatrix) * position);
+  vColor = hue * energy * skyVisibility(skyDir) * airTransmittance(skyDir);
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = size;
@@ -301,7 +302,7 @@ void main() {
     0.93 * (0.75 + 0.25 * column.g),
     0.85 * (0.55 + 0.45 * column.g));
   gl_FragColor = vec4(scotopic(hue * displayRadiance(radiance), radiance) * uIntensity
-    * airTransmittance(vAirDir), 1.0);
+    * skyVisibility(vAirDir) * airTransmittance(vAirDir), 1.0);
 }
 `;
 

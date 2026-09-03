@@ -86,7 +86,7 @@ void main() {
   // sky the way the star points wash out: the light fades and the
   // occlusion fades with it — a rift cannot darken an atmosphere
   // that shines in front of it.
-  fragColor = texture(uSky, vUv) * uIntensity;
+  fragColor = texture(uSky, vUv) * uIntensity * skyVisibility(dir);
   fragColor.rgb *= airTransmittance(dir);
 }
 `;

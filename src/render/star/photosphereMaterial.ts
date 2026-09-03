@@ -1,7 +1,6 @@
 import { ShaderMaterial, type DataTexture } from 'three';
 import type { Star } from '../../universe/star/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
-import { ADAPTATION_EXPONENT } from '../lighting/starlight';
 import { seedOffset } from './seedOffset';
 import { stellarSurfaceModel, stellarSurfaceStateAt } from './surfaceModel';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
@@ -222,12 +221,11 @@ void main() {
   float radiance = pow(localT / uTeff, 4.0);
   float limb = 1.0 - uLimbU * (1.0 - mu);
 
-  // The disc's seat is the adapted power of its radiance, so the air's
-  // extinction goes in under the same power: a setting sun dims and
-  // reddens to a bounded disc still brighter than its sky, not to a
-  // dark spot on it.
+  // The disc's display seat is adapted on the CPU, but atmospheric
+  // extinction remains physical: compressing transmittance itself
+  // leaves a setting sun implausibly white and feeds a huge bloom halo.
   vec3 hdr = color * radiance * limb * uIntensity * uLuminosityMultiplier
-    * pow(airTransmittance(-vViewDir), vec3(${ADAPTATION_EXPONENT}));
+    * airTransmittance(-vViewDir);
   gl_FragColor = vec4(hdr, 1.0);
 }
 `;

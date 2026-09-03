@@ -1,4 +1,5 @@
 import { Color, type ShaderMaterial, type Vector3 } from 'three';
+import { ADAPTATION_EXPONENT, SKYGLOW_FLUX_RATIO } from './starlight';
 
 /**
  * The air between the eye and everything it sees from a ground: the
@@ -10,23 +11,92 @@ import { Color, type ShaderMaterial, type Vector3 } from 'three';
  */
 export const AIR_VIEW_GLSL = /* glsl */ `
 uniform vec3 uAirTau;
+uniform vec3 uAirRayleighTau;
+uniform vec3 uAirAerosolTau;
 uniform float uAirHorizon;
+uniform float uAirAerosolHorizon;
+uniform vec3 uAirSunDir;
+uniform float uAirSunIntensity;
+uniform float uAirEclipse;
+uniform float uAirScatteringAlbedo;
 #ifndef AIR_UP_DECLARED
 #define AIR_UP_DECLARED
 uniform vec3 uAirUp;
 #endif
 
-float airViewMass(float mu) {
+float airViewMassFor(float mu, float horizon) {
   mu = max(mu, 0.0);
-  return 1.0 / (mu + exp(-11.0 * mu) / uAirHorizon);
+  return 1.0 / (mu + exp(-11.0 * mu) / horizon);
+}
+
+float airViewMass(float mu) {
+  return airViewMassFor(mu, uAirHorizon);
 }
 
 vec3 airTransmittance(vec3 dir) {
-  return exp(-uAirTau * airViewMass(dot(dir, uAirUp)));
+  float mu = dot(dir, uAirUp);
+  return exp(
+    -uAirRayleighTau * airViewMassFor(mu, uAirHorizon)
+    -uAirAerosolTau * airViewMassFor(mu, uAirAerosolHorizon)
+  );
 }
 
 vec3 airTransmittanceTo(vec3 worldPos) {
   return airTransmittance(normalize(worldPos - cameraPosition));
+}
+
+// Directional daylight contrast for stellar backgrounds. The global
+// intensity is seated against the zenith; this ratio corrects each
+// sightline so stars emerge first in the darker anti-solar sky and
+// remain washed out around the sunset aureole. During totality the
+// umbra darkens the overhead column most while the distant horizon
+// retains its illuminated ring.
+float airSkyRadianceGreen(vec3 dir) {
+  if (uAirTau.g <= 0.0 || uAirSunIntensity <= 0.0) return 0.0;
+  float muView = dot(dir, uAirUp);
+  float muSun = dot(uAirSunDir, uAirUp);
+  // Collapse the two scale heights to extinction-weighted air masses
+  // for the analytic sky integral. This preserves the exact direct
+  // transmittance while retaining the inexpensive closed form.
+  float xv = (uAirRayleighTau.g * airViewMassFor(muView, uAirHorizon)
+      + uAirAerosolTau.g * airViewMassFor(muView, uAirAerosolHorizon))
+    / max(uAirTau.g, 1e-6);
+  float xs = (uAirRayleighTau.g * airViewMassFor(muSun, uAirHorizon)
+      + uAirAerosolTau.g * airViewMassFor(muSun, uAirAerosolHorizon))
+    / max(uAirTau.g, 1e-6);
+  float tv = uAirTau.g * xv;
+  float ts = uAirTau.g * xs;
+  float den = xs - xv;
+  float integral = abs(den) > 1e-3
+    ? xv * (exp(-tv) - exp(-ts)) / den
+    : tv * exp(-tv);
+  float cosTheta = dot(dir, uAirSunDir);
+  float phase = 0.1875 * (1.0 + cosTheta * cosTheta) * uAirScatteringAlbedo;
+  float secant = 1.0 / max(sqrt(max(1.0 - muSun * muSun, 0.0)), 1e-4);
+  float radiusOverHeight = 2.0 * uAirHorizon * uAirHorizon / 3.14159265;
+  float dusk = muSun >= 0.0 ? 1.0 : exp(-radiusOverHeight * (secant - 1.0));
+  float overheadShare = smoothstep(0.0, 0.5, max(muView, 0.0));
+  float eclipseLight = mix(1.0, uAirEclipse, overheadShare);
+  float scatterTau = uAirTau.g * uAirScatteringAlbedo;
+  float interacted = 1.0 - exp(-scatterTau * xs);
+  float survived = exp(-uAirTau.g * (1.0 - uAirScatteringAlbedo) * 0.5 * (xs + xv));
+  float escaped = 1.0 / (1.0 + 0.35 * scatterTau * xv);
+  float multiple = 0.08 * interacted * survived * escaped * dusk;
+  return uAirSunIntensity * (phase * max(integral, 0.0) * dusk + multiple) * eclipseLight;
+}
+
+float skyVisibility(vec3 dir) {
+  float localDaylight = airSkyRadianceGreen(normalize(dir));
+  float zenithDaylight = airSkyRadianceGreen(uAirUp);
+  float local = pow(
+    ${SKYGLOW_FLUX_RATIO.toExponential()} / max(${SKYGLOW_FLUX_RATIO.toExponential()}, localDaylight),
+    ${1 - ADAPTATION_EXPONENT}
+  );
+  float zenith = pow(
+    ${SKYGLOW_FLUX_RATIO.toExponential()} / max(${SKYGLOW_FLUX_RATIO.toExponential()}, zenithDaylight),
+    ${1 - ADAPTATION_EXPONENT}
+  );
+  return clamp(local / max(zenith, 1e-6), 0.0, 16.0);
 }
 `;
 
@@ -66,11 +136,23 @@ vec3 airRefractPosition(vec3 worldPos) {
 export interface AirView {
   /** Vertical optical depth per channel above the eye. */
   tau: readonly [number, number, number];
+  /** Molecular and aerosol shares of tau, kept separate because haze
+   *  usually falls away over a much shorter vertical scale. */
+  rayleighTau?: readonly [number, number, number];
+  aerosolTau?: readonly [number, number, number];
   up: Vector3;
   horizon: number;
+  aerosolHorizon?: number;
   /** Refraction at the ground against Earth's sea-level air: 1 lifts
    *  the horizon by Bennett's 34 arcminutes. */
   refraction: number;
+  /** Direction and green-band strength of the local sun, when known. */
+  sunDir?: Vector3;
+  sunIntensity?: number;
+  /** Direct solar visibility at the eye, 0 in the umbra and 1 clear. */
+  eclipse?: number;
+  /** Green-band scattering divided by total extinction. */
+  scatteringAlbedo?: number;
 }
 
 /** Refraction lift in arcminutes at apparent elevation h (degrees):
@@ -83,9 +165,16 @@ export function refractionArcmin(hDeg: number, strength: number): number {
 export function airViewUniforms(): Record<string, { value: unknown }> {
   return {
     uAirTau: { value: new Color(0, 0, 0) },
+    uAirRayleighTau: { value: new Color(0, 0, 0) },
+    uAirAerosolTau: { value: new Color(0, 0, 0) },
     uAirUp: { value: [0, 1, 0] },
     uAirHorizon: { value: 1 },
+    uAirAerosolHorizon: { value: 1 },
     uAirRefraction: { value: 0 },
+    uAirSunDir: { value: [0, 1, 0] },
+    uAirSunIntensity: { value: 0 },
+    uAirEclipse: { value: 1 },
+    uAirScatteringAlbedo: { value: 1 },
   };
 }
 
@@ -94,11 +183,26 @@ export function applyAirView(material: ShaderMaterial, air: AirView | null): voi
   if (!uniforms.uAirTau) return;
   if (air) {
     (uniforms.uAirTau.value as Color).setRGB(air.tau[0], air.tau[1], air.tau[2]);
+    const rayleigh = air.rayleighTau ?? air.tau;
+    const aerosol = air.aerosolTau ?? [0, 0, 0];
+    (uniforms.uAirRayleighTau.value as Color).setRGB(rayleigh[0], rayleigh[1], rayleigh[2]);
+    (uniforms.uAirAerosolTau.value as Color).setRGB(aerosol[0], aerosol[1], aerosol[2]);
     uniforms.uAirUp.value = [air.up.x, air.up.y, air.up.z];
     uniforms.uAirHorizon.value = air.horizon;
+    uniforms.uAirAerosolHorizon.value = air.aerosolHorizon ?? air.horizon;
     uniforms.uAirRefraction.value = air.refraction;
+    const sunDir = air.sunDir;
+    uniforms.uAirSunDir.value = sunDir ? [sunDir.x, sunDir.y, sunDir.z] : [0, 1, 0];
+    uniforms.uAirSunIntensity.value = air.sunIntensity ?? 0;
+    uniforms.uAirEclipse.value = air.eclipse ?? 1;
+    uniforms.uAirScatteringAlbedo.value = air.scatteringAlbedo ?? 1;
   } else {
     (uniforms.uAirTau.value as Color).setRGB(0, 0, 0);
+    (uniforms.uAirRayleighTau.value as Color).setRGB(0, 0, 0);
+    (uniforms.uAirAerosolTau.value as Color).setRGB(0, 0, 0);
     uniforms.uAirRefraction.value = 0;
+    uniforms.uAirSunIntensity.value = 0;
+    uniforms.uAirEclipse.value = 1;
+    uniforms.uAirScatteringAlbedo.value = 1;
   }
 }

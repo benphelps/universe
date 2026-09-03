@@ -225,8 +225,8 @@ void main() {
   vec3 hue = mix(
     vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
     starColor, sat);
-  vColor = hue * energy * extinction
-    * airTransmittance(normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition));
+  vec3 skyDir = normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition);
+  vColor = hue * energy * extinction * skyVisibility(skyDir) * airTransmittance(skyDir);
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   gl_PointSize = drawn;
   gl_Position = projectionMatrix * viewMatrix

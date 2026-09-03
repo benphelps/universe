@@ -5,8 +5,10 @@ import {
   airSegmentColumn,
   airmass,
   beamTransmittance,
+  diffuseShadow,
   groundIrradiance,
   horizonAirmass,
+  multipleScatterRadiance,
   skyRadiance,
   slantColumn,
 } from './surfaceLight';
@@ -114,6 +116,28 @@ describe('skyRadiance', () => {
   });
 });
 
+describe('multipleScatterRadiance', () => {
+  const horizon = horizonAirmass(6371, 8.5);
+
+  it('is a restrained correction for a clear terrestrial column', () => {
+    const correction = multipleScatterRadiance(0.1, 0.98, 1, 1, horizon);
+    expect(correction).toBeGreaterThan(0.005);
+    expect(correction).toBeLessThan(0.02);
+  });
+
+  it('keeps a thick conservative atmosphere from collapsing to black', () => {
+    const correction = multipleScatterRadiance(5, 0.98, 1, 1, horizon);
+    expect(correction).toBeGreaterThan(0.01);
+    expect(correction).toBeLessThan(0.08);
+  });
+
+  it('does not recycle strongly absorbed blue light into haze', () => {
+    const warm = multipleScatterRadiance(2.1, 0.98, 1, 1, horizon);
+    const blue = multipleScatterRadiance(4.65, 0.38, 1, 1, horizon);
+    expect(warm).toBeGreaterThan(blue * 5);
+  });
+});
+
 describe('airColumnScatter', () => {
   it('matches the sky seen from below when the eye looks straight down', () => {
     // Sun overhead, eye above the column looking at the sub-solar
@@ -169,6 +193,23 @@ describe('groundIrradiance', () => {
     expect(set).toBeGreaterThan(dusk);
     expect(dusk).toBeGreaterThan(late);
     expect(late).toBeLessThan(set * 1e-3);
+  });
+
+  it('keeps diffuse skylight when an eclipse blocks the direct beam', () => {
+    const clear = groundIrradiance(0.25, 1, horizon);
+    const totality = groundIrradiance(0.25, 1, horizon, 0, 1, 0, diffuseShadow(0));
+    const noSky = groundIrradiance(0.25, 1, horizon, 0, 1, 0, 0);
+    expect(totality).toBeGreaterThan(0);
+    expect(totality).toBeLessThan(clear);
+    expect(noSky).toBe(0);
+    expect(diffuseShadow(0)).toBeCloseTo(0.12, 6);
+    expect(diffuseShadow(1)).toBe(1);
+  });
+
+  it('does not turn absorbed light into skylight', () => {
+    const conservative = groundIrradiance(1, 1, horizon, 0.5, 1);
+    const absorbing = groundIrradiance(1, 1, horizon, 0.5, 0.25);
+    expect(absorbing).toBeLessThan(conservative);
   });
 });
 

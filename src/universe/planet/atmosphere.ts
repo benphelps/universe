@@ -145,29 +145,83 @@ const RAYLEIGH_PER_BAR: Record<AtmosphereClass, number> = {
   'rock-vapor': 1,
 };
 /**
- * The haze each class carries, as vertical optical depth at green and
- * its tint at green one: a clear terrestrial sky's thin aerosol, a
+ * The haze each class carries: vertical extinction at green, its
+ * extinction spectrum, and the share returned as scattered light. A
+ * clear terrestrial sky's thin aerosol, a
  * giant's stratospheric haze, Venus's sulfur veil above the deck,
  * Mars's dust, Titan's tholins. A class property, not a pressure one —
  * the dust in a thin CO₂ sky is what makes it, not how much gas holds
  * it up.
  */
-const AEROSOL: Record<AtmosphereClass, { depth: number; hue: [number, number, number] }> = {
-  none: { depth: 0, hue: [1, 1, 1] },
-  'hydrogen-helium': { depth: 0.35, hue: [1.05, 1, 0.9] },
-  nitrogen: { depth: 0.1, hue: [0.92, 1, 1.06] },
-  'nitrogen-oxygen': { depth: 0.1, hue: [0.92, 1, 1.06] },
-  'co2-hothouse': { depth: 2.5, hue: [1.2, 1, 0.67] },
-  'thin-co2': { depth: 0.5, hue: [1.25, 1, 0.83] },
-  'nitrogen-methane': { depth: 3, hue: [1.3, 1, 0.54] },
-  'rock-vapor': { depth: 1, hue: [1.2, 1, 0.9] },
+const AEROSOL: Record<
+  AtmosphereClass,
+  {
+    depth: number;
+    extinctionHue: [number, number, number];
+    singleScatteringAlbedo: [number, number, number];
+    scaleHeightRatio: number;
+  }
+> = {
+  none: {
+    depth: 0,
+    extinctionHue: [1, 1, 1],
+    singleScatteringAlbedo: [0, 0, 0],
+    scaleHeightRatio: 1,
+  },
+  'hydrogen-helium': {
+    depth: 0.25,
+    extinctionHue: [0.9, 1, 1.2],
+    singleScatteringAlbedo: [0.96, 0.91, 0.76],
+    scaleHeightRatio: 0.65,
+  },
+  nitrogen: {
+    depth: 0.03,
+    extinctionHue: [0.95, 1, 1.08],
+    singleScatteringAlbedo: [0.95, 0.94, 0.9],
+    scaleHeightRatio: 0.22,
+  },
+  'nitrogen-oxygen': {
+    depth: 0.03,
+    extinctionHue: [0.95, 1, 1.08],
+    singleScatteringAlbedo: [0.95, 0.94, 0.9],
+    scaleHeightRatio: 0.22,
+  },
+  'co2-hothouse': {
+    depth: 2.5,
+    extinctionHue: [0.72, 1, 1.45],
+    singleScatteringAlbedo: [0.98, 0.92, 0.62],
+    scaleHeightRatio: 0.55,
+  },
+  'thin-co2': {
+    depth: 0.35,
+    extinctionHue: [0.72, 1, 1.35],
+    singleScatteringAlbedo: [0.96, 0.83, 0.52],
+    scaleHeightRatio: 0.35,
+  },
+  'nitrogen-methane': {
+    depth: 3,
+    extinctionHue: [0.7, 1, 1.55],
+    singleScatteringAlbedo: [0.96, 0.78, 0.34],
+    scaleHeightRatio: 0.8,
+  },
+  'rock-vapor': {
+    depth: 1,
+    extinctionHue: [0.78, 1, 1.3],
+    singleScatteringAlbedo: [0.9, 0.72, 0.45],
+    scaleHeightRatio: 0.45,
+  },
 };
 
 /** The two scatterers of a visible column, per channel: the gas's
  *  Rayleigh depth and the class's aerosol haze. */
 export interface AirColumn {
   rayleigh: [number, number, number];
+  /** Aerosol scattering optical depth. */
   aerosol: [number, number, number];
+  /** Aerosol extinction optical depth: scattering plus absorption. */
+  aerosolExtinction: [number, number, number];
+  /** Aerosol scale height divided by the molecular-gas scale height. */
+  aerosolScaleHeightRatio: number;
 }
 
 /**
@@ -185,14 +239,30 @@ export function visibleOpticalDepth(
   return [k * RAYLEIGH_HUE[0], k * RAYLEIGH_HUE[1], k * RAYLEIGH_HUE[2]];
 }
 
-/** Vertical aerosol optical depth of the haze, per channel. */
+/** Vertical aerosol extinction optical depth of the haze, per channel. */
+export function aerosolExtinctionDepth(atmosphere: PlanetAtmosphere): [number, number, number] {
+  const { depth, extinctionHue } = AEROSOL[atmosphere.class];
+  return [depth * extinctionHue[0], depth * extinctionHue[1], depth * extinctionHue[2]];
+}
+
+/** Vertical aerosol scattering optical depth, after absorptive losses. */
 export function aerosolOpticalDepth(atmosphere: PlanetAtmosphere): [number, number, number] {
-  const { depth, hue } = AEROSOL[atmosphere.class];
-  return [depth * hue[0], depth * hue[1], depth * hue[2]];
+  const extinction = aerosolExtinctionDepth(atmosphere);
+  const { singleScatteringAlbedo } = AEROSOL[atmosphere.class];
+  return [
+    extinction[0] * singleScatteringAlbedo[0],
+    extinction[1] * singleScatteringAlbedo[1],
+    extinction[2] * singleScatteringAlbedo[2],
+  ];
 }
 
 export function atmosphereColumn(atmosphere: PlanetAtmosphere, bulk: PlanetBulk): AirColumn {
-  return { rayleigh: visibleOpticalDepth(atmosphere, bulk), aerosol: aerosolOpticalDepth(atmosphere) };
+  return {
+    rayleigh: visibleOpticalDepth(atmosphere, bulk),
+    aerosol: aerosolOpticalDepth(atmosphere),
+    aerosolExtinction: aerosolExtinctionDepth(atmosphere),
+    aerosolScaleHeightRatio: AEROSOL[atmosphere.class].scaleHeightRatio,
+  };
 }
 
 /**
@@ -217,9 +287,23 @@ const CLOUD_TOP_MAX_TAU = 0.3;
  * the haze, wherever the geometric deck was placed.
  */
 export function columnAbove(column: AirColumn, atmosphere: PlanetAtmosphere, deckKm: number): AirColumn {
-  const above = Math.exp(-deckKm / Math.max(atmosphere.scaleHeightKm, 0.1));
-  const green = column.rayleigh[1] + column.aerosol[1];
-  const f = Math.min(above, green > 0 ? CLOUD_TOP_MAX_TAU / green : 1);
-  const scale = (v: [number, number, number]): [number, number, number] => [v[0] * f, v[1] * f, v[2] * f];
-  return { rayleigh: scale(column.rayleigh), aerosol: scale(column.aerosol) };
+  const gasAbove = Math.exp(-deckKm / Math.max(atmosphere.scaleHeightKm, 0.1));
+  const aerosolAbove = Math.exp(
+    -deckKm /
+      Math.max(atmosphere.scaleHeightKm * column.aerosolScaleHeightRatio, 0.1),
+  );
+  const green =
+    column.rayleigh[1] * gasAbove + column.aerosolExtinction[1] * aerosolAbove;
+  const cap = green > 0 ? Math.min(1, CLOUD_TOP_MAX_TAU / green) : 1;
+  const scale = (v: [number, number, number], factor: number): [number, number, number] => [
+    v[0] * factor,
+    v[1] * factor,
+    v[2] * factor,
+  ];
+  return {
+    rayleigh: scale(column.rayleigh, gasAbove * cap),
+    aerosol: scale(column.aerosol, aerosolAbove * cap),
+    aerosolExtinction: scale(column.aerosolExtinction, aerosolAbove * cap),
+    aerosolScaleHeightRatio: column.aerosolScaleHeightRatio,
+  };
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { aerosolOpticalDepth, atmosphereColumn, columnAbove, visibleOpticalDepth } from './atmosphere';
+import {
+  aerosolExtinctionDepth,
+  aerosolOpticalDepth,
+  atmosphereColumn,
+  columnAbove,
+  visibleOpticalDepth,
+} from './atmosphere';
 import type { PlanetAtmosphere, PlanetBulk } from './types';
 
 const earthBulk = { gravityMs2: 9.80665 } as PlanetBulk;
@@ -31,27 +37,31 @@ describe('visibleOpticalDepth', () => {
 });
 
 describe('aerosolOpticalDepth', () => {
-  it('is a thin, faintly blue haze over clear air and a thick brown one over Titan', () => {
+  it('keeps clear air thin and makes methane haze orange through blue absorption', () => {
     const [r, g, b] = aerosolOpticalDepth(air({}));
-    expect(g).toBeCloseTo(0.1, 6);
-    expect(b).toBeGreaterThan(r);
+    expect(g).toBeLessThan(0.04);
+    expect(g).toBeGreaterThan(0.02);
     const [tr, tg, tb] = aerosolOpticalDepth(air({ class: 'nitrogen-methane' }));
     expect(tg).toBeGreaterThan(1);
     expect(tr).toBeGreaterThan(tb);
+    const [er, , eb] = aerosolExtinctionDepth(air({ class: 'nitrogen-methane' }));
+    expect(eb).toBeGreaterThan(er * 2);
   });
 });
 
 describe('columnAbove', () => {
-  it('thins both scatterers with the deck height', () => {
+  it('thins low aerosols faster than the molecular gas', () => {
     const column = atmosphereColumn(air({}), earthBulk);
     const above = columnAbove(column, air({}), 8.5);
     expect(above.rayleigh[1]).toBeCloseTo(0.1 / Math.E, 6);
-    expect(above.aerosol[1]).toBeCloseTo(0.1 / Math.E, 6);
+    expect(above.aerosol[1]).toBeCloseTo(0.03 * 0.94 * Math.exp(-1 / 0.22), 6);
+    expect(above.aerosolExtinction[1]).toBeCloseTo(0.03 * Math.exp(-1 / 0.22), 6);
+    expect(above.aerosolExtinction[1]).toBeLessThan(above.rayleigh[1] * 0.01);
   });
 
   it('never hides the deck under a hothouse', () => {
     const hothouse = air({ class: 'co2-hothouse', surfacePressureBar: 90, scaleHeightKm: 15 });
     const above = columnAbove(atmosphereColumn(hothouse, earthBulk), hothouse, 20);
-    expect(above.rayleigh[1] + above.aerosol[1]).toBeLessThanOrEqual(0.3 + 1e-9);
+    expect(above.rayleigh[1] + above.aerosolExtinction[1]).toBeLessThanOrEqual(0.3 + 1e-9);
   });
 });

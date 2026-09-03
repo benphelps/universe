@@ -9,18 +9,27 @@ import { Color, type ShaderMaterial } from 'three';
  */
 export const SURFACE_LIGHT_GLSL = /* glsl */ `
 uniform vec3 uOpticalDepth;             // the whole column, gas and haze
-uniform vec3 uAerosolFraction;          // the haze's share of it, per channel
+uniform vec3 uRayleighDepth;
+uniform vec3 uAerosolExtinction;
+uniform vec3 uAerosolFraction;          // the haze's share of scattering, per channel
+uniform vec3 uScatteringAlbedo;         // scattering / extinction, per channel
 uniform float uHorizonAirmass;
+uniform float uAerosolHorizonAirmass;
 uniform float uNightFloor;
 uniform float uPlanetRadius;            // world units
 uniform float uScaleHeight;             // world units
+uniform float uAerosolScaleHeight;      // world units
 
 // Relative air mass along the slant path at local sun elevation mu:
 // one overhead, the horizon column at grazing, held there below the
 // horizon so twilight has a path to fade along.
-float airmass(float mu) {
+float airmassFor(float mu, float horizon) {
   mu = max(mu, 0.0);
-  return 1.0 / (mu + exp(-11.0 * mu) / uHorizonAirmass);
+  return 1.0 / (mu + exp(-11.0 * mu) / horizon);
+}
+
+float airmass(float mu) {
+  return airmassFor(mu, uHorizonAirmass);
 }
 
 // The lit fraction of the column overhead once the sun is down: the
@@ -37,8 +46,43 @@ float twilight(float mu) {
 }
 
 // Direct-beam transmittance along the slant path.
+vec3 opticalSlant(vec3 tau, float mu) {
+  // Most callers use the material's whole column. The scale also
+  // preserves cloud-top and interpolated columns without duplicating
+  // the lighting function for each surface kind.
+  vec3 relative = tau / max(uOpticalDepth, vec3(1e-6));
+  return relative * (
+    uRayleighDepth * airmassFor(mu, uHorizonAirmass)
+      + uAerosolExtinction * airmassFor(mu, uAerosolHorizonAirmass)
+  );
+}
+
 vec3 beamTransmittance(vec3 tau, float mu) {
-  return exp(-tau * airmass(mu));
+  return exp(-opticalSlant(tau, mu));
+}
+
+vec3 opticalSlantAt(float altitude, float mu) {
+  float gas = exp(-max(altitude, 0.0) / max(uScaleHeight, 1e-4));
+  float haze = exp(-max(altitude, 0.0) / max(uAerosolScaleHeight, 1e-4));
+  return uRayleighDepth * gas * airmassFor(mu, uHorizonAirmass)
+    + uAerosolExtinction * haze * airmassFor(mu, uAerosolHorizonAirmass);
+}
+
+vec3 beamTransmittanceAt(float altitude, float mu) {
+  return exp(-opticalSlantAt(altitude, mu));
+}
+
+vec3 opticalDepthAt(float altitude) {
+  float gas = exp(-max(altitude, 0.0) / max(uScaleHeight, 1e-4));
+  float haze = exp(-max(altitude, 0.0) / max(uAerosolScaleHeight, 1e-4));
+  return uRayleighDepth * gas + uAerosolExtinction * haze;
+}
+
+vec3 tangentColumnAt(float altitude) {
+  float gas = exp(-max(altitude, 0.0) / max(uScaleHeight, 1e-4));
+  float haze = exp(-max(altitude, 0.0) / max(uAerosolScaleHeight, 1e-4));
+  return 2.0 * (uRayleighDepth * gas * uHorizonAirmass
+    + uAerosolExtinction * haze * uAerosolHorizonAirmass);
 }
 
 // Rayleigh's phase, normalized over the sphere: twice the light
@@ -60,16 +104,54 @@ float hazePhase(float cosTheta) {
   return 0.5 * henyeyGreenstein(cosTheta, 0.9) + 0.5 * henyeyGreenstein(cosTheta, 0.4);
 }
 
-// The column's phase, gas and haze in their shares — both are taken to
-// follow the same scale height, so one integral serves them together.
+// The column's phase, gas and haze in their scattering shares. Their
+// extinction paths retain their separate scale heights elsewhere.
 vec3 phaseWeight(float cosTheta) {
-  return mix(vec3(rayleighPhase(cosTheta)), vec3(hazePhase(cosTheta)), uAerosolFraction);
+  return mix(vec3(rayleighPhase(cosTheta)), vec3(hazePhase(cosTheta)), uAerosolFraction)
+    * uScatteringAlbedo;
 }
 
 // The column's back-scatter fraction: half for Rayleigh, an eighth for
 // the two-lobed haze.
 vec3 backscatter() {
-  return mix(vec3(0.5), vec3(0.12), uAerosolFraction);
+  return mix(vec3(0.5), vec3(0.12), uAerosolFraction) * uScatteringAlbedo;
+}
+
+// A small, energy-bounded approximation to higher scattering orders.
+// The first interaction supplies the light, absorption removes it on
+// the average in/out path, and diffusion limits how much escapes a
+// thick view column. It is deliberately isotropic: the single-scatter
+// term retains the aureole and Rayleigh phase structure.
+vec3 multipleScatterFromSlants(
+  vec3 sunSlant,
+  vec3 viewSlant,
+  float muSun
+) {
+  vec3 interacted = 1.0 - exp(-sunSlant * uScatteringAlbedo);
+  vec3 survived = exp(
+    -(sunSlant + viewSlant) * (1.0 - uScatteringAlbedo) * 0.5
+  );
+  vec3 escaped = 1.0 / (1.0 + 0.35 * viewSlant * uScatteringAlbedo);
+  return 0.08 * interacted * survived * escaped * twilight(muSun);
+}
+
+vec3 multipleScatter(vec3 tau, float muSun, float muView) {
+  return multipleScatterFromSlants(
+    opticalSlant(tau, muSun), opticalSlant(tau, muView), muSun
+  );
+}
+
+vec3 multipleScatterAt(float altitude, float muSun, float muView) {
+  return multipleScatterFromSlants(
+    opticalSlantAt(altitude, muSun), opticalSlantAt(altitude, muView), muSun
+  );
+}
+
+// A total eclipse removes the direct beam but not every illuminated
+// parcel in the hemisphere. The residual is the horizon ring and air
+// outside the narrow umbra; penumbra transitions remain continuous.
+float diffuseShadow(float directShadow) {
+  return mix(0.12, 1.0, sqrt(clamp(directShadow, 0.0, 1.0)));
 }
 
 // cosTheta throughout is the scattering angle's cosine: between the
@@ -97,22 +179,33 @@ vec3 airColumnScatter(vec3 tauEye, vec3 tauPoint, float xv, float xs, float cosT
 // exact for a straight line through an exponential atmosphere, and
 // capped at the horizon column where a flat slant would outrun the
 // sphere. The aerial perspective the ground shows at every range.
-vec3 airSegmentColumn(float eyeAlt, float pointAlt, float dist) {
-  float h = max(uScaleHeight, 1e-4);
-  vec3 tauEye = uOpticalDepth * exp(-max(eyeAlt, 0.0) / h);
-  vec3 tauPoint = uOpticalDepth * exp(-max(pointAlt, 0.0) / h);
+vec3 airSegmentComponent(vec3 depth, float h, float horizon, float eyeAlt, float pointAlt, float dist) {
+  h = max(h, 1e-4);
+  vec3 tauEye = depth * exp(-max(eyeAlt, 0.0) / h);
+  vec3 tauPoint = depth * exp(-max(pointAlt, 0.0) / h);
   float dh = abs(eyeAlt - pointAlt);
   return dh > 1e-3 * h
-    ? abs(tauPoint - tauEye) * min(dist / dh, uHorizonAirmass)
-    : (tauEye + tauPoint) * 0.5 * min(dist / h, uHorizonAirmass);
+    ? abs(tauPoint - tauEye) * min(dist / dh, horizon)
+    : (tauEye + tauPoint) * 0.5 * min(dist / h, horizon);
+}
+
+vec3 airSegmentColumn(float eyeAlt, float pointAlt, float dist) {
+  return airSegmentComponent(
+    uRayleighDepth, uScaleHeight, uHorizonAirmass, eyeAlt, pointAlt, dist
+  ) + airSegmentComponent(
+    uAerosolExtinction,
+    uAerosolScaleHeight,
+    uAerosolHorizonAirmass,
+    eyeAlt,
+    pointAlt,
+    dist
+  );
 }
 
 // Sunlight scattered toward the eye along that run: the beam at the
 // run's middle, the phase, and the part of the run that scatters.
 vec3 airSegmentScatter(vec3 column, float midAlt, float muSun, float cosTheta) {
-  float h = max(uScaleHeight, 1e-4);
-  vec3 tauMid = uOpticalDepth * exp(-max(midAlt, 0.0) / h);
-  vec3 beam = exp(-tauMid * airmass(muSun));
+  vec3 beam = beamTransmittanceAt(midAlt, muSun);
   return phaseWeight(cosTheta) * beam * (1.0 - exp(-column)) * twilight(muSun);
 }
 
@@ -123,15 +216,24 @@ vec3 airSegmentScatter(vec3 column, float midAlt, float muSun, float cosTheta) {
 // vacuum: pure Lambert. The beam is gated at the body's own horizon
 // over about a solar diameter, since a slope cannot face a sun the
 // ground has hidden.
-vec3 surfaceLight(vec3 tau, vec3 lightDir, vec3 lightColor, vec3 normal, vec3 up, float shadow) {
+vec3 surfaceLight(
+  vec3 tau,
+  vec3 lightDir,
+  vec3 lightColor,
+  vec3 normal,
+  vec3 up,
+  float directShadow,
+  float skyShadow
+) {
   float mu = dot(up, lightDir);
-  float x = airmass(mu);
-  vec3 direct = exp(-tau * x);
-  vec3 total = 1.0 / (1.0 + backscatter() * tau * x);
+  vec3 slant = opticalSlant(tau, mu);
+  vec3 direct = exp(-slant);
+  vec3 total = exp(-slant * (1.0 - uScatteringAlbedo))
+    / (1.0 + backscatter() * slant);
   float lambert = max(dot(normal, lightDir), 0.0) * smoothstep(-0.01, 0.01, mu);
   float hemi = 0.5 + 0.5 * dot(normal, up);
   vec3 sky = max(total - direct, vec3(0.0)) * hemi * twilight(mu);
-  return lightColor * (direct * lambert + sky) * shadow;
+  return lightColor * (direct * lambert * directShadow + sky * skyShadow);
 }
 `;
 
@@ -144,6 +246,11 @@ export function horizonAirmass(radiusKm: number, scaleHeightKm: number): number 
 export function airmass(mu: number, horizon: number): number {
   const m = Math.max(mu, 0);
   return 1 / (m + Math.exp(-11 * m) / horizon);
+}
+
+/** Diffuse atmospheric illumination retained under a local occultation. */
+export function diffuseShadow(directShadow: number): number {
+  return 0.12 + 0.88 * Math.sqrt(Math.min(1, Math.max(0, directShadow)));
 }
 
 /**
@@ -186,7 +293,11 @@ export function beamTransmittance(
  *  material's world units. */
 export interface SurfaceAir {
   rayleigh: readonly [number, number, number];
+  /** Aerosol scattering depth. */
   aerosol: readonly [number, number, number];
+  /** Aerosol scattering plus absorption. */
+  aerosolExtinction: readonly [number, number, number];
+  aerosolScaleHeightRatio: number;
   horizon: number;
   radius: number;
   scaleHeight: number;
@@ -195,6 +306,8 @@ export interface SurfaceAir {
 export const VACUUM: SurfaceAir = {
   rayleigh: [0, 0, 0],
   aerosol: [0, 0, 0],
+  aerosolExtinction: [0, 0, 0],
+  aerosolScaleHeightRatio: 1,
   horizon: 1,
   radius: 1,
   scaleHeight: 1,
@@ -203,25 +316,41 @@ export const VACUUM: SurfaceAir = {
 /** The whole column, gas and haze together. */
 export function totalDepth(air: SurfaceAir): [number, number, number] {
   return [
-    air.rayleigh[0] + air.aerosol[0],
-    air.rayleigh[1] + air.aerosol[1],
-    air.rayleigh[2] + air.aerosol[2],
+    air.rayleigh[0] + air.aerosolExtinction[0],
+    air.rayleigh[1] + air.aerosolExtinction[1],
+    air.rayleigh[2] + air.aerosolExtinction[2],
   ];
 }
 
 function aerosolFraction(air: SurfaceAir): [number, number, number] {
-  const total = totalDepth(air);
-  return [0, 1, 2].map((i) => (total[i] > 0 ? air.aerosol[i] / total[i] : 0)) as [number, number, number];
+  const scattering = [0, 1, 2].map((i) => air.rayleigh[i] + air.aerosol[i]);
+  return scattering.map((t, i) => (t > 0 ? air.aerosol[i] / t : 0)) as [number, number, number];
+}
+
+function scatteringAlbedo(air: SurfaceAir): [number, number, number] {
+  const extinction = totalDepth(air);
+  return extinction.map((t, i) => (t > 0 ? (air.rayleigh[i] + air.aerosol[i]) / t : 0)) as [
+    number,
+    number,
+    number,
+  ];
 }
 
 export function surfaceLightUniforms(air: SurfaceAir = VACUUM): Record<string, { value: unknown }> {
   return {
     uOpticalDepth: { value: new Color(...totalDepth(air)) },
+    uRayleighDepth: { value: new Color(...air.rayleigh) },
+    uAerosolExtinction: { value: new Color(...air.aerosolExtinction) },
     uAerosolFraction: { value: new Color(...aerosolFraction(air)) },
+    uScatteringAlbedo: { value: new Color(...scatteringAlbedo(air)) },
     uHorizonAirmass: { value: air.horizon },
+    uAerosolHorizonAirmass: {
+      value: horizonAirmass(air.radius, air.scaleHeight * air.aerosolScaleHeightRatio),
+    },
     uNightFloor: { value: 0 },
     uPlanetRadius: { value: air.radius },
     uScaleHeight: { value: air.scaleHeight },
+    uAerosolScaleHeight: { value: air.scaleHeight * air.aerosolScaleHeightRatio },
   };
 }
 
@@ -229,10 +358,18 @@ export function applySurfaceLight(material: ShaderMaterial, air: SurfaceAir): vo
   const uniforms = material.uniforms;
   if (!uniforms.uOpticalDepth) return;
   (uniforms.uOpticalDepth.value as Color).setRGB(...totalDepth(air));
+  (uniforms.uRayleighDepth.value as Color).setRGB(...air.rayleigh);
+  (uniforms.uAerosolExtinction.value as Color).setRGB(...air.aerosolExtinction);
   (uniforms.uAerosolFraction.value as Color).setRGB(...aerosolFraction(air));
+  (uniforms.uScatteringAlbedo.value as Color).setRGB(...scatteringAlbedo(air));
   uniforms.uHorizonAirmass.value = air.horizon;
+  uniforms.uAerosolHorizonAirmass.value = horizonAirmass(
+    air.radius,
+    air.scaleHeight * air.aerosolScaleHeightRatio,
+  );
   uniforms.uPlanetRadius.value = air.radius;
   uniforms.uScaleHeight.value = air.scaleHeight;
+  uniforms.uAerosolScaleHeight.value = air.scaleHeight * air.aerosolScaleHeightRatio;
 }
 
 /** Mirror of the ground's illumination under one light, sun at
@@ -243,17 +380,47 @@ export function groundIrradiance(
   muSun: number,
   horizon: number,
   aerosolFraction = 0,
+  scatteringAlbedo = 1,
+  directShadow = 1,
+  skyShadow = 1,
 ): number {
   const x = airmass(muSun, horizon);
   const direct = Math.exp(-tau * x);
-  const back = 0.5 + (0.12 - 0.5) * aerosolFraction;
-  const total = 1 / (1 + back * tau * x);
+  const back = (0.5 + (0.12 - 0.5) * aerosolFraction) * scatteringAlbedo;
+  const total = Math.exp(-tau * (1 - scatteringAlbedo) * x) / (1 + back * tau * x);
   const gate = Math.min(1, Math.max(0, (muSun + 0.01) / 0.02));
   const lit =
     muSun >= 0
       ? 1
       : Math.exp(-((2 * horizon * horizon) / Math.PI) * (1 / Math.max(Math.sqrt(Math.max(1 - muSun * muSun, 0)), 1e-4) - 1));
-  return direct * Math.max(muSun, 0) * gate + Math.max(total - direct, 0) * lit;
+  return (
+    direct * Math.max(muSun, 0) * gate * directShadow +
+    Math.max(total - direct, 0) * lit * skyShadow
+  );
+}
+
+/** CPU mirror of the bounded higher-order sky term, per channel. */
+export function multipleScatterRadiance(
+  tau: number,
+  scatteringAlbedo: number,
+  muSun: number,
+  muView: number,
+  horizon: number,
+): number {
+  const xs = airmass(muSun, horizon);
+  const xv = airmass(muView, horizon);
+  const scatterTau = tau * scatteringAlbedo;
+  const interacted = 1 - Math.exp(-scatterTau * xs);
+  const survived = Math.exp(-tau * (1 - scatteringAlbedo) * 0.5 * (xs + xv));
+  const escaped = 1 / (1 + 0.35 * scatterTau * xv);
+  const lit =
+    muSun >= 0
+      ? 1
+      : Math.exp(
+          -((2 * horizon * horizon) / Math.PI) *
+            (1 / Math.max(Math.sqrt(Math.max(1 - muSun * muSun, 0)), 1e-4) - 1),
+        );
+  return 0.08 * interacted * survived * escaped * lit;
 }
 
 /** Mirror of the outside-eye column scatter, for tests. */
