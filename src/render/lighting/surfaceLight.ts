@@ -101,7 +101,12 @@ float henyeyGreenstein(float cosTheta, float g) {
 }
 
 float hazePhase(float cosTheta) {
-  return 0.5 * henyeyGreenstein(cosTheta, 0.9) + 0.5 * henyeyGreenstein(cosTheta, 0.4);
+  // A narrow diffraction core over a broad aerosol shoulder. g=0.9
+  // left the nominally sharp half of the lobe several degrees wide;
+  // at sunset columns that became a false solar disc many times the
+  // photosphere's angular diameter.
+  return 0.12 * henyeyGreenstein(cosTheta, 0.94)
+    + 0.88 * henyeyGreenstein(cosTheta, 0.4);
 }
 
 // The column's phase, gas and haze in their scattering shares. Their

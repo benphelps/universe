@@ -53,7 +53,10 @@ export class RenderPipeline {
     // Keep glare as a compact optical cue around HDR emitters. A broad
     // radius turned the physically small solar disc into a white bank
     // across the horizon, hiding sunset color and eclipse contacts.
-    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.3, 0.28, 1.0);
+    // UnrealBloom's radius control reweights its mip pyramid; positive
+    // values strengthen the broadest, lowest-resolution levels. Keep it
+    // at zero and give those levels an explicitly compact PSF below.
+    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.18, 0, 1.0);
     guardBloomInput(this.bloom);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
