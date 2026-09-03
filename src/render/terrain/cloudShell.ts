@@ -9,8 +9,7 @@ import { atmosphereColumn, columnAbove } from '../../universe/planet/atmosphere'
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
-import { planetSeedOffset } from '../planet/solidPlanetMaterial';
-import { CLOUD_PATTERN_GLSL, cloudPatternUniforms } from '../planet/cloudPattern';
+import { CLOUD_PATTERN_GLSL, cloudPatternUniforms, planetSeedOffset } from '../planet/cloudPattern';
 import { CLOUD_VOLUME_GLSL } from './cloudVolume';
 
 const VERTEX = /* glsl */ `
@@ -79,9 +78,13 @@ void main() {
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, cloudNormal, p, shadow2, diffuseShadow(shadow2));
   }
   vec3 color = uCloudColor * mix(0.65, 1.12, cloud.z) * (light + uNightFloor);
-  // Below the deck we see its shaded base rather than the sunlit top.
+  // Below the deck we see transmitted diffuse flux, not an arbitrary shaded
+  // copy of the sunlit top. An optically thick scattering slab passes roughly
+  // 1/(1+3τ/4) of the incident diffuse field.
   float aboveDeck = step(length(shellPoint), length(cameraPosition));
-  color *= mix(0.42 + 0.25 * (1.0 - cloud.y), 1.0, aboveDeck);
+  float deckTau = uCloudOpticalDepth * max(cloud.x, 1e-4);
+  float deckTransmission = 1.0 / (1.0 + 0.75 * deckTau);
+  color *= mix(displayTransmittance(deckTransmission), 1.0, aboveDeck);
   // Seen through the air between the eye and the deck.
   float eyeAlt = length(cameraPosition) - uPlanetRadius;
   float pointAlt = length(shellPoint) - uPlanetRadius;
@@ -106,7 +109,15 @@ void main() {
         * airmassFor(dot(midUp, uLightDir), uAerosolHorizonAirmass)
     ) * (1.0 - exp(-column))
     * twilight(dot(midUp, uLightDir)) * airShadow;
-  color = color * exp(-column) + scatter;
+  // A direct beam seen from above follows Beer-Lambert. Beneath a cloud,
+  // photons arrive as a diffuse field and scattering redirects rather than
+  // simply destroying them, so use the slab transport solution. The sky dome
+  // owns foreground air scatter below the deck and is cloud-masked there.
+  color = mix(
+    color * displayTransmittance(diffuseTransmittance(column)),
+    color * exp(-column) + scatter,
+    aboveDeck
+  );
 
   // Fade out around the camera so descending through the deck never
   // crosses a hard sheet.
@@ -120,6 +131,26 @@ void main() {
  * highest terrain, visible from orbit as global weather and from the
  * ground as an overhead sky deck.
  */
+export function cloudShellBounds(
+  physical: Characterization,
+  seaLevelKm: number,
+  reliefKm: number,
+): { baseKm: number; topKm: number } | null {
+  if (
+    physical.atmosphere.class === 'none' ||
+    physical.appearance.clouds.coverage < 0.01
+  ) return null;
+  const terrainClearanceKm = Math.max(seaLevelKm, 0) + reliefKm + 1;
+  const topKm = Math.max(terrainClearanceKm, physical.appearance.clouds.topAltitudeKm);
+  return {
+    topKm,
+    baseKm: Math.max(
+      terrainClearanceKm,
+      topKm - physical.appearance.clouds.thicknessKm,
+    ),
+  };
+}
+
 export function createCloudShell(
   physical: Characterization,
   radiusKm: number,
@@ -127,13 +158,12 @@ export function createCloudShell(
   reliefKm: number,
 ): Mesh | null {
   const { appearance, atmosphere, bulk } = physical;
-  if (atmosphere.class === 'none' || appearance.clouds.coverage < 0.01) return null;
+  const bounds = cloudShellBounds(physical, seaLevelKm, reliefKm);
+  if (!bounds) return null;
   // The deck must clear the highest terrain by more than its own
   // triangulation sag, or quad centers dip below mountaintops and the
   // depth test punches a grid of holes through the clouds.
-  const terrainClearanceKm = Math.max(seaLevelKm, 0) + reliefKm + 1;
-  const deckKm = Math.max(terrainClearanceKm, appearance.clouds.topAltitudeKm);
-  const baseKm = Math.max(terrainClearanceKm, deckKm - appearance.clouds.thicknessKm);
+  const { baseKm, topKm: deckKm } = bounds;
   const column = atmosphereColumn(atmosphere, bulk);
   const material = new ShaderMaterial({
     vertexShader: VERTEX,

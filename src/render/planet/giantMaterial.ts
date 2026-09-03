@@ -13,7 +13,7 @@ import {
 import { deckOpticalDepth } from '../../universe/planet/atmosphere';
 import { HEIGHT_SCALE } from './giantPattern';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
-import { planetSeedOffset } from './solidPlanetMaterial';
+import { planetSeedOffset } from './cloudPattern';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 
 const VERTEX = /* glsl */ `

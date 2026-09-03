@@ -55,11 +55,11 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
         : 0.05;
 
   const tectonics: TectonicStyle =
-    interior.regime === 'active-tectonics'
+    climate.hydrosphere === 'magma'
+      ? 'molten'
+      : interior.regime === 'active-tectonics'
       ? 'active'
-      : interior.regime === 'magma'
-        ? 'molten'
-        : interior.regime === 'stagnant-lid'
+      : interior.regime === 'stagnant-lid'
           ? 'stagnant'
           : 'dead';
 

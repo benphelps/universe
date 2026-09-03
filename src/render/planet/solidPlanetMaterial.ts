@@ -1,7 +1,5 @@
 import { Color, ShaderMaterial } from 'three';
 import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
-import { seedFromHex } from '../../core/rng/hash';
-import { Rng } from '../../core/rng/rng';
 import { atmosphereColumn, columnAbove } from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
@@ -14,7 +12,7 @@ import {
 } from '../lighting/surfaceLight';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
-import { CLOUD_PATTERN_GLSL, cloudPatternUniforms } from './cloudPattern';
+import { CLOUD_PATTERN_GLSL, cloudPatternUniforms, planetSeedOffset } from './cloudPattern';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
@@ -151,12 +149,6 @@ void main() {
   gl_FragColor = vec4(color * airTransmittanceTo(vWorldPos), 1.0);
 }
 `;
-
-/** Seed-stable noise offset so each planet's geography is unique. */
-export function planetSeedOffset(seedHex: string): [number, number, number] {
-  const rng = new Rng(seedFromHex(seedHex)).fork('surface-offset');
-  return [rng.range(0, 100), rng.range(0, 100), rng.range(0, 100)];
-}
 
 export function createSolidPlanetMaterial(physical: Characterization): ShaderMaterial {
   const { appearance, bulk, atmosphere } = physical;

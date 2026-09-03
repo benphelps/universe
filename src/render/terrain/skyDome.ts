@@ -2,7 +2,13 @@ import { AdditiveBlending, BackSide, Color, Mesh, ShaderMaterial, SphereGeometry
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { secondSunUniforms } from '../lighting/secondSun';
 import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
+import {
+  CLOUD_PATTERN_GLSL,
+  cloudPatternUniforms,
+  planetSeedOffset,
+} from '../planet/cloudPattern';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
+import type { Characterization } from '../../universe/planet/types';
 
 const VERTEX = /* glsl */ `
 varying vec3 vDir;
@@ -20,8 +26,12 @@ uniform vec3 uLightColor;
 uniform vec3 uSunDir;
 uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
+uniform vec3 uSeedOffset;
+uniform float uTimeDays;
+uniform float uCloudBaseRadius;
 
 ${SIMPLEX_NOISE_GLSL}
+${CLOUD_PATTERN_GLSL}
 ${SHADOW_GLSL}
 ${SURFACE_LIGHT_GLSL}
 
@@ -33,6 +43,25 @@ float sphereExit(vec3 origin, vec3 dir, float radius) {
   float along = dot(origin, dir);
   float discriminant = along * along - (dot(origin, origin) - radius * radius);
   return max(-along + sqrt(max(discriminant, 0.0)), 0.0);
+}
+
+// A view from below crosses the condensate layer at its base. The local
+// procedural density gives the slant transmission along that ray; views from
+// within or above the deck have no foreground cloud boundary.
+vec2 cloudBoundary(vec3 dir) {
+  float eyeRadius = length(cameraPosition);
+  if (uCloudCoverage < 0.001 || uCloudBaseRadius <= eyeRadius) {
+    return vec2(1e30, 1.0);
+  }
+  float distance = sphereExit(cameraPosition, dir, uCloudBaseRadius);
+  vec3 point = cameraPosition + dir * distance;
+  vec3 up = normalize(point);
+  vec3 cloud = cloudDeckSample(
+    up, dot(up, uSunDir), uSeedOffset, uTimeDays
+  );
+  float verticalTransmission = 1.0 - cloudOpacity(cloud.x);
+  float slant = 1.0 / max(abs(dot(up, dir)), 0.08);
+  return vec2(distance, pow(max(verticalTransmission, 0.0), slant));
 }
 
 // The first ground intersection, or a sentinel when the sightline
@@ -82,7 +111,15 @@ float sunDiscVisibility(float radiusAtParcel, float mu, float angularRadius) {
 // route to the sun, and eclipse state. High parcels therefore remain
 // sunlit after the observer's sunset and fade continuously upward and
 // outward as the planetary shadow climbs through the air.
-vec3 scattered(vec3 dir, vec3 lightDir, vec3 lightColor, float angularRadius, float reach) {
+vec3 scattered(
+  vec3 dir,
+  vec3 lightDir,
+  vec3 lightColor,
+  float angularRadius,
+  float reach,
+  vec2 deck,
+  float meanDeckTransmission
+) {
   if (max(max(lightColor.r, lightColor.g), lightColor.b) <= 0.0) return vec3(0.0);
   float gasHeight = max(uScaleHeight, 1e-4);
   float aerosolHeight = max(uAerosolScaleHeight, 1e-4);
@@ -117,6 +154,9 @@ vec3 scattered(vec3 dir, vec3 lightDir, vec3 lightColor, float angularRadius, fl
         + uAerosolExtinction * aerosolDensity / aerosolHeight
     ) * ds;
     vec3 viewBeam = exp(-(viewDepth + 0.5 * segmentDepth));
+    if (0.5 * (start + end) > deck.x) {
+      viewBeam *= displayTransmittance(deck.y);
+    }
 
     float muSun = dot(lightDir, parcelUp);
     float discVisible = sunDiscVisibility(radiusAtParcel, muSun, angularRadius);
@@ -141,7 +181,11 @@ vec3 scattered(vec3 dir, vec3 lightDir, vec3 lightColor, float angularRadius, fl
       ));
       vec3 source = phase * gasDensity + haze * aerosolDensity;
       float visible = shadowFactor(parcel, lightDir, angularRadius, reach);
-      radiance += source * sunBeam * viewBeam * visible * discVisible * ds;
+      float sourceDeck = radiusAtParcel < uCloudBaseRadius
+        ? meanDeckTransmission
+        : 1.0;
+      radiance += source * sunBeam * viewBeam * visible * discVisible
+        * displayTransmittance(sourceDeck) * ds;
     }
     viewDepth += segmentDepth;
   }
@@ -153,10 +197,21 @@ void main() {
   // direction shortens toward each triangle's middle and the peak
   // facets into a diamond unless the direction is renormalized here.
   vec3 dir = normalize(vDir);
+  vec2 deck = cloudBoundary(dir);
+  // The global climate model supplies mean coverage rather than a second
+  // weather map along the source ray. Its area-weighted transmission is the
+  // physically correct expectation for direct light reaching air below it.
+  float meanDeckTransmission = 1.0 - uCloudCoverage
+    * (1.0 - exp(-uCloudOpticalDepth));
   // Scattering adds light; it never occludes, so the sun's disc (and
   // anything else bright enough) blazes through the daytime sky.
-  vec3 sky = scattered(dir, uSunDir, uLightColor, uStarAngularRadius, 1e30)
-    + scattered(dir, uLight2Dir, uLight2Color, uStar2AngularRadius, uLight2Reach);
+  vec3 sky = scattered(
+    dir, uSunDir, uLightColor, uStarAngularRadius, 1e30,
+    deck, meanDeckTransmission
+  ) + scattered(
+    dir, uLight2Dir, uLight2Color, uStar2AngularRadius, uLight2Reach,
+    deck, meanDeckTransmission
+  );
   gl_FragColor = vec4(sky, 1.0);
 }
 `;
@@ -169,16 +224,23 @@ void main() {
  * an eclipse. Its atmospheric properties are seated by the viewer with
  * the rest of the ground materials.
  */
-export function createSkyDome(): Mesh {
+export function createSkyDome(
+  physical: Characterization,
+  cloudBaseRadiusKm = 0,
+): Mesh {
   const material = new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
       ...createShadowUniforms(),
       ...surfaceLightUniforms(),
+      ...cloudPatternUniforms(physical),
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
       uSunDir: { value: [0, 0, 1] },
+      uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
+      uTimeDays: { value: 0 },
+      uCloudBaseRadius: { value: cloudBaseRadiusKm },
     },
     side: BackSide,
     transparent: true,

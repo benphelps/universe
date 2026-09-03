@@ -10,7 +10,7 @@ import type { Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { WORLD_NORMAL_GLSL } from '../glsl/worldNormal';
-import { planetSeedOffset } from './solidPlanetMaterial';
+import { planetSeedOffset } from './cloudPattern';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 
 const VERTEX = /* glsl */ `

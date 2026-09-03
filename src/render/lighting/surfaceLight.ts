@@ -1,4 +1,5 @@
 import { Color, type ShaderMaterial } from 'three';
+import { ADAPTATION_EXPONENT } from './starlight';
 
 /**
  * Sunlight through an atmosphere, for every lit surface: the direct
@@ -20,6 +21,19 @@ uniform float uNightFloor;
 uniform float uPlanetRadius;            // world units
 uniform float uScaleHeight;             // world units
 uniform float uAerosolScaleHeight;      // world units
+
+const float DISPLAY_ADAPTATION_EXPONENT = ${ADAPTATION_EXPONENT.toFixed(8)};
+
+// Relative radiance factors must pass through the same response as the
+// incident stellar flux: (I·t)^a = I^a·t^a. This is display perception only;
+// all transport functions themselves stay in physical linear radiance.
+vec3 displayTransmittance(vec3 physicalTransmission) {
+  return pow(clamp(physicalTransmission, 0.0, 1.0), vec3(DISPLAY_ADAPTATION_EXPONENT));
+}
+
+float displayTransmittance(float physicalTransmission) {
+  return pow(clamp(physicalTransmission, 0.0, 1.0), DISPLAY_ADAPTATION_EXPONENT);
+}
 
 // Relative air mass along the slant path at local sun elevation mu:
 // one overhead, the horizon column at grazing, held there below the
@@ -121,6 +135,24 @@ vec3 phaseWeight(float cosTheta) {
 // the two-lobed haze.
 vec3 backscatter() {
   return mix(vec3(0.5), vec3(0.12), uAerosolFraction) * uScatteringAlbedo;
+}
+
+// Diffuse flux through a scattering slab. The transport optical depth
+// discounts the haze's measured forward asymmetry; the Eddington absorption
+// eigenvalue removes photons that the single-scattering albedo says are truly
+// absorbed. It reduces to the conservative two-stream 1/(1+3τ/4) law when
+// absorption is zero, rather than treating every scattering event as loss via
+// Beer-Lambert extinction.
+vec3 diffuseTransmittance(vec3 column) {
+  vec3 asymmetry = 0.46 * uAerosolFraction;
+  vec3 transportAlbedo = uScatteringAlbedo * (1.0 - asymmetry);
+  vec3 absorptionEigenvalue = sqrt(max(
+    3.0 * (1.0 - uScatteringAlbedo)
+      * (1.0 - uScatteringAlbedo * asymmetry),
+    vec3(0.0)
+  ));
+  return exp(-column * absorptionEigenvalue)
+    / (1.0 + 0.75 * column * transportAlbedo);
 }
 
 // A small, energy-bounded approximation to higher scattering orders.
@@ -292,6 +324,23 @@ export function beamTransmittance(
 ): [number, number, number] {
   const column = slantColumn(altitudeKm, mu, radiusKm, scaleHeightKm);
   return [Math.exp(-tau[0] * column), Math.exp(-tau[1] * column), Math.exp(-tau[2] * column)];
+}
+
+/** Diffuse two-stream transmission through a scattering column, mirrored
+ * from the shader for physical regression tests. */
+export function diffuseTransmittance(
+  tau: number,
+  scatteringAlbedo: number,
+  aerosolFraction = 0,
+): number {
+  const omega = Math.min(1, Math.max(0, scatteringAlbedo));
+  const asymmetry = 0.46 * Math.min(1, Math.max(0, aerosolFraction));
+  const transportAlbedo = omega * (1 - asymmetry);
+  const absorptionEigenvalue = Math.sqrt(
+    Math.max(0, 3 * (1 - omega) * (1 - omega * asymmetry)),
+  );
+  return Math.exp(-Math.max(tau, 0) * absorptionEigenvalue) /
+    (1 + 0.75 * Math.max(tau, 0) * transportAlbedo);
 }
 
 /** The air a material stands under: vertical depth per channel, the

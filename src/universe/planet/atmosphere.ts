@@ -265,6 +265,35 @@ export function atmosphereColumn(atmosphere: PlanetAtmosphere, bulk: PlanetBulk)
   };
 }
 
+/** Visible Bond-albedo contribution of the gas/aerosol column. Rayleigh
+ * scattering is isotropic in the mean; the aerosol term is reduced by the
+ * same measured forward-asymmetry used by the renderer. Absorption competes
+ * with the two-stream backscatter instead of a planet class choosing a fixed
+ * albedo. `incidentRgb` weights the three visible bands by the host spectrum. */
+export function atmosphericBondAlbedo(
+  atmosphere: PlanetAtmosphere,
+  bulk: PlanetBulk,
+  incidentRgb: readonly [number, number, number],
+): number {
+  const column = atmosphereColumn(atmosphere, bulk);
+  const photopic = [0.2126, 0.7152, 0.0722] as const;
+  const weights = photopic.map((weight, i) => weight * Math.max(incidentRgb[i], 0));
+  const weightSum = Math.max(weights[0] + weights[1] + weights[2], 1e-9);
+  let reflected = 0;
+  for (let channel = 0; channel < 3; channel++) {
+    const transportScatter =
+      column.rayleigh[channel] + column.aerosol[channel] * (1 - 0.46);
+    const absorption = Math.max(
+      0,
+      column.aerosolExtinction[channel] - column.aerosol[channel],
+    );
+    const backscatter = 0.5 * transportScatter;
+    const reflectance = backscatter / (1 + backscatter + absorption);
+    reflected += reflectance * weights[channel];
+  }
+  return reflected / weightSum;
+}
+
 /**
  * The column above what a body shows from outside: a solid's whole
  * column, or for an envelope the gas above its visible deck — the tops

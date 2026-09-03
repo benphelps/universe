@@ -1,4 +1,12 @@
 import type { Characterization } from '../../universe/planet/types';
+import { seedFromHex } from '../../core/rng/hash';
+import { Rng } from '../../core/rng/rng';
+
+/** Seed-stable noise offset shared by the orbit and ground cloud fields. */
+export function planetSeedOffset(seedHex: string): [number, number, number] {
+  const rng = new Rng(seedFromHex(seedHex)).fork('surface-offset');
+  return [rng.range(0, 100), rng.range(0, 100), rng.range(0, 100)];
+}
 
 /** One procedural weather field shared by distant solid spheres and the
  *  focus cloud shell. Coverage decides where condensate exists; density

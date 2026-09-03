@@ -44,7 +44,7 @@ import { createAtmosphereShell } from '../render/planet/atmosphereShell';
 import { PlanetObject } from '../render/planet/planetObject';
 import { createRingMesh } from '../render/planet/ringMaterial';
 import { applyOccluders, applyRingShadow, clearRingShadow, shadowAt } from '../render/planet/shadows';
-import { planetSeedOffset } from '../render/planet/solidPlanetMaterial';
+import { planetSeedOffset } from '../render/planet/cloudPattern';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { SKY_POINT_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
 import { StarObject } from '../render/star/starObject';
@@ -94,7 +94,7 @@ import { createOrbitLine } from '../render/system/orbitLine';
 import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
 import { SPLIT_RATIO, TerrainChunkManager } from '../render/terrain/chunkManager';
 import { PointConeIndex } from '../render/picking/pointConeIndex';
-import { createCloudShell } from '../render/terrain/cloudShell';
+import { cloudShellBounds, createCloudShell } from '../render/terrain/cloudShell';
 import { createMagmaMaterial, createOceanMaterial } from '../render/terrain/oceanSphere';
 import {
   createRockGeometry,
@@ -2321,8 +2321,14 @@ export class UnifiedViewer {
         }
       },
     );
+    const seaLevelKm = this.field.seaLevelM / 1000;
+    const reliefKm = this.field.params.reliefM / 1000;
+    const cloudBounds = cloudShellBounds(physical, seaLevelKm, reliefKm);
     if (physical.atmosphere.class !== 'none') {
-      this.skyDome = createSkyDome();
+      this.skyDome = createSkyDome(
+        physical,
+        cloudBounds ? this.radiusKm + cloudBounds.baseKm : 0,
+      );
       this.scene.add(this.skyDome);
     }
     this.atmosphereShell = createAtmosphereShell(physical, this.radiusKm);
@@ -2330,8 +2336,8 @@ export class UnifiedViewer {
     this.cloudShell = createCloudShell(
       physical,
       this.radiusKm,
-      this.field.seaLevelM / 1000,
-      this.field.params.reliefM / 1000,
+      seaLevelKm,
+      reliefKm,
     );
     if (this.cloudShell) this.scene.add(this.cloudShell);
     // The ground materials take this body's air; the shared ones
@@ -4841,6 +4847,7 @@ export class UnifiedViewer {
       const material = this.skyDome.material as ShaderMaterial;
       material.uniforms.uSunDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
+      material.uniforms.uTimeDays.value = foldShaderTime(this.simTimeDays);
       applySecondSun(material, surf2);
     }
   }

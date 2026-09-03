@@ -6,6 +6,7 @@ import {
   airmass,
   beamTransmittance,
   curvedZenithSkyRadiance,
+  diffuseTransmittance,
   diffuseShadow,
   groundIrradiance,
   horizonAirmass,
@@ -72,6 +73,19 @@ describe('beamTransmittance', () => {
 
   it('passes everything through a vacuum', () => {
     expect(beamTransmittance([0, 0, 0], 0, 0.01, 1737, 0.1)).toEqual([1, 1, 1]);
+  });
+});
+
+describe('diffuseTransmittance', () => {
+  it('uses transport rather than treating conservative scattering as absorption', () => {
+    expect(diffuseTransmittance(10, 1)).toBeCloseTo(1 / 8.5, 6);
+    expect(diffuseTransmittance(10, 1)).toBeGreaterThan(Math.exp(-10) * 1000);
+  });
+
+  it('preferentially removes an absorbed blue channel in a deep haze', () => {
+    const red = diffuseTransmittance(9, 0.995, 0.2);
+    const blue = diffuseTransmittance(24, 0.94, 0.1);
+    expect(red).toBeGreaterThan(blue * 20);
   });
 });
 

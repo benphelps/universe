@@ -4,10 +4,13 @@ import type { PlanetClass } from '../system/types';
 import type {
   Hydrosphere,
   PlanetAtmosphere,
+  PlanetBulk,
   PlanetClimate,
   PlanetInterior,
   PlanetRotation,
 } from './types';
+import { silicateMeltFraction } from './thermodynamics';
+import { atmosphericBondAlbedo } from './atmosphere';
 
 /** T_eq = 278.6 K at 1 AU around 1 L☉ with zero albedo. */
 const T_EQ_1AU = 278.6;
@@ -22,14 +25,17 @@ export function computeClimate(
   rng: Rng,
   planetClass: PlanetClass,
   atmosphere: PlanetAtmosphere,
+  bulk: PlanetBulk,
   interior: PlanetInterior,
   rotation: PlanetRotation,
+  incidentRgb: readonly [number, number, number],
   luminosity: number,
   aAu: number,
   ageGyr: number,
 ): PlanetClimate {
   const instellation = luminosity / aAu ** 2;
   const envelope = atmosphere.class === 'hydrogen-helium';
+  const airAlbedo = envelope ? 0 : atmosphericBondAlbedo(atmosphere, bulk, incidentRgb);
 
   // Water inventory: ice-rich beyond the frost line, trace delivery inside.
   const waterMassFraction =
@@ -80,59 +86,68 @@ export function computeClimate(
       surfaceMeanK = equilibriumK;
       break;
     }
-    if (interior.regime === 'magma') {
+    const wasHydrosphere: Hydrosphere = hydrosphere;
+    const irradiationMelt = silicateMeltFraction(surfaceMeanK);
+    if (interior.regime === 'magma' || irradiationMelt > 0) {
       hydrosphere = 'magma';
       // Exposed-melt fraction: the crust closes over as the flux falls
       // toward the magma threshold (2 W/m²), and irradiation past the
       // silicate solidus melts it open again from above.
       const fluxMelt = 0.15 + 0.45 * Math.log10(interior.heatFluxWm2 / 2);
-      const irradiationMelt = (surfaceMeanK - 1300) / 400;
       oceanCoverage = Math.min(0.95, Math.max(0.05, fluxMelt, irradiationMelt));
-      break;
-    }
-
-    // Polar temperature falls below the mean; thick atmospheres transport heat.
-    const transport = Math.min(1, pressureBar) * 0.6;
-    const poleDeltaK = 55 * (1 - 0.6 * transport);
-    // Permanent ice needs annual means ~10 K below freezing.
-    const capFreezeK = 263;
-    const fullFreezeK = 266;
-    const boilK = 373 * Math.min(1.5, Math.max(0.75, pressureBar ** 0.08));
-
-    const hasWater = waterMassFraction > 3e-5;
-    const wasHydrosphere: Hydrosphere = hydrosphere;
-    if (!hasWater || atmosphere.class === 'none' || surfaceMeanK > boilK) {
-      hydrosphere = 'none';
       iceCapLatitudeRad = Math.PI / 2;
-      oceanCoverage = 0;
-    } else if (surfaceMeanK < fullFreezeK) {
-      hydrosphere = 'ice-sheet';
-      iceCapLatitudeRad = 0;
-      oceanCoverage = 0;
     } else {
-      hydrosphere = 'oceans';
-      oceanCoverage = Math.min(1, (waterMassFraction / 4e-4) * 0.71);
-      // Caps extend equatorward until the freeze line: T(φ) ≈ T_s − ΔT·sin²φ.
-      const sinSq = (surfaceMeanK - capFreezeK) / Math.max(poleDeltaK, 1);
-      iceCapLatitudeRad = sinSq >= 1 ? Math.PI / 2 : Math.asin(Math.sqrt(Math.max(0, sinSq)));
+      // Polar temperature falls below the mean; thick atmospheres transport heat.
+      const transport = Math.min(1, pressureBar) * 0.6;
+      const poleDeltaK = 55 * (1 - 0.6 * transport);
+      // Permanent ice needs annual means ~10 K below freezing.
+      const capFreezeK = 263;
+      const fullFreezeK = 266;
+      const boilK = 373 * Math.min(1.5, Math.max(0.75, pressureBar ** 0.08));
+
+      const hasWater = waterMassFraction > 3e-5;
+      if (!hasWater || atmosphere.class === 'none' || surfaceMeanK > boilK) {
+        hydrosphere = 'none';
+        iceCapLatitudeRad = Math.PI / 2;
+        oceanCoverage = 0;
+      } else if (surfaceMeanK < fullFreezeK) {
+        hydrosphere = 'ice-sheet';
+        iceCapLatitudeRad = 0;
+        oceanCoverage = 0;
+      } else {
+        hydrosphere = 'oceans';
+        oceanCoverage = Math.min(1, (waterMassFraction / 4e-4) * 0.71);
+        // Caps extend equatorward until the freeze line: T(φ) ≈ T_s − ΔT·sin²φ.
+        const sinSq = (surfaceMeanK - capFreezeK) / Math.max(poleDeltaK, 1);
+        iceCapLatitudeRad = sinSq >= 1 ? Math.PI / 2 : Math.asin(Math.sqrt(Math.max(0, sinSq)));
+      }
     }
 
     const iceFraction = 1 - Math.sin(iceCapLatitudeRad);
     snowball = hydrosphere === 'ice-sheet';
-    const cloudAlbedo =
-      atmosphere.class === 'co2-hothouse'
-        ? 0.5
-        : 0.18 * Math.min(1, pressureBar) * (oceanCoverage > 0 ? 1 : 0.3);
-    const surfaceAlbedo = 0.15 * (1 - oceanCoverage) + 0.06 * oceanCoverage;
-    const next = Math.min(
-      0.75,
-      surfaceAlbedo * (1 - iceFraction) + 0.45 * iceFraction + cloudAlbedo,
+    const waterCloudAlbedo =
+      hydrosphere === 'oceans' ? 0.18 * Math.min(1, pressureBar) : 0;
+    const bareAlbedo = hydrosphere === 'magma' ? 0.1 : 0.15;
+    const surfaceAlbedo = bareAlbedo * (1 - oceanCoverage) + 0.06 * oceanCoverage;
+    const lowerAlbedo = Math.min(
+      0.95,
+      surfaceAlbedo * (1 - iceFraction) + 0.45 * iceFraction + waterCloudAlbedo,
     );
+    // Adding-doubling for an atmosphere over a reflecting lower boundary:
+    // the down-and-up transmission is (1-A)^2 and repeated bounces form the
+    // denominator. No atmosphere class is assigned a predetermined albedo.
+    const next = airAlbedo +
+      ((1 - airAlbedo) ** 2 * lowerAlbedo) /
+        Math.max(1 - airAlbedo * lowerAlbedo, 1e-6);
     if (Math.abs(next - bondAlbedo) < 0.005 && wasHydrosphere === hydrosphere) break;
     bondAlbedo = bondAlbedo * 0.5 + next * 0.5;
   }
 
   const equilibriumK = T_EQ_1AU * instellation ** 0.25 * (1 - bondAlbedo) ** 0.25;
+  if (!envelope) {
+    const opticalDepth = atmosphere.opticalDepth + 5.8 * co2Bar ** 0.7;
+    surfaceMeanK = equilibriumK * (1 + 0.75 * opticalDepth) ** 0.25;
+  }
 
   // Locked worlds: redistribution efficiency sets the day–night contrast.
   const redistribution = Math.min(1, (atmosphere.surfacePressureBar + co2Bar) * 0.8);

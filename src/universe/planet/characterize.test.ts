@@ -85,6 +85,18 @@ describe('planet fixtures around a Sun-like star', () => {
     expect(lava.appearance.lavaGlow).toBe(1);
   });
 
+  it('melts a surface heated past the silicate solidus by its atmosphere', () => {
+    const greenhouse = fixture(0x424b1a3372a4b38cn, 'rocky', 0.8, 0.64, {
+      ...SUN_CONTEXT,
+      centralLuminosity: 18,
+    });
+    expect(greenhouse.climate.surfaceMeanK).toBeGreaterThan(1300);
+    expect(greenhouse.climate.hydrosphere).toBe('magma');
+    expect(greenhouse.interior.regime).toBe('magma');
+    expect(greenhouse.appearance.lavaGlow).toBe(1);
+    expect(greenhouse.appearance.clouds.condensate).not.toBe('sulfuric-acid');
+  });
+
   it('a Mars analog is a cold thin-atmosphere world', () => {
     const mars = fixture(13n, 'rocky', 0.107, 1.52);
     expect(['thin-co2', 'none']).toContain(mars.atmosphere.class);

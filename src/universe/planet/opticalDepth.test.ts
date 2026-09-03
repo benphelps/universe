@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aerosolExtinctionDepth,
   aerosolOpticalDepth,
+  atmosphericBondAlbedo,
   atmosphereColumn,
   columnAbove,
   visibleOpticalDepth,
@@ -33,6 +34,24 @@ describe('visibleOpticalDepth', () => {
 
   it('is transparent without an atmosphere', () => {
     expect(visibleOpticalDepth(air({ class: 'none', surfacePressureBar: 0 }), earthBulk)).toEqual([0, 0, 0]);
+  });
+});
+
+describe('atmosphericBondAlbedo', () => {
+  it('derives a modest clear-Earth contribution from its visible column', () => {
+    const albedo = atmosphericBondAlbedo(air({}), earthBulk, [1, 1, 1]);
+    expect(albedo).toBeGreaterThan(0.02);
+    expect(albedo).toBeLessThan(0.12);
+  });
+
+  it('makes a deep scattering CO2 column reflective without a class albedo', () => {
+    const albedo = atmosphericBondAlbedo(
+      air({ class: 'co2-hothouse', surfacePressureBar: 68 }),
+      earthBulk,
+      [0.55, 0.7, 1],
+    );
+    expect(albedo).toBeGreaterThan(0.7);
+    expect(albedo).toBeLessThan(1);
   });
 });
 

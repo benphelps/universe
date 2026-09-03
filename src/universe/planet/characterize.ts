@@ -59,7 +59,7 @@ export function characterizePlanet(
     rotation.periodHours,
     ironCoreFraction,
   );
-  const interior = computeInterior(
+  let interior = computeInterior(
     rng.fork('interior'),
     planetClass,
     bulk,
@@ -84,12 +84,20 @@ export function characterizePlanet(
     rng.fork('climate'),
     planetClass,
     atmosphere,
+    bulk,
     interior,
     rotation,
+    star.linearRgb,
     centralLuminosity,
     aAu,
     star.ageGyr,
   );
+  // Geological heat and stellar heating enter independently, but either can
+  // leave the observable surface molten. Reconcile that final thermodynamic
+  // state before appearance and terrain are derived from it.
+  if (climate.hydrosphere === 'magma' && interior.regime !== 'gas') {
+    interior = { ...interior, regime: 'magma' };
+  }
   if (climate.biosphere) atmosphere = withOxygen(atmosphere);
   if (climate.co2Bar > 0.005) {
     // The thermostat's CO₂ is real mass: fold it into the column the

@@ -5,7 +5,7 @@ import {
   type Circulation,
 } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
-import { planetSeedOffset } from './solidPlanetMaterial';
+import { planetSeedOffset } from './cloudPattern';
 
 /**
  * The deck pattern: cloud color and cloud-top height as a pure function

@@ -45,7 +45,8 @@ export function computeAppearance(
   let landColorB: Rgb;
   let lavaGlow = 0;
 
-  if (interior.regime === 'magma') {
+  const molten = climate.hydrosphere === 'magma';
+  if (molten) {
     landColorA = [0.09, 0.08, 0.08];
     landColorB = [0.16, 0.13, 0.11];
     lavaGlow = 1;
@@ -70,7 +71,7 @@ export function computeAppearance(
     landColorB,
     // Molten worlds' "seas" are melt under a chilling crust — their
     // reflectance is basalt-dark; the light they show is their own.
-    oceanColor: interior.regime === 'magma' ? [0.05, 0.04, 0.038] : [0.02, 0.09, 0.18],
+    oceanColor: molten ? [0.05, 0.04, 0.038] : [0.02, 0.09, 0.18],
     iceColor: [0.82, 0.86, 0.9],
     clouds: computeCloudLayer(rng.fork('clouds'), atmosphere, climate, bulk, rotation),
     lavaGlow,

@@ -53,7 +53,7 @@ describe('solid-world cloud layers', () => {
     const titan = computeCloudLayer(
       new Rng(1n),
       atmosphere('nitrogen-methane', 18),
-      { ...CLIMATE, surfaceMeanK: 94, hydrosphere: 'none' },
+      { ...CLIMATE, equilibriumK: 94, surfaceMeanK: 94, hydrosphere: 'none' },
       BULK,
       ROTATION,
     );
@@ -75,6 +75,25 @@ describe('solid-world cloud layers', () => {
     expect(venus.coverage).toBe(1);
     expect(venus.topAltitudeKm).toBeGreaterThanOrEqual(50);
     expect(venus.opticalDepth).toBeGreaterThan(20);
+  });
+
+  it('does not put sulfuric acid in an atmosphere that never enters its phase window', () => {
+    const ultraHot = computeCloudLayer(
+      new Rng(2n),
+      { ...atmosphere('co2-hothouse', 20), surfacePressureBar: 68 },
+      {
+        ...CLIMATE,
+        equilibriumK: 883,
+        surfaceMeanK: 2680,
+        hydrosphere: 'magma',
+        oceanCoverage: 0.95,
+      },
+      BULK,
+      ROTATION,
+    );
+    expect(ultraHot.condensate).toBe('mineral');
+    expect(ultraHot.coverage).toBeGreaterThan(0.8);
+    expect(ultraHot.topAltitudeKm).toBeGreaterThan(ultraHot.thicknessKm);
   });
 
   it('gives ocean worlds more clouds and deeper relief than frozen ones', () => {
