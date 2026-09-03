@@ -1,5 +1,5 @@
 import { Color, ShaderMaterial } from 'three';
-import { secondSunUniforms } from '../lighting/secondSun';
+import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
@@ -28,8 +28,7 @@ varying vec3 vWorldPos;
 uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
+${SECOND_SUN_GLSL}
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
@@ -55,12 +54,15 @@ void main() {
   vec3 viewDir = normalize(-vViewPos) * mat3(viewMatrix);
 
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
-  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
-  vec3 color = uColor * (light + uNightFloor)
-    + sunSheen(normal, viewDir, uLightDir, uLightColor, shadow)
-    + sunSheen(normal, viewDir, uLight2Dir, uLight2Color, shadow2);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow));
+  vec3 sheen = sunSheen(normal, viewDir, uLightDir, uLightColor, shadow);
+  bool lit2 = secondSunLit();
+  if (lit2) {
+    float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+    light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
+    sheen += sunSheen(normal, viewDir, uLight2Dir, uLight2Color, shadow2);
+  }
+  vec3 color = uColor * (light + uNightFloor) + sheen;
 
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,
@@ -73,10 +75,12 @@ void main() {
   vec3 midPoint = 0.5 * (cameraPosition + vWorldPos);
   vec3 toEye = normalize(cameraPosition - vWorldPos);
   float airShadow = shadowFactor(midPoint, uLightDir, uStarAngularRadius, 1e30);
-  float airShadow2 = shadowFactor(midPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   vec3 seen = color * exp(-column)
-    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * airShadow
-    + uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * airShadow2;
+    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * airShadow;
+  if (lit2) {
+    float airShadow2 = shadowFactor(midPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+    seen += uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * airShadow2;
+  }
   gl_FragColor = vec4(seen, 1.0);
 }
 `;
@@ -126,8 +130,7 @@ varying vec3 vWorldPos;
 uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
+${SECOND_SUN_GLSL}
 uniform vec3 uSeedOffset;
 uniform float uTimeDays;
 
@@ -167,13 +170,16 @@ void main() {
 
   float hot = smoothstep(0.2, 0.9, lum);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
-  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
-  vec3 color = uColor * (light + uNightFloor)
-    + meltSheen(bumped, normal, viewDir, uLightDir, uLightColor, hot, shadow)
-    + meltSheen(bumped, normal, viewDir, uLight2Dir, uLight2Color, hot, shadow2)
-    + glow;
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow));
+  vec3 sheen = meltSheen(bumped, normal, viewDir, uLightDir, uLightColor, hot, shadow);
+  bool lit2 = secondSunLit();
+  float shadow2 = 1.0;
+  if (lit2) {
+    shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+    light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
+    sheen += meltSheen(bumped, normal, viewDir, uLight2Dir, uLight2Color, hot, shadow2);
+  }
+  vec3 color = uColor * (light + uNightFloor) + sheen + glow;
 
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,
@@ -185,8 +191,10 @@ void main() {
   vec3 midUp = normalize(0.5 * (cameraPosition + vWorldPos));
   vec3 toEye = normalize(cameraPosition - vWorldPos);
   vec3 seen = color * exp(-column)
-    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * shadow
-    + uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * shadow2;
+    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * shadow;
+  if (lit2) {
+    seen += uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * shadow2;
+  }
   gl_FragColor = vec4(seen, 1.0);
 }
 `;

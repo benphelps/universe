@@ -4,7 +4,7 @@ import { type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { WORLD_NORMAL_GLSL } from '../glsl/worldNormal';
-import { secondSunUniforms } from '../lighting/secondSun';
+import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import {
   horizonAirmass,
   SURFACE_LIGHT_GLSL,
@@ -44,8 +44,7 @@ uniform samplerCube uDeckB;
 uniform float uDeckMix;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
+${SECOND_SUN_GLSL}
 uniform vec3 uSeedOffset;
 uniform float uTimeDays;
 uniform float uContrast;
@@ -102,24 +101,33 @@ void main() {
   vec3 bumped = normalize(normal - clamp(slopeX, -0.6, 0.6) * tx - clamp(slopeY, -0.6, 0.6) * ty);
 
   float ndotl = dot(normal, uLightDir);
-  float ndotl2 = dot(normal, uLight2Dir);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
-  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
+  bool lit2 = secondSunLit();
+  float ndotl2 = 0.0;
+  float shadow2 = 1.0;
+  if (lit2) {
+    ndotl2 = dot(normal, uLight2Dir);
+    shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+  }
 
   // The deck is lit through the clear column above it and seen back
   // through the same column: the limb darkens as the slant lengthens,
   // and the column's own scattering veils the limb blue and rims the
   // lit edge — what the painted haze and rim once stood in for.
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow, diffuseShadow(shadow))
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, diffuseShadow(shadow2));
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow, diffuseShadow(shadow));
+  if (lit2) {
+    light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, diffuseShadow(shadow2));
+  }
   vec3 color = surface * (light + uNightFloor);
   float xv = airmass(dot(normal, viewDir));
   color = color * airColumnThrough(vec3(0.0), uOpticalDepth, xv)
     + uLightColor * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl), -dot(viewDir, uLightDir))
-      * twilight(ndotl) * shadow
-    + uLight2Color * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl2), -dot(viewDir, uLight2Dir))
+      * twilight(ndotl) * shadow;
+  if (lit2) {
+    color += uLight2Color * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl2), -dot(viewDir, uLight2Dir))
       * twilight(ndotl2) * shadow2;
+  }
 
   // Hot giants radiate their own heat; the locked hotspot rides east
   // of the substellar point and carries into the night.

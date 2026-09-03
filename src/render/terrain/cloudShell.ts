@@ -1,5 +1,5 @@
 import { Color, DoubleSide, Mesh, ShaderMaterial, SphereGeometry } from 'three';
-import { secondSunUniforms } from '../lighting/secondSun';
+import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import {
   horizonAirmass,
   SURFACE_LIGHT_GLSL,
@@ -32,8 +32,7 @@ varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
+${SECOND_SUN_GLSL}
 uniform vec3 uSeedOffset;
 uniform vec3 uCloudColor;
 uniform float uTimeDays;
@@ -50,17 +49,21 @@ void main() {
   // Use the analytic sphere hit for every close-range calculation. The
   // interpolated geometry position lies on a flat triangle, not the deck.
   vec3 shellPoint = cloudOuterPoint(vWorldPos);
+  float range = distance(cameraPosition, shellPoint);
+  float volumeWeight = 1.0 - smoothstep(600.0, 3500.0, range);
+  bool nearDeck = volumeWeight > 0.001;
+  if (nearDeck) {
+    // Transparent DoubleSide spheres are drawn once per side. At close
+    // range only the boundary facing the camera owns this ray segment;
+    // integrating both sides would double the same volume, so the other
+    // side leaves before it samples the weather at all.
+    bool outsideDeck = length(cameraPosition) > uCloudOuterRadius;
+    if ((outsideDeck && !gl_FrontFacing) || (!outsideDeck && gl_FrontFacing)) discard;
+  }
   vec3 p = normalize(shellPoint);
   vec3 cloud = cloudDeckSample(p, dot(p, uLightDir), uSeedOffset, uTimeDays);
   float mask = cloudOpacity(cloud.x);
-  float range = distance(cameraPosition, shellPoint);
-  float volumeWeight = 1.0 - smoothstep(600.0, 3500.0, range);
-  if (volumeWeight > 0.001) {
-    bool outsideDeck = length(cameraPosition) > uCloudOuterRadius;
-    // Transparent DoubleSide spheres are drawn once per side. At close
-    // range only the boundary facing the camera owns this ray segment;
-    // integrating both sides would double the same volume.
-    if ((outsideDeck && !gl_FrontFacing) || (!outsideDeck && gl_FrontFacing)) discard;
+  if (nearDeck) {
     vec3 volume = cloudVolume(shellPoint, cloud, uSeedOffset, uTimeDays);
     mask = mix(mask, volume.x, volumeWeight);
     cloud.y = mix(cloud.y, volume.y, volumeWeight);
@@ -70,9 +73,11 @@ void main() {
   // Radially-lit tops through the thin air above the deck: bright by
   // day, reddened at the terminator, eclipsed under a moon's shadow.
   float shadow = shadowFactor(shellPoint, uLightDir, uStarAngularRadius, 1e30);
-  float shadow2 = shadowFactor(shellPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, cloudNormal, p, shadow, diffuseShadow(shadow))
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, cloudNormal, p, shadow2, diffuseShadow(shadow2));
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, cloudNormal, p, shadow, diffuseShadow(shadow));
+  if (secondSunLit()) {
+    float shadow2 = shadowFactor(shellPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+    light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, cloudNormal, p, shadow2, diffuseShadow(shadow2));
+  }
   vec3 color = uCloudColor * mix(0.65, 1.12, cloud.z) * (light + uNightFloor);
   // Below the deck we see its shaded base rather than the sunlit top.
   float aboveDeck = step(length(shellPoint), length(cameraPosition));

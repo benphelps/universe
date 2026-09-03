@@ -1,5 +1,5 @@
 import { Color, DoubleSide, ShaderMaterial } from 'three';
-import { secondSunUniforms } from '../lighting/secondSun';
+import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
@@ -52,8 +52,7 @@ varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
+${SECOND_SUN_GLSL}
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
@@ -86,9 +85,12 @@ void main() {
   // moon or ring standing in its way; the night keeps the sky's own
   // glow as the viewer's adaptation allows.
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
-  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, dir, shadow, diffuseShadow(shadow))
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, dir, shadow2, diffuseShadow(shadow2));
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, dir, shadow, diffuseShadow(shadow));
+  bool lit2 = secondSunLit();
+  if (lit2) {
+    float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+    light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, dir, shadow2, diffuseShadow(shadow2));
+  }
   vec3 color = ground * (light + uNightFloor);
 
   // Aerial perspective: the air along the run to the eye keeps some of
@@ -102,10 +104,12 @@ void main() {
   vec3 midPoint = 0.5 * (cameraPosition + vWorldPos);
   vec3 toEye = normalize(cameraPosition - vWorldPos);
   float airShadow = shadowFactor(midPoint, uLightDir, uStarAngularRadius, 1e30);
-  float airShadow2 = shadowFactor(midPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
   vec3 seen = color * exp(-column)
-    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * airShadow
-    + uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * airShadow2;
+    + uLightColor * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLightDir), -dot(toEye, uLightDir)) * airShadow;
+  if (lit2) {
+    float airShadow2 = shadowFactor(midPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+    seen += uLight2Color * airSegmentScatter(column, 0.5 * (eyeAlt + pointAlt), dot(midUp, uLight2Dir), -dot(toEye, uLight2Dir)) * airShadow2;
+  }
   gl_FragColor = vec4(seen, 1.0);
 }
 `;

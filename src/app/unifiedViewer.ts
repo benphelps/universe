@@ -4451,13 +4451,10 @@ export class UnifiedViewer {
     // The stars at their true positions and radii: angular size, phase
     // light, parallax, and eclipses all come out right by construction.
     const starPositions = this.stellarPositionsKm(tSeconds);
-    // Everything in the sky is seen through the same air.
+    // Everything in the sky is seen through the same air. The bodies
+    // take it as they are placed; the stellar tiers take it once the
+    // sun's geometry is known below.
     const air = this.airView(up);
-    this.backdrop?.setAirView(air);
-    this.pipeline.sky.setAirView(air);
-    for (const points of [this.starSprites, this.farPoints, this.neighborPoints]) {
-      if (points) applyAirView(points.material as ShaderMaterial, air);
-    }
     const spritePositions = this.starSprites?.geometry.getAttribute('position') as
       | BufferAttribute
       | undefined;
@@ -4797,11 +4794,11 @@ export class UnifiedViewer {
       air.sunDir = sunDir;
       air.sunIntensity = lightColor[1];
       air.eclipse = eclipse;
-      this.backdrop?.setAirView(air);
-      this.pipeline.sky.setAirView(air);
-      for (const points of [this.starSprites, this.farPoints, this.neighborPoints]) {
-        if (points) applyAirView(points.material as ShaderMaterial, air);
-      }
+    }
+    this.backdrop?.setAirView(air);
+    this.pipeline.sky.setAirView(air);
+    for (const points of [this.starSprites, this.farPoints, this.neighborPoints]) {
+      if (points) applyAirView(points.material as ShaderMaterial, air);
     }
     const pointVisibility = pointStarVisibility(daylight);
     const extendedVisibility = extendedSkyVisibility(daylight);

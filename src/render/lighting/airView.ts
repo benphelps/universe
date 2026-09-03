@@ -19,6 +19,7 @@ uniform vec3 uAirSunDir;
 uniform float uAirSunIntensity;
 uniform float uAirEclipse;
 uniform float uAirScatteringAlbedo;
+uniform float uAirZenithRadiance;
 #ifndef AIR_UP_DECLARED
 #define AIR_UP_DECLARED
 uniform vec3 uAirUp;
@@ -50,7 +51,8 @@ vec3 airTransmittanceTo(vec3 worldPos) {
 // sightline so stars emerge first in the darker anti-solar sky and
 // remain washed out around the sunset aureole. During totality the
 // umbra darkens the overhead column most while the distant horizon
-// retains its illuminated ring.
+// retains its illuminated ring. The zenith's own value depends on
+// nothing but uniforms, so it arrives as one computed once a frame.
 float airSkyRadianceGreen(vec3 dir) {
   if (uAirTau.g <= 0.0 || uAirSunIntensity <= 0.0) return 0.0;
   float muView = dot(dir, uAirUp);
@@ -90,7 +92,7 @@ float skyVisibility(vec3 dir) {
   // after that visible glow had already gone.
   if (dot(uAirSunDir, uAirUp) < 0.0) return 1.0;
   float localDaylight = airSkyRadianceGreen(normalize(dir));
-  float zenithDaylight = airSkyRadianceGreen(uAirUp);
+  float zenithDaylight = uAirZenithRadiance;
   float local = pow(
     ${SKYGLOW_FLUX_RATIO.toExponential()} / max(${SKYGLOW_FLUX_RATIO.toExponential()}, localDaylight),
     ${1 - ADAPTATION_EXPONENT}
@@ -165,6 +167,46 @@ export function refractionArcmin(hDeg: number, strength: number): number {
   return (strength * 1.02) / Math.tan(((h + 10.3 / (h + 5.11)) * Math.PI) / 180);
 }
 
+function viewMass(mu: number, horizon: number): number {
+  const m = Math.max(mu, 0);
+  return 1 / (m + Math.exp(-11 * m) / horizon);
+}
+
+/**
+ * The shader's zenith sky radiance in the green band — the seat the
+ * directional star visibility corrects each sightline against —
+ * mirrored here so the viewer computes it once a frame instead of
+ * every fragment and vertex recomputing the same number.
+ */
+export function airZenithRadianceGreen(air: AirView): number {
+  const tau = air.tau[1];
+  const sunIntensity = air.sunIntensity ?? 0;
+  if (tau <= 0 || sunIntensity <= 0) return 0;
+  const rayleigh = (air.rayleighTau ?? air.tau)[1];
+  const aerosol = (air.aerosolTau ?? [0, 0, 0])[1];
+  const aerosolHorizon = air.aerosolHorizon ?? air.horizon;
+  const muSun = air.sunDir ? air.sunDir.dot(air.up) : air.up.y;
+  const xv =
+    (rayleigh * viewMass(1, air.horizon) + aerosol * viewMass(1, aerosolHorizon)) /
+    Math.max(tau, 1e-6);
+  const xs =
+    (rayleigh * viewMass(muSun, air.horizon) + aerosol * viewMass(muSun, aerosolHorizon)) /
+    Math.max(tau, 1e-6);
+  const tv = tau * xv;
+  const ts = tau * xs;
+  const den = xs - xv;
+  const integral =
+    Math.abs(den) > 1e-3 ? (xv * (Math.exp(-tv) - Math.exp(-ts))) / den : tv * Math.exp(-tv);
+  const albedo = air.scatteringAlbedo ?? 1;
+  const phase = 0.1875 * (1 + muSun * muSun) * albedo;
+  const scatterTau = tau * albedo;
+  const interacted = 1 - Math.exp(-scatterTau * xs);
+  const survived = Math.exp(-tau * (1 - albedo) * 0.5 * (xs + xv));
+  const escaped = 1 / (1 + 0.35 * scatterTau * xv);
+  const multiple = 0.08 * interacted * survived * escaped;
+  return sunIntensity * (phase * Math.max(integral, 0) + multiple) * (air.eclipse ?? 1);
+}
+
 export function airViewUniforms(): Record<string, { value: unknown }> {
   return {
     uAirTau: { value: new Color(0, 0, 0) },
@@ -178,6 +220,7 @@ export function airViewUniforms(): Record<string, { value: unknown }> {
     uAirSunIntensity: { value: 0 },
     uAirEclipse: { value: 1 },
     uAirScatteringAlbedo: { value: 1 },
+    uAirZenithRadiance: { value: 0 },
   };
 }
 
@@ -199,6 +242,7 @@ export function applyAirView(material: ShaderMaterial, air: AirView | null): voi
     uniforms.uAirSunIntensity.value = air.sunIntensity ?? 0;
     uniforms.uAirEclipse.value = air.eclipse ?? 1;
     uniforms.uAirScatteringAlbedo.value = air.scatteringAlbedo ?? 1;
+    uniforms.uAirZenithRadiance.value = airZenithRadianceGreen(air);
   } else {
     (uniforms.uAirTau.value as Color).setRGB(0, 0, 0);
     (uniforms.uAirRayleighTau.value as Color).setRGB(0, 0, 0);
@@ -207,5 +251,6 @@ export function applyAirView(material: ShaderMaterial, air: AirView | null): voi
     uniforms.uAirSunIntensity.value = 0;
     uniforms.uAirEclipse.value = 1;
     uniforms.uAirScatteringAlbedo.value = 1;
+    uniforms.uAirZenithRadiance.value = 0;
   }
 }

@@ -15,8 +15,21 @@ export interface SecondSun {
   reach: number;
 }
 
-/** Shaders declare uLight2Dir/uLight2Color themselves; the color stays
- *  black when nothing contributes, so single-star systems pay nothing. */
+/**
+ * The second light's uniforms and the gate every lit shader keeps its
+ * second-sun work behind: the color stays black when nothing
+ * contributes, and a single-star system skips that light's shadows,
+ * lighting and scatter outright.
+ */
+export const SECOND_SUN_GLSL = /* glsl */ `
+uniform vec3 uLight2Dir;
+uniform vec3 uLight2Color;
+
+bool secondSunLit() {
+  return any(greaterThan(uLight2Color, vec3(0.0)));
+}
+`;
+
 export function secondSunUniforms(): Record<string, { value: unknown }> {
   return {
     uLight2Dir: { value: [0, 0, 1] },

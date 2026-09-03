@@ -115,7 +115,13 @@ export class StarObject {
     // The corona keeps its true ratio to the ground the disc lights,
     // a millionth of F/θ² — under our Sun a twentieth of a white
     // ground, which a daytime sky outshines and a shadowed one shows.
-    const coronaLinear = (level * CORONA_RATIO) / Math.max(angular * angular, 1e-12);
+    // That ratio grows as the square of the distance, so far from the
+    // star the disc's own adapted seat bounds it: on the display's
+    // scale the corona is a millionth of the disc and never more.
+    const coronaLinear = Math.min(
+      (level * CORONA_RATIO) / Math.max(angular * angular, 1e-12),
+      physical * adapted(CORONA_RATIO),
+    );
     const corona = coronaLinear + (this.coronaIntensity - coronaLinear) * detail;
     const surfaceState = this.surfaceModel
       ? stellarSurfaceStateAt(this.star, this.surfaceModel, simTimeDays)

@@ -1,5 +1,5 @@
 import { AdditiveBlending, Color, Mesh, ShaderMaterial, SphereGeometry } from 'three';
-import { secondSunUniforms } from '../lighting/secondSun';
+import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { deckOpticalDepth } from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
@@ -48,8 +48,7 @@ varying vec3 vAxisZ;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
+${SECOND_SUN_GLSL}
 uniform float uInflation;
 
 ${SIMPLEX_NOISE_GLSL}
@@ -101,8 +100,10 @@ void main() {
     + vAxisX * surfaceUnit.x + vAxisY * surfaceUnit.y + vAxisZ * surfaceUnit.z;
   float tangentAlt = distance(tangent, surfacePoint);
   vec3 viewDir = normalize(vWorldPos - cameraPosition);
-  vec3 scatter = limbScatter(uLightDir, uLightColor, tangent, tangentAlt, viewDir, 1e30)
-    + limbScatter(uLight2Dir, uLight2Color, tangent, tangentAlt, viewDir, uLight2Reach);
+  vec3 scatter = limbScatter(uLightDir, uLightColor, tangent, tangentAlt, viewDir, 1e30);
+  if (secondSunLit()) {
+    scatter += limbScatter(uLight2Dir, uLight2Color, tangent, tangentAlt, viewDir, uLight2Reach);
+  }
   gl_FragColor = vec4(scatter * airTransmittanceTo(vWorldPos), 1.0);
 }
 `;

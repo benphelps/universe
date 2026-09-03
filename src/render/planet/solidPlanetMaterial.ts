@@ -1,5 +1,5 @@
 import { Color, ShaderMaterial } from 'three';
-import { secondSunUniforms } from '../lighting/secondSun';
+import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { seedFromHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { atmosphereColumn, columnAbove } from '../../universe/planet/atmosphere';
@@ -41,8 +41,7 @@ varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform vec3 uLight2Dir;
-uniform vec3 uLight2Color;
+${SECOND_SUN_GLSL}
 uniform vec3 uSeedOffset;
 uniform vec3 uLandA;
 uniform vec3 uLandB;
@@ -101,13 +100,18 @@ void main() {
   // the cloud tops where the deck covers — with eclipse/ring shadows.
   // The oblate body's true normal is also its local vertical.
   float ndotl = dot(normal, uLightDir);
-  float ndotl2 = dot(normal, uLight2Dir);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
-  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 groundLight = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
-  vec3 cloudLight = surfaceLight(uCloudAirDepth, uLightDir, uLightColor, cloudNormal, normal, shadow, diffuseShadow(shadow))
-    + surfaceLight(uCloudAirDepth, uLight2Dir, uLight2Color, cloudNormal, normal, shadow2, diffuseShadow(shadow2));
+  vec3 groundLight = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow));
+  vec3 cloudLight = surfaceLight(uCloudAirDepth, uLightDir, uLightColor, cloudNormal, normal, shadow, diffuseShadow(shadow));
+  bool lit2 = secondSunLit();
+  float ndotl2 = 0.0;
+  float shadow2 = 1.0;
+  if (lit2) {
+    ndotl2 = dot(normal, uLight2Dir);
+    shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+    groundLight += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
+    cloudLight += surfaceLight(uCloudAirDepth, uLight2Dir, uLight2Color, cloudNormal, normal, shadow2, diffuseShadow(shadow2));
+  }
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   // Chilled crust is matte; only the hot open melt keeps a sheen.
@@ -116,9 +120,11 @@ void main() {
   vec3 halfDir = normalize(uLightDir + viewDir);
   vec3 specular = uLightColor * beamTransmittance(uOpticalDepth, ndotl)
     * pow(max(dot(normal, halfDir), 0.0), 90.0) * sheen * max(ndotl, 0.0) * shadow;
-  vec3 halfDir2 = normalize(uLight2Dir + viewDir);
-  specular += uLight2Color * beamTransmittance(uOpticalDepth, ndotl2)
-    * pow(max(dot(normal, halfDir2), 0.0), 90.0) * sheen * max(ndotl2, 0.0) * shadow2;
+  if (lit2) {
+    vec3 halfDir2 = normalize(uLight2Dir + viewDir);
+    specular += uLight2Color * beamTransmittance(uOpticalDepth, ndotl2)
+      * pow(max(dot(normal, halfDir2), 0.0), 90.0) * sheen * max(ndotl2, 0.0) * shadow2;
+  }
 
   vec3 groundColor = surface * (groundLight + uNightFloor) + specular;
   // Optical opacity determines whether the ground shows through; height
@@ -134,9 +140,11 @@ void main() {
   float xv = airmass(dot(normal, viewDir));
   color = color * airColumnThrough(vec3(0.0), tau, xv)
     + uLightColor * airColumnScatter(vec3(0.0), tau, xv, airmass(ndotl), -dot(viewDir, uLightDir))
-      * twilight(ndotl) * shadow
-    + uLight2Color * airColumnScatter(vec3(0.0), tau, xv, airmass(ndotl2), -dot(viewDir, uLight2Dir))
+      * twilight(ndotl) * shadow;
+  if (lit2) {
+    color += uLight2Color * airColumnScatter(vec3(0.0), tau, xv, airmass(ndotl2), -dot(viewDir, uLight2Dir))
       * twilight(ndotl2) * shadow2;
+  }
 
   color += lavaGlowC * liquid * uLavaGlow * (1.0 - cloudMask * 0.85);
 

@@ -1,9 +1,8 @@
-import { ACESFilmicToneMapping, Vector2, WebGLRenderer, type Camera, type Scene } from 'three';
+import { ACESFilmicToneMapping, WebGLRenderer, type Camera, type Scene } from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { guardBloomInput } from './bloomGuard';
+import { CompactBloomPass } from './compactBloom';
 import { DiagramPass } from './diagramLayer';
 import { SkyLayer } from './skyLayer';
 
@@ -31,7 +30,7 @@ export class RenderPipeline {
    *  scene pass as a single depth-tested quad. */
   readonly sky = new SkyLayer();
   private readonly composer: EffectComposer;
-  private readonly bloom: UnrealBloomPass;
+  private readonly bloom: CompactBloomPass;
 
   constructor(
     container: HTMLElement,
@@ -50,14 +49,10 @@ export class RenderPipeline {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(scene, camera));
-    // Keep glare as a compact optical cue around HDR emitters. A broad
-    // radius turned the physically small solar disc into a white bank
-    // across the horizon, hiding sunset color and eclipse contacts.
-    // UnrealBloom's radius control reweights its mip pyramid; positive
-    // values strengthen the broadest, lowest-resolution levels. Keep it
-    // at zero and give those levels an explicitly compact PSF below.
-    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.18, 0, 1.0);
-    guardBloomInput(this.bloom);
+    // Glare is a compact optical cue around HDR emitters: a broad
+    // point-spread turns the physically small solar disc into a white
+    // bank across the horizon, hiding sunset color and eclipse contacts.
+    this.bloom = new CompactBloomPass(0.18);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new DiagramPass(scene, camera));
