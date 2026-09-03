@@ -75,12 +75,12 @@ describe('galactic background depth', () => {
     const backdrop = new StarfieldBackdrop(emptySky(), 2000);
     const points = backdrop.group.children.find((child) => child instanceof Points) as Points;
     const glow = backdrop.group.children.find((child) => child instanceof Mesh) as Mesh;
-    backdrop.setVisibility(0.3, 0.00005);
+    backdrop.setVisibility(0.3, 0.0000005);
     expect(points.visible).toBe(true);
     expect(glow.visible).toBe(false);
     expect((points.material as ShaderMaterial).uniforms.uIntensity.value).toBe(0.3);
-    expect((glow.material as ShaderMaterial).uniforms.uIntensity.value).toBe(0.00005);
-    backdrop.setVisibility(0.3, 0.0002);
+    expect((glow.material as ShaderMaterial).uniforms.uIntensity.value).toBe(0.0000005);
+    backdrop.setVisibility(0.3, 0.000002);
     expect(glow.visible).toBe(true);
     backdrop.dispose();
   });

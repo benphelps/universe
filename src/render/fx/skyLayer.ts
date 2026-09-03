@@ -56,15 +56,15 @@ export function skyResolutionScale(pixelRatio: number): number {
   return Math.min(SKY_RESOLUTION_SCALE, 1 / (SKY_SAMPLE_CSS_PX * pixelRatio));
 }
 
-/** Point sprites below this contribution are not worth submitting. */
-export const SKY_POINT_VISIBILITY_FLOOR = 0.002;
+/** The last sub-pixel tail of a point fade is not worth submitting. */
+export const SKY_POINT_VISIBILITY_FLOOR = 0.000001;
 
 /**
- * Extended light must begin rendering much farther below perceptibility
- * than a point. Its broad gradients otherwise appear all at once when
- * a coarse common cutoff is crossed during twilight.
+ * Extended light is likewise kept through its entire perceptible fade.
+ * Its broad gradients otherwise appear all at once when a coarse common
+ * cutoff is crossed during twilight.
  */
-export const SKY_EXTENDED_VISIBILITY_FLOOR = 0.0001;
+export const SKY_EXTENDED_VISIBILITY_FLOOR = 0.000001;
 
 const VERTEX = /* glsl */ `
 out vec2 vUv;

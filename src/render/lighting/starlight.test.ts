@@ -64,29 +64,32 @@ describe('starlight', () => {
 describe('night-sky visibility', () => {
   it('reveals point stars before diffuse galactic light', () => {
     const twilight = 1e-3;
-    expect(pointStarVisibility(twilight)).toBeGreaterThan(0.95);
-    expect(extendedSkyVisibility(twilight)).toBeLessThan(0.01);
+    expect(pointStarVisibility(twilight)).toBeGreaterThan(0.6);
+    expect(extendedSkyVisibility(twilight)).toBeLessThan(0.05);
   });
 
   it('suppresses stars under a bright daytime sky', () => {
-    expect(pointStarVisibility(0.03)).toBeLessThan(0.001);
-    expect(extendedSkyVisibility(0.03)).toBeLessThan(0.0001);
+    expect(pointStarVisibility(0.03)).toBe(0);
+    expect(extendedSkyVisibility(0.03)).toBe(0);
   });
 
-  it('brings diffuse light in gradually only after the point field', () => {
-    expect(extendedSkyVisibility(2e-4)).toBeGreaterThan(0.04);
-    expect(extendedSkyVisibility(2e-4)).toBeLessThan(0.06);
-    expect(extendedSkyVisibility(2e-5)).toBeCloseTo(0.5, 8);
-    expect(extendedSkyVisibility(2e-6)).toBeGreaterThan(0.95);
+  it('gives diffuse light a continuous, finite fade with no culling jump', () => {
+    const midpoint = Math.sqrt(2e-7 * 3e-3);
+    expect(extendedSkyVisibility(2e-7)).toBe(1);
+    expect(extendedSkyVisibility(midpoint)).toBeCloseTo(0.5, 8);
+    expect(extendedSkyVisibility(3e-3)).toBe(0);
   });
 
-  it('is monotonic and reaches the full sky when scattered daylight is gone', () => {
-    const radiances = [0.03, 1e-3, 1e-4, 1e-5, 1e-7, 0];
+  it('is monotonic and never leaves diffuse structure after the point field', () => {
+    const radiances = [0.03, 3e-3, 1e-3, 1e-4, 1e-5, 1e-7, 0];
     const point = radiances.map(pointStarVisibility);
     const extended = radiances.map(extendedSkyVisibility);
     for (let i = 1; i < radiances.length; i++) {
       expect(point[i]).toBeGreaterThanOrEqual(point[i - 1]);
       expect(extended[i]).toBeGreaterThanOrEqual(extended[i - 1]);
+    }
+    for (let i = 0; i < radiances.length; i++) {
+      expect(point[i]).toBeGreaterThanOrEqual(extended[i]);
     }
     expect(point.at(-1)).toBe(1);
     expect(extended.at(-1)).toBe(1);

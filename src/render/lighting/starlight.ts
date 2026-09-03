@@ -16,39 +16,52 @@ export const ADAPTATION_EXPONENT = 0.2;
 export const SKYGLOW_FLUX_RATIO = 1.5e-8;
 
 /**
- * Atmospheric background radiance at which each class of night-sky
- * feature is half revealed. Both are in the units returned by the sky
- * scattering model: radiance relative to a white Lambertian surface
- * under the local star.
+ * Atmospheric background radiances bounding each class of night-sky
+ * feature. All are in the units returned by the sky scattering model:
+ * radiance relative to a white Lambertian surface under the local star.
  *
  * A point source is detectable against a much brighter background than
  * an extended source of the same total flux. Keeping those contrast
  * thresholds separate gives twilight its natural order: bright stars,
  * then the field, then the Milky Way and diffuse nebulae.
  */
-export const POINT_STAR_HALF_RADIANCE = 3e-3;
-export const EXTENDED_SKY_HALF_RADIANCE = 2e-5;
+export const POINT_STAR_FULL_RADIANCE = 1e-4;
+export const POINT_STAR_HIDDEN_RADIANCE = 3e-2;
+export const EXTENDED_SKY_FULL_RADIANCE = 2e-7;
+export const EXTENDED_SKY_HIDDEN_RADIANCE = 3e-3;
 
 function contrastVisibility(
   daylightRadiance: number,
-  halfRadiance: number,
-  shoulder: number,
+  fullRadiance: number,
+  hiddenRadiance: number,
 ): number {
-  if (!(daylightRadiance > 0)) return 1;
-  const contrast = daylightRadiance / halfRadiance;
-  return 1 / (1 + contrast ** shoulder);
+  if (!(daylightRadiance > fullRadiance)) return 1;
+  if (daylightRadiance >= hiddenRadiance) return 0;
+  // Perception spans orders of magnitude. Interpolate in log-radiance,
+  // with zero slope at both ends so neither end of the fade can pop.
+  const t =
+    Math.log(daylightRadiance / fullRadiance) /
+    Math.log(hiddenRadiance / fullRadiance);
+  const smooth = t * t * (3 - 2 * t);
+  return 1 - smooth;
 }
 
 /** Visibility of unresolved stars against the atmospheric background. */
 export function pointStarVisibility(daylightRadiance: number): number {
-  // A firm shoulder keeps the daytime field absent while letting its
-  // brightest members emerge well before the sky itself has gone dark.
-  return contrastVisibility(daylightRadiance, POINT_STAR_HALF_RADIANCE, 3);
+  return contrastVisibility(
+    daylightRadiance,
+    POINT_STAR_FULL_RADIANCE,
+    POINT_STAR_HIDDEN_RADIANCE,
+  );
 }
 
 /** Visibility of low-contrast galactic glow and resolved nebulae. */
 export function extendedSkyVisibility(daylightRadiance: number): number {
-  return contrastVisibility(daylightRadiance, EXTENDED_SKY_HALF_RADIANCE, 1.3);
+  return contrastVisibility(
+    daylightRadiance,
+    EXTENDED_SKY_FULL_RADIANCE,
+    EXTENDED_SKY_HIDDEN_RADIANCE,
+  );
 }
 
 /** What a flux ratio displays as once the eye has settled on it. */
