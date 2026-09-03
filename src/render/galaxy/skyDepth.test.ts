@@ -56,9 +56,9 @@ describe('galactic background depth', () => {
     backdrop.dispose();
   });
 
-  it('culls the full-screen backdrop when its contribution is negligible', () => {
+  it('culls the backdrop when all of its contributions are negligible', () => {
     const backdrop = new StarfieldBackdrop(emptySky(), 2000);
-    backdrop.intensity = 0.002;
+    backdrop.intensity = 0;
     expect(backdrop.group.visible).toBe(false);
     backdrop.intensity = 0.003;
     expect(backdrop.group.visible).toBe(true);
@@ -68,6 +68,20 @@ describe('galactic background depth', () => {
         0.003,
       );
     }
+    backdrop.dispose();
+  });
+
+  it('reveals points separately from smooth galactic light', () => {
+    const backdrop = new StarfieldBackdrop(emptySky(), 2000);
+    const points = backdrop.group.children.find((child) => child instanceof Points) as Points;
+    const glow = backdrop.group.children.find((child) => child instanceof Mesh) as Mesh;
+    backdrop.setVisibility(0.3, 0.00005);
+    expect(points.visible).toBe(true);
+    expect(glow.visible).toBe(false);
+    expect((points.material as ShaderMaterial).uniforms.uIntensity.value).toBe(0.3);
+    expect((glow.material as ShaderMaterial).uniforms.uIntensity.value).toBe(0.00005);
+    backdrop.setVisibility(0.3, 0.0002);
+    expect(glow.visible).toBe(true);
     backdrop.dispose();
   });
 

@@ -56,8 +56,15 @@ export function skyResolutionScale(pixelRatio: number): number {
   return Math.min(SKY_RESOLUTION_SCALE, 1 / (SKY_SAMPLE_CSS_PX * pixelRatio));
 }
 
-/** Washout below which a stellar layer is not worth drawing at all. */
-export const SKY_VISIBILITY_FLOOR = 0.002;
+/** Point sprites below this contribution are not worth submitting. */
+export const SKY_POINT_VISIBILITY_FLOOR = 0.002;
+
+/**
+ * Extended light must begin rendering much farther below perceptibility
+ * than a point. Its broad gradients otherwise appear all at once when
+ * a coarse common cutoff is crossed during twilight.
+ */
+export const SKY_EXTENDED_VISIBILITY_FLOOR = 0.0001;
 
 const VERTEX = /* glsl */ `
 out vec2 vUv;
@@ -160,7 +167,7 @@ export class SkyLayer {
    *  and the frame never touches the target. */
   render(renderer: WebGLRenderer, camera: Camera): void {
     const anything =
-      this.intensity > SKY_VISIBILITY_FLOOR &&
+      this.intensity > SKY_EXTENDED_VISIBILITY_FLOOR &&
       this.scene.children.some((child) => child.visible);
     this.quad.visible = anything;
     if (!anything) return;

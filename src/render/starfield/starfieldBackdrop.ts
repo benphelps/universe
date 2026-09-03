@@ -42,6 +42,10 @@ import {
   type NebulaPatch,
 } from '../../universe/galaxy/skyfield';
 import { AIR_VIEW_GLSL, airViewUniforms, applyAirView, type AirView } from '../lighting/airView';
+import {
+  SKY_EXTENDED_VISIBILITY_FLOOR,
+  SKY_POINT_VISIBILITY_FLOOR,
+} from '../fx/skyLayer';
 
 const MAX_NEBULAE = NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS;
 const MAX_DARK = DARK_ATLAS_COLS * DARK_ATLAS_ROWS;
@@ -159,7 +163,7 @@ void main() {
   float held = uFloor > 0.0
     ? smoothstep(-6.64, -3.32, log2(max(raw, 1e-12) / uFloor) / uGamma)
     : 1.0;
-  float energy = clamp(raw, uFloor, uCeil) * uIntensity * held;
+  float energy = clamp(raw, uFloor, uCeil) * held;
   // An instrument with a real limit: points below it vanish outright
   // (half a magnitude of softness so the sky never pops), and colour
   // drains from the faint ones the way it does at the eyepiece.
@@ -171,7 +175,7 @@ void main() {
   // The backdrop rides the eye, so a point's world direction is its
   // position turned by the group.
   vec3 skyDir = normalize(mat3(modelMatrix) * position);
-  vColor = hue * energy * skyVisibility(skyDir) * airTransmittance(skyDir);
+  vColor = hue * energy * uIntensity * skyVisibility(skyDir) * airTransmittance(skyDir);
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = size;
@@ -357,10 +361,9 @@ export class StarfieldBackdrop {
   private pointsMaterial!: ShaderMaterial;
   private glowMaterial!: ShaderMaterial;
   private nebulaMaterial: ShaderMaterial | null = null;
-
-  /** Match the galaxy layers' draw cutoff: below this the contribution
-   * is visually nil, but the two full-screen domes are still expensive. */
-  private static readonly VISIBILITY_FLOOR = 0.002;
+  private points!: Points;
+  private glow!: Mesh;
+  private nebulaDome: Mesh | null = null;
 
   /** skipStars omits the first N sky entries (a 3D view of the near field). */
   constructor(sky: BackdropSource, radius: number, skipStars = 0) {
@@ -410,6 +413,7 @@ export class StarfieldBackdrop {
     this.materials.push(pointsMaterial);
     this.pointsMaterial = pointsMaterial;
     const points = new Points(geometry, pointsMaterial);
+    this.points = points;
     points.frustumCulled = false;
     points.renderOrder = -2;
     this.group.add(points);
@@ -497,6 +501,7 @@ export class StarfieldBackdrop {
     this.materials.push(glowMaterial);
     this.glowMaterial = glowMaterial;
     const dome = new Mesh(new SphereGeometry(radius * 1.01, 48, 24), glowMaterial);
+    this.glow = dome;
     dome.frustumCulled = false;
     dome.renderOrder = -3;
     this.group.add(dome);
@@ -569,6 +574,7 @@ export class StarfieldBackdrop {
       this.nebulaSeeds = patches.map((patch) => patch.seed);
       this.applyNebulaSuppression();
       const nebulaDome = new Mesh(new SphereGeometry(radius * 1.02, 48, 24), nebulaMaterial);
+      this.nebulaDome = nebulaDome;
       nebulaDome.frustumCulled = false;
       nebulaDome.renderOrder = -3;
       this.group.add(nebulaDome);
@@ -617,10 +623,29 @@ export class StarfieldBackdrop {
     for (const material of this.materials) applyAirView(material, air);
   }
 
-  /** 1 = full night sky; approaches 0 under bright daylight. */
+  /** Set one visibility for all tiers, retained for instruments and tests. */
   set intensity(value: number) {
-    for (const material of this.materials) material.uniforms.uIntensity.value = value;
-    this.group.visible = value > StarfieldBackdrop.VISIBILITY_FLOOR;
+    this.setVisibility(value, value);
+  }
+
+  /**
+   * Seat high-contrast points and low-contrast extended light against
+   * daylight independently. Stars become detectable before the smooth
+   * Milky Way and nebular background, as they do through real twilight.
+   */
+  setVisibility(pointValue: number, extendedValue: number): void {
+    const point = Math.min(1, Math.max(0, pointValue));
+    const extended = Math.min(1, Math.max(0, extendedValue));
+    this.pointsMaterial.uniforms.uIntensity.value = point;
+    this.glowMaterial.uniforms.uIntensity.value = extended;
+    if (this.nebulaMaterial) this.nebulaMaterial.uniforms.uIntensity.value = extended;
+    this.points.visible = point > SKY_POINT_VISIBILITY_FLOOR;
+    this.glow.visible = extended > SKY_EXTENDED_VISIBILITY_FLOOR;
+    if (this.nebulaDome) {
+      this.nebulaDome.visible = extended > SKY_EXTENDED_VISIBILITY_FLOOR;
+    }
+    this.group.visible =
+      this.points.visible || this.glow.visible || Boolean(this.nebulaDome?.visible);
   }
 
   dispose(): void {

@@ -46,14 +46,15 @@ import { createRingMesh } from '../render/planet/ringMaterial';
 import { applyOccluders, applyRingShadow, clearRingShadow, shadowAt } from '../render/planet/shadows';
 import { planetSeedOffset } from '../render/planet/solidPlanetMaterial';
 import { RenderPipeline } from '../render/fx/pipeline';
-import { SKY_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
+import { SKY_POINT_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
 import { StarObject } from '../render/star/starObject';
 import { applyAirView, type AirView } from '../render/lighting/airView';
 import { applySecondSun, type SecondSun } from '../render/lighting/secondSun';
 import {
-  ADAPTATION_EXPONENT,
   adapted,
+  extendedSkyVisibility,
   instellation,
+  pointStarVisibility,
   SKYGLOW_FLUX_RATIO,
   starlight,
 } from '../render/lighting/starlight';
@@ -3821,31 +3822,36 @@ export class UnifiedViewer {
    * The system's own star glints stay full — an unresolved sun (or a
    * bright companion) outshines any daytime sky.
    */
-  private setSkyIntensity(value: number): void {
-    value = Math.min(1, Math.max(0, value));
+  private setSkyIntensity(pointValue: number, extendedValue = pointValue): void {
+    pointValue = Math.min(1, Math.max(0, pointValue));
+    extendedValue = Math.min(1, Math.max(0, extendedValue));
     // The backdrop fades out as the volumetric galaxy fades in — its
     // sky-sphere geometry is wrong once the camera has real parallax.
     // The neighborhood points are true 3D and stay: they simply recede.
-    if (this.backdrop) this.backdrop.intensity = value * (1 - this.galaxyFade);
-    // The volume domes — galaxy band and nebulae — are the same sky the
-    // points are, and an atmosphere shining in front of them washes
-    // them out identically: light and occlusion together, or a rift
-    // punches a dark hole through the daytime sky behind it.
-    this.pipeline.sky.intensity = value;
+    if (this.backdrop) {
+      this.backdrop.setVisibility(
+        pointValue * (1 - this.galaxyFade),
+        extendedValue * (1 - this.galaxyFade),
+      );
+    }
+    // Smooth galaxy and nebula light has a much lower contrast against
+    // twilight than a stellar point. Its occlusion fades with its light,
+    // so a rift cannot punch a dark hole through the atmosphere.
+    this.pipeline.sky.intensity = extendedValue;
     if (this.neighborPoints) {
-      (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
-      this.neighborPoints.visible = value > SKY_VISIBILITY_FLOOR;
+      (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = pointValue;
+      this.neighborPoints.visible = pointValue > SKY_POINT_VISIBILITY_FLOOR;
     }
     if (this.farPoints) {
-      (this.farPoints.material as ShaderMaterial).uniforms.uIntensity.value = value;
-      this.farPoints.visible = value > SKY_VISIBILITY_FLOOR;
+      (this.farPoints.material as ShaderMaterial).uniforms.uIntensity.value = pointValue;
+      this.farPoints.visible = pointValue > SKY_POINT_VISIBILITY_FLOOR;
     }
     // Nothing at the centre reaches the disk in visible light; only a
     // camera lifted clear of the dust layer ever sees the cluster.
     if (this.nuclearCluster) {
-      const clusterIntensity = value * this.coreTransmission;
+      const clusterIntensity = pointValue * this.coreTransmission;
       this.nuclearCluster.intensity = clusterIntensity;
-      this.nuclearCluster.group.visible = clusterIntensity > SKY_VISIBILITY_FLOOR;
+      this.nuclearCluster.group.visible = clusterIntensity > SKY_POINT_VISIBILITY_FLOOR;
     }
   }
 
@@ -4305,7 +4311,7 @@ export class UnifiedViewer {
         if (
           !this.nuclearCluster &&
           this.clusterFrame &&
-          this.coreTransmission > SKY_VISIBILITY_FLOOR
+          this.coreTransmission > SKY_POINT_VISIBILITY_FLOOR
         ) {
           this.nuclearCluster = new NuclearCluster(this.viewpointPc, this.clusterFrame, PC_KM);
           this.pcGroup.add(this.nuclearCluster.group);
@@ -4750,14 +4756,11 @@ export class UnifiedViewer {
     for (const material of this.groundMaterials()) {
       if (material.uniforms.uNightFloor) material.uniforms.uNightFloor.value = nightFloor;
     }
-    // The stars by day: the sky display law seats the points for an eye
-    // settled on the night sky, and everything on screen scales with
-    // the level the eye has settled on. What settles it is the sky
-    // itself — the column above the eye scattering this sun toward it,
-    // over the eclipse shadow at the eye — so the same points display
-    // at the night seat over the adapted ratio: nothing at noon, then
-    // progressively more while the curved air loses the light, and the
-    // whole sky once the air goes dark or the sun is covered. The air
+    // The stars by day: the atmosphere's own zenith radiance sets their
+    // contrast. Point sources become detectable against much brighter
+    // twilight than smooth galactic light, so bright stars lead the
+    // field and the Milky Way follows instead of the whole night sky
+    // switching on at its dark-sky floor. The air
     // thins with altitude, so
     // from orbit the sky is black and every star stands, day side or
     // night; a sunlit disc in the view is a thing the eye looks at,
@@ -4800,9 +4803,9 @@ export class UnifiedViewer {
         if (points) applyAirView(points.material as ShaderMaterial, air);
       }
     }
-    this.setSkyIntensity(
-      (SKYGLOW_FLUX_RATIO / Math.max(SKYGLOW_FLUX_RATIO, daylight)) ** (1 - ADAPTATION_EXPONENT),
-    );
+    const pointVisibility = pointStarVisibility(daylight);
+    const extendedVisibility = extendedSkyVisibility(daylight);
+    this.setSkyIntensity(pointVisibility, extendedVisibility);
 
     if (this.atmosphereShell) {
       const material = this.atmosphereShell.material as ShaderMaterial;

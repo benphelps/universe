@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { AU } from '../../core/physics/constants';
 import type { Star } from '../../universe/star/types';
-import { adapted, instellation, starlight } from './starlight';
+import {
+  adapted,
+  extendedSkyVisibility,
+  instellation,
+  pointStarVisibility,
+  starlight,
+} from './starlight';
 
 const AU_KM = AU / 1000;
 
@@ -52,5 +58,37 @@ describe('starlight', () => {
     const [trough] = starlight(cepheid, AU_KM, 7.5);
     expect(peak).toBeCloseTo(1.2, 6);
     expect(trough).toBeCloseTo(0.8, 6);
+  });
+});
+
+describe('night-sky visibility', () => {
+  it('reveals point stars before diffuse galactic light', () => {
+    const twilight = 1e-3;
+    expect(pointStarVisibility(twilight)).toBeGreaterThan(0.95);
+    expect(extendedSkyVisibility(twilight)).toBeLessThan(0.01);
+  });
+
+  it('suppresses stars under a bright daytime sky', () => {
+    expect(pointStarVisibility(0.03)).toBeLessThan(0.001);
+    expect(extendedSkyVisibility(0.03)).toBeLessThan(0.0001);
+  });
+
+  it('brings diffuse light in gradually only after the point field', () => {
+    expect(extendedSkyVisibility(2e-4)).toBeGreaterThan(0.04);
+    expect(extendedSkyVisibility(2e-4)).toBeLessThan(0.06);
+    expect(extendedSkyVisibility(2e-5)).toBeCloseTo(0.5, 8);
+    expect(extendedSkyVisibility(2e-6)).toBeGreaterThan(0.95);
+  });
+
+  it('is monotonic and reaches the full sky when scattered daylight is gone', () => {
+    const radiances = [0.03, 1e-3, 1e-4, 1e-5, 1e-7, 0];
+    const point = radiances.map(pointStarVisibility);
+    const extended = radiances.map(extendedSkyVisibility);
+    for (let i = 1; i < radiances.length; i++) {
+      expect(point[i]).toBeGreaterThanOrEqual(point[i - 1]);
+      expect(extended[i]).toBeGreaterThanOrEqual(extended[i - 1]);
+    }
+    expect(point.at(-1)).toBe(1);
+    expect(extended.at(-1)).toBe(1);
   });
 });

@@ -205,7 +205,7 @@ void main() {
   float held = uFloor > 0.0
     ? smoothstep(-6.64, -3.32, log2(max(raw, 1e-12) / uFloor) / uGamma)
     : 1.0;
-  float energy = clamp(raw, uFloor, uCeil) * uIntensity * restored * held;
+  float energy = clamp(raw, uFloor, uCeil) * restored * held;
   // An instrument with a real limit drops the points below it — the
   // same seating the backdrop's stars take, so the two star tiers
   // stay one photometric system under any mode.
@@ -226,7 +226,7 @@ void main() {
     vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
     starColor, sat);
   vec3 skyDir = normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition);
-  vColor = hue * energy * extinction * skyVisibility(skyDir) * airTransmittance(skyDir);
+  vColor = hue * energy * uIntensity * extinction * skyVisibility(skyDir) * airTransmittance(skyDir);
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   gl_PointSize = drawn;
   gl_Position = projectionMatrix * viewMatrix
