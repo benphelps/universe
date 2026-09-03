@@ -84,14 +84,46 @@ export interface GiantBanding {
   thermalGlowK: number;
 }
 
+export type CloudCondensate =
+  | 'none'
+  | 'water'
+  | 'carbon-dioxide'
+  | 'sulfuric-acid'
+  | 'methane'
+  | 'mineral';
+
+/** A solid world's visible condensate layer. Aerosol haze belongs to
+ *  the atmosphere column instead, so a Titan-like haze is not mistaken
+ *  for an opaque global cloud deck. */
+export interface PlanetCloudLayer {
+  condensate: CloudCondensate;
+  /** Fraction of the globe covered when averaged over weather time. */
+  coverage: number;
+  /** Single-pass visible optical depth through the body of a cloud. */
+  opticalDepth: number;
+  /** Top of the visible deck above the reference surface. */
+  topAltitudeKm: number;
+  /** Approximate vertical extent, retained for a future volume renderer. */
+  thicknessKm: number;
+  /** Dominant horizontal weather-system size. */
+  featureScaleKm: number;
+  /** Zonal motion of the pattern relative to the ground. */
+  driftRadPerDay: number;
+  /** Cloud-top relief, from flat stratus (0) to deep convection (1). */
+  relief: number;
+  /** Positive gathers cloud toward the substellar side; negative toward night. */
+  stellarBias: number;
+  /** Condensate's diffuse color in linear sRGB. */
+  color: [number, number, number];
+}
+
 export interface PlanetAppearance {
   /** Two land tones blended by terrain noise, linear sRGB. */
   landColorA: [number, number, number];
   landColorB: [number, number, number];
   oceanColor: [number, number, number];
   iceColor: [number, number, number];
-  cloudCoverage: number;
-  cloudColor: [number, number, number];
+  clouds: PlanetCloudLayer;
   /** Night-side incandescence for magma worlds, 0 = none. */
   lavaGlow: number;
   /** Set for giants and envelope worlds; solid-surface fields unused then. */

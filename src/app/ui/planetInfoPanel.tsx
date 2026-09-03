@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { AU, EARTH_RADIUS } from '../../core/physics/constants';
 import type { Moon } from '../../universe/moon/types';
+import type { CloudCondensate, PlanetCloudLayer } from '../../universe/planet/types';
 import { asteroidDesignation } from '../../universe/smallbody/notable';
 import type { Asteroid } from '../../universe/smallbody/types';
 import type { Star } from '../../universe/star/types';
@@ -50,6 +51,21 @@ const HYDROSPHERE_LABEL: Record<string, string> = {
   magma: 'magma seas',
 };
 
+const CLOUD_LABEL: Record<CloudCondensate, string> = {
+  none: 'none',
+  water: 'water',
+  'carbon-dioxide': 'CO₂ ice',
+  'sulfuric-acid': 'sulfuric acid',
+  methane: 'methane',
+  mineral: 'mineral vapor',
+};
+
+function cloudLine(clouds: PlanetCloudLayer): string {
+  return clouds.condensate === 'none'
+    ? 'none'
+    : `${CLOUD_LABEL[clouds.condensate]} · ${fmt(clouds.coverage * 100, 2)}% · top ${fmt(clouds.topAltitudeKm, 3)} km`;
+}
+
 const REGIME_LABEL: Record<string, string> = {
   dead: 'geologically dead',
   'stagnant-lid': 'stagnant lid',
@@ -65,7 +81,7 @@ export function planetPlateSpec(
   planet: Planet,
   index: number,
 ): PlateSpec {
-  const { bulk, interior, rotation, atmosphere, climate } = planet.physical;
+  const { bulk, interior, rotation, atmosphere, climate, appearance } = planet.physical;
   const aAu = planet.elements.semiMajorAxis / AU;
 
   const rows: Array<[string, ReactNode]> = [
@@ -85,6 +101,7 @@ export function planetPlateSpec(
             }`,
     ],
     ['Atmosphere', atmosphereLine(planet)],
+    ['Clouds', cloudLine(appearance.clouds)],
     ['T', temperatureLine(planet)],
     ['Albedo', fmt(climate.bondAlbedo, 2)],
   ];
@@ -132,7 +149,7 @@ export function moonPlateSpec(
   moonIndex: number,
 ): PlateSpec {
   const moon = parent.moons[moonIndex];
-  const { bulk, interior, rotation, atmosphere, climate } = moon.physical;
+  const { bulk, interior, rotation, atmosphere, climate, appearance } = moon.physical;
   const radiusKm = bulk.radiusEarth * (EARTH_RADIUS / 1000);
   const rows: Array<[string, ReactNode]> = [
     ['Origin', moon.channel === 'capture' ? 'captured body' : `${moon.channel} moon`],
@@ -146,6 +163,7 @@ export function moonPlateSpec(
         ? 'airless'
         : `${ATMOSPHERE_LABEL[atmosphere.class]} · ${fmt(atmosphere.surfacePressureBar)} bar`,
     ],
+    ['Clouds', cloudLine(appearance.clouds)],
     ['T', `${fmt(climate.surfaceMeanK, 3)} K`],
     ['Surface', HYDROSPHERE_LABEL[climate.hydrosphere]],
     ['Geology', REGIME_LABEL[interior.regime]],

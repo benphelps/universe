@@ -253,6 +253,7 @@ function buildMoon(seed: bigint, planet: Planet, context: MoonContext, spec: Moo
   const appearance = computeAppearance(
     rng.fork('appearance'),
     'rocky',
+    bulk,
     atmosphere,
     climate,
     interior,

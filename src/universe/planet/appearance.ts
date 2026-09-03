@@ -4,10 +4,12 @@ import type {
   GiantBanding,
   PlanetAppearance,
   PlanetAtmosphere,
+  PlanetBulk,
   PlanetClimate,
   PlanetInterior,
   PlanetRotation,
 } from './types';
+import { computeCloudLayer, NO_CLOUDS } from './clouds';
 
 type Rgb = [number, number, number];
 
@@ -19,6 +21,7 @@ type Rgb = [number, number, number];
 export function computeAppearance(
   rng: Rng,
   planetClass: PlanetClass,
+  bulk: PlanetBulk,
   atmosphere: PlanetAtmosphere,
   climate: PlanetClimate,
   interior: PlanetInterior,
@@ -32,8 +35,7 @@ export function computeAppearance(
       landColorB: [0, 0, 0],
       oceanColor: [0, 0, 0],
       iceColor: [0, 0, 0],
-      cloudCoverage: 0,
-      cloudColor: [0, 0, 0],
+      clouds: { ...NO_CLOUDS },
       lavaGlow: 0,
       banding: computeBanding(rng, planetClass, climate.equilibriumK, rotation),
     };
@@ -70,39 +72,10 @@ export function computeAppearance(
     // reflectance is basalt-dark; the light they show is their own.
     oceanColor: interior.regime === 'magma' ? [0.05, 0.04, 0.038] : [0.02, 0.09, 0.18],
     iceColor: [0.82, 0.86, 0.9],
-    cloudCoverage: cloudCoverage(rng, atmosphere, climate),
-    cloudColor: cloudColor(atmosphere),
+    clouds: computeCloudLayer(rng.fork('clouds'), atmosphere, climate, bulk, rotation),
     lavaGlow,
     banding: null,
   };
-}
-
-function cloudCoverage(rng: Rng, atmosphere: PlanetAtmosphere, climate: PlanetClimate): number {
-  switch (atmosphere.class) {
-    case 'none':
-      return 0;
-    case 'co2-hothouse':
-    case 'nitrogen-methane':
-      return 1;
-    case 'thin-co2':
-    case 'rock-vapor':
-      return rng.range(0.02, 0.12);
-    default:
-      return climate.hydrosphere === 'oceans' ? rng.range(0.4, 0.65) : rng.range(0.1, 0.3);
-  }
-}
-
-function cloudColor(atmosphere: PlanetAtmosphere): Rgb {
-  switch (atmosphere.class) {
-    case 'co2-hothouse':
-      // Sulfuric-acid deck.
-      return [0.85, 0.78, 0.58];
-    case 'nitrogen-methane':
-      // Tholin haze.
-      return [0.78, 0.55, 0.25];
-    default:
-      return [0.92, 0.92, 0.92];
-  }
 }
 
 function computeBanding(

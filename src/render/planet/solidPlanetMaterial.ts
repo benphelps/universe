@@ -14,6 +14,7 @@ import {
 } from '../lighting/surfaceLight';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
+import { CLOUD_PATTERN_GLSL, cloudPatternUniforms } from './cloudPattern';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
@@ -46,26 +47,20 @@ uniform vec3 uSeedOffset;
 uniform vec3 uLandA;
 uniform vec3 uLandB;
 uniform vec3 uCloudColor;
-uniform float uCloudCoverage;
 uniform float uLavaGlow;
 uniform float uRadiusKm;
 uniform float uTimeDays;
-uniform vec3 uCloudOpticalDepth;
+uniform vec3 uCloudAirDepth;
 #ifdef HAS_SURFACE
 uniform samplerCube uSurfaceCube;
 #endif
 
 ${SIMPLEX_NOISE_GLSL}
+${CLOUD_PATTERN_GLSL}
 ${MAGMA_PATTERN_GLSL}
 ${SHADOW_GLSL}
 ${SURFACE_LIGHT_GLSL}
 ${AIR_VIEW_GLSL}
-
-vec3 rotateY(vec3 p, float a) {
-  float c = cos(a);
-  float s = sin(a);
-  return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
-}
 
 void main() {
   vec3 p = normalize(vObjPos);
@@ -85,12 +80,10 @@ void main() {
   liquid = 0.0;
 #endif
 
-  // Cloud deck drifts relative to the surface.
-  vec3 cloudP = rotateY(p, uTimeDays * 0.35);
-  float cloudField = fbm(cloudP * 3.2 + uSeedOffset + vec3(0.0, 0.0, uTimeDays * 0.02)) * 0.5 + 0.5;
-  float cloudThreshold = 1.0 - uCloudCoverage;
-  float cloudMask = smoothstep(cloudThreshold - 0.12, cloudThreshold + 0.12, cloudField);
-  surface = mix(surface, uCloudColor, cloudMask * 0.95);
+  vec3 normal = normalize(vWorldNormal);
+  vec3 cloud = cloudDeckSample(p, dot(normal, uLightDir), uSeedOffset, uTimeDays);
+  float cloudMask = cloudOpacity(cloud.x);
+  vec3 cloudNormal = cloudReliefNormal(normal, cloud.y);
 
   // Molten worlds: the magma seas radiate their own light, day and
   // night — evaluated in the planet's kilometer frame with the same
@@ -107,27 +100,33 @@ void main() {
   // Lighting: each sun through the air above the ground — or above
   // the cloud tops where the deck covers — with eclipse/ring shadows.
   // The oblate body's true normal is also its local vertical.
-  vec3 normal = normalize(vWorldNormal);
   float ndotl = dot(normal, uLightDir);
   float ndotl2 = dot(normal, uLight2Dir);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 tau = mix(uOpticalDepth, uCloudOpticalDepth, cloudMask);
-  vec3 light = surfaceLight(tau, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
-    + surfaceLight(tau, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
+  vec3 groundLight = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow))
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
+  vec3 cloudLight = surfaceLight(uCloudAirDepth, uLightDir, uLightColor, cloudNormal, normal, shadow, diffuseShadow(shadow))
+    + surfaceLight(uCloudAirDepth, uLight2Dir, uLight2Color, cloudNormal, normal, shadow2, diffuseShadow(shadow2));
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   // Chilled crust is matte; only the hot open melt keeps a sheen.
   float gloss = uLavaGlow > 0.0 ? 0.2 * (0.2 + 0.8 * lavaHot) : 0.5;
   float sheen = liquid * (1.0 - cloudMask) * gloss;
   vec3 halfDir = normalize(uLightDir + viewDir);
-  vec3 specular = uLightColor * beamTransmittance(tau, ndotl)
+  vec3 specular = uLightColor * beamTransmittance(uOpticalDepth, ndotl)
     * pow(max(dot(normal, halfDir), 0.0), 90.0) * sheen * max(ndotl, 0.0) * shadow;
   vec3 halfDir2 = normalize(uLight2Dir + viewDir);
-  specular += uLight2Color * beamTransmittance(tau, ndotl2)
+  specular += uLight2Color * beamTransmittance(uOpticalDepth, ndotl2)
     * pow(max(dot(normal, halfDir2), 0.0), 90.0) * sheen * max(ndotl2, 0.0) * shadow2;
 
-  vec3 color = surface * (light + uNightFloor) + specular;
+  vec3 groundColor = surface * (groundLight + uNightFloor) + specular;
+  // Optical opacity determines whether the ground shows through; height
+  // independently gives thick towers bright tops and darker shoulders.
+  vec3 cloudSurface = uCloudColor * mix(0.65, 1.12, cloud.z);
+  vec3 cloudColor = cloudSurface * (cloudLight + uNightFloor * mix(0.45, 0.8, cloud.y));
+  vec3 color = mix(groundColor, cloudColor, cloudMask);
+  vec3 tau = mix(uOpticalDepth, uCloudAirDepth, cloudMask);
 
   // The way out: the disc seen from space keeps its light through the
   // column above and gains the sunlight that column scatters toward
@@ -155,9 +154,9 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
   const { appearance, bulk, atmosphere } = physical;
   const radiusKm = bulk.radiusEarth * 6371;
   const column = atmosphereColumn(atmosphere, bulk);
-  // The deck stands where the focus view's shell would put it over a
-  // flat sea: a few kilometres, or most of a scale height.
-  const deckKm = Math.max(3, atmosphere.scaleHeightKm * 0.9);
+  // The distant sphere sees the same physically placed top as the focus
+  // shell (terrain clearance is the only focus-only adjustment).
+  const deckKm = appearance.clouds.topAltitudeKm;
   const above = columnAbove(column, atmosphere, deckKm);
   return new ShaderMaterial({
     vertexShader: VERTEX,
@@ -165,13 +164,14 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
     uniforms: {
       ...createShadowUniforms(),
       ...airViewUniforms(),
+      ...cloudPatternUniforms(physical),
       ...surfaceLightUniforms({
         ...column,
         horizon: horizonAirmass(radiusKm, atmosphere.scaleHeightKm),
         radius: radiusKm,
         scaleHeight: atmosphere.scaleHeightKm,
       }),
-      uCloudOpticalDepth: {
+      uCloudAirDepth: {
         value: new Color(
           above.rayleigh[0] + above.aerosolExtinction[0],
           above.rayleigh[1] + above.aerosolExtinction[1],
@@ -184,8 +184,7 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
       uLandA: { value: appearance.landColorA },
       uLandB: { value: appearance.landColorB },
-      uCloudColor: { value: appearance.cloudColor },
-      uCloudCoverage: { value: appearance.cloudCoverage },
+      uCloudColor: { value: appearance.clouds.color },
       uLavaGlow: { value: appearance.lavaGlow },
       uRadiusKm: { value: radiusKm },
       uSurfaceCube: { value: null },

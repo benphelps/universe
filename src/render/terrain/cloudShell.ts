@@ -10,6 +10,8 @@ import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
 import { planetSeedOffset } from '../planet/solidPlanetMaterial';
+import { CLOUD_PATTERN_GLSL, cloudPatternUniforms } from '../planet/cloudPattern';
+import { CLOUD_VOLUME_GLSL } from './cloudVolume';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
@@ -34,47 +36,51 @@ uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
 uniform vec3 uSeedOffset;
 uniform vec3 uCloudColor;
-uniform float uCloudCoverage;
 uniform float uTimeDays;
 uniform vec3 uSurfaceRayleighDepth;     // the whole column, below the deck too
 uniform vec3 uSurfaceAerosolDepth;
 
 ${SIMPLEX_NOISE_GLSL}
+${CLOUD_PATTERN_GLSL}
 ${SHADOW_GLSL}
 ${SURFACE_LIGHT_GLSL}
-
-vec3 rotateY(vec3 p, float a) {
-  float c = cos(a);
-  float s = sin(a);
-  return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
-}
+${CLOUD_VOLUME_GLSL}
 
 void main() {
-  vec3 p = normalize(vObjPos);
-  // The same drifting field as the shader-sphere planets, so the focus
-  // view keeps the cloud climate the far view promised.
-  vec3 cloudP = rotateY(p, uTimeDays * 0.35);
-  float cloudField = fbm(cloudP * 3.2 + uSeedOffset + vec3(0.0, 0.0, uTimeDays * 0.02)) * 0.5 + 0.5;
-  float threshold = 1.0 - uCloudCoverage;
-  float mask = smoothstep(threshold - 0.12, threshold + 0.12, cloudField);
-  // Finer structure fades in up close so decks read as weather, not
-  // blobs — and stays out of the far view, where its top octave would
-  // alias into a lattice and break parity with the shader-sphere look.
-  float detail = fbm(cloudP * 7.0 + uSeedOffset.zxy) * 0.5 + 0.5;
-  float detailWeight = 1.0 - smoothstep(300.0, 3000.0, distance(cameraPosition, vWorldPos));
-  mask = clamp(mask * mix(1.0, 0.35 + 1.1 * detail, detailWeight), 0.0, 1.0);
+  // Use the analytic sphere hit for every close-range calculation. The
+  // interpolated geometry position lies on a flat triangle, not the deck.
+  vec3 shellPoint = cloudOuterPoint(vWorldPos);
+  vec3 p = normalize(shellPoint);
+  vec3 cloud = cloudDeckSample(p, dot(p, uLightDir), uSeedOffset, uTimeDays);
+  float mask = cloudOpacity(cloud.x);
+  float range = distance(cameraPosition, shellPoint);
+  float volumeWeight = 1.0 - smoothstep(600.0, 3500.0, range);
+  if (volumeWeight > 0.001) {
+    bool outsideDeck = length(cameraPosition) > uCloudOuterRadius;
+    // Transparent DoubleSide spheres are drawn once per side. At close
+    // range only the boundary facing the camera owns this ray segment;
+    // integrating both sides would double the same volume.
+    if ((outsideDeck && !gl_FrontFacing) || (!outsideDeck && gl_FrontFacing)) discard;
+    vec3 volume = cloudVolume(shellPoint, cloud, uSeedOffset, uTimeDays);
+    mask = mix(mask, volume.x, volumeWeight);
+    cloud.y = mix(cloud.y, volume.y, volumeWeight);
+  }
+  vec3 cloudNormal = cloudReliefNormal(p, cloud.y);
 
   // Radially-lit tops through the thin air above the deck: bright by
   // day, reddened at the terminator, eclipsed under a moon's shadow.
-  float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
-  float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, p, p, shadow, diffuseShadow(shadow))
-    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, p, p, shadow2, diffuseShadow(shadow2));
-  vec3 color = uCloudColor * (light + uNightFloor);
+  float shadow = shadowFactor(shellPoint, uLightDir, uStarAngularRadius, 1e30);
+  float shadow2 = shadowFactor(shellPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
+  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, cloudNormal, p, shadow, diffuseShadow(shadow))
+    + surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, cloudNormal, p, shadow2, diffuseShadow(shadow2));
+  vec3 color = uCloudColor * mix(0.65, 1.12, cloud.z) * (light + uNightFloor);
+  // Below the deck we see its shaded base rather than the sunlit top.
+  float aboveDeck = step(length(shellPoint), length(cameraPosition));
+  color *= mix(0.42 + 0.25 * (1.0 - cloud.y), 1.0, aboveDeck);
   // Seen through the air between the eye and the deck.
   float eyeAlt = length(cameraPosition) - uPlanetRadius;
-  float pointAlt = length(vWorldPos) - uPlanetRadius;
-  float viewDistance = distance(cameraPosition, vWorldPos);
+  float pointAlt = length(shellPoint) - uPlanetRadius;
+  float viewDistance = distance(cameraPosition, shellPoint);
   vec3 column = airSegmentComponent(
       uSurfaceRayleighDepth, uScaleHeight, uHorizonAirmass,
       eyeAlt, pointAlt, viewDistance
@@ -82,9 +88,9 @@ void main() {
       uSurfaceAerosolDepth, uAerosolScaleHeight, uAerosolHorizonAirmass,
       eyeAlt, pointAlt, viewDistance
     );
-  vec3 midUp = normalize(0.5 * (cameraPosition + vWorldPos));
-  vec3 midPoint = 0.5 * (cameraPosition + vWorldPos);
-  vec3 toEye = normalize(cameraPosition - vWorldPos);
+  vec3 midUp = normalize(0.5 * (cameraPosition + shellPoint));
+  vec3 midPoint = 0.5 * (cameraPosition + shellPoint);
+  vec3 toEye = normalize(cameraPosition - shellPoint);
   float midAlt = max(0.5 * (eyeAlt + pointAlt), 0.0);
   float airShadow = shadowFactor(midPoint, uLightDir, uStarAngularRadius, 1e30);
   vec3 scatter = uLightColor * phaseWeight(-dot(toEye, uLightDir))
@@ -99,8 +105,8 @@ void main() {
 
   // Fade out around the camera so descending through the deck never
   // crosses a hard sheet.
-  float fade = smoothstep(1.0, 6.0, distance(cameraPosition, vWorldPos));
-  gl_FragColor = vec4(color, mask * 0.92 * fade);
+  float fade = smoothstep(1.0, 6.0, range);
+  gl_FragColor = vec4(color, mask * fade);
 }
 `;
 
@@ -116,18 +122,20 @@ export function createCloudShell(
   reliefKm: number,
 ): Mesh | null {
   const { appearance, atmosphere, bulk } = physical;
-  if (atmosphere.class === 'none' || appearance.cloudCoverage < 0.02) return null;
+  if (atmosphere.class === 'none' || appearance.clouds.coverage < 0.01) return null;
   // The deck must clear the highest terrain by more than its own
   // triangulation sag, or quad centers dip below mountaintops and the
   // depth test punches a grid of holes through the clouds.
-  const deckKm =
-    Math.max(seaLevelKm, 0) + reliefKm + Math.max(3, atmosphere.scaleHeightKm * 0.9);
+  const terrainClearanceKm = Math.max(seaLevelKm, 0) + reliefKm + 1;
+  const deckKm = Math.max(terrainClearanceKm, appearance.clouds.topAltitudeKm);
+  const baseKm = Math.max(terrainClearanceKm, deckKm - appearance.clouds.thicknessKm);
   const column = atmosphereColumn(atmosphere, bulk);
   const material = new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
       ...createShadowUniforms(),
+      ...cloudPatternUniforms(physical),
       ...surfaceLightUniforms({
         ...columnAbove(column, atmosphere, deckKm),
         horizon: horizonAirmass(radiusKm, atmosphere.scaleHeightKm),
@@ -140,9 +148,10 @@ export function createCloudShell(
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
-      uCloudColor: { value: appearance.cloudColor },
-      uCloudCoverage: { value: appearance.cloudCoverage },
+      uCloudColor: { value: appearance.clouds.color },
       uTimeDays: { value: 0 },
+      uCloudInnerRadius: { value: radiusKm + baseKm },
+      uCloudOuterRadius: { value: radiusKm + deckKm },
     },
     transparent: true,
     depthWrite: false,

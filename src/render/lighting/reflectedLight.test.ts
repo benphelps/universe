@@ -44,8 +44,18 @@ describe('shineTint', () => {
     landColorB: [0, 0, 0] as [number, number, number],
     oceanColor: [0, 0, 0] as [number, number, number],
     iceColor: [0, 0, 0] as [number, number, number],
-    cloudColor: [0.9, 0.9, 1.0] as [number, number, number],
-    cloudCoverage: 0,
+    clouds: {
+      condensate: 'water' as const,
+      coverage: 0,
+      opticalDepth: 12,
+      topAltitudeKm: 10,
+      thicknessKm: 4,
+      featureScaleKm: 1500,
+      driftRadPerDay: 0.2,
+      relief: 0.7,
+      stellarBias: 0,
+      color: [0.9, 0.9, 1.0] as [number, number, number],
+    },
     lavaGlow: 0,
     banding: null,
   };
@@ -58,7 +68,10 @@ describe('shineTint', () => {
   });
 
   it('clouds whiten the shine', () => {
-    const tint = shineTint({ ...appearance, cloudCoverage: 1 });
+    const tint = shineTint({
+      ...appearance,
+      clouds: { ...appearance.clouds, coverage: 1 },
+    });
     expect(tint[1]).toBeGreaterThan(0.85);
     expect(tint[2]).toBeGreaterThan(tint[1]);
   });

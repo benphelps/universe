@@ -38,10 +38,10 @@ export function reflectedFluxRatio(body: ShineBody, sunDirAtBody: Vector3): numb
  *  cover, its ground where they don't, normalized to chroma only (the
  *  Bond albedo already owns the brightness). */
 export function shineTint(appearance: PlanetAppearance): [number, number, number] {
-  const cloud = Math.min(1, appearance.cloudCoverage * 0.8);
-  const r = appearance.landColorA[0] * (1 - cloud) + appearance.cloudColor[0] * cloud;
-  const g = appearance.landColorA[1] * (1 - cloud) + appearance.cloudColor[1] * cloud;
-  const b = appearance.landColorA[2] * (1 - cloud) + appearance.cloudColor[2] * cloud;
+  const cloud = Math.min(1, appearance.clouds.coverage * 0.8);
+  const r = appearance.landColorA[0] * (1 - cloud) + appearance.clouds.color[0] * cloud;
+  const g = appearance.landColorA[1] * (1 - cloud) + appearance.clouds.color[1] * cloud;
+  const b = appearance.landColorA[2] * (1 - cloud) + appearance.clouds.color[2] * cloud;
   const peak = Math.max(r, g, b, 1e-6);
   return [r / peak, g / peak, b / peak];
 }

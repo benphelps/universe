@@ -58,7 +58,8 @@ describe('planet fixtures around a Sun-like star', () => {
     expect(venus.atmosphere.surfacePressureBar).toBeGreaterThan(10);
     expect(venus.climate.surfaceMeanK).toBeGreaterThan(500);
     expect(venus.climate.hydrosphere).not.toBe('oceans');
-    expect(venus.appearance.cloudCoverage).toBe(1);
+    expect(venus.appearance.clouds.coverage).toBe(1);
+    expect(venus.appearance.clouds.condensate).toBe('sulfuric-acid');
   });
 
   it('a close-in eccentric rocky world melts into bounded magma seas', () => {

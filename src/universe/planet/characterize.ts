@@ -111,6 +111,7 @@ export function characterizePlanet(
     appearance: computeAppearance(
       rng.fork('appearance'),
       planetClass,
+      bulk,
       atmosphere,
       climate,
       interior,
