@@ -5,6 +5,7 @@ import {
   airSegmentColumn,
   airmass,
   beamTransmittance,
+  curvedZenithSkyRadiance,
   diffuseShadow,
   groundIrradiance,
   horizonAirmass,
@@ -14,6 +15,15 @@ import {
 } from './surfaceLight';
 
 const EARTH: [number, number, number] = [0.064, 0.1, 0.18];
+const EARTH_AIR = {
+  rayleigh: EARTH,
+  aerosol: [0.006, 0.006, 0.006] as [number, number, number],
+  aerosolExtinction: [0.01, 0.01, 0.01] as [number, number, number],
+  aerosolScaleHeightRatio: 0.15,
+  horizon: horizonAirmass(6371, 8.5),
+  radius: 6371,
+  scaleHeight: 8.5,
+};
 
 describe('horizonAirmass', () => {
   it('is a few dozen verticals for Earth', () => {
@@ -113,6 +123,42 @@ describe('skyRadiance', () => {
     // Both are fractions of the beam's irradiance; the dome sums to π×mean radiance.
     expect(sum / Math.PI).toBeGreaterThan(twoStream * 0.5);
     expect(sum / Math.PI).toBeLessThan(twoStream * 1.5);
+  });
+});
+
+describe('curvedZenithSkyRadiance', () => {
+  it('follows the planet shadow through a continuous twilight', () => {
+    const noon = curvedZenithSkyRadiance(EARTH_AIR, 0, 1)[1];
+    const sunset = curvedZenithSkyRadiance(EARTH_AIR, 0, 0)[1];
+    const civil = curvedZenithSkyRadiance(EARTH_AIR, 0, -Math.sin(Math.PI / 30))[1];
+    const nautical = curvedZenithSkyRadiance(EARTH_AIR, 0, -Math.sin(Math.PI / 15))[1];
+    expect(noon).toBeGreaterThan(0);
+    expect(sunset).toBeGreaterThan(civil);
+    expect(civil).toBeGreaterThan(nautical);
+    expect(nautical).toBeGreaterThan(0);
+  });
+
+  it('has no sunset discontinuity', () => {
+    const justAbove = curvedZenithSkyRadiance(EARTH_AIR, 0, 0.001)[1];
+    const justBelow = curvedZenithSkyRadiance(EARTH_AIR, 0, -0.001)[1];
+    expect(justBelow).toBeGreaterThan(justAbove * 0.8);
+    expect(justBelow).toBeLessThanOrEqual(justAbove);
+  });
+
+  it('is black in a vacuum and above the modeled air', () => {
+    expect(
+      curvedZenithSkyRadiance(
+        {
+          ...EARTH_AIR,
+          rayleigh: [0, 0, 0],
+          aerosol: [0, 0, 0],
+          aerosolExtinction: [0, 0, 0],
+        },
+        0,
+        1,
+      ),
+    ).toEqual([0, 0, 0]);
+    expect(curvedZenithSkyRadiance(EARTH_AIR, 205, 1)).toEqual([0, 0, 0]);
   });
 });
 

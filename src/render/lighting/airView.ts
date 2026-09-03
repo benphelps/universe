@@ -72,20 +72,23 @@ float airSkyRadianceGreen(vec3 dir) {
     : tv * exp(-tv);
   float cosTheta = dot(dir, uAirSunDir);
   float phase = 0.1875 * (1.0 + cosTheta * cosTheta) * uAirScatteringAlbedo;
-  float secant = 1.0 / max(sqrt(max(1.0 - muSun * muSun, 0.0)), 1e-4);
-  float radiusOverHeight = 2.0 * uAirHorizon * uAirHorizon / 3.14159265;
-  float dusk = muSun >= 0.0 ? 1.0 : exp(-radiusOverHeight * (secant - 1.0));
   float overheadShare = smoothstep(0.0, 0.5, max(muView, 0.0));
   float eclipseLight = mix(1.0, uAirEclipse, overheadShare);
   float scatterTau = uAirTau.g * uAirScatteringAlbedo;
   float interacted = 1.0 - exp(-scatterTau * xs);
   float survived = exp(-uAirTau.g * (1.0 - uAirScatteringAlbedo) * 0.5 * (xs + xv));
   float escaped = 1.0 / (1.0 + 0.35 * scatterTau * xv);
-  float multiple = 0.08 * interacted * survived * escaped * dusk;
-  return uAirSunIntensity * (phase * max(integral, 0.0) * dusk + multiple) * eclipseLight;
+  float multiple = 0.08 * interacted * survived * escaped;
+  return uAirSunIntensity * (phase * max(integral, 0.0) + multiple) * eclipseLight;
 }
 
 float skyVisibility(vec3 dir) {
+  // Once the sun is below the observer's horizon, the curved sky dome
+  // itself supplies the directional twilight glow. Let the physically
+  // computed global exposure reveal all stellar directions together;
+  // retaining the old scalar dusk estimate here could hide the stars
+  // after that visible glow had already gone.
+  if (dot(uAirSunDir, uAirUp) < 0.0) return 1.0;
   float localDaylight = airSkyRadianceGreen(normalize(dir));
   float zenithDaylight = airSkyRadianceGreen(uAirUp);
   float local = pow(

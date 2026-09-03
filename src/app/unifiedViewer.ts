@@ -59,9 +59,8 @@ import {
 } from '../render/lighting/starlight';
 import {
   applySurfaceLight,
+  curvedZenithSkyRadiance,
   horizonAirmass,
-  multipleScatterRadiance,
-  skyRadiance,
   totalDepth,
   VACUUM,
 } from '../render/lighting/surfaceLight';
@@ -1071,10 +1070,6 @@ export class UnifiedViewer {
   /** Fired when the user clicks a picked body. */
   onPick: ((target: PickTarget) => void) | null = null;
   private lastFrameMs = performance.now();
-  /** Exposure adapts quickly to a bright sky and more slowly back to
-   *  darkness; retained across focus changes like the observer's eye. */
-  private skyIntensity = 1;
-  private frameDtSeconds = 1 / 60;
   private readonly onResize = () => this.resize();
   private containerObserver: ResizeObserver | null = null;
 
@@ -2326,7 +2321,7 @@ export class UnifiedViewer {
       },
     );
     if (physical.atmosphere.class !== 'none') {
-      this.skyDome = createSkyDome(this.radiusKm, physical.atmosphere.scaleHeightKm);
+      this.skyDome = createSkyDome();
       this.scene.add(this.skyDome);
     }
     this.atmosphereShell = createAtmosphereShell(physical, this.radiusKm);
@@ -3827,11 +3822,7 @@ export class UnifiedViewer {
    * bright companion) outshines any daytime sky.
    */
   private setSkyIntensity(value: number): void {
-    const target = Math.min(1, Math.max(0, value));
-    const timeConstant = target < this.skyIntensity ? 0.18 : 1.6;
-    const blend = 1 - Math.exp(-this.frameDtSeconds / timeConstant);
-    this.skyIntensity += (target - this.skyIntensity) * blend;
-    value = this.skyIntensity;
+    value = Math.min(1, Math.max(0, value));
     // The backdrop fades out as the volumetric galaxy fades in — its
     // sky-sphere geometry is wrong once the camera has real parallax.
     // The neighborhood points are true 3D and stay: they simply recede.
@@ -3979,7 +3970,6 @@ export class UnifiedViewer {
     if (this.disposed) return;
     const now = performance.now();
     const dtSeconds = Math.min((now - this.lastFrameMs) / 1000, 0.1);
-    this.frameDtSeconds = dtSeconds;
     this.smoothFrame(now - this.lastFrameMs);
     this.lastFrameMs = now;
     // OrbitControls decays its leftover motion once per frame, so a
@@ -4765,9 +4755,10 @@ export class UnifiedViewer {
     // the level the eye has settled on. What settles it is the sky
     // itself — the column above the eye scattering this sun toward it,
     // over the eclipse shadow at the eye — so the same points display
-    // at the night seat over the adapted ratio: nothing at noon, still
-    // nothing through civil twilight, the whole sky once the air goes
-    // dark or the sun is covered. The column thins with altitude, so
+    // at the night seat over the adapted ratio: nothing at noon, then
+    // progressively more while the curved air loses the light, and the
+    // whole sky once the air goes dark or the sun is covered. The air
+    // thins with altitude, so
     // from orbit the sky is black and every star stands, day side or
     // night; a sunlit disc in the view is a thing the eye looks at,
     // not a sky it stands under. The envelope and the vacuum have no
@@ -4775,17 +4766,22 @@ export class UnifiedViewer {
     let daylight = 0;
     let eclipse = 1;
     if (this.focusAir && solid) {
-      const column = air?.tau ?? ([0, 0, 0] as [number, number, number]);
       const muSun = sunDir.dot(up);
-      const zenith =
-        skyRadiance(column, 1, muSun, muSun, this.focusAir.horizon)[1] +
-        multipleScatterRadiance(
-          column[1],
-          air?.scatteringAlbedo ?? this.focusAir.scatteringAlbedo,
-          muSun,
-          1,
-          this.focusAir.horizon,
-        );
+      const zenith = curvedZenithSkyRadiance(
+        {
+          rayleigh: this.focusAir.rayleigh,
+          aerosol: this.focusAir.aerosol,
+          aerosolExtinction: this.focusAir.aerosolExtinction,
+          aerosolScaleHeightRatio:
+            this.focusAir.aerosolScaleHeightKm / Math.max(this.focusAir.scaleHeightKm, 0.1),
+          horizon: this.focusAir.horizon,
+          radius: this.radiusKm,
+          scaleHeight: this.focusAir.scaleHeightKm,
+        },
+        this.altitudeKm,
+        muSun,
+        angularRadius,
+      )[1];
       eclipse = shadowAt(this.camera.position, sunDir, groundCasters, angularRadius);
       daylight = lightColor[1] * zenith * eclipse;
     }
@@ -4844,11 +4840,8 @@ export class UnifiedViewer {
       this.skyDome.position.copy(this.camera.position);
       const material = this.skyDome.material as ShaderMaterial;
       material.uniforms.uSunDir.value = [sunDir.x, sunDir.y, sunDir.z];
-      material.uniforms.uUp.value = [up.x, up.y, up.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
       applySecondSun(material, surf2);
-      // The column above the eye: the surface depth thinned by the
-      // scale height, so the sky goes black on the way to orbit.
     }
   }
 }

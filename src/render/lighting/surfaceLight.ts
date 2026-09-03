@@ -10,6 +10,7 @@ import { Color, type ShaderMaterial } from 'three';
 export const SURFACE_LIGHT_GLSL = /* glsl */ `
 uniform vec3 uOpticalDepth;             // the whole column, gas and haze
 uniform vec3 uRayleighDepth;
+uniform vec3 uAerosolScatterDepth;      // scattering only; extinction can absorb too
 uniform vec3 uAerosolExtinction;
 uniform vec3 uAerosolFraction;          // the haze's share of scattering, per channel
 uniform vec3 uScatteringAlbedo;         // scattering / extinction, per channel
@@ -345,6 +346,7 @@ export function surfaceLightUniforms(air: SurfaceAir = VACUUM): Record<string, {
   return {
     uOpticalDepth: { value: new Color(...totalDepth(air)) },
     uRayleighDepth: { value: new Color(...air.rayleigh) },
+    uAerosolScatterDepth: { value: new Color(...air.aerosol) },
     uAerosolExtinction: { value: new Color(...air.aerosolExtinction) },
     uAerosolFraction: { value: new Color(...aerosolFraction(air)) },
     uScatteringAlbedo: { value: new Color(...scatteringAlbedo(air)) },
@@ -364,6 +366,7 @@ export function applySurfaceLight(material: ShaderMaterial, air: SurfaceAir): vo
   if (!uniforms.uOpticalDepth) return;
   (uniforms.uOpticalDepth.value as Color).setRGB(...totalDepth(air));
   (uniforms.uRayleighDepth.value as Color).setRGB(...air.rayleigh);
+  (uniforms.uAerosolScatterDepth.value as Color).setRGB(...air.aerosol);
   (uniforms.uAerosolExtinction.value as Color).setRGB(...air.aerosolExtinction);
   (uniforms.uAerosolFraction.value as Color).setRGB(...aerosolFraction(air));
   (uniforms.uScatteringAlbedo.value as Color).setRGB(...scatteringAlbedo(air));
@@ -481,4 +484,104 @@ export function skyRadiance(
     const integral = Math.abs(den) > 1e-3 ? (xv * (Math.exp(-tv) - Math.exp(-t * xs))) / den : tv * Math.exp(-tv);
     return phase * Math.max(integral, 0) * lit;
   }) as [number, number, number];
+}
+
+const SKY_ATMOSPHERE_SCALE_HEIGHTS = 24;
+
+function rayleighPhase(cosTheta: number): number {
+  return 0.1875 * (1 + cosTheta * cosTheta);
+}
+
+function henyeyGreenstein(cosTheta: number, g: number): number {
+  return (0.25 * (1 - g * g)) / (1 + g * g - 2 * g * cosTheta) ** 1.5;
+}
+
+function hazePhase(cosTheta: number): number {
+  return 0.12 * henyeyGreenstein(cosTheta, 0.94) + 0.88 * henyeyGreenstein(cosTheta, 0.4);
+}
+
+function smoothstep01(value: number): number {
+  const t = Math.min(1, Math.max(0, value));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Zenith radiance from an atmosphere whose curvature is actually
+ * followed. Each parcel is lit only when its own ray to the sun clears
+ * the planet; there is no observer-level twilight switch. This mirrors
+ * the sky-dome integration closely enough to drive the stellar sky from
+ * the light that is visibly washing it out.
+ */
+export function curvedZenithSkyRadiance(
+  air: SurfaceAir,
+  altitudeKm: number,
+  muSun: number,
+  sunAngularRadius = 0.0047,
+  steps = 16,
+): [number, number, number] {
+  const gasHeight = Math.max(air.scaleHeight, 0.1);
+  const aerosolHeight = Math.max(gasHeight * air.aerosolScaleHeightRatio, 0.1);
+  const altitude = Math.max(altitudeKm, 0);
+  const topAltitude = SKY_ATMOSPHERE_SCALE_HEIGHTS * Math.max(gasHeight, aerosolHeight);
+  if (altitude >= topAltitude) return [0, 0, 0];
+
+  const count = Math.max(1, Math.floor(steps));
+  const distance = topAltitude - altitude;
+  const phaseCosine = Math.min(1, Math.max(-1, muSun));
+  const phaseGas = rayleighPhase(phaseCosine);
+  const phaseAerosol = hazePhase(phaseCosine);
+  const viewDepth = [0, 0, 0];
+  const radiance = [0, 0, 0];
+
+  for (let sample = 0; sample < count; sample++) {
+    const q0 = sample / count;
+    const q1 = (sample + 1) / count;
+    const start = distance * q0 * q0;
+    const end = distance * q1 * q1;
+    const ds = end - start;
+    const sampleAltitude = altitude + (start + end) * 0.5;
+    const gasDensity = Math.exp(-sampleAltitude / gasHeight);
+    const aerosolDensity = Math.exp(-sampleAltitude / aerosolHeight);
+    const radiusAtSample = air.radius + sampleAltitude;
+    const horizonDip = Math.acos(Math.min(1, air.radius / radiusAtSample));
+    const sunElevation = Math.asin(Math.min(1, Math.max(-1, muSun)));
+    const discHalfWidth = Math.max(sunAngularRadius, 1e-5);
+    const discVisible = smoothstep01(
+      (sunElevation + horizonDip + discHalfWidth) / (2 * discHalfWidth),
+    );
+    const tangentMu = -Math.sqrt(
+      Math.max(1 - (air.radius * air.radius) / (radiusAtSample * radiusAtSample), 0),
+    );
+    const sourceMu = Math.max(muSun, tangentMu);
+    const gasSunColumn = slantColumn(sampleAltitude, sourceMu, air.radius, gasHeight);
+    const aerosolSunColumn = slantColumn(
+      sampleAltitude,
+      sourceMu,
+      air.radius,
+      aerosolHeight,
+    );
+    const sunVisible = Number.isFinite(gasSunColumn) && Number.isFinite(aerosolSunColumn);
+
+    for (let channel = 0; channel < 3; channel++) {
+      const extinction =
+        (air.rayleigh[channel] * gasDensity) / gasHeight +
+        (air.aerosolExtinction[channel] * aerosolDensity) / aerosolHeight;
+      const segmentDepth = extinction * ds;
+      const viewTransmittance = Math.exp(-viewDepth[channel] - segmentDepth * 0.5);
+      const sunTransmittance = sunVisible
+        ? Math.exp(
+            -air.rayleigh[channel] * gasSunColumn -
+              air.aerosolExtinction[channel] * aerosolSunColumn,
+          )
+        : 0;
+      const scattering =
+        (air.rayleigh[channel] * gasDensity * phaseGas) / gasHeight +
+        (air.aerosol[channel] * aerosolDensity * phaseAerosol) / aerosolHeight;
+      radiance[channel] +=
+        scattering * sunTransmittance * viewTransmittance * discVisible * ds;
+      viewDepth[channel] += segmentDepth;
+    }
+  }
+
+  return radiance as [number, number, number];
 }
