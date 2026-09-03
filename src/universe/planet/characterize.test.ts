@@ -62,7 +62,7 @@ describe('planet fixtures around a Sun-like star', () => {
     expect(venus.appearance.clouds.condensate).toBe('sulfuric-acid');
   });
 
-  it('a close-in eccentric rocky world melts into bounded magma seas', () => {
+  it('a close-in eccentric rocky world melts into magma seas', () => {
     const lava = characterizePlanet(
       13n,
       'rocky',
@@ -81,7 +81,12 @@ describe('planet fixtures around a Sun-like star', () => {
     expect(lava.interior.regime).toBe('magma');
     expect(lava.climate.hydrosphere).toBe('magma');
     expect(lava.climate.oceanCoverage).toBeGreaterThanOrEqual(0.05);
-    expect(lava.climate.oceanCoverage).toBeLessThanOrEqual(0.95);
+    expect(lava.climate.oceanCoverage).toBeLessThanOrEqual(1);
+    const coldestSurfaceK =
+      lava.climate.surfaceMeanK - lava.climate.dayNightDeltaK * 0.5;
+    if (coldestSurfaceK >= 1800) {
+      expect(lava.climate.oceanCoverage).toBe(1);
+    }
     expect(lava.appearance.lavaGlow).toBe(1);
   });
 

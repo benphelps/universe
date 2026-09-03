@@ -9,7 +9,7 @@ import type {
   PlanetInterior,
   PlanetRotation,
 } from './types';
-import { silicateMeltFraction } from './thermodynamics';
+import { globalSilicateMeltFraction } from './thermodynamics';
 import { atmosphericBondAlbedo } from './atmosphere';
 
 /** T_eq = 278.6 K at 1 AU around 1 L☉ with zero albedo. */
@@ -87,14 +87,18 @@ export function computeClimate(
       break;
     }
     const wasHydrosphere: Hydrosphere = hydrosphere;
-    const irradiationMelt = silicateMeltFraction(surfaceMeanK);
+    const redistribution = Math.min(1, pressureBar * 0.8);
+    const thermalContrastK = rotation.locked
+      ? equilibriumK * 0.9 * (1 - redistribution)
+      : 0;
+    const irradiationMelt = globalSilicateMeltFraction(surfaceMeanK, thermalContrastK);
     if (interior.regime === 'magma' || irradiationMelt > 0) {
       hydrosphere = 'magma';
       // Exposed-melt fraction: the crust closes over as the flux falls
       // toward the magma threshold (2 W/m²), and irradiation past the
       // silicate solidus melts it open again from above.
       const fluxMelt = 0.15 + 0.45 * Math.log10(interior.heatFluxWm2 / 2);
-      oceanCoverage = Math.min(0.95, Math.max(0.05, fluxMelt, irradiationMelt));
+      oceanCoverage = Math.min(1, Math.max(0.05, fluxMelt, irradiationMelt));
       iceCapLatitudeRad = Math.PI / 2;
     } else {
       // Polar temperature falls below the mean; thick atmospheres transport heat.

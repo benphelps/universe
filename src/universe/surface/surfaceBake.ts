@@ -78,7 +78,13 @@ export function bakeSurfaceCube(
           // stair-stepping.
           const window = Math.max(6, Math.abs(hx1 - hx0) + Math.abs(hy1 - hy0));
           const t = (seaLevelM - h) / window + 0.5;
-          alpha = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+          alpha = field.params.fullyMolten
+            ? 1
+            : t <= 0
+              ? 0
+              : t >= 1
+                ? 1
+                : t * t * (3 - 2 * t);
           if (alpha > 0 && !molten) {
             color = [
               color[0] + (oceanColor[0] - color[0]) * alpha,

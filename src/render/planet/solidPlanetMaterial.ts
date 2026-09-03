@@ -2,6 +2,7 @@ import { Color, ShaderMaterial } from 'three';
 import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { atmosphereColumn, columnAbove } from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
+import { exposedMagmaTemperatureK } from '../../universe/planet/thermodynamics';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { WORLD_NORMAL_GLSL } from '../glsl/worldNormal';
@@ -13,6 +14,7 @@ import {
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 import { CLOUD_PATTERN_GLSL, cloudPatternUniforms, planetSeedOffset } from './cloudPattern';
+import { blackbodySurfaceEmission } from '../lighting/thermalEmission';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
@@ -45,6 +47,11 @@ uniform vec3 uLandA;
 uniform vec3 uLandB;
 uniform vec3 uCloudColor;
 uniform float uLavaGlow;
+uniform float uMagmaCoverage;
+uniform float uMagmaTemperatureK;
+uniform float uDayNightDeltaK;
+uniform vec3 uThermalColor;
+uniform float uThermalStrength;
 uniform float uRadiusKm;
 uniform float uTimeDays;
 uniform vec3 uCloudAirDepth;
@@ -74,7 +81,9 @@ void main() {
 #else
   float tint = fbm(p * 2.3 + uSeedOffset) * 0.5 + 0.5;
   surface = mix(uLandA, uLandB, tint);
-  liquid = 0.0;
+  // A world above the liquidus is already known to be a continuous fluid
+  // shell; do not flash rigid terrain while its surface bake is pending.
+  liquid = step(0.999, uMagmaCoverage);
 #endif
 
   vec3 normal = normalize(vWorldNormal);
@@ -84,14 +93,20 @@ void main() {
 
   // Molten worlds: the magma seas radiate their own light, day and
   // night — evaluated in the planet's kilometer frame with the same
-  // pattern the walk-up lava tiles use, so the same melt streams sit
-  // in the same places at every distance.
-  vec3 lavaGlowC = vec3(0.0);
-  float lavaHot = 0.0;
+  // pattern the walk-up lava tiles use, so the same convective structures
+  // sit in the same places at every distance.
+  vec3 magma = vec3(uMagmaTemperatureK, 0.0, 0.5);
   if (uLavaGlow > 0.0 && liquid > 0.0) {
     vec3 wKm = p * uRadiusKm;
-    lavaGlowC = magmaGlow(wKm, uSeedOffset, uTimeDays, length(fwidth(wKm)));
-    lavaHot = smoothstep(0.2, 0.9, dot(lavaGlowC, vec3(0.3, 0.59, 0.11)));
+    magma = magmaSurfaceState(
+      wKm,
+      uSeedOffset,
+      uTimeDays,
+      length(fwidth(wKm)),
+      uMagmaTemperatureK,
+      uDayNightDeltaK,
+      dot(normal, uLightDir)
+    );
   }
 
   // Lighting: each sun through the air above the ground — or above
@@ -113,7 +128,7 @@ void main() {
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   // Chilled crust is matte; only the hot open melt keeps a sheen.
-  float gloss = uLavaGlow > 0.0 ? 0.2 * (0.2 + 0.8 * lavaHot) : 0.5;
+  float gloss = uLavaGlow > 0.0 ? 0.2 * (0.2 + 0.8 * magma.y) : 0.5;
   float sheen = liquid * (1.0 - cloudMask) * gloss;
   vec3 halfDir = normalize(uLightDir + viewDir);
   vec3 specular = uLightColor * beamTransmittance(uOpticalDepth, ndotl)
@@ -124,7 +139,14 @@ void main() {
       * pow(max(dot(normal, halfDir2), 0.0), 90.0) * sheen * max(ndotl2, 0.0) * shadow2;
   }
 
-  vec3 groundColor = surface * (groundLight + uNightFloor) + specular;
+  vec3 solidGround = surface * (groundLight + uNightFloor) + specular;
+  float magmaEmissivity = mix(0.84, 0.94, magma.y);
+  float thermalRatio = pow(magma.x / max(uMagmaTemperatureK, 1.0), 4.0);
+  vec3 moltenGround =
+    uThermalColor * uThermalStrength * thermalRatio * magmaEmissivity * uLavaGlow
+    + surface * (groundLight + uNightFloor) * (1.0 - magmaEmissivity)
+    + specular;
+  vec3 groundColor = mix(solidGround, moltenGround, liquid);
   // Optical opacity determines whether the ground shows through; height
   // independently gives thick towers bright tops and darker shoulders.
   vec3 cloudSurface = uCloudColor * mix(0.65, 1.12, cloud.z);
@@ -144,8 +166,6 @@ void main() {
       * twilight(ndotl2) * shadow2;
   }
 
-  color += lavaGlowC * liquid * uLavaGlow * (1.0 - cloudMask * 0.85);
-
   gl_FragColor = vec4(color * airTransmittanceTo(vWorldPos), 1.0);
 }
 `;
@@ -158,6 +178,14 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
   // shell (terrain clearance is the only focus-only adjustment).
   const deckKm = appearance.clouds.topAltitudeKm;
   const above = columnAbove(column, atmosphere, deckKm);
+  const magmaCoverage = physical.climate.hydrosphere === 'magma'
+    ? physical.climate.oceanCoverage
+    : 0;
+  const magmaTemperatureK = exposedMagmaTemperatureK(
+    physical.climate.surfaceMeanK,
+    magmaCoverage,
+  );
+  const thermalEmission = blackbodySurfaceEmission(magmaTemperatureK);
   return new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -186,6 +214,11 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       uLandB: { value: appearance.landColorB },
       uCloudColor: { value: appearance.clouds.color },
       uLavaGlow: { value: appearance.lavaGlow },
+      uMagmaCoverage: { value: magmaCoverage },
+      uMagmaTemperatureK: { value: magmaTemperatureK },
+      uDayNightDeltaK: { value: physical.climate.dayNightDeltaK },
+      uThermalColor: { value: new Color(...thermalEmission.color) },
+      uThermalStrength: { value: thermalEmission.strength },
       uRadiusKm: { value: radiusKm },
       uSurfaceCube: { value: null },
       uTimeDays: { value: 0 },

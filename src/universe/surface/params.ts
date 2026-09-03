@@ -19,6 +19,8 @@ export interface SurfaceParams {
   oceanCoverage: number;
   /** Exposed-melt fraction on molten worlds: the magma seas' coverage. */
   magmaCoverage: number;
+  /** No mechanically coherent crust remains above the silicate liquidus. */
+  fullyMolten: boolean;
   tectonics: TectonicStyle;
   /** 0 = crater-free, 1 = saturated airless highlands. */
   craterAmplitude: number;
@@ -75,6 +77,8 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
           : 0.05;
 
   const radiusM = bulk.radiusEarth * EARTH_RADIUS;
+  const magmaCoverage = climate.hydrosphere === 'magma' ? climate.oceanCoverage : 0;
+  const fullyMolten = magmaCoverage >= 1 - 1e-6;
   // A lid floating on molten interior supports little topographic load:
   // relief collapses to sheet-flow plains with modest volcanic swells
   // (Io's plains run a few hundred meters; its rare tall blocks are
@@ -86,12 +90,14 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
     // Crust strength sets relief against gravity, but never more than a
     // few percent of the body: beyond that it's shape, not terrain
     // (Moon 0.5% R, Mars 0.9% R, Vesta ~8% R at the small-body limit).
-    reliefM:
-      Math.min(26000, radiusM * 0.08, Math.max(900, 5500 * gravityRatio ** 0.7)) * crustSupport,
+    reliefM: fullyMolten
+      ? 0
+      : Math.min(26000, radiusM * 0.08, Math.max(900, 5500 * gravityRatio ** 0.7)) * crustSupport,
     oceanCoverage: climate.hydrosphere === 'oceans' ? climate.oceanCoverage : 0,
-    magmaCoverage: climate.hydrosphere === 'magma' ? climate.oceanCoverage : 0,
+    magmaCoverage,
+    fullyMolten,
     tectonics,
-    craterAmplitude: craterRetention * (1 - erosion * 0.85),
+    craterAmplitude: fullyMolten ? 0 : craterRetention * (1 - erosion * 0.85),
     erosion,
     volcanism:
       interior.regime === 'magma'

@@ -98,6 +98,9 @@ export class TerrainChunkManager {
     /** Receives the first worker's grid survey once its field is built —
      *  the main thread's deferGrid field attaches it. */
     private readonly onSurvey: ((survey: GridSurvey) => void) | null = null,
+    /** Fully molten worlds still stream the level fluid mesh for ground-scale
+     * precision, but their hidden bathymetry is not a drawable surface. */
+    private readonly renderTerrain = true,
   ) {
     this.radiusKm = radiusKm;
     const workerCount = Math.min(5, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
@@ -305,7 +308,7 @@ export class TerrainChunkManager {
     const record = this.ensure(face, level, x, y);
     record.lastDrawn = this.frame;
     if (record.mesh) {
-      record.mesh.visible = true;
+      record.mesh.visible = this.renderTerrain;
       if (record.waterMesh) record.waterMesh.visible = true;
       return;
     }
@@ -317,7 +320,7 @@ export class TerrainChunkManager {
           const child = this.chunks.get(`${face}:${level + 1}:${x * 2 + cx}:${y * 2 + cy}`);
           if (child?.mesh) {
             child.lastDrawn = this.frame;
-            child.mesh.visible = true;
+            child.mesh.visible = this.renderTerrain;
             if (child.waterMesh) child.waterMesh.visible = true;
           }
         }

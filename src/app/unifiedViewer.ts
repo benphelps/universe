@@ -2302,13 +2302,13 @@ export class UnifiedViewer {
     this.surveying = field.finishGrid !== undefined;
     this.oceanMaterial =
       this.field.params.magmaCoverage > 0
-        ? createMagmaMaterial(physical.appearance.oceanColor, planetSeedOffset(physical.seedHex))
+        ? createMagmaMaterial(physical, planetSeedOffset(physical.seedHex))
         : createOceanMaterial(physical.appearance.oceanColor);
     this.chunkManager = new TerrainChunkManager(
       this.scene,
       this.terrainMaterial,
       this.oceanMaterial,
-      this.scatterMaterial,
+      this.field.params.fullyMolten ? null : this.scatterMaterial,
       { type: 'init', seedHex: physical.seedHex, physical },
       this.radiusKm,
       this.field.params.biosphere
@@ -2320,6 +2320,7 @@ export class UnifiedViewer {
           this.surveying = false;
         }
       },
+      !this.field.params.fullyMolten,
     );
     const seaLevelKm = this.field.seaLevelM / 1000;
     const reliefKm = this.field.params.reliefM / 1000;

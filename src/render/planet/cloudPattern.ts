@@ -107,13 +107,10 @@ vec3 cloudReliefNormal(vec3 up, float height) {
 }
 
 float cloudOpacity(float density) {
-  // Dense condensate saturates through a cubic core, while a much thinner
-  // linear component keeps the surrounding wisps visible. The latter is
-  // tied to the footprint density, so it cannot become a global haze.
-  float condensate = max(density * density * density, 0.0);
-  float core = 1.0 - exp(-0.42 * uCloudOpticalDepth * condensate);
-  float fringe = 1.0 - exp(-0.045 * uCloudOpticalDepth * max(density, 0.0));
-  return 1.0 - (1.0 - core) * (1.0 - fringe);
+  // Beer-Lambert through the local condensate column. The previous cubic
+  // response made even a nominal tau=10 global deck translucent wherever
+  // procedural density was merely moderate, exposing a false orange surface.
+  return 1.0 - exp(-uCloudOpticalDepth * max(density, 0.0));
 }
 `;
 

@@ -333,6 +333,11 @@ export function createSurfaceField(
   };
 
   const heightAt = (dir: Vec3, lodAngularRad = 0): number => {
+    // Above the liquidus there is no persistent crust to carry relief.
+    // Keep the hidden bathymetric mesh at the datum so the streamed fluid
+    // shell, camera floor and orbital bake all meet the same surface.
+    if (params.fullyMolten) return 0;
+
     let h = continents(dir.x * 1.3, dir.y * 1.3, dir.z * 1.3) * reliefM * 0.55;
 
     if (mountainStrength > 0.05) {
@@ -481,12 +486,14 @@ export function createSurfaceField(
     return h;
   };
 
-  // Magma seas flood through the same machinery as water: one solved
-  // level, one liquid surface, one shoreline treatment.
-  const seaLevelM = solveSeaLevel(
-    heightAt,
-    Math.max(params.oceanCoverage, params.magmaCoverage),
-  );
+  // Partial seas flood real basins. A fully molten world has no coastline:
+  // its photosphere is one level fluid shell at the planetary datum.
+  const seaLevelM = params.fullyMolten
+    ? 0
+    : solveSeaLevel(
+        heightAt,
+        Math.max(params.oceanCoverage, params.magmaCoverage),
+      );
   solvedSeaLevelM = seaLevelM;
   let climate: ClimateField | null = null;
   let finishGrid: ((survey: GridSurvey) => void) | undefined;

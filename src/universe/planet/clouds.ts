@@ -103,7 +103,9 @@ export function computeCloudLayer(
         driftRadPerDay: drift(rng.range(45, 110), radiusKm),
         relief: rng.range(0.35, 0.7),
         stellarBias: rotation.locked ? -0.65 : 0,
-        color: [0.72, 0.67, 0.62],
+        // Iron-poor silicate grains are approximately neutral scatterers in
+        // visible light; the star and overlying gas supply the observed hue.
+        color: [0.72, 0.72, 0.7],
       };
     }
 
@@ -153,7 +155,7 @@ export function computeCloudLayer(
       relief: rng.range(0.35, 0.65),
       // Tidally locked vapor condenses after it crosses onto the cold side.
       stellarBias: rotation.locked ? -0.85 : 0,
-      color: [0.72, 0.67, 0.62],
+      color: [0.72, 0.72, 0.7],
     };
   }
 

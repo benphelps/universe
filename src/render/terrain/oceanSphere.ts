@@ -1,6 +1,9 @@
 import { Color, ShaderMaterial } from 'three';
+import type { Characterization } from '../../universe/planet/types';
+import { exposedMagmaTemperatureK } from '../../universe/planet/thermodynamics';
 import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
+import { blackbodySurfaceEmission } from '../lighting/thermalEmission';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
@@ -133,6 +136,10 @@ uniform vec3 uLightColor;
 ${SECOND_SUN_GLSL}
 uniform vec3 uSeedOffset;
 uniform float uTimeDays;
+uniform float uMagmaTemperatureK;
+uniform float uDayNightDeltaK;
+uniform vec3 uThermalColor;
+uniform float uThermalStrength;
 
 ${SIMPLEX_NOISE_GLSL}
 ${MAGMA_PATTERN_GLSL}
@@ -153,33 +160,45 @@ void main() {
   vec3 normal = normalize(vNormal);
   vec3 viewDir = normalize(-vViewPos) * mat3(viewMatrix);
 
-  vec3 glow = magmaGlow(vWorldPos, uSeedOffset, uTimeDays, length(fwidth(vWorldPos)));
-  float lum = dot(glow, vec3(0.3, 0.59, 0.11));
+  vec3 magma = magmaSurfaceState(
+    vWorldPos,
+    uSeedOffset,
+    uTimeDays,
+    length(fwidth(vWorldPos)),
+    uMagmaTemperatureK,
+    uDayNightDeltaK,
+    dot(normal, uLightDir)
+  );
 
-  // The sheen belongs to the melt: open lava is glassy-fluid, chilled
-  // crust is matte rubble, and the surface is anything but smooth —
-  // the flow pattern itself bumps the specular normal, so the glint
-  // breaks along the filaments instead of pooling into a polished blob.
+  // Resolved convection perturbs the fluid normal. Above the liquidus the
+  // perturbation stays shallow; near the solidus, raft edges roughen it.
   vec3 sx = dFdx(vWorldPos);
   vec3 sy = dFdy(vWorldPos);
   vec3 tx = normalize(sx - normal * dot(sx, normal) + vec3(1e-6));
   vec3 ty = normalize(sy - normal * dot(sy, normal) + vec3(1e-6));
-  float gx = clamp(dFdx(lum) / max(length(sx), 1e-5) * 2.0, -0.5, 0.5);
-  float gy = clamp(dFdy(lum) / max(length(sy), 1e-5) * 2.0, -0.5, 0.5);
+  float roughness = mix(0.55, 0.16, magma.y);
+  float gx = clamp(dFdx(magma.z) / max(length(sx), 1e-5) * roughness, -0.18, 0.18);
+  float gy = clamp(dFdy(magma.z) / max(length(sy), 1e-5) * roughness, -0.18, 0.18);
   vec3 bumped = normalize(normal - gx * tx - gy * ty);
 
-  float hot = smoothstep(0.2, 0.9, lum);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow));
-  vec3 sheen = meltSheen(bumped, normal, viewDir, uLightDir, uLightColor, hot, shadow);
+  vec3 sheen = meltSheen(bumped, normal, viewDir, uLightDir, uLightColor, magma.y, shadow);
   bool lit2 = secondSunLit();
   float shadow2 = 1.0;
   if (lit2) {
     shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
-    sheen += meltSheen(bumped, normal, viewDir, uLight2Dir, uLight2Color, hot, shadow2);
+    sheen += meltSheen(bumped, normal, viewDir, uLight2Dir, uLight2Color, magma.y, shadow2);
   }
-  vec3 color = uColor * (light + uNightFloor) + sheen + glow;
+  // Kirchhoff's law couples absorption and emission. Open silicate melt is
+  // nearly black in reflection and therefore strongly emissive; a chilled
+  // skin reflects a little more. T^4 supplies the local bolometric contrast.
+  float emissivity = mix(0.84, 0.94, magma.y);
+  float thermalRatio = pow(magma.x / max(uMagmaTemperatureK, 1.0), 4.0);
+  vec3 thermal = uThermalColor * uThermalStrength * thermalRatio * emissivity;
+  vec3 reflected = uColor * (light + uNightFloor) * (1.0 - emissivity) + sheen;
+  vec3 color = thermal + reflected;
 
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,
@@ -199,24 +218,33 @@ void main() {
 }
 `;
 
-/** Magma-sea surface for the same water tiles: chilled plates over an
- *  incandescent crack lattice, emitting its own light day and night. */
+/** Magma-sea surface for the same water tiles: a temperature-derived,
+ * convecting fluid that emits its own light day and night. */
 export function createMagmaMaterial(
-  crustColor: [number, number, number],
+  physical: Characterization,
   seedOffset: [number, number, number],
 ): ShaderMaterial {
+  const magmaTemperatureK = exposedMagmaTemperatureK(
+    physical.climate.surfaceMeanK,
+    physical.climate.oceanCoverage,
+  );
+  const emission = blackbodySurfaceEmission(magmaTemperatureK);
   return new ShaderMaterial({
     vertexShader: MAGMA_VERTEX,
     fragmentShader: MAGMA_FRAGMENT,
     uniforms: {
       ...createShadowUniforms(),
       ...surfaceLightUniforms(),
-      uColor: { value: new Color(...crustColor) },
+      uColor: { value: new Color(...physical.appearance.oceanColor) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
       uSeedOffset: { value: seedOffset },
       uTimeDays: { value: 0 },
+      uMagmaTemperatureK: { value: magmaTemperatureK },
+      uDayNightDeltaK: { value: physical.climate.dayNightDeltaK },
+      uThermalColor: { value: new Color(...emission.color) },
+      uThermalStrength: { value: emission.strength },
     },
   });
 }

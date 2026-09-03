@@ -57,7 +57,7 @@ const CLOUD_LABEL: Record<CloudCondensate, string> = {
   'carbon-dioxide': 'CO₂ ice',
   'sulfuric-acid': 'sulfuric acid',
   methane: 'methane',
-  mineral: 'mineral vapor',
+  mineral: 'mineral clouds',
 };
 
 function cloudLine(clouds: PlanetCloudLayer): string {
@@ -165,7 +165,7 @@ export function moonPlateSpec(
     ],
     ['Clouds', cloudLine(appearance.clouds)],
     ['T', `${fmt(climate.surfaceMeanK, 3)} K`],
-    ['Surface', HYDROSPHERE_LABEL[climate.hydrosphere]],
+    ['Surface', hydrosphereLine(climate)],
     ['Geology', REGIME_LABEL[interior.regime]],
   ];
   if (moon.tidalState !== 'dead') {
@@ -318,8 +318,18 @@ function temperatureLine(planet: Planet): string {
 
 function surfaceLine(planet: Planet): string {
   const { climate } = planet.physical;
-  const water = HYDROSPHERE_LABEL[climate.hydrosphere];
-  return climate.hydrosphere === 'oceans'
-    ? `${water} (${fmt(climate.oceanCoverage * 100, 2)}% cover)`
-    : water;
+  return hydrosphereLine(climate);
+}
+
+function hydrosphereLine(climate: Planet['physical']['climate']): string {
+  const label = HYDROSPHERE_LABEL[climate.hydrosphere];
+  if (climate.hydrosphere === 'oceans') {
+    return `${label} (${fmt(climate.oceanCoverage * 100, 2)}% cover)`;
+  }
+  if (climate.hydrosphere === 'magma') {
+    return climate.oceanCoverage >= 1 - 1e-6
+      ? 'global magma ocean'
+      : `${label} (${fmt(climate.oceanCoverage * 100, 2)}% cover)`;
+  }
+  return label;
 }

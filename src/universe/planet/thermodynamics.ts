@@ -106,12 +106,47 @@ export function condensationLayer(
   };
 }
 
-/** Fraction of an exposed silicate surface that is molten at its mean
- * temperature. Spatial temperature variation keeps the endpoints soft. */
+/** Equilibrium melt fraction of an exposed silicate surface at its mean
+ * temperature. Below the solidus it is solid; at and above the liquidus
+ * there is no load-bearing crust left for the terrain renderer to expose. */
 export function silicateMeltFraction(surfaceMeanK: number): number {
   return Math.min(
-    0.95,
+    1,
     Math.max(0, (surfaceMeanK - SILICATE_SOLIDUS_K) /
       (SILICATE_LIQUIDUS_K - SILICATE_SOLIDUS_K)),
   );
+}
+
+/** Area-mean exposed melt on a synchronously illuminated sphere. The climate
+ * model reports the global-mean temperature and its day-to-night drop;
+ * equal-area mu=cos(theta) bands turn that field into a global fraction.
+ * A redistributed or rotating atmosphere has zero contrast and reduces to the
+ * ordinary phase curve above. */
+export function globalSilicateMeltFraction(
+  meanTemperatureK: number,
+  dayNightDeltaK: number,
+): number {
+  if (dayNightDeltaK <= 0) return silicateMeltFraction(meanTemperatureK);
+  const bands = 64;
+  let melt = 0;
+  for (let i = 0; i < bands; i++) {
+    const mu = -1 + (2 * (i + 0.5)) / bands;
+    const localTemperatureK = meanTemperatureK + dayNightDeltaK * mu * 0.5;
+    melt += silicateMeltFraction(localTemperatureK);
+  }
+  return melt / bands;
+}
+
+/** Temperature represented by an exposed magma patch. On irradiation-
+ * dominated worlds this is simply the modeled surface temperature. For an
+ * internally heated world whose global mean is cooler, the exposed fraction
+ * places the melt within the same solidus-to-liquidus phase interval instead
+ * of assigning every lava surface one artistic glow temperature. */
+export function exposedMagmaTemperatureK(
+  surfaceMeanK: number,
+  coverage: number,
+): number {
+  const phaseTemperature = SILICATE_SOLIDUS_K +
+    Math.min(1, Math.max(0, coverage)) * (SILICATE_LIQUIDUS_K - SILICATE_SOLIDUS_K);
+  return Math.max(surfaceMeanK, phaseTemperature);
 }

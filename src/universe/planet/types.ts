@@ -60,7 +60,7 @@ export interface PlanetClimate {
   /** Latitude where permanent ice begins (π/2 = no caps, 0 = snowball). */
   iceCapLatitudeRad: number;
   hydrosphere: Hydrosphere;
-  /** Fraction of surface under liquid, when hydrosphere is oceans. */
+  /** Fraction of the surface covered by water or exposed silicate melt. */
   oceanCoverage: number;
   /** Substellar-to-antistellar contrast for locked worlds, K. */
   dayNightDeltaK: number;

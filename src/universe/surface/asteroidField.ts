@@ -98,6 +98,7 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
       reliefM: radiusM * (lumpiness * 0.35 + 0.1),
       oceanCoverage: 0,
       magmaCoverage: 0,
+      fullyMolten: false,
       tectonics: 'dead',
       craterAmplitude: 1,
       rotationPeriodHours: asteroid.spinPeriodHours,

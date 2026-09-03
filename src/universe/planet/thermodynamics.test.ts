@@ -3,6 +3,8 @@ import type { PlanetAtmosphere, PlanetBulk, PlanetClimate } from './types';
 import {
   atmosphericTemperatureK,
   condensationLayer,
+  exposedMagmaTemperatureK,
+  globalSilicateMeltFraction,
   silicateMeltFraction,
   skinTemperatureK,
 } from './thermodynamics';
@@ -58,6 +60,19 @@ describe('atmospheric thermodynamics', () => {
   it('derives melt continuously from the silicate phase interval', () => {
     expect(silicateMeltFraction(1200)).toBe(0);
     expect(silicateMeltFraction(1550)).toBeCloseTo(0.5);
-    expect(silicateMeltFraction(2200)).toBe(0.95);
+    expect(silicateMeltFraction(1800)).toBe(1);
+    expect(silicateMeltFraction(2200)).toBe(1);
+  });
+
+  it('uses the phase interval for exposed internally heated melt', () => {
+    expect(exposedMagmaTemperatureK(300, 0.2)).toBe(1400);
+    expect(exposedMagmaTemperatureK(2100, 1)).toBe(2100);
+  });
+
+  it('freezes the night side of a high-contrast locked lava world', () => {
+    expect(globalSilicateMeltFraction(2600, 0)).toBe(1);
+    const locked = globalSilicateMeltFraction(1550, 1200);
+    expect(locked).toBeGreaterThan(0.25);
+    expect(locked).toBeLessThan(0.75);
   });
 });

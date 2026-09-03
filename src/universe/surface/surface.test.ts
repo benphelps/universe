@@ -59,6 +59,32 @@ describe('surface field', () => {
   const earthLike = world(11n, 'rocky', 1, 1);
   const moonLike = world(21n, 'rocky', 0.012, 1.05);
   const marsLike = world(13n, 'rocky', 0.107, 1.52);
+  const lavaPhysical = characterizePlanet(
+    13n,
+    'rocky',
+    0.9,
+    {
+      semiMajorAxis: 0.035 * AU,
+      eccentricity: 0.02,
+      inclination: 0,
+      longitudeOfAscendingNode: 0,
+      argumentOfPeriapsis: 0,
+      meanAnomalyAtEpoch: 0,
+      epoch: 0,
+    },
+    CONTEXT,
+  );
+  const lavaLike = createSurfaceField('000000000000000d', {
+    ...lavaPhysical,
+    interior: { ...lavaPhysical.interior, regime: 'magma' },
+    climate: {
+      ...lavaPhysical.climate,
+      surfaceMeanK: 2200,
+      hydrosphere: 'magma',
+      oceanCoverage: 1,
+      dayNightDeltaK: 0,
+    },
+  });
 
   it('is deterministic', () => {
     const again = world(11n, 'rocky', 1, 1);
@@ -117,6 +143,17 @@ describe('surface field', () => {
 
   it('lower gravity yields taller relief', () => {
     expect(marsLike.params.reliefM).toBeGreaterThan(earthLike.params.reliefM * 1.3);
+  });
+
+  it('turns a surface above the liquidus into one terrain-free fluid shell', () => {
+    expect(lavaLike.params.fullyMolten).toBe(true);
+    expect(lavaLike.params.magmaCoverage).toBe(1);
+    expect(lavaLike.params.reliefM).toBe(0);
+    expect(lavaLike.seaLevelM).toBe(0);
+    for (const dir of sampleDirs(40)) expect(lavaLike.heightAt(dir)).toBe(0);
+
+    const chunk = buildChunkMesh(lavaLike, 0, 3, 2, 5, 16);
+    expect(chunk.waterPositions).not.toBeNull();
   });
 
   it('colors stay in gamut everywhere', () => {
