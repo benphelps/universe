@@ -1352,6 +1352,19 @@ table.props td:first-child {
   color: var(--accent);
 }
 
+#reorient .scale {
+  position: absolute;
+  left: 28px;
+  right: 28px;
+  bottom: 2px;
+  text-align: center;
+  font: 600 8px/1 var(--display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  pointer-events: none;
+}
+
 #reorient .dial:focus-visible,
 #reorient .corner:focus-visible {
   outline: 1px solid var(--accent);

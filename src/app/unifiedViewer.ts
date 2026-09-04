@@ -169,7 +169,7 @@ import { FlightCamera, type FlightSurface } from './flightCamera';
 import { gazeQuaternion, headingOf } from './cameraGaze';
 import { OrbitArcball } from './orbitArcball';
 import { easeInOut, edgeOn, faceOn, lookingFrom, poleOnScreen, rolledToPole } from './reorient';
-import { ReorientGizmo } from './ui/reorientGizmo';
+import { type GizmoScale, ReorientGizmo } from './ui/reorientGizmo';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
 
@@ -269,9 +269,9 @@ const NEBULA_HOME_REACH_PC = 400;
 const NEBULA_GATEWAY_STANDOFF_PC = 200;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
-/** Beyond this distance from the focus the galaxy is the body in view,
- *  and the reorient gizmo measures up against its pole. */
-const GALAXY_UP_PC = (GALAXY_FADE_NEAR_PC + GALAXY_FADE_FAR_PC) / 2;
+/** The system map is the picture until the whole system spans less
+ *  than this fraction of the altitude; beyond, the galaxy is. */
+const SYSTEM_SCALE_REACH = 40;
 /** How long a reorient takes: the one eased move the camera makes on request. */
 const REORIENT_MS = 350;
 const ORIGIN = new Vector3();
@@ -851,14 +851,37 @@ export class UnifiedViewer {
     );
   }
 
-  /** The up this scale is measured against: the body's pole, or the
-   *  galactic pole once the galaxy is the body in view. */
+  /** The diagrammatic map's altitude: capped by the system extent,
+   *  since 25 radii of a giant star can lie beyond its own planets. */
+  private atMapHeight(): boolean {
+    return this.altitudeKm > Math.min(this.radiusKm * 25, this.extentKm * 0.5);
+  }
+
+  /** The rung the camera stands on. Each has its own up, and the
+   *  gizmo's press squares the view to that one. */
+  private gizmoScale(): GizmoScale {
+    if (this.coreView) return 'core';
+    if (!this.system) return 'hidden';
+    if (this.inBand || this.flight.active) return 'ground';
+    if (this.focus === 'cloud') return 'galaxy';
+    if (!this.atMapHeight()) return 'world';
+    return this.altitudeKm > this.extentKm * SYSTEM_SCALE_REACH ? 'galaxy' : 'system';
+  }
+
+  /** The up the camera's rung is measured against: a body's spin
+   *  axis, the system's orbital pole, or the galactic pole. */
   private scalePole(): Vector3 {
-    const m = this.sceneOrientation;
-    if (this.coreView || !m || this.camera.position.length() / PC_KM < GALAXY_UP_PC) {
-      return BODY_POLE.clone();
+    switch (this.gizmoScale()) {
+      case 'system':
+        return new Vector3(0, 1, 0).applyQuaternion(this.frameQuat).normalize();
+      case 'galaxy': {
+        const m = this.sceneOrientation;
+        if (!m) return BODY_POLE.clone();
+        return new Vector3(m[2], m[5], m[8]).applyQuaternion(this.frameQuat).normalize();
+      }
+      default:
+        return BODY_POLE.clone();
     }
-    return new Vector3(m[2], m[5], m[8]).applyQuaternion(this.frameQuat).normalize();
   }
 
   /** The gizmo's press: in space, roll the scale's pole up the screen;
@@ -4142,16 +4165,16 @@ export class UnifiedViewer {
    *  or north on the ground, and which of its moves apply. */
   private updateGizmo(): void {
     if (!this.gizmo) return;
-    const ground = this.inBand || this.flight.active;
+    const scale = this.gizmoScale();
     let rollRad = -this.headingRad;
     let extent = 1;
-    if (!ground) {
+    if (scale !== 'ground' && scale !== 'hidden') {
       const seen = poleOnScreen(this.camera.quaternion, this.scalePole());
       rollRad = seen.rollRad;
       extent = seen.extent;
     }
     this.gizmo.update({
-      mode: this.system || this.coreView ? (ground ? 'ground' : 'space') : 'hidden',
+      scale,
       rollRad,
       extent,
       panned: this.controls.target.lengthSq() >= 1,
@@ -4501,7 +4524,7 @@ export class UnifiedViewer {
       // system extent, since 25 radii of a giant star can lie beyond
       // its own planets and the map would never surface — each family
       // behind its own user toggle.
-      const mapHeight = this.altitudeKm > Math.min(this.radiusKm * 25, this.extentKm * 0.5);
+      const mapHeight = this.atMapHeight();
       this.overlay.visible = mapHeight && this.orbitsVisible;
       this.stellarOrbits.visible = this.overlay.visible;
       this.zoneOverlay.visible = mapHeight && this.zonesVisible;

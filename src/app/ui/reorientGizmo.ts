@@ -1,8 +1,10 @@
-/** The gizmo's face: the orbit's compass, the ground's, or nothing. */
-export type GizmoMode = 'space' | 'ground' | 'hidden';
+/** The rung the camera stands on, which decides what "up" means and
+ *  what a press does: the ground's north, a body's spin axis, the
+ *  system's orbital pole, the galactic pole, or the hole's axis. */
+export type GizmoScale = 'hidden' | 'ground' | 'world' | 'system' | 'galaxy' | 'core';
 
 export interface GizmoState {
-  mode: GizmoMode;
+  scale: GizmoScale;
   /** The scale's pole (or, on the ground, north) measured clockwise
    *  from the top of the screen, radians. */
   rollRad: number;
@@ -22,6 +24,15 @@ export interface GizmoActions {
   focus(): void;
   ride(): void;
 }
+
+/** What the press does on each rung. */
+const PRESS_TIPS: Record<Exclude<GizmoScale, 'hidden'>, string> = {
+  ground: 'face north, level',
+  world: "roll the body's pole up",
+  system: "roll the system's pole up",
+  galaxy: 'roll the galactic pole up',
+  core: "roll the hole's axis up",
+};
 
 /** Within this of straight up the needle rests. */
 const ALIGNED_RAD = 0.02;
@@ -44,8 +55,10 @@ const ICONS = {
  * spin axis near a body, the galactic pole out in the galaxy, north
  * on the ground — with a short needle for a pole leaning toward or
  * away from the eye. Pressing the dial is the one rotation the camera
- * makes because it was asked to: it rolls the pole up the screen. Four
- * icons at the dial's corners carry the rest of the camera's moves.
+ * makes because it was asked to: it rolls that rung's pole up the
+ * screen, and the rung's name sits under the dial so it is never a
+ * guess. Four icons at the dial's corners carry the rest of the
+ * camera's moves.
  */
 export class ReorientGizmo {
   readonly element: HTMLDivElement;
@@ -54,7 +67,8 @@ export class ReorientGizmo {
   private readonly arm: SVGGElement;
   private readonly letter: SVGTextElement;
   private readonly corners: Record<keyof typeof ICONS, HTMLButtonElement>;
-  private mode: GizmoMode = 'hidden';
+  private readonly label: HTMLSpanElement;
+  private scale: GizmoScale = 'hidden';
 
   constructor(container: HTMLElement, actions: GizmoActions) {
     this.element = document.createElement('div');
@@ -113,24 +127,29 @@ export class ReorientGizmo {
       actions.up();
     });
     this.element.appendChild(this.dial);
+    this.label = document.createElement('span');
+    this.label.className = 'scale';
+    this.element.appendChild(this.label);
     container.appendChild(this.element);
   }
 
   update(state: GizmoState): void {
-    if (state.mode !== this.mode) {
-      this.mode = state.mode;
-      this.element.style.display = state.mode === 'hidden' ? 'none' : '';
-      const space = state.mode === 'space';
+    if (state.scale !== this.scale) {
+      this.scale = state.scale;
+      this.element.style.display = state.scale === 'hidden' ? 'none' : '';
+      if (state.scale === 'hidden') return;
+      const space = state.scale !== 'ground';
       for (const key of ['focus', 'faceOn', 'edgeOn'] as const) {
         this.corners[key].style.display = space ? '' : 'none';
       }
-      const tip = space ? 'roll the pole up' : 'face north, level';
+      const tip = PRESS_TIPS[state.scale];
       this.dial.dataset.tip = tip;
       this.dial.setAttribute('aria-label', tip);
+      this.label.textContent = state.scale;
     }
-    if (state.mode === 'hidden') return;
+    if (state.scale === 'hidden') return;
     this.element.classList.toggle('lifted', state.lifted);
-    const endOn = state.mode === 'space' && state.extent < END_ON_EXTENT;
+    const endOn = state.scale !== 'ground' && state.extent < END_ON_EXTENT;
     const aligned = endOn || Math.abs(state.rollRad) < ALIGNED_RAD;
     const reach = Math.max(0.28, Math.min(1, state.extent));
     this.arm.setAttribute(
