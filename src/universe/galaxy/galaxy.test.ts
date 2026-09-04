@@ -10,13 +10,17 @@ import {
   massBitsOf,
   seedForIdentity,
 } from '../star/identity';
-import { CATALOG_ROWS, luminosityCeiling, starsNear } from './catalog';
+import { CATALOG_ROWS, luminosityCeiling, rowCells, starsNear, type CatalogCell } from './catalog';
 import {
-  rowSlabPlan,
-  rowSlabSpan,
-  sweepRowSlab,
-  type SweepSlab,
-} from './skyfield';
+  projectSurveys,
+  rowSweepRadiusPc,
+  surveyCell,
+  surveyFrameAt,
+  surveyServes,
+  sweepRow,
+} from './skySurvey';
+import type { SweepSlab } from './skyStars';
+import { neighborRadiusPc } from './neighborhood';
 import { cloudFieldSmoothAt, expectedCloudField } from './clouds';
 import {
   ARM_BOOST_MAX,
@@ -227,59 +231,58 @@ describe('catalog', () => {
     expect(expectedSum / fieldSum).toBeLessThan(1.35);
   });
 
-  it('a partitioned sweep is byte-identical to the serial sweep', () => {
-    // The sky coordinator splits rows into slabs across workers;
-    // per-cell seeding must make any partition equal to the whole.
-    const row = CATALOG_ROWS[3];
-    const span = rowSlabSpan(row, HOME_POSITION);
-    const whole = sweepRowSlab(row, HOME_POSITION, { ixLo: span.lo, ixHi: span.hi });
-    const cutA = Math.floor(span.lo + (span.hi - span.lo) / 3);
-    const cutB = Math.floor(span.lo + (2 * (span.hi - span.lo)) / 3);
-    const parts = [
-      sweepRowSlab(row, HOME_POSITION, { ixLo: span.lo, ixHi: cutA }),
-      sweepRowSlab(row, HOME_POSITION, { ixLo: cutA + 1, ixHi: cutB }),
-      sweepRowSlab(row, HOME_POSITION, { ixLo: cutB + 1, ixHi: span.hi }),
-    ];
-    expectSame(whole, parts);
-  });
-
-  it('a plan cut by row is byte-identical too, however narrow the span', () => {
-    // A coarse-celled row has almost no ix columns to cut, so the plan
-    // gives each column its own iy bands instead. That is the cut most
-    // able to go wrong: the serial sweep runs ix outer and iy inner, so
-    // a band that spanned two columns would reorder the stars even
-    // though every one of them is still there. Row 1 is cut the same
-    // way the heaviest row is and sweeps in a fraction of the time.
-    const row = CATALOG_ROWS[1];
-    const span = rowSlabSpan(row, HOME_POSITION);
-    const whole = sweepRowSlab(row, HOME_POSITION, { ixLo: span.lo, ixHi: span.hi });
-    // A row with stars in it, or the comparison proves nothing.
-    expect(whole.near.seeds.length + whole.far.seeds.length).toBeGreaterThan(100);
-    // Ask for far more slabs than there are columns, which is what
-    // forces the banding.
-    const plan = rowSlabPlan(row, HOME_POSITION, (span.hi - span.lo + 1) * 4);
-    expect(plan.length).toBeGreaterThan(span.hi - span.lo + 1);
-    expect(plan.every((bounds) => bounds.ixLo === bounds.ixHi)).toBe(true);
-    expectSame(
-      whole,
-      plan.map((bounds) => sweepRowSlab(row, HOME_POSITION, bounds)),
-    );
-  }, 30000);
-
-  it('cuts a wide-spanned row by column and a narrow one by band', () => {
-    for (const row of CATALOG_ROWS) {
-      const span = rowSlabSpan(row, HOME_POSITION);
-      const width = span.hi - span.lo + 1;
-      // Every cell of the span is covered exactly once, whichever way
-      // the plan chose to cut it.
-      const plan = rowSlabPlan(row, HOME_POSITION, 12);
-      expect(plan.length).toBeGreaterThanOrEqual(Math.min(12, width));
-      const columns = new Set<number>();
-      for (const bounds of plan) {
-        for (let ix = bounds.ixLo; ix <= bounds.ixHi; ix++) columns.add(ix);
-      }
-      expect(columns.size).toBe(width);
+  it('a survey taken with reach projects a neighbouring sky to the bit', () => {
+    // The sky coordinator keeps cell surveys from earlier skies and
+    // projects them from wherever the traveler lands next. Rows 1, 3
+    // and 5 between them exercise the census, the far field and the
+    // reach taper; row 0 does the same as row 1 at ten times the cost.
+    const home = HOME_POSITION;
+    const here = { xPc: home.xPc + 18, yPc: home.yPc + 9, zPc: home.zPc - 6 };
+    const frame = surveyFrameAt(home);
+    const nearPc = neighborRadiusPc(here);
+    for (const rowIndex of [1, 3, 5]) {
+      const row = CATALOG_ROWS[rowIndex];
+      const whole = sweepRow(row, rowIndex, here);
+      expect(whole.near.seeds.length + whole.far.seeds.length).toBeGreaterThan(100);
+      const surveys = rowCells(row, here, rowSweepRadiusPc(row)).map((cell) =>
+        surveyCell(row, rowIndex, cell, frame),
+      );
+      expect(surveys.every((survey) => surveyServes(survey, row, here, nearPc))).toBe(true);
+      expectSame(whole, [projectSurveys(surveys, CATALOG_ROWS, here)]);
     }
+  }, 60000);
+
+  it('a survey serves only within its reach and its census', () => {
+    const rowIndex = 3;
+    const row = CATALOG_ROWS[rowIndex];
+    const nearPc = neighborRadiusPc(HOME_POSITION);
+    const cells = rowCells(row, HOME_POSITION, rowSweepRadiusPc(row));
+    const distanceOf = (cell: CatalogCell): number =>
+      Math.hypot(
+        (cell.ix + 0.5) * row.cellPc - HOME_POSITION.xPc,
+        (cell.iy + 0.5) * row.cellPc - HOME_POSITION.yPc,
+        (cell.iz + 0.5) * row.cellPc - HOME_POSITION.zPc,
+      );
+    const inner = cells.find((cell) => distanceOf(cell) < 12)!;
+    const outer = cells.find((cell) => distanceOf(cell) > 55)!;
+    const frame = surveyFrameAt(HOME_POSITION);
+    const survey = surveyCell(row, rowIndex, inner, frame);
+    expect(surveyServes(survey, row, HOME_POSITION, nearPc)).toBe(true);
+    const within = { ...HOME_POSITION, xPc: HOME_POSITION.xPc + frame.reachPc - 1 };
+    const beyond = { ...HOME_POSITION, xPc: HOME_POSITION.xPc + frame.reachPc + 1 };
+    expect(surveyServes(survey, row, within, nearPc)).toBe(true);
+    expect(surveyServes(survey, row, beyond, nearPc)).toBe(false);
+    // A survey taken where the disk is dense held a shorter census.
+    // Standing where the census reaches further, a cell the census
+    // reaches cannot be served from it; one it does not reach can,
+    // and so can any cell once the census fits what was held.
+    const dense = { ...frame, censusHeldPc: 40 };
+    const heldShort = (cell: CatalogCell) => ({ ...survey, cell, frame: dense });
+    expect(surveyServes(heldShort(inner), row, HOME_POSITION, nearPc)).toBe(false);
+    expect(surveyServes(heldShort(outer), row, HOME_POSITION, nearPc)).toBe(false);
+    expect(surveyServes(heldShort(outer), row, HOME_POSITION, 13)).toBe(true);
+    expect(surveyServes(heldShort(inner), row, HOME_POSITION, 13)).toBe(true);
+    expect(surveyServes(heldShort(inner), row, HOME_POSITION, 21)).toBe(false);
   });
 
   it('a materialized catalog star mirrors its traveled-to system', () => {

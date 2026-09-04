@@ -159,12 +159,6 @@ export type StarVisitor = (
 ) => void;
 
 /**
- * Every star of one catalog row within a ball, visited with its raw
- * identity bits (the caller builds seeds only for stars it keeps). Cells
- * realize their full slot stream regardless of the query ball, so any
- * overlapping sweep sees the same stars.
- */
-/**
  * A unit in [0, 1) fixed by a position alone: what a sweep thins by
  * where it must not touch the cell's own generator, since every draw
  * from that stream is a star's identity.
@@ -197,17 +191,66 @@ export function taperKeep(taper: SweepTaper, distancePc: number): number {
   return (taper.outerPc - distancePc) / (taper.outerPc - taper.innerPc);
 }
 
-export function sweepRowStars(
+/** One cell of a catalog row's grid. */
+export interface CatalogCell {
+  ix: number;
+  iy: number;
+  iz: number;
+}
+
+/**
+ * The cells of a row that a ball around a point touches, in the order
+ * a sweep visits them: ix outer, then iy, then iz. Stars concatenated
+ * in this order are the row's sweep, whoever swept which cell.
+ */
+export function rowCells(
   row: CatalogRow,
   center: GalacticPosition,
   radiusPc: number,
+): CatalogCell[] {
+  const { cellPc } = row;
+  const radiusSq = radiusPc * radiusPc;
+  const lo = [
+    Math.floor((center.xPc - radiusPc) / cellPc),
+    Math.floor((center.yPc - radiusPc) / cellPc),
+    Math.floor((center.zPc - radiusPc) / cellPc),
+  ];
+  const hi = [
+    Math.floor((center.xPc + radiusPc) / cellPc),
+    Math.floor((center.yPc + radiusPc) / cellPc),
+    Math.floor((center.zPc + radiusPc) / cellPc),
+  ];
+  const clampDelta = (v: number, cellLo: number): number =>
+    Math.max(cellLo, Math.min(v, cellLo + cellPc)) - v;
+  const cells: CatalogCell[] = [];
+  for (let ix = lo[0]; ix <= hi[0]; ix++) {
+    const gx = clampDelta(center.xPc, ix * cellPc);
+    for (let iy = lo[1]; iy <= hi[1]; iy++) {
+      const gy = clampDelta(center.yPc, iy * cellPc);
+      for (let iz = lo[2]; iz <= hi[2]; iz++) {
+        const gz = clampDelta(center.zPc, iz * cellPc);
+        if (gx * gx + gy * gy + gz * gz > radiusSq) continue;
+        cells.push({ ix, iy, iz });
+      }
+    }
+  }
+  return cells;
+}
+
+/**
+ * Every star of one cell within a ball, visited with its raw identity
+ * bits (the caller builds seeds only for stars it keeps). Every slot
+ * of the cell takes the same draws from its stream whether it is
+ * visited, out of reach, thinned, or thinned against the density, so
+ * the cell's stars are a function of the cell alone and any
+ * overlapping sweep sees the same ones.
+ */
+export function sweepCellStars(
+  row: CatalogRow,
+  cell: CatalogCell,
+  center: GalacticPosition,
+  radiusPc: number,
   visit: StarVisitor,
-  /** Fraction of the sweep's slabs finished — build progress. */
-  onProgress?: (fraction: number) => void,
-  /** Restrict the sweep to a slab: a range of ix, optionally narrowed
-   *  to a band of iy. A row whose ix span is only a few cells wide has
-   *  nowhere near enough columns to feed a pool otherwise. */
-  slab?: { ixLo: number; ixHi: number; iyLo?: number; iyHi?: number },
   /** Thin the sweep toward its edge. Stars past the taper's inner
    *  radius are dropped by a unit fixed by their position, before the
    *  density test that costs the most, and the cell's generator draws
@@ -221,67 +264,57 @@ export function sweepRowStars(
   const share = (massSpan / MASS_BIT_SPAN) * (ageSpan / AGE_BIT_SPAN);
   if (share <= 0) return;
   const radiusSq = radiusPc * radiusPc;
-  const min = [
-    Math.floor((center.xPc - radiusPc) / cellPc),
-    Math.floor((center.yPc - radiusPc) / cellPc),
-    Math.floor((center.zPc - radiusPc) / cellPc),
-  ];
-  const max = [
-    Math.floor((center.xPc + radiusPc) / cellPc),
-    Math.floor((center.yPc + radiusPc) / cellPc),
-    Math.floor((center.zPc + radiusPc) / cellPc),
-  ];
-  const clampDelta = (v: number, lo: number): number =>
-    Math.max(lo, Math.min(v, lo + cellPc)) - v;
-
-  const ixLo = slab ? Math.max(slab.ixLo, min[0]) : min[0];
-  const ixHi = slab ? Math.min(slab.ixHi, max[0]) : max[0];
-  const iyLo = slab?.iyLo !== undefined ? Math.max(slab.iyLo, min[1]) : min[1];
-  const iyHi = slab?.iyHi !== undefined ? Math.min(slab.iyHi, max[1]) : max[1];
-  for (let ix = ixLo; ix <= ixHi; ix++) {
-    onProgress?.((ix - ixLo) / (ixHi - ixLo + 1));
-    for (let iy = iyLo; iy <= iyHi; iy++) {
-      for (let iz = min[2]; iz <= max[2]; iz++) {
-        // Cheapest rejection first: cell entirely outside the ball.
-        const gx = clampDelta(center.xPc, ix * cellPc);
-        const gy = clampDelta(center.yPc, iy * cellPc);
-        const gz = clampDelta(center.zPc, iz * cellPc);
-        if (gx * gx + gy * gy + gz * gz > radiusSq) continue;
-
-        const corner = { xPc: ix * cellPc, yPc: iy * cellPc, zPc: iz * cellPc };
-        const ceiling = stellarDensityCeiling(corner, cellPc);
-        const rng = new Rng(cellSeed(row, ix, iy, iz));
-        const count = poisson(rng, ceiling * cellPc ** 3 * share);
-        for (let i = 0; i < count; i++) {
-          const x = (ix + rng.float()) * cellPc;
-          const y = (iy + rng.float()) * cellPc;
-          const z = (iz + rng.float()) * cellPc;
-          const dx = x - center.xPc;
-          const dy = y - center.yPc;
-          const dz = z - center.zPc;
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (
-            d2 > radiusSq ||
-            (taper && unitAtPosition(x, y, z) >= taperKeep(taper, Math.sqrt(d2)))
-          ) {
-            // Out of reach, or thinned away: the stream still takes the
-            // draws this star would have taken, so its neighbours in
-            // the cell stay who they are.
-            rng.float();
-            rng.int(massSpan);
-            rng.int(ageSpan);
-            rng.int(1 << ENTROPY_BITS);
-            continue;
-          }
-          // Thin against the true density; the ceiling only overdraws.
-          if (rng.float() * ceiling > stellarDensity({ xPc: x, yPc: y, zPc: z })) continue;
-          const massBits = row.massBitsLo + rng.int(massSpan);
-          const ageBits = row.ageBitsLo + rng.int(ageSpan);
-          const entropy = rng.int(1 << ENTROPY_BITS);
-          visit(x, y, z, massBits, ageBits, entropy);
-        }
-      }
+  const { ix, iy, iz } = cell;
+  const corner = { xPc: ix * cellPc, yPc: iy * cellPc, zPc: iz * cellPc };
+  const ceiling = stellarDensityCeiling(corner, cellPc);
+  const rng = new Rng(cellSeed(row, ix, iy, iz));
+  const count = poisson(rng, ceiling * cellPc ** 3 * share);
+  for (let i = 0; i < count; i++) {
+    const x = (ix + rng.float()) * cellPc;
+    const y = (iy + rng.float()) * cellPc;
+    const z = (iz + rng.float()) * cellPc;
+    const dx = x - center.xPc;
+    const dy = y - center.yPc;
+    const dz = z - center.zPc;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (
+      d2 > radiusSq ||
+      (taper && unitAtPosition(x, y, z) >= taperKeep(taper, Math.sqrt(d2)))
+    ) {
+      // Out of reach, or thinned away: the stream still takes the
+      // draws this star would have taken, so its neighbours in the
+      // cell stay who they are.
+      rng.float();
+      rng.int(massSpan);
+      rng.int(ageSpan);
+      rng.int(1 << ENTROPY_BITS);
+      continue;
     }
+    // Thin against the true density; the ceiling only overdraws.
+    if (rng.float() * ceiling > stellarDensity({ xPc: x, yPc: y, zPc: z })) {
+      rng.int(massSpan);
+      rng.int(ageSpan);
+      rng.int(1 << ENTROPY_BITS);
+      continue;
+    }
+    const massBits = row.massBitsLo + rng.int(massSpan);
+    const ageBits = row.ageBitsLo + rng.int(ageSpan);
+    const entropy = rng.int(1 << ENTROPY_BITS);
+    visit(x, y, z, massBits, ageBits, entropy);
+  }
+}
+
+/** Every star of one catalog row within a ball, cell by cell in sweep
+ *  order. */
+export function sweepRowStars(
+  row: CatalogRow,
+  center: GalacticPosition,
+  radiusPc: number,
+  visit: StarVisitor,
+  taper?: SweepTaper,
+): void {
+  for (const cell of rowCells(row, center, radiusPc)) {
+    sweepCellStars(row, cell, center, radiusPc, visit, taper);
   }
 }
 

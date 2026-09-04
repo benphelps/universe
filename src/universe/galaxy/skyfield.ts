@@ -1,24 +1,10 @@
-import {
-  blackbodyLinearRgb,
-  buildTemperatureLut,
-  temperatureToLutCoord,
-} from '../../core/color/blackbody';
+import { blackbodyLinearRgb, buildTemperatureLut } from '../../core/color/blackbody';
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { powerLaw } from '../../core/rng/distributions';
-import { initialMassFromUnit, KROUPA_SEGMENTS } from '../star/imf';
+import { KROUPA_SEGMENTS } from '../star/imf';
 import { evolve } from '../star/evolution';
-import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
-import {
-  CATALOG_ROWS,
-  luminosityCeiling,
-  sweepRowStars,
-  taperKeep,
-  unitAtPosition,
-  type CatalogRow,
-  type SweepTaper,
-} from './catalog';
-import { neighborRadiusPc } from './neighborhood';
+import { CATALOG_ROWS } from './catalog';
 import {
   cloudDustFactor,
   cloudLocalDensity,
@@ -52,8 +38,9 @@ import { NEBULA_MEAN_U, nebulaEmissionColor, nebulaNarrowbandColor } from './neb
 import { displaySurfaceBrightness } from './displayLaw';
 import { SCATTER_TINT_RGB } from './dustScattering';
 import { rotateToScene, sceneFromGalaxy } from './orientation';
-import { companionLuminosity, starPhotometry } from './photometry';
 import { populationFromUnit } from './population';
+import { appendPacked, makeAccum, packAccum, pushTo, type PackedStars, type SweepSlab } from './skyStars';
+import { MIN_FAR_IRRADIANCE, sweepRow } from './skySurvey';
 import { galaxyRoot } from './galaxySeed';
 import { sectorNameForSeed, sectorSeedAt } from './regions';
 
@@ -236,35 +223,6 @@ export interface SectorLabel {
   home: boolean;
 }
 
-/** Keep far stars down to apparent magnitude ≈ 9. */
-const MIN_FAR_IRRADIANCE = 1.5e-4;
-
-/** The furthest the near census — every star, whatever its light —
- *  ever reaches; the neighbourhood shrinks it where the disk is dense,
- *  and the sky's own split follows the neighbourhood exactly, so the
- *  far field begins where the 3D points end and no shell goes undrawn. */
-const NEAR_RADIUS_PC = 30;
-/**
- * How far past its reach a sweep tapers, as a factor of that reach. A
- * row's sky radius is a compute budget well inside where its brightest
- * members are still visible, and the near census ends where the
- * neighbourhood does — each a sphere the sky would otherwise show as
- * a step in its star density. The band beyond thins to nothing in
- * proportion to the distance left, so the sky's density falls off
- * rather than dropping.
- */
-const SWEEP_TAPER = 1.5;
-/** The census taper runs further: a census of every star is a
- *  hundred times the magnitude-limited sky's density, and a fall that
- *  steep needs the room. */
-const NEAR_TAPER = 2;
-
-/** How far a row's sweep actually runs: its reach and the taper past
- *  it, or the census taper for a row with no reach of its own. */
-function rowSweepRadiusPc(row: CatalogRow): number {
-  return Math.max(NEAR_RADIUS_PC * NEAR_TAPER, row.skyRadiusPc * SWEEP_TAPER);
-}
-
 /** Fraction of stars above a mass cut under the Kroupa IMF. */
 export function imfFractionAbove(massCut: number): number {
   let total = 0;
@@ -284,15 +242,6 @@ export function imfFractionAbove(massCut: number): number {
     }
   }
   return above / total;
-}
-
-interface StarAccum {
-  dirs: number[];
-  colors: number[];
-  brightness: number[];
-  distances: number[];
-  teffs: number[];
-  seeds: bigint[];
 }
 
 /** What a mass stratum's sweep should call itself on a progress bar. */
@@ -322,20 +271,18 @@ export function buildSkyField(
 ): SkyField {
   const rowWeights = catalogRowWeights();
   let rowsBehind = 0;
-  let rowIndex = 0;
   const slabs: SweepSlab[] = [];
-  for (const row of CATALOG_ROWS) {
-    const weight = rowWeights[rowIndex++];
+  CATALOG_ROWS.forEach((row, rowIndex) => {
+    const weight = rowWeights[rowIndex];
     const stage = rowStageName(row);
     onProgress?.(0.84 * rowsBehind, stage, 0);
-    const span = rowSlabSpan(row, viewpoint);
     slabs.push(
-      sweepRowSlab(row, viewpoint, { ixLo: span.lo, ixHi: span.hi }, (slabFraction) =>
-        onProgress?.(0.84 * (rowsBehind + weight * slabFraction), stage, slabFraction),
+      sweepRow(row, rowIndex, viewpoint, (fraction) =>
+        onProgress?.(0.84 * (rowsBehind + weight * fraction), stage, fraction),
       ),
     );
     rowsBehind += weight;
-  }
+  });
   return assembleSkyField(viewpoint, seed, slabs, onProgress);
 }
 
@@ -344,21 +291,6 @@ export function catalogRowWeights(): number[] {
   return CATALOG_ROWS.length === ROW_PROGRESS_WEIGHTS.length
     ? ROW_PROGRESS_WEIGHTS
     : CATALOG_ROWS.map(() => 1 / CATALOG_ROWS.length);
-}
-
-/** A sweep result as transferable arrays: the unit of parallelism. */
-export interface PackedStars {
-  dirs: Float32Array;
-  colors: Float32Array;
-  brightness: Float32Array;
-  distances: Float32Array;
-  teffs: Float32Array;
-  seeds: BigUint64Array;
-}
-
-export interface SweepSlab {
-  near: PackedStars;
-  far: PackedStars;
 }
 
 /**
@@ -408,205 +340,6 @@ export interface SkyPreview {
   distances: Float32Array;
 }
 
-/** The ix-slab span a row's sweep covers — how a coordinator splits
- *  the work. Mirrors sweepRowStars' own grid math. */
-export function rowSlabSpan(
-  row: CatalogRow,
-  viewpoint: GalacticPosition,
-): { lo: number; hi: number } {
-  const radius = rowSweepRadiusPc(row);
-  return {
-    lo: Math.floor((viewpoint.xPc - radius) / row.cellPc),
-    hi: Math.floor((viewpoint.xPc + radius) / row.cellPc),
-  };
-}
-
-export interface SweepBounds {
-  ixLo: number;
-  ixHi: number;
-  iyLo?: number;
-  iyHi?: number;
-}
-
-/**
- * How to cut a row's sweep into pieces a pool can share.
- *
- * The obvious cut is by ix, and for a fine-celled row there are plenty
- * of columns to go round. A coarse one has almost none: the widest row
- * in the catalogue reaches six hundred parsecs in cells a hundred and
- * sixty across, which is eight columns for the whole sky — so the
- * heaviest row of the build was handing four workers two pieces each,
- * and in the bulge, where density climbs steeply across a sweep, those
- * two were nothing like equal.
- *
- * So a row too narrow to cut by column is cut by row instead: each ix
- * becomes its own column, banded in iy. Order is what keeps this
- * lossless — the serial sweep runs ix outer and iy inner, so slabs
- * concatenated in that same order are byte-identical to it, which is
- * why an iy band never spans more than one ix.
- */
-export function rowSlabPlan(
-  row: CatalogRow,
-  viewpoint: GalacticPosition,
-  target: number,
-): SweepBounds[] {
-  const span = rowSlabSpan(row, viewpoint);
-  const width = span.hi - span.lo + 1;
-  if (width >= target) {
-    const count = Math.max(1, Math.min(target, width));
-    const bounds: SweepBounds[] = [];
-    for (let c = 0; c < count; c++) {
-      bounds.push({
-        ixLo: span.lo + Math.floor((c * width) / count),
-        ixHi: span.lo + Math.floor(((c + 1) * width) / count) - 1,
-      });
-    }
-    return bounds;
-  }
-
-  const radius = rowSweepRadiusPc(row);
-  const iyLo = Math.floor((viewpoint.yPc - radius) / row.cellPc);
-  const iyHi = Math.floor((viewpoint.yPc + radius) / row.cellPc);
-  const height = iyHi - iyLo + 1;
-  const bands = Math.max(1, Math.min(Math.ceil(target / width), height));
-  const bounds: SweepBounds[] = [];
-  for (let ix = span.lo; ix <= span.hi; ix++) {
-    for (let b = 0; b < bands; b++) {
-      bounds.push({
-        ixLo: ix,
-        ixHi: ix,
-        iyLo: iyLo + Math.floor((b * height) / bands),
-        iyHi: iyLo + Math.floor(((b + 1) * height) / bands) - 1,
-      });
-    }
-  }
-  return bounds;
-}
-
-/**
- * Sweep one catalog row over a range of ix slabs into packed star
- * arrays. Cells seed their own generators, so any partition of the
- * span, concatenated in slab order, is byte-identical to the serial
- * sweep — parallelism cannot change the sky.
- */
-export function sweepRowSlab(
-  row: CatalogRow,
-  viewpoint: GalacticPosition,
-  bounds: SweepBounds,
-  onProgress?: (fraction: number) => void,
-): SweepSlab {
-  const lut = buildTemperatureLut(96);
-  const near = makeAccum();
-  const far = makeAccum();
-  // The near census reaches exactly as far as the neighbourhood's 3D
-  // points do, then tapers: past it every star is kept by the taper's
-  // share, drawn among the far points whatever its light, so the
-  // census thins into the magnitude-limited sky instead of ending on
-  // a sphere.
-  const nearPc = neighborRadiusPc(viewpoint);
-  const nearSq = nearPc * nearPc;
-  const nearTaper: SweepTaper = { innerPc: nearPc, outerPc: nearPc * NEAR_TAPER };
-  const reachTaper: SweepTaper = {
-    innerPc: row.skyRadiusPc,
-    outerPc: row.skyRadiusPc * SWEEP_TAPER,
-  };
-  sweepRowStars(
-    row,
-    viewpoint,
-    rowSweepRadiusPc(row),
-    (x, y, z, massBits, ageBits, entropy) => {
-      const dx = x - viewpoint.xPc;
-      const dy = y - viewpoint.yPc;
-      const dz = z - viewpoint.zPc;
-      const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 < 2.5e-5) return;
-      const distance = Math.sqrt(d2);
-      const censused =
-        d2 <= nearSq || unitAtPosition(x, y, z) < taperKeep(nearTaper, distance);
-      if (censused) {
-        const starSeed = seedForIdentity(massBits, ageBits, entropy);
-        const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
-        if (physical.luminosity <= 0) return;
-        // Unresolved binaries glint with the pair's combined light.
-        const luminosity =
-          physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
-        pushTo(d2 <= nearSq ? near : far, lut, dx, dy, dz, luminosity, physical.tEff, starSeed);
-        return;
-      }
-      if (distance > reachTaper.outerPc) return;
-      const mass = initialMassFromUnit(unitFromBits(massBits, MASS_BIT_SPAN));
-      if (luminosityCeiling(mass) / d2 < MIN_FAR_IRRADIANCE) return;
-      const starSeed = seedForIdentity(massBits, ageBits, entropy);
-      const physical = starPhotometry(starSeed, { xPc: x, yPc: y, zPc: z });
-      if (physical.luminosity / d2 < MIN_FAR_IRRADIANCE) return;
-      const luminosity =
-        physical.luminosity + companionLuminosity(starSeed, { xPc: x, yPc: y, zPc: z });
-      pushTo(far, lut, dx, dy, dz, luminosity, physical.tEff, starSeed);
-    },
-    onProgress,
-    bounds,
-    // The generator's own thinning past the row's reach: the near
-    // census taper is decided above, so only the reach tapers here —
-    // and a near-only row, with no reach, is swept to its census
-    // taper untouched.
-    row.skyRadiusPc > 0 ? reachTaper : undefined,
-  );
-  return { near: packAccum(near), far: packAccum(far) };
-}
-
-function makeAccum(): StarAccum {
-  return { dirs: [], colors: [], brightness: [], distances: [], teffs: [], seeds: [] };
-}
-
-function pushTo(
-  acc: StarAccum,
-  lut: Float32Array,
-  dx: number,
-  dy: number,
-  dz: number,
-  luminosity: number,
-  tEff: number,
-  starSeed: bigint,
-): void {
-  const distanceSq = dx * dx + dy * dy + dz * dz;
-  if (distanceSq < 1e-6) return;
-  const distance = Math.sqrt(distanceSq);
-  const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(tEff) * 95)) * 4;
-  acc.dirs.push(dx / distance, dy / distance, dz / distance);
-  acc.colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
-  acc.brightness.push(luminosity / distanceSq);
-  acc.distances.push(distance);
-  acc.teffs.push(tEff);
-  acc.seeds.push(starSeed);
-}
-
-function packAccum(acc: StarAccum): PackedStars {
-  return {
-    dirs: new Float32Array(acc.dirs),
-    colors: new Float32Array(acc.colors),
-    brightness: new Float32Array(acc.brightness),
-    distances: new Float32Array(acc.distances),
-    teffs: new Float32Array(acc.teffs),
-    seeds: BigUint64Array.from(acc.seeds),
-  };
-}
-
-function appendPacked(acc: StarAccum, packed: PackedStars): void {
-  for (let i = 0; i < packed.dirs.length; i++) acc.dirs.push(packed.dirs[i]);
-  for (let i = 0; i < packed.colors.length; i++) acc.colors.push(packed.colors[i]);
-  for (let i = 0; i < packed.brightness.length; i++) {
-    acc.brightness.push(packed.brightness[i]);
-    acc.distances.push(packed.distances[i]);
-    acc.teffs.push(packed.teffs[i]);
-    acc.seeds.push(packed.seeds[i]);
-  }
-}
-
-/**
- * Everything after the star sweep: group stars and nebulae, dark
- * clouds, charts, and the glow — assembled onto the merged sweep
- * slabs (which must arrive in row-then-slab order).
- */
 /**
  * Everything about a sky that the stars have no say in.
  *
@@ -662,6 +395,11 @@ export function buildSkyBackground(
   };
 }
 
+/**
+ * Everything after the star sweep: group stars and nebulae, dark
+ * clouds, charts, and the glow — assembled onto the merged sweep
+ * slabs, which must arrive in sweep order.
+ */
 export function assembleSkyField(
   viewpoint: GalacticPosition,
   seed = 0n,

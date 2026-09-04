@@ -12,6 +12,7 @@ import type {
   SkyField,
   SkyPreview,
 } from '../universe/galaxy/skyfield';
+import type { SkyCancelMessage } from '../workers/skyWorker';
 
 /**
  * One shared sky-building worker with a small per-seed cache, so every
@@ -143,22 +144,21 @@ export function skyProgress(): SkyBuildProgress {
 /**
  * Abandon every sky build in flight.
  *
- * The worker is serial and has no way of being told to stop, so
- * stopping it means ending it — the right trade whenever the answer has
- * stopped being wanted. Diving to a galaxy's centre leaves that
- * system's sky building for a viewpoint nobody is standing at any more,
- * and so does travelling on to the next star: work that will be thrown
- * away when it lands, a progress bar counting toward it, and a queue
- * the next request has to wait behind.
+ * Diving to a galaxy's centre leaves that system's sky building for a
+ * viewpoint nobody is standing at any more, and so does travelling on
+ * to the next star: work that will be thrown away when it lands, a
+ * progress bar counting toward it, and a queue the next request has
+ * to wait behind. The builds are given up, not the worker — the cell
+ * surveys it holds are what makes the next nearby arrival fast.
  */
 export function cancelSkyBuilds(): void {
   if (!worker) return;
-  worker.terminate();
-  worker = null;
   clearSkyPermits();
+  const cancel: SkyCancelMessage = { type: 'sky-cancel' };
+  worker.postMessage(cancel);
   watching.clear();
   watchingBackground.clear();
-  // A promise whose worker is gone never settles, so it must not be
+  // A promise whose build is given up never settles, so it must not be
   // left in the cache for the next caller to await forever.
   for (const seedHex of waiting.keys()) {
     for (const key of [...cache.keys()]) {

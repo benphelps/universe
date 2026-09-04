@@ -372,6 +372,36 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   shell between was drawn by neither — the split now follows the
   neighbourhood's own radius. Cost: the home sweep runs ~30 s single-
   threaded in the test (it is pooled across workers in the app).
+- **Nearby jumps reuse the survey — landed.** A sky's star half is
+  swept one catalog cell at a time into a *survey*: the cell's stars as
+  stars — galactic position, luminosity, companion light, temperature,
+  seed — rather than the directions and brightnesses one viewpoint sees
+  (`skySurvey.ts`). A survey taken from a centre with a reach holds a
+  superset that any viewpoint within the reach projects exactly: its
+  ball, its reach taper and its magnitude cut are all held the reach
+  further out, and the census is held to the neighbourhood radius plus
+  its taper plus its own slack. Projection re-applies the sky's cuts
+  from wherever the traveler stands, so the field is the serial sweep's
+  to the bit (pinned in `galaxy.test.ts`). The reach is the
+  neighbourhood's shipped 30 pc — every listed neighbour is inside it —
+  and costs ~15% of a fresh sweep, all of it in the taper zone, where a
+  survey must density-test candidates the centre alone would have
+  thinned. The sky worker plans each build against the surveys it kept
+  (`skyBuildPlan.ts`, `skySurveyCache.ts`): served cells go to the
+  screen at once as one preview, the rest are jobbed across the pool
+  in sweep order, and the cache is trimmed by star budget, furthest
+  cells first in units of their row's reach, never below the sky being
+  stood in. Cancelling a build no longer ends the worker — that would
+  end the cache — so builds are given up by message, running jobs
+  still come home, and a permit the main thread has withdrawn is
+  answered with an empty one. Found on the way: the cell generator
+  took one draw for a slot thinned against the density and four for a
+  slot out of reach, so later slots in a cell depended on the ball
+  asking — the neighbourhood's `starsNear` and the sky's census could
+  disagree in boundary cells. Every slot now takes the same draws. Open:
+  the neighbourhood could be served from the same surveys instead of
+  being recomputed on the main thread at every arrival; the background
+  bake is now the critical path of a nearby jump.
 - **Residency ranking — landed.** Admission was by projected size alone,
   so a bright emission complex could lose its slot to bigger dark rifts.
   `residencyWeight` ranks by what is at stake on the sky: the cloud's
