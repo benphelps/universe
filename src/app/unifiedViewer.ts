@@ -818,13 +818,21 @@ export class UnifiedViewer {
    * controls change hands exactly when the view does.
    */
   private inSurfaceRegime(): boolean {
-    return !this.flight.active && this.altitudeKm < 0.12 * this.radiusKm;
+    return !this.surfaceless() && !this.flight.active && this.altitudeKm < 0.12 * this.radiusKm;
+  }
+
+  /** Whether the focus has no surface to descend to — the core, or a
+   *  cloud, whose reach is a radius only for the ride's floor and
+   *  ceiling. The horizon band never applies there: the orbit stays
+   *  an orbit about a point the whole way in. */
+  private surfaceless(): boolean {
+    return this.coreView || this.focus === 'cloud';
   }
 
   /** How far down into the horizon-gaze band the camera is: 0 in
    *  orbit, 1 at the descent floor. */
   private surfaceBlend(): number {
-    if (this.coreView) return 0;
+    if (this.surfaceless()) return 0;
     return 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
   }
 
