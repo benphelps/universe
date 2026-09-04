@@ -486,6 +486,8 @@ table.props td:first-child {
 }
 
 .orb.pill {
+  display: inline-flex;
+  align-items: center;
   width: auto;
   height: 28px;
   padding: 0 11px;
@@ -587,8 +589,7 @@ table.props td:first-child {
   accent-color: var(--accent);
 }
 
-#sidebar button,
-#clock-strip button {
+#sidebar button {
   background: none;
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -712,128 +713,115 @@ table.props td:first-child {
 }
 
 
-#clock-strip button {
-  background: rgba(10, 14, 20, 0.8);
-  backdrop-filter: blur(6px);
-}
-
 /* ---- the clock strip ---- */
 
-/* The clock along the foot of the view, clear of the gizmo's column
-   at the right. */
+/* The clock along the foot of the view: pause, and the rate as a pill
+   that is also the slider. Press the pill and drag sideways and the
+   rate axis unfolds above the whole row, from the pause orb's left
+   edge to the pill's right; let go and it folds away. */
 #clock-strip {
   position: absolute;
   left: 12px;
-  right: 148px;
   bottom: 12px;
   z-index: 6;
+}
+
+#time-row {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 12px;
+  align-items: center;
+  gap: 6px;
+}
+
+#time-lens {
+  min-width: 190px;
+  justify-content: flex-start;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#time-lens.engaged {
+  border-color: var(--accent);
+}
+
+#time-lens .mul {
+  color: var(--accent-hi);
+}
+
+#time-lens .sep {
+  margin: 0 5px;
+  color: var(--faint);
+}
+
+#time-lens .phrase {
+  color: var(--dim);
+}
+
+#time-axis {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(10, 14, 20, 0.92);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 120ms;
   pointer-events: none;
 }
 
-#clock-strip .group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  pointer-events: auto;
+#time-axis.show {
+  opacity: 1;
 }
 
-#clock-strip .group > .eyebrow {
-  padding-left: 2px;
-  font: 600 10px/1.4 var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--faint);
-}
-
-#clock-strip .row {
-  display: flex;
-  gap: 6px;
-  align-items: stretch;
-}
-
-/* The clock: which of the focus's clocks runs, and how long one turn
-   takes on screen. Label and choices share one 22 px line so their
-   text sits level. */
-#time-clocks {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 8px;
-  background: rgba(10, 14, 20, 0.8);
-  backdrop-filter: blur(6px);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-}
-
-#clock-strip .group > .eyebrow .owner {
-  color: var(--dim);
-  text-transform: none;
-  letter-spacing: 0.04em;
-}
-
-#time-clocks .still {
-  font: 12px/22px var(--mono);
-  color: var(--faint);
-}
-
-#time-clocks .tag {
-  font: 600 10px/22px var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--faint);
-}
-
-#time-clocks .seg {
-  display: flex;
-  gap: 2px;
-}
-
-#clock-strip #time-clocks .seg button {
-  height: 22px;
-  padding: 0 6px;
-  border: none;
-  border-radius: 2px;
-  background: none;
-  backdrop-filter: none;
-  font: 12px/22px var(--mono);
-  color: var(--dim);
-}
-
-#clock-strip #time-clocks .seg button:hover {
-  color: var(--ink);
-}
-
-#clock-strip #time-clocks .seg button.active {
+#time-axis .fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 14px;
   background: var(--accent-soft);
-  color: var(--accent);
 }
 
-#clock-strip #time-clocks .seg.idle button {
+#time-axis .tick {
+  position: absolute;
+  top: 20px;
+  width: 1px;
+  height: 5px;
+  background: var(--faint);
+}
+
+#time-axis .tick label {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  font: 600 8px/1 var(--display);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--faint);
-  cursor: default;
+  white-space: nowrap;
 }
 
-/* A narrower view closes the strip's ranks before it wraps. */
-@container (max-width: 900px) {
-  #clock-strip {
-    gap: 8px 12px;
-  }
+#time-axis .cursor {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent-hi);
 }
 
-#sidebar button:hover,
-#clock-strip button:hover {
+#sidebar button:hover {
   border-color: var(--accent);
   color: var(--ink);
 }
 
 #sidebar button:focus-visible,
-#clock-strip button:focus-visible,
 #settings-menu input:focus-visible {
   outline: 1px solid var(--accent-hi);
   outline-offset: 1px;
@@ -1506,23 +1494,13 @@ table.props td:first-child {
     padding: 8px 14px 6px;
   }
 
-  /* ---- the instrument bar, for one thumb ---- */
+  /* ---- the clock strip, for one thumb ---- */
 
+  /* The clock keeps the foot, and the right-hand column stacks above
+     it, clear of the home indicator. */
   #clock-strip {
     left: calc(8px + env(safe-area-inset-left));
-    right: calc(8px + env(safe-area-inset-right));
     bottom: calc(8px + env(safe-area-inset-bottom));
-    gap: 8px;
-  }
-
-  #clock-strip .group > .eyebrow {
-    display: none;
-  }
-
-  /* The clock takes the whole foot, and the right-hand column stacks
-     above it, clear of the home indicator. */
-  #clock-strip {
-    right: 12px;
   }
 
   #decals {
@@ -1575,8 +1553,7 @@ table.props td:first-child {
     color: var(--dim);
   }
 
-  #sidebar button:hover:not(.active),
-  #clock-strip button:hover:not(.active):not(.open) {
+  #sidebar button:hover:not(.active) {
     border-color: var(--line);
     color: var(--dim);
   }

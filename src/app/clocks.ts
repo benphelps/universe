@@ -22,18 +22,71 @@ export interface Clock {
 
 export const REAL_TIME: Clock = { label: 'real', periodDays: null };
 
-/** How long one turn takes on screen. */
-export const DURATIONS = [
-  { label: '5 s', seconds: 5 },
-  { label: '30 s', seconds: 30 },
-  { label: '3 min', seconds: 180 },
-] as const;
-
 const SECONDS_PER_DAY = 86400;
 
-/** The rate a clock and a duration name, days of simulation per second. */
-export function rateFor(clock: Clock, seconds: number): number {
-  return clock.periodDays === null ? 1 / SECONDS_PER_DAY : clock.periodDays / seconds;
+/** Real time, in the simulation's own unit: days per screen second. */
+export const REAL_RATE = 1 / SECONDS_PER_DAY;
+/** The fastest the slider goes: a hundred million times real time. */
+export const MAX_RATE = REAL_RATE * 1e8;
+/** A clock's landmark on the rate axis is where one turn of it takes
+ *  this long on screen. */
+export const LANDMARK_SECONDS = 10;
+/** A focus opens with its quickest clock turning once in this long —
+ *  a day at a world, the innermost orbit on a map. */
+const OPENING_SECONDS = 30;
+
+/** Where a rate stands on the slider, 0 at real time and 1 at the top. */
+export function ratePosition(rate: number): number {
+  return Math.min(1, Math.max(0, Math.log10(rate / REAL_RATE) / Math.log10(MAX_RATE / REAL_RATE)));
+}
+
+export function rateAtPosition(position: number): number {
+  const t = Math.min(1, Math.max(0, position));
+  return REAL_RATE * Math.pow(MAX_RATE / REAL_RATE, t);
+}
+
+/** The rate a focus opens at: its quickest clock, or real time. */
+export function openingRate(clocks: Clock[]): number {
+  const turning = clocks.filter((clock) => clock.periodDays !== null);
+  if (turning.length === 0) return REAL_RATE;
+  return Math.min(...turning.map((clock) => clock.periodDays as number)) / OPENING_SECONDS;
+}
+
+/** The rate as a multiple of real time, short: ×1, ×86, ×4.3k, ×12M. */
+export function formatMultiplier(rate: number): string {
+  const m = rate * SECONDS_PER_DAY;
+  if (m < 1.5) return '×1';
+  if (m < 1000) return `×${Math.round(m)}`;
+  if (m < 1e6) return `×${(m / 1e3).toFixed(m < 1e4 ? 1 : 0)}k`;
+  return `×${(m / 1e6).toFixed(m < 1e7 ? 1 : 0)}M`;
+}
+
+function formatSeconds(seconds: number): string {
+  if (seconds < 10) return `${seconds.toFixed(1)} s`;
+  if (seconds < 60) return `${Math.round(seconds)} s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  if (seconds < SECONDS_PER_DAY) return `${(seconds / 3600).toFixed(1)} h`;
+  return `${Math.round(seconds / SECONDS_PER_DAY)} d`;
+}
+
+/**
+ * What a rate means here: the largest of the focus's clocks that still
+ * turns inside ten minutes, and how long one turn takes — "a day every
+ * 17 s", "a year every 4 min" — so the phrase stays legible at every
+ * speed instead of counting years a second. Real time says so; a place
+ * where nothing turns has nothing to say.
+ */
+export function describeRate(rate: number, clocks: Clock[]): string {
+  if (rate <= REAL_RATE * 1.05) return 'real time';
+  const turning = clocks
+    .filter((clock) => clock.periodDays !== null)
+    .map((clock) => ({ label: clock.label, seconds: (clock.periodDays as number) / rate }))
+    .sort((a, b) => a.seconds - b.seconds);
+  if (turning.length === 0) return 'nothing here turns';
+  let pick = turning[0];
+  for (const clock of turning) if (clock.seconds <= 600) pick = clock;
+  const article = /^[aeiou]/.test(pick.label) ? 'an' : 'a';
+  return `${article} ${pick.label} every ${formatSeconds(pick.seconds)}`;
 }
 
 /** The clocks of a focus: whose they are, and what turns. Real time
