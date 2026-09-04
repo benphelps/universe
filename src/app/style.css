@@ -475,7 +475,26 @@ table.props td:first-child {
   position: relative;
 }
 
-/* The frame's instruments, top-left of the viewport. */
+/* The frame's instruments, top-left of the viewport: a pill with the
+   rate that opens into the full readout in the same spot, its corners
+   as round as the pill's ends. */
+#perf-pill {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+}
+
+.orb.pill {
+  width: auto;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 14px;
+  font: 11px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 #perf {
   position: absolute;
   top: 12px;
@@ -484,14 +503,23 @@ table.props td:first-child {
   display: grid;
   grid-template-columns: auto auto;
   gap: 1px 10px;
-  padding: 7px 10px;
+  padding: 8px 12px;
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 14px;
   font: 11px/1.5 var(--mono);
   color: var(--dim);
-  pointer-events: none;
+  cursor: pointer;
+}
+
+#perf:hover {
+  border-color: var(--accent);
+}
+
+#perf:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
 }
 
 #perf .perf-row {
@@ -620,11 +648,11 @@ table.props td:first-child {
   outline-offset: 2px;
 }
 
-/* The decal rail: four orbs in a row above the gizmo. */
+/* The decal rail: four orbs in a row under the gizmo. */
 #decals {
   position: absolute;
   right: 12px;
-  bottom: 144px;
+  bottom: 12px;
   z-index: 6;
   display: flex;
   gap: 4px;
@@ -1229,12 +1257,12 @@ table.props td:first-child {
 
 /* A compass dial in the view's bottom-right corner: the needle is
    where the scale's pole lies on screen, the dial rolls it up, and the
-   four corners carry the camera's other moves. The decal rail and the
-   touch chrome stack above it. */
+   four corners carry the camera's other moves. The decal rail sits
+   under it and the touch chrome stacks above. */
 #reorient {
   position: absolute;
   right: 12px;
-  bottom: 12px;
+  bottom: 48px;
   z-index: 6;
   /* As wide as the decal rail above, so the corners fall in line with
      its outer orbs. */
@@ -1407,7 +1435,8 @@ table.props td:first-child {
   }
 
   /* The frame readout steps aside for the toggle. */
-  body.console-collapsed #perf {
+  body.console-collapsed #perf,
+  body.console-collapsed #perf-pill {
     left: 58px;
   }
 }
@@ -1496,14 +1525,14 @@ table.props td:first-child {
     right: 12px;
   }
 
-  #reorient {
+  #decals {
     right: calc(12px + env(safe-area-inset-right));
     bottom: calc(60px + env(safe-area-inset-bottom));
   }
 
-  #decals {
+  #reorient {
     right: calc(12px + env(safe-area-inset-right));
-    bottom: calc(192px + env(safe-area-inset-bottom));
+    bottom: calc(96px + env(safe-area-inset-bottom));
   }
 
   #drag-mode,
@@ -1523,7 +1552,8 @@ table.props td:first-child {
 
   /* The overlays sit clear of the drawer handle and the cog. */
   #walk-hint,
-  #perf {
+  #perf,
+  #perf-pill {
     top: calc(62px + env(safe-area-inset-top));
   }
 

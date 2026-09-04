@@ -32,14 +32,16 @@ const thousands = (value: number): string =>
   value >= 1e6 ? `${(value / 1e6).toFixed(1)}M` : value >= 1e4 ? `${(value / 1e3).toFixed(0)}k` : `${value}`;
 
 /**
- * The frame's instruments, in the viewport's top-left: rate and the
- * timings behind it, what the renderer drew, and what the sky tiers
- * are carrying. Polled a few times a second rather than every frame —
- * a readout that redraws at frame rate would be part of the cost it
- * reports.
+ * The frame's instruments, in the viewport's top-left: a pill with
+ * the rate, opening on a press into the timings behind it, what the
+ * renderer drew, and what the sky tiers are carrying; a press on the
+ * panel folds it back. Polled a few times a second rather than every
+ * frame — a readout that redraws at frame rate would be part of the
+ * cost it reports.
  */
 export function PerfReadout(): ReactNode {
   const [stats, setStats] = useState<PerfStats | null>(null);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
     const id = window.setInterval(() => setStats(perfStats()), 250);
     return () => window.clearInterval(id);
@@ -48,6 +50,20 @@ export function PerfReadout(): ReactNode {
   // Nothing measured yet, or the document is hidden and no frame
   // counts: a dash, not a zero that reads as a stalled frame.
   const live = stats.frameMs > 0;
+  if (!open) {
+    return (
+      <button
+        id="perf-pill"
+        className="orb pill"
+        data-tip="frame timings"
+        aria-label="frame timings"
+        aria-expanded={false}
+        onClick={() => setOpen(true)}
+      >
+        {live ? fixed(stats.fps, 0) : '—'} fps
+      </button>
+    );
+  }
   const rows: Array<[string, string]> = [
     ['fps', live ? fixed(stats.fps, 0) : '—'],
     ['frame', live ? `${fixed(stats.frameMs)} ms` : '—'],
@@ -60,7 +76,20 @@ export function PerfReadout(): ReactNode {
   if (stats.bakes > 0) rows.push(['bakes', `${stats.bakes}`]);
   if (stats.terrain > 0) rows.push(['terrain', `${stats.terrain}`]);
   return (
-    <div id="perf" aria-label="performance readout">
+    <div
+      id="perf"
+      role="button"
+      tabIndex={0}
+      aria-label="frame timings, press to fold"
+      aria-expanded={true}
+      onClick={() => setOpen(false)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ' || event.key === 'Escape') {
+          event.preventDefault();
+          setOpen(false);
+        }
+      }}
+    >
       {rows.map(([label, value]) => (
         <div className="perf-row" key={label}>
           <span className="perf-label">{label}</span>
