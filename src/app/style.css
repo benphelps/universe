@@ -576,11 +576,11 @@ table.props td:first-child {
   position: absolute;
   top: 0;
   right: 0;
-  width: 272px;
-  padding: 40px 14px 12px;
+  width: 300px;
+  padding: 0 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 12px;
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
   border: 1px solid var(--line);
@@ -589,37 +589,150 @@ table.props td:first-child {
   animation: unfold 140ms ease-out;
 }
 
-#settings-menu[hidden] {
-  display: none;
+/* The header band is the cog's row: the title at its left, the cog
+   at its right. */
+#settings-menu .settings-title {
+  margin: 0 40px 2px 0;
+  font: 600 11px/32px var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--dim);
 }
 
-#settings-menu .row {
-  display: grid;
-  grid-template-columns: 62px 1fr auto;
-  gap: 8px;
-  align-items: center;
+/* Each instrument: its name and reading on one line, the control
+   beneath at full width. */
+#settings-menu .setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-#settings-menu label {
+#settings-menu .setting-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+#settings-menu .setting-head label,
+#settings-menu .setting-label {
   font: 600 11px/1.4 var(--display);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--faint);
 }
 
-#settings-menu input[type='text'] {
-  width: 100%;
-  background: var(--panel-raised);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  color: var(--ink);
-  font: 12px/1.5 var(--mono);
-  padding: 3px 7px;
+#settings-menu output {
+  font: 11px/1.4 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-hi);
 }
 
+/* The sliders in the console's own idiom: a hairline track filled to
+   the thumb, and a ring for the thumb. */
 #settings-menu input[type='range'] {
+  --track: rgba(170, 210, 255, 0.16);
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
-  accent-color: var(--accent);
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  cursor: ew-resize;
+}
+
+#settings-menu input[type='range']::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--track) var(--fill));
+}
+
+#settings-menu input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1.5px solid var(--accent);
+}
+
+#settings-menu input[type='range']:hover::-webkit-slider-thumb,
+#settings-menu input[type='range']:active::-webkit-slider-thumb {
+  background: var(--accent-soft);
+  border-color: var(--accent-hi);
+}
+
+#settings-menu input[type='range']::-moz-range-track {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--track);
+}
+
+#settings-menu input[type='range']::-moz-range-progress {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+#settings-menu input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1.5px solid var(--accent);
+}
+
+/* The sky's instrument: one pill of three cells, the chosen one lit,
+   and a line under it saying what that one sees. */
+#settings-menu .segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(10, 14, 20, 0.5);
+}
+
+#settings-menu .segmented button {
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: 600 11px/1 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+
+#settings-menu .segmented button + button {
+  border-left: 1px solid var(--line);
+}
+
+#settings-menu .segmented button:hover {
+  color: var(--accent-hi);
+}
+
+#settings-menu .segmented button.on {
+  background: var(--accent-soft);
+  color: var(--accent-hi);
+}
+
+#settings-menu .segmented button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -3px;
+}
+
+#settings-menu .setting-hint {
+  margin: 0;
+  min-height: 2.8em;
+  font: 11px/1.4 var(--mono);
+  color: var(--faint);
+}
+
+#settings-menu[hidden] {
+  display: none;
 }
 
 #sidebar button {
@@ -768,8 +881,8 @@ table.props td:first-child {
 }
 
 #time-lens {
-  /* One width whatever it says, so the axis above never shifts under
-     a drag. */
+  /* One width whatever it says, so the marker's run never shifts
+     under a drag. */
   width: 280px;
   justify-content: flex-start;
   cursor: ew-resize;
@@ -780,6 +893,31 @@ table.props td:first-child {
 
 #time-lens.engaged {
   border-color: var(--accent);
+}
+
+/* Where along the run the rate stands: a hairline across the pill,
+   behind the words, pulling across as the rate changes. */
+#time-lens .marker {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent-hi);
+  opacity: 0.45;
+  transition: left 140ms ease-out, opacity 140ms;
+  pointer-events: none;
+}
+
+#time-lens.engaged .marker {
+  opacity: 1;
+}
+
+#time-lens .mul,
+#time-lens .sep,
+#time-lens .phrase {
+  position: relative;
 }
 
 #time-lens .mul {
@@ -1005,14 +1143,6 @@ table.props td:first-child {
 #instruments-corner [data-tip]::after {
   top: calc(100% + 8px);
   right: 0;
-}
-
-#settings-menu [data-tip]::after {
-  top: auto;
-  right: auto;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
 }
 
 #console-toggle[data-tip]::after {
@@ -1519,7 +1649,7 @@ table.props td:first-child {
   }
 
   #settings-menu {
-    width: min(76vw, 272px);
+    width: min(82vw, 300px);
   }
 
   /* The overlays sit clear of the drawer handle and the cog. */

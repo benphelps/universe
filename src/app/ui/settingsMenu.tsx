@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   setExposure,
   setSkyExposure,
@@ -6,15 +6,22 @@ import {
   type SkyInstrumentName,
 } from '../store';
 
-const SKY_MODES: Array<{ name: SkyInstrumentName; label: string; title: string }> = [
-  { name: 'camera', label: 'camera', title: 'sky-subtracted deep exposure, true colour' },
-  { name: 'eye', label: 'eye', title: 'the dark-adapted naked eye — what you would really see' },
+const SKY_MODES: Array<{ name: SkyInstrumentName; label: string; sees: string }> = [
+  { name: 'camera', label: 'Camera', sees: 'a sky-subtracted deep exposure in true colour' },
+  { name: 'eye', label: 'Eye', sees: 'the dark-adapted naked eye: what you would really see' },
   {
     name: 'narrowband',
     label: 'SHO',
-    title: 'mapped narrowband: [S II]/Hα/[O III] on RGB, false colour',
+    sees: 'mapped narrowband, [S II], Hα and [O III] on red, green and blue',
   },
 ];
+
+/** A slider's fill, as the share of its range it stands at. */
+const fillOf = (value: number, min: number, max: number): string =>
+  `${((value - min) / (max - min)) * 100}%`;
+
+/** A multiplier, short: ×0.10, ×1.00, ×4.00. */
+const times = (value: number, digits: number): string => `×${value.toFixed(digits)}`;
 
 const COG = (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
@@ -24,14 +31,20 @@ const COG = (
 );
 
 /**
- * The cog at the top-right of the view: instrument dials, folded away
- * until asked for. A press unfolds the panel from the cog itself —
- * its top-right corner is the cog's, and the cog stays there as the
- * fold. Time lives on the clock strip along the foot.
+ * The cog at the top-right of the view: the picture's instruments,
+ * folded away until asked for. A press unfolds the panel from the cog
+ * itself — its top-right corner is the cog's, and the cog stays there
+ * as the fold. Inside, each instrument has its name and its reading
+ * on one line and its control beneath: the exposure, the sky's
+ * instrument as one pill of three with a line saying what the chosen
+ * one sees, and how deep that instrument integrates. Time lives on
+ * the clock strip along the foot.
  */
 export function SettingsMenu(): ReactNode {
   const [open, setOpen] = useState(false);
   const [skyMode, setSkyMode] = useState<SkyInstrumentName>('camera');
+  const [exposure, setExposureValue] = useState(1);
+  const [skyDepth, setSkyDepth] = useState(0);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -50,6 +63,7 @@ export function SettingsMenu(): ReactNode {
     };
   }, [open]);
 
+  const sky = SKY_MODES.find((mode) => mode.name === skyMode) ?? SKY_MODES[0];
   return (
     <div id="settings-corner" ref={root}>
       <button
@@ -62,27 +76,39 @@ export function SettingsMenu(): ReactNode {
       >
         {COG}
       </button>
-      <div id="settings-menu" hidden={!open}>
-        <div className="row">
-          <label htmlFor="exposure">exposure</label>
+      <div id="settings-menu" hidden={!open} role="dialog" aria-label="instrument settings">
+        <h3 className="settings-title">Instruments</h3>
+        <section className="setting">
+          <div className="setting-head">
+            <label htmlFor="exposure">Exposure</label>
+            <output htmlFor="exposure">{times(exposure, 2)}</output>
+          </div>
           <input
             id="exposure"
             type="range"
             min={0.1}
             max={4}
             step={0.05}
-            defaultValue={1}
-            onChange={(event) => setExposure(Number(event.currentTarget.value))}
+            value={exposure}
+            style={{ '--fill': fillOf(exposure, 0.1, 4) } as CSSProperties}
+            onChange={(event) => {
+              const value = Number(event.currentTarget.value);
+              setExposureValue(value);
+              setExposure(value);
+            }}
           />
-        </div>
-        <div className="row" id="sky-modes" role="radiogroup" aria-label="sky instrument">
-          <label>sky</label>
-          <div>
-            {SKY_MODES.map(({ name, label, title }) => (
+        </section>
+        <section className="setting">
+          <div className="setting-head">
+            <span className="setting-label" id="sky-label">
+              Sky instrument
+            </span>
+          </div>
+          <div className="segmented" role="radiogroup" aria-labelledby="sky-label">
+            {SKY_MODES.map(({ name, label }) => (
               <button
                 key={name}
-                className={skyMode === name ? 'active' : ''}
-                data-tip={title}
+                className={skyMode === name ? 'on' : ''}
                 role="radio"
                 aria-checked={skyMode === name}
                 onClick={() => {
@@ -94,23 +120,29 @@ export function SettingsMenu(): ReactNode {
               </button>
             ))}
           </div>
-        </div>
-        <div className="row">
-          <label htmlFor="sky-exposure" title="how deep the sky's instrument integrates">
-            sky depth
-          </label>
+          <p className="setting-hint">{sky.sees}</p>
+        </section>
+        <section className="setting">
+          <div className="setting-head">
+            <label htmlFor="sky-exposure">Sky depth</label>
+            <output htmlFor="sky-exposure">{times(10 ** skyDepth, skyDepth < 0 ? 2 : 1)}</output>
+          </div>
           <input
             id="sky-exposure"
             type="range"
             min={-2}
             max={2}
             step={0.05}
-            defaultValue={0}
-            onChange={(event) => setSkyExposure(10 ** Number(event.currentTarget.value))}
+            value={skyDepth}
+            style={{ '--fill': fillOf(skyDepth, -2, 2) } as CSSProperties}
+            onChange={(event) => {
+              const value = Number(event.currentTarget.value);
+              setSkyDepth(value);
+              setSkyExposure(10 ** value);
+            }}
           />
-        </div>
+        </section>
       </div>
     </div>
   );
 }
-

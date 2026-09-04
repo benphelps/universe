@@ -30,6 +30,8 @@ const PLAY = (
 );
 
 const NO_CLOCK: FocusClock = { owner: '', clock: null };
+/** The marker runs between the pill's ends, inset by its own padding. */
+const MARKER_INSET_PX = 12;
 /** Shift with an arrow key steps this many stops. */
 const BIG_STEP = 5;
 /** Wheel events closer than this are one step. */
@@ -42,9 +44,10 @@ const WHEEL_STEP_MS = 60;
  * the rate steps between the stops — real time, then the focus's one
  * clock at every pace from a turn an hour to a turn a second, a drag
  * across the pill's width running the whole range. The pill's own
- * words are the readout; there is no scale to show. A double-click is
- * real time, a scroll steps a stop, arrows step, shift-arrows leap.
- * Each focus opens at its own pace.
+ * words are the readout, and a marker inside it stands where along
+ * the run the rate is, pulling across as it changes. A double-click
+ * is real time, a scroll steps a stop, arrows step, shift-arrows
+ * leap. Each focus opens at its own pace.
  */
 export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode {
   const { owner, clock } = snap ? clockFor(snap) : NO_CLOCK;
@@ -127,6 +130,8 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
 
   const pauseTip = paused ? 'resume time' : 'pause time';
   const phrase = describeDetent(detent);
+  const along = last > 0 ? at / last : 0;
+  const markerLeft = `calc(${MARKER_INSET_PX}px + ${along} * (100% - ${2 * MARKER_INSET_PX}px))`;
   return (
     <div id="time-row">
       <button
@@ -155,6 +160,7 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
         onWheel={onWheel}
         onKeyDown={onKeyDown}
       >
+        <span className="marker" style={{ left: markerLeft }} aria-hidden="true" />
         <span className="mul">{formatMultiplier(detent.rate)}</span>
         <span className="sep">·</span>
         <span className="phrase">{phrase}</span>
