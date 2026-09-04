@@ -1907,7 +1907,13 @@ export class UnifiedViewer {
     }
     const carrier = this.enclosingCarrier;
     carrier.assign(members.map((volume) => volume.box));
-    carrier.update(this.camera.position, worldToScene, PC_KM, Math.min(this.camera.far * 0.3, 3e15));
+    carrier.update(
+      this.camera.position,
+      this.heliocentric.position,
+      worldToScene,
+      PC_KM,
+      Math.min(this.camera.far * 0.3, 3e15),
+    );
     carrier.opacity = 1;
     // The merged march takes the nearest member's slot: the nearest
     // draws last, over everything farther.
@@ -2320,9 +2326,10 @@ export class UnifiedViewer {
     // asteroids (the primary's belts only). Object targets name a moon
     // of one of those planets.
     // A cloud is a body here, not a place a body happens to sit in: the
-    // camera measures its ride against the cloud's own reach, so
-    // arriving means standing off the cloud rather than standing on a
-    // star that is zoomed out until the cloud fits.
+    // orbit is anchored on the cloud's centre and the camera measures
+    // its ride against the cloud's own reach, so arriving means
+    // standing off the cloud rather than standing on a star that is
+    // zoomed out until the cloud fits.
     if (target === 'cloud') {
       this.focusCloud = this.localCloud(true);
       this.focusPlanet = null;
@@ -2656,10 +2663,10 @@ export class UnifiedViewer {
     // Ringed worlds greet the camera from above the ring plane — an
     // edge-on arrival would collapse the rings to a one-pixel sliver.
     if (this.focusPlanet?.rings) arrival.y += 0.55;
-    // A cloud is stood off from its gateway star, which sits just past
-    // the cloud's edge: the camera arrives on the far side of the star
-    // from the cloud, raised a little, so the whole body lies beyond
-    // the star in frame.
+    // A cloud is stood off from its own centre on the side its gateway
+    // star lies — its thinnest, where a lit region shows its bright
+    // face — and raised a little, so the whole body lies before the
+    // camera with the gateway between.
     const cloudDir = this.focus === 'cloud' ? this.focusedCloudSceneDir() : null;
     if (cloudDir) arrival.copy(cloudDir).negate().addScaledVector(new Vector3(0, 1, 0), 0.35);
     arrival.normalize();
@@ -3640,7 +3647,7 @@ export class UnifiedViewer {
     // there and the hole itself out of frame.
     if (this.lensedSky && this.blackHole && !this.skyCaptured) {
       this.skyCaptured = true;
-      this.galaxyVolume?.update(ORIGIN, identity, PC_KM, 1, 1e15);
+      this.galaxyVolume?.update(ORIGIN, ORIGIN, identity, PC_KM, 1, 1e15);
       this.galaxyParticles?.update(0, pixelsPerRadian);
       if (this.nuclearCluster) {
         this.nuclearCluster.sizeScale = this.lensedSky.pixelsPerRadian / pixelsPerRadian;
@@ -3662,6 +3669,7 @@ export class UnifiedViewer {
       this.camera.position.length() < LENSING_SOLID_RG * this.blackHole.kmPerRg;
     this.galaxyVolume?.update(
       this.camera.position,
+      ORIGIN,
       identity,
       PC_KM,
       holeCoversSky ? 0 : 1,
@@ -4122,6 +4130,18 @@ export class UnifiedViewer {
   /** Heliocentric position of the focus body at the current time, km. */
   private focusPositionKm(): Vector3 {
     if (!this.system) return new Vector3();
+    // A cloud is orbited about its own centre; the gateway star the
+    // view is served from is only where the sky was surveyed.
+    if (this.focus === 'cloud' && this.focusCloud && this.sceneOrientation) {
+      const { positionPc } = this.focusCloud.cloud;
+      const [x, y, z] = rotateToScene(
+        this.sceneOrientation,
+        positionPc.xPc - this.viewpointPc.xPc,
+        positionPc.yPc - this.viewpointPc.yPc,
+        positionPc.zPc - this.viewpointPc.zPc,
+      );
+      return new Vector3(x, y, z).multiplyScalar(PC_KM);
+    }
     const tSeconds = seconds(this.simTimeDays * DAY);
     if (this.focusAsteroid) {
       const { position } = elementsToState(
@@ -4373,8 +4393,10 @@ export class UnifiedViewer {
       this.camera.updateProjectionMatrix();
 
       // The sky sphere hands off to the volumetric galaxy with distance
-      // from the system: same model, inside view to outside view.
-      const distancePc = this.camera.position.length() / PC_KM;
+      // from the viewpoint it was surveyed at: same model, inside view
+      // to outside view. The viewpoint is the heliocentric origin,
+      // which a cloud focus carries off the scene's.
+      const distancePc = this.camera.position.distanceTo(this.heliocentric.position) / PC_KM;
       const fade = Math.min(
         1,
         Math.max(0, (distancePc - GALAXY_FADE_NEAR_PC) / (GALAXY_FADE_FAR_PC - GALAXY_FADE_NEAR_PC)),
@@ -4420,6 +4442,7 @@ export class UnifiedViewer {
         // rasterizers shred at 1e17-km clip coordinates.
         this.galaxyVolume.update(
           this.camera.position,
+          this.heliocentric.position,
           worldToScene,
           PC_KM,
           this.galaxyFade,
@@ -4452,6 +4475,7 @@ export class UnifiedViewer {
           volume.opacity = volume.fade;
           volume.update(
             this.camera.position,
+            this.heliocentric.position,
             worldToScene,
             PC_KM,
             Math.min(this.camera.far * 0.3, 3e15),

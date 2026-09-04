@@ -119,12 +119,15 @@ export class GalaxyVolume {
   }
 
   /**
-   * Per-frame state: camera world position (km), the world→scene
-   * rotation (inverse of the ground frame), fade opacity, and a dome
-   * radius safely inside the far plane.
+   * Per-frame state: camera world position (km), where the viewpoint
+   * the galaxy is placed about stands in the same frame (the focus can
+   * carry the scene's origin away from it), the world→scene rotation
+   * (inverse of the ground frame), fade opacity, and a dome radius
+   * safely inside the far plane.
    */
   update(
     cameraWorldKm: Vector3,
+    viewpointWorldKm: Vector3,
     worldToScene: Matrix3,
     pcKm: number,
     opacity: number,
@@ -139,6 +142,7 @@ export class GalaxyVolume {
     const camGal = this.material.uniforms.uCamGalKpc.value as Vector3;
     camGal
       .copy(cameraWorldKm)
+      .sub(viewpointWorldKm)
       .applyMatrix3(worldToGalaxy)
       .divideScalar(pcKm);
     camGal.set(

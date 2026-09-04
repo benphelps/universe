@@ -498,13 +498,20 @@ export class NebulaCarrier {
     this.mesh.visible = value > 0.002;
   }
 
-  /** Where the camera stands, in the galaxy's own frame; the dome
-   *  rides it. */
-  update(cameraWorldKm: Vector3, worldToScene: Matrix3, pcKm: number, domeRadiusKm: number): Vector3 {
+  /** Where the camera stands, in the galaxy's own frame — measured
+   *  from where the viewpoint stands in the world, since the focus can
+   *  carry the scene's origin away from it; the dome rides the camera. */
+  update(
+    cameraWorldKm: Vector3,
+    viewpointWorldKm: Vector3,
+    worldToScene: Matrix3,
+    pcKm: number,
+    domeRadiusKm: number,
+  ): Vector3 {
     const worldToGalaxy = this.material.uniforms.uWorldToGalaxy.value as Matrix3;
     worldToGalaxy.multiplyMatrices(this.sceneToGalaxy, worldToScene);
     const cam = this.material.uniforms.uCamPc.value as Vector3;
-    cam.copy(cameraWorldKm).applyMatrix3(worldToGalaxy).divideScalar(pcKm);
+    cam.copy(cameraWorldKm).sub(viewpointWorldKm).applyMatrix3(worldToGalaxy).divideScalar(pcKm);
     cam.set(
       cam.x + this.viewpointPc.xPc,
       cam.y + this.viewpointPc.yPc,
@@ -644,8 +651,14 @@ export class NebulaVolume {
   }
 
   /** Per-frame: where the camera stands, in the galaxy's own frame. */
-  update(cameraWorldKm: Vector3, worldToScene: Matrix3, pcKm: number, domeRadiusKm: number): void {
-    const cam = this.carrier.update(cameraWorldKm, worldToScene, pcKm, domeRadiusKm);
+  update(
+    cameraWorldKm: Vector3,
+    viewpointWorldKm: Vector3,
+    worldToScene: Matrix3,
+    pcKm: number,
+    domeRadiusKm: number,
+  ): void {
+    const cam = this.carrier.update(cameraWorldKm, viewpointWorldKm, worldToScene, pcKm, domeRadiusKm);
     this.cameraDistancePc = cam.distanceTo(this.box.centrePc);
     const half = this.box.halfPc;
     this.enclosing =
