@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { boot, closeConsole, toggleConsole, useApp } from '../store';
 import { useConsoleWidth } from './consoleGrip';
-import { InstrumentBar } from './instrumentBar';
+import { ClockStrip } from './clockStrip';
+import { DecalToggles } from './decalToggles';
+import { InstrumentsCorner } from './instrumentsCorner';
 import { PerfReadout } from './perfReadout';
 import { Sidebar } from './sidebar';
 import { Welcome } from './welcome';
@@ -114,7 +116,9 @@ export function App(): ReactNode {
       />
       <div id="console-scrim" hidden={!open} onClick={closeConsole} />
       <main id="view" ref={view}>
-        <InstrumentBar snap={snap} />
+        <ClockStrip snap={snap} />
+        <DecalToggles />
+        <InstrumentsCorner />
         <PerfReadout />
       </main>
       <Welcome />

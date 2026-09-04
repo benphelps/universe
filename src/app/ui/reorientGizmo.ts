@@ -13,8 +13,6 @@ export interface GizmoState {
   /** The orbit anchor is off the focus. */
   panned: boolean;
   riding: boolean;
-  /** Touch chrome stands in the corner too; the gizmo lifts above it. */
-  lifted: boolean;
 }
 
 export interface GizmoActions {
@@ -82,7 +80,7 @@ export class ReorientGizmo {
       act: () => void,
     ): HTMLButtonElement => {
       const button = document.createElement('button');
-      button.className = `corner ${place}`;
+      button.className = `orb corner ${place}`;
       button.dataset.tip = tip;
       button.setAttribute('aria-label', tip);
       button.innerHTML = ICONS[key];
@@ -148,7 +146,6 @@ export class ReorientGizmo {
       this.label.textContent = state.scale;
     }
     if (state.scale === 'hidden') return;
-    this.element.classList.toggle('lifted', state.lifted);
     const endOn = state.scale !== 'ground' && state.extent < END_ON_EXTENT;
     const aligned = endOn || Math.abs(state.rollRad) < ALIGNED_RAD;
     const reach = Math.max(0.28, Math.min(1, state.extent));

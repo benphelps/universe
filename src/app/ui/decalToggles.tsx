@@ -58,8 +58,8 @@ const DECALS: Array<{ key: keyof DecalState; title: string; icon: ReactNode }> =
   },
 ];
 
-/** The decal switchboard in the viewport's corner: one icon per decal
- *  family, lit while its layer shows. */
+/** The decal switchboard: a rail of four above the reorient gizmo,
+ *  one orb per decal family, lit while its layer shows. */
 export function DecalToggles(): ReactNode {
   const [visible, setVisible] = useState<DecalState>({
     orbits: true,
@@ -73,7 +73,7 @@ export function DecalToggles(): ReactNode {
       {DECALS.map(({ key, title, icon }) => (
         <button
           key={key}
-          className={visible[key] ? 'active' : ''}
+          className={visible[key] ? 'orb active' : 'orb'}
           data-tip={title}
           aria-label={title}
           aria-pressed={visible[key]}
@@ -83,7 +83,7 @@ export function DecalToggles(): ReactNode {
             setDecal(key, next);
           }}
         >
-          <svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
             {icon}
           </svg>
         </button>

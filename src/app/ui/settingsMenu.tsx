@@ -24,8 +24,8 @@ const COG = (
 );
 
 /**
- * The cog in the viewport's corner: instrument dials, folded away
- * until asked for. Time and seed live on the clock strip below.
+ * The cog at the top-right of the view: instrument dials, folded away
+ * until asked for. Time lives on the clock strip along the foot.
  */
 export function SettingsMenu(): ReactNode {
   const [open, setOpen] = useState(false);
@@ -52,7 +52,7 @@ export function SettingsMenu(): ReactNode {
     <div id="settings-corner" ref={root}>
       <button
         id="settings-toggle"
-        className={open ? 'open' : ''}
+        className={open ? 'orb open' : 'orb'}
         data-tip="instrument settings"
         aria-label="instrument settings"
         aria-expanded={open}

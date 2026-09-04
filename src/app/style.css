@@ -511,22 +511,9 @@ table.props td:first-child {
   font-variant-numeric: tabular-nums;
 }
 
-#settings-toggle {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  padding: 0;
-}
-
-#settings-toggle.open {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
 #settings-menu {
   position: absolute;
-  bottom: calc(100% + 8px);
+  top: calc(100% + 8px);
   right: 0;
   width: 272px;
   padding: 12px 14px;
@@ -573,7 +560,7 @@ table.props td:first-child {
 }
 
 #sidebar button,
-#instrument-bar button {
+#clock-strip button {
   background: none;
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -584,34 +571,73 @@ table.props td:first-child {
   cursor: pointer;
 }
 
-#decals {
-  display: flex;
-  gap: 6px;
-}
+/* ---- the corner orbs ---- */
 
-#decals button {
+/* One button for every corner instrument: the gizmo's four moves, the
+   decal switches above it, the shutter and the cog at the top. */
+.orb {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 28px;
+  height: 28px;
   padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(10, 14, 20, 0.8);
+  backdrop-filter: blur(6px);
+  color: var(--dim);
+  cursor: pointer;
+  touch-action: manipulation;
 }
 
-#decals button svg {
+.orb svg {
   display: block;
 }
 
-#capture {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  padding: 0;
+.orb:hover {
+  border-color: var(--accent);
+  color: var(--accent-hi);
 }
 
-#decals button.active {
+.orb[aria-disabled='true'] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.orb[aria-disabled='true']:hover {
+  border-color: var(--line);
+  color: var(--dim);
+}
+
+.orb.active,
+.orb.open {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.orb:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The decal rail: four orbs in a row above the gizmo. */
+#decals {
+  position: absolute;
+  right: 12px;
+  bottom: 124px;
+  z-index: 6;
+  display: flex;
+  gap: 4px;
+}
+
+/* The shutter and the cog, top-right. */
+#instruments-corner {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 6;
+  display: flex;
+  gap: 4px;
 }
 
 /* The status line: one row along the foot of the console, always
@@ -658,19 +684,19 @@ table.props td:first-child {
 }
 
 
-#instrument-bar button {
+#clock-strip button {
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
 }
 
-/* ---- the instrument bar ---- */
+/* ---- the clock strip ---- */
 
-/* Every dial in one panel along the foot of the view, in three
-   captioned groups: the clock, the address, the instruments. */
-#instrument-bar {
+/* The clock along the foot of the view, clear of the gizmo's column
+   at the right. */
+#clock-strip {
   position: absolute;
   left: 12px;
-  right: 12px;
+  right: 148px;
   bottom: 12px;
   z-index: 6;
   display: flex;
@@ -681,14 +707,14 @@ table.props td:first-child {
   pointer-events: none;
 }
 
-#instrument-bar .group {
+#clock-strip .group {
   display: flex;
   flex-direction: column;
   gap: 4px;
   pointer-events: auto;
 }
 
-#instrument-bar .group > .eyebrow {
+#clock-strip .group > .eyebrow {
   padding-left: 2px;
   font: 600 10px/1.4 var(--display);
   text-transform: uppercase;
@@ -696,14 +722,10 @@ table.props td:first-child {
   color: var(--faint);
 }
 
-#instrument-bar .row {
+#clock-strip .row {
   display: flex;
   gap: 6px;
   align-items: stretch;
-}
-
-#instrument-bar .gap {
-  width: 6px;
 }
 
 /* The clock: which of the focus's clocks runs, and how long one turn
@@ -721,7 +743,7 @@ table.props td:first-child {
   border-radius: 3px;
 }
 
-#instrument-bar .group > .eyebrow .owner {
+#clock-strip .group > .eyebrow .owner {
   color: var(--dim);
   text-transform: none;
   letter-spacing: 0.04em;
@@ -744,7 +766,7 @@ table.props td:first-child {
   gap: 2px;
 }
 
-#instrument-bar #time-clocks .seg button {
+#clock-strip #time-clocks .seg button {
   height: 22px;
   padding: 0 6px;
   border: none;
@@ -755,57 +777,35 @@ table.props td:first-child {
   color: var(--dim);
 }
 
-#instrument-bar #time-clocks .seg button:hover {
+#clock-strip #time-clocks .seg button:hover {
   color: var(--ink);
 }
 
-#instrument-bar #time-clocks .seg button.active {
+#clock-strip #time-clocks .seg button.active {
   background: var(--accent-soft);
   color: var(--accent);
 }
 
-#instrument-bar #time-clocks .seg.idle button {
+#clock-strip #time-clocks .seg.idle button {
   color: var(--faint);
   cursor: default;
 }
 
-/* A narrower view closes the bar's ranks before it wraps: the seed
-   sheds its hex, which the URL carries. */
+/* A narrower view closes the strip's ranks before it wraps. */
 @container (max-width: 900px) {
-  #instrument-bar {
+  #clock-strip {
     gap: 8px 12px;
   }
-
-  #seed-chip {
-    padding: 0 11px;
-  }
-
-  #seed-chip #seed-text {
-    display: none;
-  }
-}
-
-#seed-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 13px;
-  font-size: 12px;
-}
-
-#seed-chip #seed-text.copied {
-  color: var(--accent);
 }
 
 #sidebar button:hover,
-#instrument-bar button:hover {
+#clock-strip button:hover {
   border-color: var(--accent);
   color: var(--ink);
 }
 
 #sidebar button:focus-visible,
-#instrument-bar button:focus-visible,
+#clock-strip button:focus-visible,
 #settings-menu input:focus-visible {
   outline: 1px solid var(--accent-hi);
   outline-offset: 1px;
@@ -981,13 +981,20 @@ table.props td:first-child {
   visibility: visible;
 }
 
-#instrument-bar [data-tip]::after {
+#clock-strip [data-tip]::after {
   bottom: calc(100% + 8px);
   left: 0;
 }
 
-#instrument-bar .instruments [data-tip]::after {
-  left: auto;
+/* The corner rails open their tips away from the edge they sit on. */
+#reorient [data-tip]::after,
+#decals [data-tip]::after {
+  bottom: calc(100% + 8px);
+  right: 0;
+}
+
+#instruments-corner [data-tip]::after {
+  top: calc(100% + 8px);
   right: 0;
 }
 
@@ -1220,21 +1227,17 @@ table.props td:first-child {
 
 /* ---- the reorient gizmo ---- */
 
-/* A compass dial in the corner above the instrument bar: the needle
-   is where the scale's pole lies on screen, the dial rolls it up, and
-   the four corners carry the camera's other moves. It lifts above the
-   touch chrome when a finger has the corner. */
+/* A compass dial in the view's bottom-right corner: the needle is
+   where the scale's pole lies on screen, the dial rolls it up, and the
+   four corners carry the camera's other moves. The decal rail and the
+   touch chrome stack above it. */
 #reorient {
   position: absolute;
   right: 12px;
-  bottom: 96px;
+  bottom: 12px;
   z-index: 6;
   width: 104px;
   height: 104px;
-}
-
-#reorient.lifted {
-  bottom: 160px;
 }
 
 #reorient .dial {
@@ -1313,44 +1316,12 @@ table.props td:first-child {
 
 #reorient .corner {
   position: absolute;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  background: rgba(10, 14, 20, 0.8);
-  backdrop-filter: blur(6px);
-  color: var(--dim);
-  cursor: pointer;
-  touch-action: manipulation;
 }
 
 #reorient .corner.tl { left: 0; top: 0; }
 #reorient .corner.tr { right: 0; top: 0; }
 #reorient .corner.bl { left: 0; bottom: 0; }
 #reorient .corner.br { right: 0; bottom: 0; }
-
-#reorient .corner:hover {
-  border-color: var(--accent);
-  color: var(--accent-hi);
-}
-
-#reorient .corner[aria-disabled='true'] {
-  opacity: 0.35;
-  cursor: default;
-}
-
-#reorient .corner[aria-disabled='true']:hover {
-  border-color: var(--line);
-  color: var(--dim);
-}
-
-#reorient .corner.active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 
 #reorient .scale {
   position: absolute;
@@ -1365,8 +1336,7 @@ table.props td:first-child {
   pointer-events: none;
 }
 
-#reorient .dial:focus-visible,
-#reorient .corner:focus-visible {
+#reorient .dial:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1375,8 +1345,8 @@ table.props td:first-child {
    standing where the fly stick would, since the two never coincide. */
 #drag-mode {
   position: absolute;
-  right: 24px;
-  bottom: 104px;
+  right: 20px;
+  bottom: 164px;
   z-index: 6;
   display: grid;
   place-items: center;
@@ -1401,8 +1371,8 @@ table.props td:first-child {
    Thumb-sized, and off to the side of what you are looking at. */
 #fly-stick {
   position: absolute;
-  right: 18px;
-  bottom: 96px;
+  right: 12px;
+  bottom: 160px;
   z-index: 6;
   display: grid;
   place-items: center;
@@ -1507,41 +1477,42 @@ table.props td:first-child {
 
   /* ---- the instrument bar, for one thumb ---- */
 
-  #instrument-bar {
+  #clock-strip {
     left: calc(8px + env(safe-area-inset-left));
     right: calc(8px + env(safe-area-inset-right));
     bottom: calc(8px + env(safe-area-inset-bottom));
     gap: 8px;
   }
 
-  #instrument-bar .group > .eyebrow {
+  #clock-strip .group > .eyebrow {
     display: none;
   }
 
-  /* The seed keeps its copy button but sheds the hex, which the URL
-     carries. */
-  #seed-chip {
-    padding: 0 11px;
-  }
-
-  #seed-chip #seed-text {
-    display: none;
-  }
-
-  /* Clear of the bar once the home indicator pushes it up. */
-  #drag-mode,
-  #fly-stick {
-    right: calc(16px + env(safe-area-inset-right));
-    bottom: calc(104px + env(safe-area-inset-bottom));
+  /* The clock takes the whole foot, and the right-hand column stacks
+     above it, clear of the home indicator. */
+  #clock-strip {
+    right: 12px;
   }
 
   #reorient {
-    right: calc(10px + env(safe-area-inset-right));
-    bottom: calc(96px + env(safe-area-inset-bottom));
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(60px + env(safe-area-inset-bottom));
   }
 
-  #reorient.lifted {
-    bottom: calc(160px + env(safe-area-inset-bottom));
+  #decals {
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(172px + env(safe-area-inset-bottom));
+  }
+
+  #drag-mode,
+  #fly-stick {
+    right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(208px + env(safe-area-inset-bottom));
+  }
+
+  #instruments-corner {
+    top: calc(12px + env(safe-area-inset-top));
+    right: calc(12px + env(safe-area-inset-right));
   }
 
   #settings-menu {
@@ -1573,7 +1544,7 @@ table.props td:first-child {
   }
 
   #sidebar button:hover:not(.active),
-  #instrument-bar button:hover:not(.active):not(.open) {
+  #clock-strip button:hover:not(.active):not(.open) {
     border-color: var(--line);
     color: var(--dim);
   }

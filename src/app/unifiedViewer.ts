@@ -4179,7 +4179,6 @@ export class UnifiedViewer {
       extent,
       panned: this.controls.target.lengthSq() >= 1,
       riding: this.rideOutRate > 0,
-      lifted: this.touchMode,
     });
   }
 
