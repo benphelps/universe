@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  beginsRun,
   describeDetent,
+  DETENT_SECONDS,
   detentsFor,
   formatMultiplier,
   openingIndex,
@@ -10,25 +12,30 @@ import {
 } from './clocks';
 
 const DAY = { label: 'day', periodDays: 0.846 };
+const MONTH = { label: 'month', periodDays: 27.3 };
 const YEAR = { label: 'year', periodDays: 434 };
-const WORLD = [REAL_TIME, DAY, YEAR];
+const WORLD = [REAL_TIME, DAY, YEAR, MONTH];
 
 describe('detentsFor', () => {
-  it('runs from real time up through every clock, ascending, without doubles', () => {
+  it('runs real time, then each clock whole, quickest clock first', () => {
     const detents = detentsFor(WORLD);
     expect(detents[0]).toEqual({ rate: REAL_RATE, clock: null, seconds: null });
-    for (let i = 1; i < detents.length; i++) {
-      expect(detents[i].rate / detents[i - 1].rate).toBeGreaterThanOrEqual(1.25);
-    }
-    expect(detents[detents.length - 1]).toEqual({ rate: 434, clock: YEAR, seconds: 1 });
-    // A day a second and a year an hour are near enough to be one stop.
-    expect(detents.filter((d) => Math.abs(Math.log10(d.rate / 0.846)) < 0.1)).toHaveLength(1);
+    expect(detents).toHaveLength(1 + 3 * DETENT_SECONDS.length);
+    const clocks = detents.slice(1).map((d) => d.clock?.label);
+    expect(clocks).toEqual([
+      ...Array(8).fill('day'),
+      ...Array(8).fill('month'),
+      ...Array(8).fill('year'),
+    ]);
+    const paces = detents.slice(1, 9).map((d) => d.seconds);
+    expect(paces).toEqual([3600, 1800, 300, 60, 30, 15, 5, 1]);
+    expect(detents[8].rate).toBeCloseTo(0.846, 9);
+    expect(detents[9].rate).toBeCloseTo(27.3 / 3600, 9);
   });
 
-  it('keeps every clock\'s half-minute stop, the labelled one', () => {
+  it('names a clock where its run begins', () => {
     const detents = detentsFor(WORLD);
-    const labelled = detents.filter((d) => d.seconds === OPENING_SECONDS).map((d) => d.clock?.label);
-    expect(labelled).toEqual(['day', 'year']);
+    expect(detents.filter(beginsRun).map((d) => d.clock?.label)).toEqual(['day', 'month', 'year']);
   });
 
   it('is only real time where nothing turns', () => {
@@ -47,12 +54,15 @@ describe('openingIndex', () => {
 });
 
 describe('describeDetent', () => {
-  it('names the clock and the pace', () => {
+  it('names the clock and the pace in words', () => {
     expect(describeDetent({ rate: REAL_RATE, clock: null, seconds: null })).toBe('real time');
-    expect(describeDetent({ rate: 1, clock: DAY, seconds: 15 })).toBe('a day every 15 s');
-    expect(describeDetent({ rate: 1, clock: YEAR, seconds: 300 })).toBe('a year every 5 min');
-    expect(describeDetent({ rate: 1, clock: { label: 'inner orbit', periodDays: 1 }, seconds: 3600 })).toBe(
-      'an inner orbit every 1 h',
+    expect(describeDetent({ rate: 1, clock: DAY, seconds: 3600 })).toBe('a day every hour');
+    expect(describeDetent({ rate: 1, clock: DAY, seconds: 1800 })).toBe('a day every 30 minutes');
+    expect(describeDetent({ rate: 1, clock: DAY, seconds: 60 })).toBe('a day every minute');
+    expect(describeDetent({ rate: 1, clock: DAY, seconds: 15 })).toBe('a day every 15 seconds');
+    expect(describeDetent({ rate: 1, clock: YEAR, seconds: 1 })).toBe('a year every second');
+    expect(describeDetent({ rate: 1, clock: { label: 'inner orbit', periodDays: 1 }, seconds: 300 })).toBe(
+      'an inner orbit every 5 minutes',
     );
   });
 });

@@ -26,13 +26,11 @@ const SECONDS_PER_DAY = 86400;
 
 /** Real time, in the simulation's own unit: days per screen second. */
 export const REAL_RATE = 1 / SECONDS_PER_DAY;
-/** How long one turn of a clock takes on screen, detent by detent,
+/** How long one turn of a clock takes on screen, stop by stop,
  *  slowest first. */
-export const DETENT_SECONDS = [3600, 1800, 900, 300, 60, 30, 15, 5, 1] as const;
-/** The detent a focus opens on, and the one its clock is labelled at. */
+export const DETENT_SECONDS = [3600, 1800, 300, 60, 30, 15, 5, 1] as const;
+/** The stop a focus opens on. */
 export const OPENING_SECONDS = 30;
-/** Two detents this close in rate are one; the labelled one wins. */
-const SAME_RATE = 1.25;
 
 /** A stop on the slider: a rate, and the clock and pace it names. */
 export interface Detent {
@@ -44,32 +42,22 @@ export interface Detent {
 }
 
 /**
- * The slider's stops for a focus: real time first, then every clock's
- * ladder of paces merged into one ascending run, so the slider turns
- * through the slow paces of a slow clock and on into the fast paces of
- * a fast one without a gap or a doubling. Stops are spaced evenly on
- * the slider whatever their rates, which is what keeps real time and
- * the crawl above it from taking most of its length.
+ * The slider's stops for a focus: real time, then each clock's whole
+ * run of paces from a turn an hour down to a turn a second, clock
+ * after clock, quickest clock first — a day's run, then a month's,
+ * then a year's. The stops are spaced evenly on the slider, so the
+ * slider reads as "which clock, and how fast", not as a number line;
+ * the rate itself is whatever those two name.
  */
 export function detentsFor(clocks: Clock[]): Detent[] {
-  const ladder: Detent[] = [];
-  for (const clock of clocks) {
-    if (clock.periodDays === null) continue;
-    for (const seconds of DETENT_SECONDS) {
-      ladder.push({ rate: clock.periodDays / seconds, clock, seconds });
-    }
-  }
-  ladder.sort((a, b) => a.rate - b.rate);
   const detents: Detent[] = [{ rate: REAL_RATE, clock: null, seconds: null }];
-  for (const next of ladder) {
-    const last = detents[detents.length - 1];
-    if (next.rate / last.rate < SAME_RATE) {
-      if (next.seconds === OPENING_SECONDS && last.seconds !== OPENING_SECONDS) {
-        detents[detents.length - 1] = next;
-      }
-      continue;
+  const turning = clocks
+    .filter((clock) => clock.periodDays !== null)
+    .sort((a, b) => (a.periodDays as number) - (b.periodDays as number));
+  for (const clock of turning) {
+    for (const seconds of DETENT_SECONDS) {
+      detents.push({ rate: (clock.periodDays as number) / seconds, clock, seconds });
     }
-    detents.push(next);
   }
   return detents;
 }
@@ -77,14 +65,13 @@ export function detentsFor(clocks: Clock[]): Detent[] {
 /** Where a focus opens: its quickest clock turning once in half a
  *  minute — a day at a world, the innermost orbit on a map. */
 export function openingIndex(detents: Detent[]): number {
-  let quickest = -1;
-  detents.forEach((detent, index) => {
-    if (detent.seconds !== OPENING_SECONDS) return;
-    if (quickest < 0 || (detent.clock?.periodDays ?? 0) < (detents[quickest].clock?.periodDays ?? 0)) {
-      quickest = index;
-    }
-  });
-  return Math.max(0, quickest);
+  const index = detents.findIndex((detent) => detent.seconds === OPENING_SECONDS);
+  return Math.max(0, index);
+}
+
+/** Whether a stop begins a clock's run, where the slider names it. */
+export function beginsRun(detent: Detent): boolean {
+  return detent.seconds === DETENT_SECONDS[0];
 }
 
 /** The rate as a multiple of real time, short: ×1, ×86, ×4.3k, ×12M. */
@@ -97,18 +84,19 @@ export function formatMultiplier(rate: number): string {
   return `×${(m / 1e9).toFixed(m < 1e10 ? 1 : 0)}G`;
 }
 
-function formatSeconds(seconds: number): string {
-  if (seconds < 60) return `${seconds} s`;
-  if (seconds < 3600) return `${seconds / 60} min`;
-  return `${seconds / 3600} h`;
+/** A pace in words: "every hour", "every 30 minutes", "every second". */
+function everyPace(seconds: number): string {
+  const unit = seconds >= 3600 ? 'hour' : seconds >= 60 ? 'minute' : 'second';
+  const count = seconds >= 3600 ? seconds / 3600 : seconds >= 60 ? seconds / 60 : seconds;
+  return count === 1 ? `every ${unit}` : `every ${count} ${unit}s`;
 }
 
-/** What a stop means here: "a day every 15 s", "an orbit every 5 min",
- *  or real time. */
+/** What a stop means here: "a day every 15 seconds", "an orbit every
+ *  5 minutes", or real time. */
 export function describeDetent(detent: Detent): string {
   if (!detent.clock || detent.seconds === null) return 'real time';
   const article = /^[aeiou]/.test(detent.clock.label) ? 'an' : 'a';
-  return `${article} ${detent.clock.label} every ${formatSeconds(detent.seconds)}`;
+  return `${article} ${detent.clock.label} ${everyPace(detent.seconds)}`;
 }
 
 /** The clocks of a focus: whose they are, and what turns. Real time

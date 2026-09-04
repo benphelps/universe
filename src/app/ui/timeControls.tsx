@@ -9,12 +9,12 @@ import {
   type WheelEvent,
 } from 'react';
 import {
+  beginsRun,
   clocksFor,
   describeDetent,
   detentsFor,
   formatMultiplier,
   openingIndex,
-  OPENING_SECONDS,
   REAL_TIME,
   type FocusClocks,
 } from '../clocks';
@@ -46,11 +46,11 @@ const WHEEL_STEP_MS = 60;
  * multiple of real time and what that means here, "×2.4k · a day
  * every 30 s". The pill is the slider: press and drag sideways and the
  * rate axis unfolds above, and the cursor steps between the focus's
- * detents — real time, then each clock's ladder of paces from a turn
- * an hour to a turn a second, merged in one run and spaced evenly.
- * Only the clocks are ticked and named, each at its half-minute
- * stop; the paces between are felt, not shown. Let go and the axis
- * folds away. A double-click is real time, a scroll steps a stop,
+ * stops — real time, then each clock's whole run of paces from a turn
+ * an hour to a turn a second, clock after clock, spaced evenly. Only
+ * the clocks are ticked and named, each where its run begins; the
+ * paces along it are felt, not shown. Let go and the axis folds
+ * away. A double-click is real time, a scroll steps a stop,
  * arrows step, shift-arrows leap. Each focus opens at its own pace.
  */
 export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode {
@@ -173,9 +173,9 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
       <div id="time-axis" className={engaged ? 'show' : ''} aria-hidden="true">
         <div className="fill" style={{ width: position(at) }} />
         {detents.map((stop, i) =>
-          i === 0 || stop.seconds === OPENING_SECONDS ? (
+          i === 0 || beginsRun(stop) ? (
             <div className="tick" key={i} style={{ left: position(i) }}>
-              <label>{stop.clock?.label ?? 'real'}</label>
+              {stop.clock && <label>{stop.clock.label}</label>}
             </div>
           ) : null,
         )}

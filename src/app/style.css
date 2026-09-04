@@ -736,7 +736,7 @@ table.props td:first-child {
 #time-lens {
   /* One width whatever it says, so the axis above never shifts under
      a drag. */
-  width: 250px;
+  width: 280px;
   justify-content: flex-start;
   cursor: ew-resize;
   touch-action: none;
