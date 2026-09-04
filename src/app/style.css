@@ -788,7 +788,8 @@ table.props td:first-child {
   left: 0;
   top: 0;
   bottom: 0;
-  border-radius: 14px;
+  /* Round with the axis at the left, square against the cursor. */
+  border-radius: 14px 0 0 14px;
   background: var(--accent-soft);
 }
 
