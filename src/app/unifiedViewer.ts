@@ -173,8 +173,8 @@ import { seatFieldPointInstrument } from '../render/displayTransfer';
 import { getGalacticLandmarks } from './landmarkService';
 import { cancelSkyBuilds, getSkyField, skyPending, skyProgress, watchSkyBuild } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
-import { FlightCamera, type FlightSurface } from './flightCamera';
-import { gazeQuaternion, headingOf } from './cameraGaze';
+import { CLEARANCE_M, FlightCamera, type FlightSurface } from './flightCamera';
+import { gazeQuaternion, headingOf, tangentFrame } from './cameraGaze';
 import { OrbitArcball } from './orbitArcball';
 import { easeInOut, edgeOn, faceOn, lookingFrom, poleOnScreen, rolledToPole, turnAbout } from './reorient';
 import { type GizmoScale, ReorientGizmo } from './ui/reorientGizmo';
@@ -633,6 +633,16 @@ export class UnifiedViewer {
       bakes: pendingNebulaBakes(),
       terrain: this.chunkManager?.outstanding ?? 0,
     };
+  }
+
+  /** The shared epoch all orbital propagation reads, for tools that
+   *  locate an event and then bring the scene to it. */
+  get simulationTimeDays(): number {
+    return this.simTimeDays;
+  }
+
+  set simulationTimeDays(value: number) {
+    if (Number.isFinite(value)) this.simTimeDays = value;
   }
 
   /** What the background generators are working on right now: terrain
@@ -2736,6 +2746,47 @@ export class UnifiedViewer {
     this.pitchRad = 0;
     this.inBand = this.surfaceBlend() > 0;
     this.aimCamera();
+  }
+
+  /**
+   * Put a finder arrival on the focused terrain at one planet-fixed
+   * direction, with the head aimed at the event in its sky. The camera
+   * enters the same two-metre-clear flight state an ordinary descent
+   * reaches, so this is genuinely ground level and immediately usable.
+   */
+  landAtSurface(
+    surfaceDirection: readonly [number, number, number],
+    lookDirection: readonly [number, number, number],
+  ): boolean {
+    const surface = this.flightSurface();
+    if (!surface || !this.focusPlanet || this.focusMoon) return false;
+    const up = new Vector3(...surfaceDirection);
+    const gaze = new Vector3(...lookDirection);
+    if (
+      ![up.x, up.y, up.z, gaze.x, gaze.y, gaze.z].every(Number.isFinite) ||
+      up.lengthSq() < 1e-12 ||
+      gaze.lengthSq() < 1e-12
+    ) {
+      return false;
+    }
+    up.normalize();
+    gaze.normalize();
+    const groundM = Math.max(surface.heightM(up), surface.waterLevelM(up));
+    const radiusKm = this.radiusKm + (groundM + CLEARANCE_M) / 1000;
+    this.camera.position.copy(up).multiplyScalar(radiusKm);
+    this.altitudeKm = CLEARANCE_M / 1000;
+    this.controls.target.set(0, 0, 0);
+    this.pendingWheelFactor = 1;
+    this.lastSpinRad = null;
+    this.stopRideOut();
+
+    const { north, east } = tangentFrame(up, BODY_POLE);
+    this.headingRad = Math.atan2(gaze.dot(east), gaze.dot(north));
+    this.pitchRad = Math.asin(Math.min(1, Math.max(-1, gaze.dot(up))));
+    this.flight.begin(surface);
+    this.inBand = true;
+    this.aimCamera();
+    return true;
   }
 
   /** Promote any materialized belt member to the focused body. */

@@ -46,6 +46,8 @@ import { homeGalaxy, randomHex, setHomeGalaxy } from './home';
 
 /** The pace before the clock control has spoken: one minute a second. */
 const DEFAULT_TIME_SCALE = 1 / 1440;
+/** Eclipse playback opens at real time once the paused arrival is released. */
+const ECLIPSE_TIME_SCALE = 1 / 86400;
 
 /** The preset the focus is framed at: a star at its limb, a system
  *  from above, a world from orbit, or the galaxy around a place. */
@@ -91,6 +93,10 @@ export interface AppSnapshot {
   marksEpoch: number;
   /** Narrow screens fold the console away; this is whether it stands open. */
   consoleOpen: boolean;
+  /** Time is held, including finder arrivals held at their event epoch. */
+  timePaused: boolean;
+  /** Bumped when a finder asks the clock UI to seat itself at real time. */
+  eclipseClockEpoch: number;
 }
 
 /** What the panels need to introduce a cloud, the way a plate
@@ -172,6 +178,8 @@ let cloudFocus = false;
 let cloudSubjectHex: string | null = null;
 let marksEpoch = 0;
 let consoleOpen = false;
+let timePaused = false;
+let eclipseClockEpoch = 0;
 
 let snapshot: AppSnapshot | null = null;
 const listeners = new Set<() => void>();
@@ -200,6 +208,8 @@ function notify(): void {
           at: localePc ? localeParam(localePc) : undefined,
           marksEpoch,
           consoleOpen,
+          timePaused,
+          eclipseClockEpoch,
         }
       : null;
   for (const listener of listeners) listener();
@@ -330,7 +340,7 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
       }
     }
   }
-  viewer.timeScaleDaysPerSecond = timeScale;
+  viewer.timeScaleDaysPerSecond = timePaused ? 0 : timeScale;
   viewer.exposure = exposure;
 
   syncAddress();
@@ -786,7 +796,50 @@ export function setSkyExposure(value: number): void {
 
 export function setTimeScale(daysPerSecond: number): void {
   timeScale = daysPerSecond;
-  if (viewer) viewer.timeScaleDaysPerSecond = daysPerSecond;
+  if (viewer) viewer.timeScaleDaysPerSecond = timePaused ? 0 : daysPerSecond;
+}
+
+export function setTimePaused(paused: boolean): void {
+  if (timePaused === paused) return;
+  timePaused = paused;
+  if (viewer) viewer.timeScaleDaysPerSecond = paused ? 0 : timeScale;
+  notify();
+}
+
+/** The orbital epoch visible now; finder tools use it as "from now". */
+export function simulationTimeDays(): number {
+  return viewer?.simulationTimeDays ?? 0;
+}
+
+/** Travel to a finder result, held just before the event begins. */
+export function travelToEclipse(destination: {
+  seedHex: string;
+  positionPc: GalacticPosition;
+  hostIndex: number;
+  planetIndex: number;
+  timeDays: number;
+  arrivalTimeDays: number;
+  surfaceDirection: [number, number, number];
+  sunDirection: [number, number, number];
+}): void {
+  acted();
+  timePaused = true;
+  timeScale = ECLIPSE_TIME_SCALE;
+  eclipseClockEpoch++;
+  if (viewer) viewer.simulationTimeDays = destination.arrivalTimeDays;
+  focusBody('planet', 'world');
+  planetIndex = destination.planetIndex;
+  moonIndex = -1;
+  companionIndex = destination.hostIndex;
+  load(destination.seedHex, destination.positionPc);
+  // A system change deliberately resets host selection. Restore a
+  // companion-hosted destination once that system has materialized.
+  if (companionIndex !== destination.hostIndex) {
+    companionIndex = destination.hostIndex;
+    planetIndex = destination.planetIndex;
+    load(destination.seedHex);
+  }
+  viewer?.landAtSurface(destination.surfaceDirection, destination.sunDirection);
 }
 
 export function setDecal(key: keyof DecalState, visible: boolean): void {
