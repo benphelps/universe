@@ -1,6 +1,6 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { edgeOn, faceOn, poleOnScreen, rolledToPole } from './reorient';
+import { edgeOn, faceOn, poleOnScreen, rolledToPole, turnAbout } from './reorient';
 
 const Y = new Vector3(0, 1, 0);
 
@@ -73,5 +73,22 @@ describe('edgeOn', () => {
     expect(up.dot(Y)).toBeCloseTo(1, 9);
     const heading = axes(q).forward.clone().setY(0).normalize();
     expect(forward.dot(heading)).toBeCloseTo(1, 9);
+  });
+});
+
+describe('turnAbout', () => {
+  it('keeps a camera fixed to a frame that turns about the axis', () => {
+    const position = new Vector3(2, 1, 4);
+    const q = camera(position, 0.3);
+    const anchor = new Vector3(0.5, 0, -0.2);
+    const star = new Vector3(-30, 8, 12);
+    const seen = star.clone().sub(position).applyQuaternion(q.clone().invert());
+    const anchorSeen = anchor.clone().sub(position).applyQuaternion(q.clone().invert());
+    const rad = 1.1;
+    turnAbout(Y, rad, [position, anchor], [q]);
+    const turnedStar = star.clone().applyAxisAngle(Y, rad);
+    expect(turnedStar.sub(position).applyQuaternion(q.clone().invert()).distanceTo(seen)).toBeLessThan(1e-9);
+    expect(anchor.clone().sub(position).applyQuaternion(q.clone().invert()).distanceTo(anchorSeen)).toBeLessThan(1e-9);
+    expect(position.length()).toBeCloseTo(Math.sqrt(21), 9);
   });
 });

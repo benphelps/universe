@@ -73,6 +73,19 @@ export function edgeOn(q: Quaternion, pole: Vector3): Quaternion {
   return lookingFrom(q, flat.negate(), pole);
 }
 
+/**
+ * Turn a camera bodily about an axis through the origin: the points
+ * it carries (its position, the anchor it orbits) and the orientations
+ * it holds (its own, and any it is easing toward). Turned by the same
+ * angle the scene's frame turns, the camera keeps to whatever that
+ * frame turns against.
+ */
+export function turnAbout(axis: Vector3, rad: number, points: Vector3[], quaternions: Quaternion[]): void {
+  const turn = new Quaternion().setFromAxisAngle(axis, rad);
+  for (const point of points) point.applyQuaternion(turn);
+  for (const q of quaternions) q.premultiply(turn);
+}
+
 /** Ease-in-out over the unit interval. */
 export function easeInOut(x: number): number {
   const t = Math.min(1, Math.max(0, x));

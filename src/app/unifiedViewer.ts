@@ -168,7 +168,7 @@ import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
 import { gazeQuaternion, headingOf } from './cameraGaze';
 import { OrbitArcball } from './orbitArcball';
-import { easeInOut, edgeOn, faceOn, lookingFrom, poleOnScreen, rolledToPole } from './reorient';
+import { easeInOut, edgeOn, faceOn, lookingFrom, poleOnScreen, rolledToPole, turnAbout } from './reorient';
 import { type GizmoScale, ReorientGizmo } from './ui/reorientGizmo';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
@@ -1107,6 +1107,9 @@ export class UnifiedViewer {
   private cameraMove: { q0: Quaternion; q1: Quaternion; t0: number; orbit: boolean } | null = null;
   /** An eased turn of the head, asked for on the ground. */
   private headMove: { h0: number; p0: number; t0: number } | null = null;
+  /** The ground frame's spin on the last frame, radians; null until a
+   *  focus is placed. Above the map height the camera turns with it. */
+  private lastSpinRad: number | null = null;
   /** Hold-to-fly, the ground regime's control on a touch device. */
   private flyStick: HTMLButtonElement | null = null;
   private oceanMaterial: ShaderMaterial | null = null;
@@ -2659,6 +2662,7 @@ export class UnifiedViewer {
     // new focus and pending ride input clears.
     this.controls.target.set(0, 0, 0);
     this.pendingWheelFactor = 1;
+    this.lastSpinRad = null;
     this.stopRideOut();
     // Descending pitches toward screen-up: the orbit view keeps the
     // pole at the top of the frame, so a zero heading makes the horizon
@@ -3497,6 +3501,7 @@ export class UnifiedViewer {
     const frame = sceneFromUpAxis(nucleus.spinAxis);
     this.viewpointPc = GALACTIC_CENTRE;
     this.frameQuat.identity();
+    this.lastSpinRad = null;
     this.heliocentric.quaternion.identity();
     this.heliocentric.position.set(0, 0, 0);
 
@@ -3537,6 +3542,7 @@ export class UnifiedViewer {
       .multiplyScalar(this.radiusKm + this.altitudeKm);
     this.controls.target.set(0, 0, 0);
     this.pendingWheelFactor = 1;
+    this.lastSpinRad = null;
     this.stopRideOut();
     this.headingRad = 0;
     this.pitchRad = 0;
@@ -4628,6 +4634,21 @@ export class UnifiedViewer {
     // stars instead of outrunning them.
     const spin =
       solid && spinPeriodHours ? (-2 * Math.PI * 24 * this.simTimeDays) / spinPeriodHours : 0;
+    // Above the map height the camera keeps to the sky: it turns with
+    // the frame's spin, so the body turns under an orbiting eye and
+    // the system stands still around it. Below, it rides the ground
+    // frame, where the terrain streams and the horizon band hands the
+    // view to the head.
+    if (this.lastSpinRad !== null && spin !== this.lastSpinRad && this.atMapHeight()) {
+      const move = this.cameraMove;
+      turnAbout(
+        yAxis,
+        spin - this.lastSpinRad,
+        [this.camera.position, this.controls.target],
+        [this.camera.quaternion, ...(move ? [move.q0, move.q1] : [])],
+      );
+    }
+    this.lastSpinRad = spin;
     // Terrain worlds put their spin axis on world Y, so their axial tilt
     // lives in the frame: the ecliptic leans by the obliquity. Envelope
     // focuses tilt the body instead (inside PlanetObject).
