@@ -16,7 +16,7 @@ import {
   openingIndex,
   type FocusClock,
 } from '../clocks';
-import { setTimeScale, type AppSnapshot } from '../store';
+import { setTimePaused, setTimeScale, type AppSnapshot } from '../store';
 
 const PAUSE = (
   <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -58,7 +58,7 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
     [label, periodDays],
   );
   const [index, setIndex] = useState(() => openingIndex(detents));
-  const [paused, setPaused] = useState(false);
+  const paused = snap?.timePaused ?? false;
   const [engaged, setEngaged] = useState(false);
   const drag = useRef<{ pointerId: number; startX: number; startIndex: number; width: number } | null>(
     null,
@@ -71,12 +71,18 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
     setIndex(opening);
   }, [owner, opening]);
 
+  // Finder arrivals are paused just before first contact. Seat the
+  // rate at real time so Play reveals the eclipse instead of skipping it.
+  useEffect(() => {
+    if ((snap?.eclipseClockEpoch ?? 0) > 0) setIndex(0);
+  }, [snap?.eclipseClockEpoch]);
+
   const last = detents.length - 1;
   const at = Math.min(index, last);
   const detent = detents[at];
   useEffect(() => {
-    setTimeScale(paused ? 0 : detent.rate);
-  }, [paused, detent]);
+    setTimeScale(detent.rate);
+  }, [detent]);
 
   const step = (to: number): void => setIndex(Math.max(0, Math.min(last, Math.round(to))));
 
@@ -139,7 +145,7 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
         className={paused ? 'orb active' : 'orb'}
         data-tip={pauseTip}
         aria-label={pauseTip}
-        onClick={() => setPaused(!paused)}
+        onClick={() => setTimePaused(!paused)}
       >
         {paused ? PLAY : PAUSE}
       </button>

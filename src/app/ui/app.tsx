@@ -3,6 +3,7 @@ import { boot, closeConsole, toggleConsole, useApp } from '../store';
 import { useConsoleWidth } from './consoleGrip';
 import { ClockStrip } from './clockStrip';
 import { DecalToggles } from './decalToggles';
+import { FinderMenu } from './finderMenu';
 import { InstrumentsCorner } from './instrumentsCorner';
 import { PerfReadout } from './perfReadout';
 import { Sidebar } from './sidebar';
@@ -118,6 +119,7 @@ export function App(): ReactNode {
       <main id="view" ref={view}>
         <ClockStrip snap={snap} />
         <DecalToggles />
+        <FinderMenu snap={snap} />
         <InstrumentsCorner />
         <PerfReadout />
       </main>

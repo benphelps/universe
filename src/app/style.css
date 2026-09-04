@@ -527,7 +527,12 @@ table.props td:first-child {
 
 @media (prefers-reduced-motion: reduce) {
   #perf,
-  #settings-menu {
+  #settings-menu,
+  #finder-menu {
+    animation: none;
+  }
+
+  .finder-status::before {
     animation: none;
   }
 }
@@ -733,6 +738,214 @@ table.props td:first-child {
 
 #settings-menu[hidden] {
   display: none;
+}
+
+/* A family of destination/event tools, folded into one orb at the
+   bottom-right. Like settings, the panel grows from the button and
+   keeps that button in its own header corner. */
+#finder-corner {
+  position: absolute;
+  right: 12px;
+  bottom: 52px;
+  z-index: 7;
+}
+
+#finder-toggle {
+  z-index: 1;
+}
+
+#finder-toggle.open {
+  border-color: transparent;
+  background: none;
+  backdrop-filter: none;
+  color: var(--accent);
+}
+
+#finder-toggle.open::after {
+  display: none;
+}
+
+#finder-menu {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  max-height: calc(100dvh - 76px);
+  padding: 0 14px 14px;
+  overflow: auto;
+  background: rgba(10, 14, 20, 0.86);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  transform-origin: bottom right;
+  animation: unfold 140ms ease-out;
+}
+
+#finder-menu[hidden] {
+  display: none;
+}
+
+#finder-menu .finder-title {
+  margin: 0 40px 2px 0;
+  font: 600 11px/32px var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+.finder-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.finder-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.finder-tool-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent-hi);
+  background: var(--accent-soft);
+}
+
+.finder-tool-head > span:last-child {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.finder-tool-head strong,
+.finder-result strong {
+  font: 600 12px/1.3 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+}
+
+.finder-tool-head small {
+  margin-top: 2px;
+  font: 10.5px/1.35 var(--mono);
+  color: var(--faint);
+}
+
+.finder-copy,
+.finder-empty {
+  margin: 0;
+  font: 11px/1.45 var(--mono);
+  color: var(--dim);
+}
+
+.finder-action {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(10, 14, 20, 0.55);
+  color: var(--accent-hi);
+  font: 600 10.5px/1 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+}
+
+.finder-action:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.finder-action:disabled {
+  color: var(--faint);
+  cursor: wait;
+}
+
+.finder-status {
+  color: var(--faint);
+  font: 10px/1.4 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.finder-status::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 7px 1px 1px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: finder-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes finder-pulse {
+  to { opacity: 0.35; }
+}
+
+.finder-result {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 10px 11px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(70, 174, 198, 0.06);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.finder-result:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.finder-result-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.finder-result-top > span {
+  color: var(--accent-hi);
+  font: 11px/1.3 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.finder-result-world {
+  margin-top: 5px;
+  color: var(--accent-hi);
+  font: 12px/1.4 var(--mono);
+}
+
+.finder-result-meta {
+  margin-top: 1px;
+  color: var(--faint);
+  font: 10px/1.45 var(--mono);
+}
+
+.finder-result-go {
+  margin-top: 8px;
+  color: var(--accent);
+  font: 600 9.5px/1.3 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.finder-action:focus-visible,
+.finder-result:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
 }
 
 #sidebar button {
@@ -1143,6 +1356,11 @@ table.props td:first-child {
 #instruments-corner [data-tip]::after {
   top: calc(100% + 8px);
   right: 0;
+}
+
+#finder-corner [data-tip]::after {
+  right: 0;
+  bottom: calc(100% + 8px);
 }
 
 #console-toggle[data-tip]::after {
@@ -1650,6 +1868,16 @@ table.props td:first-child {
 
   #settings-menu {
     width: min(82vw, 300px);
+  }
+
+  #finder-corner {
+    right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(130px + env(safe-area-inset-bottom));
+  }
+
+  #finder-menu {
+    width: min(86vw, 320px);
+    max-height: calc(100dvh - 154px - env(safe-area-inset-top));
   }
 
   /* The overlays sit clear of the drawer handle and the cog. */
