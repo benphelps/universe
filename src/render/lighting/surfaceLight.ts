@@ -212,18 +212,20 @@ vec3 airColumnScatter(vec3 tauEye, vec3 tauPoint, float xv, float xs, float cosT
 }
 
 // Inside the air: the straight run from the eye to a point, altitudes
-// above the datum and the distance between, as the column it crosses —
-// exact for a straight line through an exponential atmosphere, and
-// capped at the horizon column where a flat slant would outrun the
-// sphere. The aerial perspective the ground shows at every range.
+// above the datum and the distance between, as the column it crosses.
+// Exact for a straight line through an exponential atmosphere — the
+// run's length in scale heights, at the density of its lower end,
+// times the mean density along a rise of x scale heights, (1 − e⁻ˣ)/x
+// — and capped at the lower end's tangent column, which is the most
+// any run can cross before the sphere curves the air away beneath it.
+// The aerial perspective the ground shows at every range.
 vec3 airSegmentComponent(vec3 depth, float h, float horizon, float eyeAlt, float pointAlt, float dist) {
   h = max(h, 1e-4);
-  vec3 tauEye = depth * exp(-max(eyeAlt, 0.0) / h);
-  vec3 tauPoint = depth * exp(-max(pointAlt, 0.0) / h);
-  float dh = abs(eyeAlt - pointAlt);
-  return dh > 1e-3 * h
-    ? abs(tauPoint - tauEye) * min(dist / dh, horizon)
-    : (tauEye + tauPoint) * 0.5 * min(dist / h, horizon);
+  float low = max(min(eyeAlt, pointAlt), 0.0);
+  float rise = abs(max(eyeAlt, 0.0) - max(pointAlt, 0.0)) / h;
+  float mean = rise > 1e-3 ? (1.0 - exp(-rise)) / rise : 1.0 - 0.5 * rise;
+  vec3 tauLow = depth * exp(-low / h);
+  return tauLow * min(dist / h * mean, horizon);
 }
 
 vec3 airSegmentColumn(float eyeAlt, float pointAlt, float dist) {
@@ -500,12 +502,10 @@ export function airSegmentColumn(
   dist: number,
 ): number {
   const h = Math.max(scaleHeight, 1e-4);
-  const tauEye = tau * Math.exp(-Math.max(eyeAlt, 0) / h);
-  const tauPoint = tau * Math.exp(-Math.max(pointAlt, 0) / h);
-  const dh = Math.abs(eyeAlt - pointAlt);
-  return dh > 1e-3 * h
-    ? Math.abs(tauPoint - tauEye) * Math.min(dist / dh, horizon)
-    : ((tauEye + tauPoint) / 2) * Math.min(dist / h, horizon);
+  const low = Math.max(Math.min(eyeAlt, pointAlt), 0);
+  const rise = Math.abs(Math.max(eyeAlt, 0) - Math.max(pointAlt, 0)) / h;
+  const mean = rise > 1e-3 ? (1 - Math.exp(-rise)) / rise : 1 - 0.5 * rise;
+  return tau * Math.exp(-low / h) * Math.min((dist / h) * mean, horizon);
 }
 
 /**
