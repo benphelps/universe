@@ -1244,10 +1244,10 @@ table.props td:first-child {
 
 #reorient .dial {
   position: absolute;
-  left: 34px;
-  top: 34px;
-  width: 56px;
-  height: 56px;
+  left: 18px;
+  top: 18px;
+  width: 88px;
+  height: 88px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -1261,8 +1261,8 @@ table.props td:first-child {
 
 #reorient .compass {
   display: block;
-  width: 56px;
-  height: 56px;
+  width: 88px;
+  height: 88px;
 }
 
 #reorient .ring {
@@ -1299,7 +1299,7 @@ table.props td:first-child {
 }
 
 #reorient .letter {
-  font: 600 9px var(--display);
+  font: 600 10px var(--display);
   letter-spacing: 0.1em;
   fill: var(--dim);
 }

@@ -32,6 +32,12 @@ const PRESS_TIPS: Record<Exclude<GizmoScale, 'hidden'>, string> = {
   core: "roll the hole's axis up",
 };
 
+/** The dial's size, and its geometry in the same pixels. */
+const DIAL = 88;
+const CENTRE = DIAL / 2;
+const RING = CENTRE - 4;
+const NEEDLE_TIP = CENTRE - RING + 11;
+
 /** Within this of straight up the needle rests. */
 const ALIGNED_RAD = 0.02;
 /** Below this much pole in the screen there is nothing to roll to. */
@@ -103,20 +109,22 @@ export class ReorientGizmo {
     this.dial.dataset.tip = 'roll the pole up';
     this.dial.setAttribute('aria-label', 'roll the pole up the screen');
     this.compass = document.createElementNS(SVG_NS, 'svg');
-    this.compass.setAttribute('viewBox', '0 0 56 56');
+    this.compass.setAttribute('viewBox', `0 0 ${DIAL} ${DIAL}`);
     this.compass.setAttribute('class', 'compass');
+    const c = CENTRE;
+    const edge = c - RING;
     this.compass.innerHTML = `
-      <circle class="ring" cx="28" cy="28" r="25"/>
-      <line class="tick top" x1="28" y1="3" x2="28" y2="9"/>
-      <line class="tick" x1="28" y1="53" x2="28" y2="49"/>
-      <line class="tick" x1="3" y1="28" x2="7" y2="28"/>
-      <line class="tick" x1="53" y1="28" x2="49" y2="28"/>
+      <circle class="ring" cx="${c}" cy="${c}" r="${RING}"/>
+      <line class="tick top" x1="${c}" y1="${edge}" x2="${c}" y2="${edge + 9}"/>
+      <line class="tick" x1="${c}" y1="${DIAL - edge}" x2="${c}" y2="${DIAL - edge - 5}"/>
+      <line class="tick" x1="${edge}" y1="${c}" x2="${edge + 5}" y2="${c}"/>
+      <line class="tick" x1="${DIAL - edge}" y1="${c}" x2="${DIAL - edge - 5}" y2="${c}"/>
       <g class="arm">
-        <line class="needle" x1="28" y1="28" x2="28" y2="11"/>
-        <circle class="tip" cx="28" cy="11" r="2.4"/>
+        <line class="needle" x1="${c}" y1="${c}" x2="${c}" y2="${NEEDLE_TIP}"/>
+        <circle class="tip" cx="${c}" cy="${NEEDLE_TIP}" r="3"/>
       </g>
-      <circle class="hub" cx="28" cy="28" r="1.6"/>
-      <text class="letter" x="28" y="41" text-anchor="middle">N</text>`;
+      <circle class="hub" cx="${c}" cy="${c}" r="2"/>
+      <text class="letter" x="${c}" y="${c + 20}" text-anchor="middle">N</text>`;
     this.arm = this.compass.querySelector('.arm') as SVGGElement;
     this.letter = this.compass.querySelector('.letter') as SVGTextElement;
     this.dial.appendChild(this.compass);
@@ -149,9 +157,10 @@ export class ReorientGizmo {
     const endOn = state.scale !== 'ground' && state.extent < END_ON_EXTENT;
     const aligned = endOn || Math.abs(state.rollRad) < ALIGNED_RAD;
     const reach = Math.max(0.28, Math.min(1, state.extent));
+    const c = CENTRE;
     this.arm.setAttribute(
       'transform',
-      `rotate(${(state.rollRad * 180) / Math.PI} 28 28) translate(28 28) scale(1 ${reach}) translate(-28 -28)`,
+      `rotate(${(state.rollRad * 180) / Math.PI} ${c} ${c}) translate(${c} ${c}) scale(1 ${reach}) translate(-${c} -${c})`,
     );
     this.compass.classList.toggle('aligned', aligned);
     this.letter.textContent = endOn ? '·' : 'N';
