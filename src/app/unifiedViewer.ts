@@ -21,7 +21,6 @@ import {
   Vector2,
   Vector3,
 } from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { elementsToState, orbitPath } from '../core/math/kepler';
 import { orbitalPeriod } from '../core/math/orbit';
 import {
@@ -167,6 +166,8 @@ import { getGalacticLandmarks } from './landmarkService';
 import { cancelSkyBuilds, getSkyField, skyPending, skyProgress, watchSkyBuild } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
+import { gazeQuaternion, wrapAngle } from './cameraGaze';
+import { OrbitTurntable } from './orbitTurntable';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
 
@@ -182,6 +183,20 @@ const IDENTITY_MATRIX = new Matrix3();
 const PC_KM = PARSEC / 1000;
 /** How long the orbit keeps gliding after the hand comes off, seconds. */
 const ORBIT_EASE_SECONDS = 0.05;
+/** How long the view takes to square up once the wheel has been quiet:
+ *  the head back to the turntable's nadir, the pole to the scale's. */
+const GAZE_SETTLE_SECONDS = 0.15;
+/** Zoom input this recent holds the gaze exactly where it is. */
+const ZOOM_HOLD_MS = 150;
+/** Altitude ratio per unit of wheel delta: the one ride at every scale. */
+const WHEEL_BASE = 1.0016;
+/** Wheel events closer together than this run as one streak, and each
+ *  step of the streak adds this much to the gain, up to the cap. */
+const WHEEL_STREAK_MS = 200;
+const WHEEL_STREAK_GAIN = 0.15;
+const WHEEL_STREAK_CAP = 12;
+/** Outward wheel input, summed across frames, that ends a flight. */
+const FLIGHT_LEAVE_FACTOR = 1.02;
 const GALAXY_ARRIVAL_ALTITUDE_KM = 15 * PC_KM;
 /** High enough to frame the whole galaxy from above the disk. */
 const MAX_ALTITUDE_KM = 45_000 * PC_KM;
@@ -254,6 +269,9 @@ const NEBULA_HOME_REACH_PC = 400;
 const NEBULA_GATEWAY_STANDOFF_PC = 200;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
+/** Beyond this distance from the system the galaxy is the body in
+ *  view, and the turntable turns about its pole instead. */
+const GALAXY_POLE_HANDOVER_PC = (GALAXY_FADE_NEAR_PC + GALAXY_FADE_FAR_PC) / 2;
 const ORIGIN = new Vector3();
 
 /** A backdrop standing before the sweep has no stars of its own yet. */
@@ -423,7 +441,7 @@ export class UnifiedViewer {
   private readonly scene = new Scene();
   private readonly camera: PerspectiveCamera;
   private readonly pipeline: RenderPipeline;
-  private readonly controls: OrbitControls;
+  private readonly controls: OrbitTurntable;
   private readonly lut = createTemperatureLutTexture();
   private readonly terrainMaterial = createTerrainMaterial(SPLIT_RATIO);
   private readonly scatterMaterial = createScatterMaterial();
@@ -640,6 +658,13 @@ export class UnifiedViewer {
   private panHeld = false;
   /** Wheel ride input, applied to the altitude during the next frame. */
   private pendingWheelFactor = 1;
+  /** When zoom input last arrived: a wheel event or a pinch. */
+  private zoomInputAtMs = -Infinity;
+  private lastWheelMs = -Infinity;
+  private lastWheelSign = 0;
+  private wheelStreak = 0;
+  /** The turntable's axis and the screen's up, eased to the scale's pole. */
+  private readonly pole = new Vector3(0, 1, 0);
   /** Auto wheel ride: >0 while the slow pull-back to the galaxy runs. */
   private rideOutRate = 0;
   /** Fired when the automatic ride out starts, ends, or is cut short. */
@@ -715,11 +740,8 @@ export class UnifiedViewer {
   /**
    * Who owns the drag right now. The orbit gives it up to ground
    * flight, to a finger set to pan, to a mouse pan — and to any
-   * gesture with a second finger in it: OrbitControls has no state for
-   * a two-finger gesture whose dolly and pan are both switched off, so
-   * it stays in touch-rotate and steers by the midpoint between the
-   * fingers. Left enabled, a pinch would spin the camera by whatever
-   * that midpoint did. A pinch is a pinch and nothing else.
+   * gesture with a second finger in it: a pinch is a pinch and
+   * nothing else.
    */
   private syncControlsEnabled(): void {
     const fingerPanning = this.oneFingerDown && this.touchDragMode === 'pan';
@@ -760,6 +782,7 @@ export class UnifiedViewer {
       // Spreading the fingers descends, the way scrolling up does.
       this.stopRideOut();
       this.pendingWheelFactor *= this.pinchSpan / span;
+      this.zoomInputAtMs = performance.now();
     }
     this.pinchSpan = span;
   }
@@ -796,6 +819,85 @@ export class UnifiedViewer {
    */
   private inSurfaceRegime(): boolean {
     return !this.flight.active && this.altitudeKm < 0.12 * this.radiusKm;
+  }
+
+  /** How far down into the horizon-gaze band the camera is: 0 in
+   *  orbit, 1 at the descent floor. */
+  private surfaceBlend(): number {
+    if (this.coreView) return 0;
+    return 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
+  }
+
+  /** The axis this scale turns about: the focus body's own pole until
+   *  the galaxy is the body in view, then the galactic pole. */
+  private wantedPole(): Vector3 {
+    const m = this.sceneOrientation;
+    if (this.coreView || !m || this.camera.position.length() / PC_KM < GALAXY_POLE_HANDOVER_PC) {
+      return new Vector3(0, 1, 0);
+    }
+    return new Vector3(m[2], m[5], m[8]).applyQuaternion(this.frameQuat).normalize();
+  }
+
+  /**
+   * Square the view up once the wheel has been quiet. In orbit the
+   * head's heading and pitch ease back to the turntable's nadir and
+   * the pole eases to the scale's own; a zoom never turns the view by
+   * itself, so both wait for the zoom to end. Inside the horizon band
+   * the head is the user's, and only the pole is brought home, so the
+   * ground's north is the one the flight's compass uses.
+   */
+  private settleGaze(dtSeconds: number): void {
+    const ease = 1 - Math.exp(-dtSeconds / GAZE_SETTLE_SECONDS);
+    if (this.surfaceBlend() > 0) {
+      this.pole.lerp(new Vector3(0, 1, 0), ease).normalize();
+      return;
+    }
+    if (this.rideOutRate > 0 || performance.now() - this.zoomInputAtMs < ZOOM_HOLD_MS) return;
+    this.headingRad = wrapAngle(this.headingRad) * (1 - ease);
+    this.pitchRad *= 1 - ease;
+    this.pole.lerp(this.wantedPole(), ease).normalize();
+  }
+
+  /** Point the camera: at its anchor from orbit, along the head's gaze
+   *  near the ground, and on every frame between. */
+  private aimCamera(): void {
+    const anchor = this.controls.target;
+    const up =
+      anchor.lengthSq() >= 1
+        ? this.camera.position.clone().sub(anchor).normalize()
+        : this.camera.position.clone().normalize();
+    gazeQuaternion(
+      {
+        up,
+        pole: this.pole,
+        headingRad: this.headingRad,
+        pitchRad: this.pitchRad,
+        surface: this.surfaceBlend(),
+      },
+      this.camera.quaternion,
+    );
+  }
+
+  /**
+   * One wheel event's share of the ride, in delta units. Lines and
+   * pages become pixels, and events in quick succession — a wheel
+   * spun, a trackpad flicked — ramp the gain, so a lone notch is a
+   * precise step and a sustained scroll crosses the decades between a
+   * planet's ground and its orbit without a hundred of them. Reversing
+   * direction starts the ramp over.
+   */
+  private wheelStep(e: WheelEvent): number {
+    const pixels =
+      e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+    const now = performance.now();
+    const sign = Math.sign(pixels);
+    this.wheelStreak =
+      now - this.lastWheelMs < WHEEL_STREAK_MS && sign === this.lastWheelSign
+        ? Math.min(WHEEL_STREAK_CAP, this.wheelStreak + 1)
+        : 0;
+    this.lastWheelMs = now;
+    this.lastWheelSign = sign;
+    return pixels * (1 + WHEEL_STREAK_GAIN * this.wheelStreak);
   }
 
   /**
@@ -1083,11 +1185,8 @@ export class UnifiedViewer {
     this.camera = new PerspectiveCamera(55, 1, 0.01, 1e6);
     this.pipeline = new RenderPipeline(container, this.scene, this.camera);
 
-    this.controls = new OrbitControls(this.camera, this.pipeline.renderer.domElement);
-    this.controls.enableDamping = true;
-    this.controls.enablePan = false;
-    this.controls.enableZoom = false;
-    this.controls.target.set(0, 0, 0);
+    this.controls = new OrbitTurntable(this.camera, this.pipeline.renderer.domElement);
+    this.controls.easeSeconds = ORBIT_EASE_SECONDS;
 
     // Model-frame content lies flat in the world's ground plane.
     for (const group of [this.auGroup, this.overlay, this.zoneOverlay, this.stellarOrbits]) {
@@ -1115,9 +1214,7 @@ export class UnifiedViewer {
       this.pitchRad = Math.min(1.5, Math.max(-1.5, this.pitchRad - e.movementY * 0.0022));
     });
     // The right button is a camera control at every altitude, so the
-    // scene owns the menu it would otherwise raise. OrbitControls
-    // suppresses this too, but only while it is enabled — and it is
-    // not, in the regimes where the right button matters most.
+    // scene owns the menu it would otherwise raise.
     this.pipeline.renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
     this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'touch') return;
@@ -1138,9 +1235,11 @@ export class UnifiedViewer {
     // Escape hands the pointer back mid-drag; the gesture carries on
     // with a cursor that exists again.
     document.addEventListener('pointerlockchange', () => {
-      if (this.dragLock && document.pointerLockElement !== this.pipeline.renderer.domElement) {
-        this.dragLock.held = false;
-      }
+      const locked = document.pointerLockElement === this.pipeline.renderer.domElement;
+      if (this.dragLock && !locked) this.dragLock.held = false;
+      // A lock granted after the drag that asked for it has already
+      // ended would hold the cursor with nothing to steer: give it back.
+      if (locked && !this.dragLock?.held && !this.flight.active) document.exitPointerLock();
     });
 
     // On foot the mouse is the head: click takes pointer lock, motion
@@ -1180,7 +1279,7 @@ export class UnifiedViewer {
       if (!this.freeFlightAvailable()) return;
       this.panBy(e.movementX, e.movementY);
     });
-    // Fingers: one drags (OrbitControls orbits, or the gaze turns on
+    // Fingers: one drags (the turntable orbits, or the gaze turns on
     // foot), two ride and pan at once — the wheel and the right-drag
     // of a device that has neither.
     this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
@@ -1248,12 +1347,20 @@ export class UnifiedViewer {
     window.addEventListener('keyup', this.onKeyChange);
     window.addEventListener('blur', this.onWindowBlur);
 
-    this.pipeline.renderer.domElement.addEventListener(
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault();
+      this.stopRideOut();
+      this.pendingWheelFactor *= WHEEL_BASE ** this.wheelStep(e);
+      this.zoomInputAtMs = performance.now();
+    };
+    const canvas = this.pipeline.renderer.domElement;
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    // With the pointer locked to the canvas the wheel is still the
+    // canvas's, wherever the hidden cursor was last seen.
+    window.addEventListener(
       'wheel',
       (e) => {
-        e.preventDefault();
-        this.stopRideOut();
-        this.pendingWheelFactor *= 1.0016 ** e.deltaY;
+        if (e.target !== canvas && document.pointerLockElement === canvas) onWheel(e);
       },
       { passive: false },
     );
@@ -2479,19 +2586,18 @@ export class UnifiedViewer {
     this.camera.position
       .copy(arrival)
       .multiplyScalar(this.focus === 'cloud' ? this.altitudeKm : this.radiusKm + this.altitudeKm);
-    this.camera.up.set(0, 1, 0);
     // Any free-flight wandering ends here: the orbit re-anchors on the
     // new focus and pending ride input clears.
     this.controls.target.set(0, 0, 0);
     this.pendingWheelFactor = 1;
     this.stopRideOut();
-    this.controls.update();
-
-    // Descending pitches toward screen-up: the orbit view keeps north
-    // at the top of the frame, so a zero heading makes the horizon rise
-    // straight ahead instead of sweeping sideways. Right-drag turns.
+    // Descending pitches toward screen-up: the orbit view keeps the
+    // pole at the top of the frame, so a zero heading makes the horizon
+    // rise straight ahead instead of sweeping sideways.
     this.headingRad = 0;
     this.pitchRad = 0;
+    this.pole.copy(this.wantedPole());
+    this.aimCamera();
   }
 
   /** Promote any materialized belt member to the focused body. */
@@ -3315,11 +3421,8 @@ export class UnifiedViewer {
 
     const nucleus = galacticNucleus();
     // The centre has no system to inherit a sky angle from, so it takes
-    // the hole's own: spin axis up the scene's +Y. That lays the
-    // accretion flow in the plane the orbit camera turns in, and keeps
-    // camera.up at the value OrbitControls latched onto when it was
-    // built — its orbit axis is fixed at construction and a later
-    // camera.up only rolls the image out from under the drag.
+    // the hole's own: spin axis up the scene's +Y, which lays the
+    // accretion flow in the plane the turntable turns in.
     const frame = sceneFromUpAxis(nucleus.spinAxis);
     this.viewpointPc = GALACTIC_CENTRE;
     this.frameQuat.identity();
@@ -3361,13 +3464,13 @@ export class UnifiedViewer {
     this.camera.position
       .set(Math.cos(lift), Math.sin(lift), 0)
       .multiplyScalar(this.radiusKm + this.altitudeKm);
-    this.camera.up.set(0, 1, 0);
     this.controls.target.set(0, 0, 0);
     this.pendingWheelFactor = 1;
     this.stopRideOut();
-    this.controls.update();
     this.headingRad = 0;
     this.pitchRad = 0;
+    this.pole.set(0, 1, 0);
+    this.aimCamera();
     this.galaxyFade = 1;
     // Stopped down while standing in the cluster and back up on the way
     // out, so the galaxy seen from here at kiloparsec range is the same
@@ -3393,7 +3496,6 @@ export class UnifiedViewer {
       this.blackHole.dispose();
       this.blackHole = null;
     }
-    this.camera.up.set(0, 1, 0);
   }
 
   /**
@@ -3408,7 +3510,8 @@ export class UnifiedViewer {
     );
     this.controls.enabled = !this.multiTouched;
     this.controls.target.set(0, 0, 0);
-    this.controls.update();
+    this.controls.axis.set(0, 1, 0);
+    this.controls.update(dtSeconds);
 
     if (this.rideOutRate > 0) {
       if (this.altitudeKm >= this.maxAltitudeKm() * 0.999) this.stopRideOut();
@@ -3422,6 +3525,7 @@ export class UnifiedViewer {
     );
     this.camera.position.copy(up).multiplyScalar(this.radiusKm + this.altitudeKm);
     this.pendingWheelFactor = 1;
+    this.aimCamera();
 
     this.camera.near = Math.max(this.altitudeKm * 1e-4, 1);
     this.camera.far = Math.max(this.camera.position.length() * 2.5, NEIGHBOR_RADIUS_PC * PC_KM * 2.5);
@@ -4029,14 +4133,6 @@ export class UnifiedViewer {
     const dtSeconds = Math.min((now - this.lastFrameMs) / 1000, 0.1);
     this.smoothFrame(now - this.lastFrameMs);
     this.lastFrameMs = now;
-    // OrbitControls decays its leftover motion once per frame, so a
-    // fixed damping factor eases for three times as long at twenty
-    // frames a second as at sixty — the glide outlasts the drag exactly
-    // when the frame rate is already making things feel heavy. Convert
-    // a time constant into this frame's factor instead: the ease lasts
-    // the same fraction of a second whatever the rate, and collapses to
-    // no ease at all once frames are slower than the constant itself.
-    this.controls.dampingFactor = Math.min(1, 1 - Math.exp(-dtSeconds / ORBIT_EASE_SECONDS));
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
 
     if (this.coreView) {
@@ -4047,7 +4143,7 @@ export class UnifiedViewer {
         Math.max(0.012, (1.4 * this.altitudeKm) / this.radiusKm),
       );
       // Orbit rotation yields to panning only where free flight applies;
-      // descending into the surface regime restores the classic controls
+      // descending into the surface regime hands the drag to the head
       // and re-anchors the orbit (and the wheel ride) on the body. In
       // ground flight, the flight camera owns the position outright.
       const flying = this.flight.active;
@@ -4057,7 +4153,8 @@ export class UnifiedViewer {
         if (!freeFlight && this.controls.target.lengthSq() > 0) {
           this.controls.target.set(0, 0, 0);
         }
-        this.controls.update();
+        this.controls.axis.copy(this.pole);
+        this.controls.update(dtSeconds);
       }
 
       let up = this.camera.position.clone().normalize();
@@ -4085,12 +4182,12 @@ export class UnifiedViewer {
           // From a standstill near the ground the first push must clear
           // the flight camera's exit threshold whatever the frame rate.
           if (flying) {
-            this.pendingWheelFactor = Math.max(this.pendingWheelFactor, 1.03);
+            this.pendingWheelFactor = Math.max(this.pendingWheelFactor, FLIGHT_LEAVE_FACTOR + 0.01);
           }
         }
       }
       if (flying) {
-        if (this.pendingWheelFactor > 1.02) {
+        if (this.pendingWheelFactor > FLIGHT_LEAVE_FACTOR) {
           // One notch out hands the camera back to the wheel ride,
           // which resumes from wherever the flight left it.
           this.flight.stop();
@@ -4143,67 +4240,13 @@ export class UnifiedViewer {
           this.camera.position.copy(up).multiplyScalar(surfaceKm + this.altitudeKm);
         }
       }
-      this.pendingWheelFactor = 1;
+      // A flight keeps outward wheel input across frames until it adds
+      // up to a departure, so a slow wheel leaves as surely as a spun
+      // one; inward input, with nowhere to go, drops it.
+      if (!this.flight.active || this.pendingWheelFactor < 1) this.pendingWheelFactor = 1;
 
-      // Nadir gaze from orbit tipping up into a steerable horizon gaze
-      // near the ground. The tip is the only thing that blends: pitch
-      // runs from straight down to wherever the head is aimed, and the
-      // orientation is then built outright from the tangent frame.
-      //
-      // Interpolating whole orientations instead — from whatever pose
-      // the orbit left, toward a look-at — cost both ends of the
-      // control. The two poses differ by a rotation that grows with
-      // heading, so behind the camera the interpolation became
-      // ill-conditioned and the view swung tens of degrees for a
-      // degree of input; and short of the ground the blend only ever
-      // delivered a fraction of the aimed pitch, which is why the gaze
-      // hit a ceiling well below straight up.
-      const horizonBlend = 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
-      if (horizonBlend > 0.01) {
-        const north =
-          Math.abs(up.y) > 0.99
-            ? new Vector3(1, 0, 0)
-            : new Vector3(0, 1, 0).addScaledVector(up, -up.y).normalize();
-        const east = new Vector3().crossVectors(north, up);
-        const heading = north
-          .clone()
-          .multiplyScalar(Math.cos(this.headingRad))
-          .addScaledVector(east, Math.sin(this.headingRad));
-        const t = horizonBlend * horizonBlend * (3 - 2 * horizonBlend);
-        // Descending tips the resting gaze from straight down to the
-        // horizon; the aim rides on top of that and keeps its whole
-        // range the whole way, so a head half way down can still look
-        // at its own zenith. Screen-up swings with the gaze through the
-        // same plane, so nadir carries the heading up the screen and
-        // there is no orientation the basis degenerates at.
-        const restPitch = -(Math.PI / 2) * (1 - t);
-        // Straight down is where the orbit above is looking, so the
-        // total has to be able to reach it. The aim is bounded short of
-        // vertical on its own, at the input.
-        const pitch = Math.max(
-          -Math.PI / 2,
-          Math.min(Math.PI / 2, restPitch + this.pitchRad),
-        );
-        const forward = heading
-          .clone()
-          .multiplyScalar(Math.cos(pitch))
-          .addScaledVector(up, Math.sin(pitch));
-        const screenUp = up
-          .clone()
-          .multiplyScalar(Math.cos(pitch))
-          .addScaledVector(heading, -Math.sin(pitch));
-        // Looking straight down, the heading is pure roll: it decides
-        // nothing about where the camera points, only what lies up the
-        // screen. The orbit above puts north up there, so the roll has
-        // to arrive from north rather than start at the heading — or
-        // entering the band spins the view by the whole heading, which
-        // for a quarter turn is the ground going sideways.
-        screenUp.applyAxisAngle(forward, -this.headingRad * (1 - t));
-        const right = new Vector3().crossVectors(forward, screenUp);
-        this.camera.quaternion.setFromRotationMatrix(
-          new Matrix4().makeBasis(right, screenUp, forward.clone().negate()),
-        );
-      }
+      this.settleGaze(dtSeconds);
+      this.aimCamera();
 
       // Near tracks altitude (nothing sits closer than the ground below,
       // and at interstellar heights the nearest star is parsecs away);

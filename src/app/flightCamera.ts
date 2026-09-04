@@ -1,4 +1,5 @@
 import { Vector3 } from 'three';
+import { tangentFrame } from './cameraGaze';
 
 /** The body below, as the flyer sees it: a datum sphere, a height
  *  field, and its water. */
@@ -20,6 +21,9 @@ const SPEED_PER_AGL = 0.9;
 const BOOST = 6;
 /** Velocity eases toward the stick with this time constant, seconds. */
 const INERTIA_S = 0.18;
+
+/** The body's spin axis: north on the ground is toward it. */
+const POLE = new Vector3(0, 1, 0);
 
 const HANDLED_CODES = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'KeyC', 'ShiftLeft']);
 
@@ -83,11 +87,7 @@ export class FlightCamera {
 
     // Tangent basis shared with the viewer's horizon gaze, so W flies
     // where the camera looks.
-    const north =
-      Math.abs(up.y) > 0.99
-        ? new Vector3(1, 0, 0)
-        : new Vector3(0, 1, 0).addScaledVector(up, -up.y).normalize();
-    const east = new Vector3().crossVectors(north, up);
+    const { north, east } = tangentFrame(up, POLE);
     const heading = north
       .multiplyScalar(Math.cos(headingRad))
       .addScaledVector(east, Math.sin(headingRad));
