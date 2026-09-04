@@ -9,15 +9,12 @@ import {
   type WheelEvent,
 } from 'react';
 import {
-  beginsRun,
-  clocksFor,
+  clockFor,
   describeDetent,
   detentsFor,
   formatMultiplier,
   openingIndex,
-  orderNote,
-  REAL_TIME,
-  type FocusClocks,
+  type FocusClock,
 } from '../clocks';
 import { setTimeScale, type AppSnapshot } from '../store';
 
@@ -32,7 +29,7 @@ const PLAY = (
   </svg>
 );
 
-const NO_CLOCKS: FocusClocks = { owner: '', subject: '', clocks: [REAL_TIME] };
+const NO_CLOCK: FocusClock = { owner: '', clock: null };
 /** The axis has this much in from each end for the cursor's own width. */
 const AXIS_INSET_PX = 14;
 /** Shift with an arrow key steps this many stops. */
@@ -46,20 +43,22 @@ const WHEEL_STEP_MS = 60;
  * The clock: a pause orb and, beside it, the rate as a pill — the
  * multiple of real time and what that means here, "×2.4k · a day
  * every 30 s". The pill is the slider: press and drag sideways and the
- * rate axis unfolds above, and the cursor steps between the focus's
- * stops — real time, then each clock's whole run of paces from a turn
- * an hour to a turn a second, clock after clock, shortest first,
- * spaced evenly. Only the clocks are ticked and named, each where its
- * run begins; the paces along it are felt, not shown, and a line
- * above the axis says why the order is what it is when a day outlasts
- * a month. Let go and the axis folds away. A double-click is real time, a scroll steps a stop,
- * arrows step, shift-arrows leap. Each focus opens at its own pace.
+ * rate axis unfolds above, and the cursor steps between the stops —
+ * real time, then the focus's one clock at every pace from a turn an
+ * hour to a turn a second, spaced evenly. Real time and the clock are
+ * ticked, the clock named where its run begins; the paces along it
+ * are felt, not shown. Let go and the axis folds away. A double-click
+ * is real time, a scroll steps a stop, arrows step, shift-arrows
+ * leap. Each focus opens at its own pace.
  */
 export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode {
-  const focus = useMemo(() => (snap ? clocksFor(snap) : NO_CLOCKS), [snap]);
-  const { owner, clocks } = focus;
-  const detents = useMemo(() => detentsFor(clocks), [clocks]);
-  const note = useMemo(() => orderNote(focus), [focus]);
+  const { owner, clock } = snap ? clockFor(snap) : NO_CLOCK;
+  const label = clock?.label;
+  const periodDays = clock?.periodDays;
+  const detents = useMemo(
+    () => detentsFor(label !== undefined && periodDays !== undefined ? { label, periodDays } : null),
+    [label, periodDays],
+  );
   const [index, setIndex] = useState(() => openingIndex(detents));
   const [paused, setPaused] = useState(false);
   const [engaged, setEngaged] = useState(false);
@@ -175,15 +174,12 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
         <span className="phrase">{phrase}</span>
       </button>
       <div id="time-axis" className={engaged ? 'show' : ''} aria-hidden="true">
-        {note && <span className="note">{note}</span>}
         <div className="fill" style={{ width: position(at) }} />
-        {detents.map((stop, i) =>
-          i === 0 || beginsRun(stop) ? (
-            <div className="tick" key={i} style={{ left: position(i) }}>
-              {stop.clock && <label>{stop.clock.label}</label>}
-            </div>
-          ) : null,
-        )}
+        {detents.slice(0, 2).map((stop, i) => (
+          <div className="tick" key={i} style={{ left: position(i) }}>
+            {stop.clock && <label>{stop.clock.label}</label>}
+          </div>
+        ))}
         <div className="cursor" style={{ left: position(at) }} />
       </div>
     </div>

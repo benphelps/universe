@@ -813,18 +813,6 @@ table.props td:first-child {
   white-space: nowrap;
 }
 
-/* Why the runs stand as they do, when a day outlasts a month. */
-#time-axis .note {
-  position: absolute;
-  left: 12px;
-  bottom: calc(100% + 6px);
-  font: 600 9px/1 var(--display);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--dim);
-  white-space: nowrap;
-}
-
 #time-axis .cursor {
   position: absolute;
   top: 4px;
