@@ -624,7 +624,7 @@ table.props td:first-child {
 #decals {
   position: absolute;
   right: 12px;
-  bottom: 124px;
+  bottom: 144px;
   z-index: 6;
   display: flex;
   gap: 4px;
@@ -1236,14 +1236,16 @@ table.props td:first-child {
   right: 12px;
   bottom: 12px;
   z-index: 6;
-  width: 104px;
-  height: 104px;
+  /* As wide as the decal rail above, so the corners fall in line with
+     its outer orbs. */
+  width: 124px;
+  height: 124px;
 }
 
 #reorient .dial {
   position: absolute;
-  left: 24px;
-  top: 24px;
+  left: 34px;
+  top: 34px;
   width: 56px;
   height: 56px;
   padding: 0;
@@ -1346,7 +1348,7 @@ table.props td:first-child {
 #drag-mode {
   position: absolute;
   right: 20px;
-  bottom: 164px;
+  bottom: 180px;
   z-index: 6;
   display: grid;
   place-items: center;
@@ -1372,7 +1374,7 @@ table.props td:first-child {
 #fly-stick {
   position: absolute;
   right: 12px;
-  bottom: 160px;
+  bottom: 180px;
   z-index: 6;
   display: grid;
   place-items: center;
@@ -1501,13 +1503,13 @@ table.props td:first-child {
 
   #decals {
     right: calc(12px + env(safe-area-inset-right));
-    bottom: calc(172px + env(safe-area-inset-bottom));
+    bottom: calc(192px + env(safe-area-inset-bottom));
   }
 
   #drag-mode,
   #fly-stick {
     right: calc(16px + env(safe-area-inset-right));
-    bottom: calc(208px + env(safe-area-inset-bottom));
+    bottom: calc(228px + env(safe-area-inset-bottom));
   }
 
   #instruments-corner {
