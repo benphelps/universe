@@ -1008,11 +1008,28 @@ table.props td:first-child {
   left: 0;
 }
 
-/* The corner rails open their tips away from the edge they sit on. */
+/* The corner column opens its tips sideways into the empty view, and
+   a hovered orb rises over its neighbours, so no tip ends up under
+   the dial or the next button along. */
 #reorient [data-tip]::after,
 #decals [data-tip]::after {
-  bottom: calc(100% + 8px);
-  right: 0;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+#reorient .corner:hover,
+#reorient .corner:focus-visible,
+#decals .orb:hover,
+#decals .orb:focus-visible {
+  z-index: 1;
+}
+
+/* The frame pill's tip stands beside it, not on it. */
+#perf-pill[data-tip]::after {
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 #instruments-corner [data-tip]::after {
