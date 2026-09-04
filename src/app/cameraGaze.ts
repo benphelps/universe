@@ -30,8 +30,8 @@ export function tangentFrame(up: Vector3, pole: Vector3): { north: Vector3; east
 
 /**
  * One gaze for every altitude. In orbit the camera looks straight
- * down at its anchor with the pole up the screen — the turntable's
- * own view. Descending tips that resting gaze from nadir up to the
+ * down at its anchor with the pole up the screen — the orbit's own
+ * view, and the one an arrival is given. Descending tips that resting gaze from nadir up to the
  * horizon, and the head's own pitch comes in with the tip, so the
  * gaze is exactly nadir at the top of the band and exactly where the
  * head aimed it at the floor. The heading rides the whole way: what
@@ -67,32 +67,10 @@ export function headingVector(up: Vector3, pole: Vector3, headingRad: number): V
   return north.multiplyScalar(Math.cos(headingRad)).addScaledVector(east, Math.sin(headingRad));
 }
 
-/** The heading that faces the same way measured from another pole,
- *  so swapping the pole under it leaves the view exactly where it is. */
-export function rebasedHeading(
-  up: Vector3,
-  pole: Vector3,
-  headingRad: number,
-  newPole: Vector3,
-): number {
-  const facing = headingVector(up, pole, headingRad);
-  const { north, east } = tangentFrame(up, newPole);
-  return Math.atan2(facing.dot(east), facing.dot(north));
-}
-
-/**
- * The pole turned about the local vertical to stand behind the
- * heading: the same tilt out of the ground, facing the way the head
- * does. A camera climbing out of the surface takes this as its
- * turntable axis, so whatever it faced down there is up from then on
- * and a heading of zero names that view.
- */
-export function alignedPole(up: Vector3, pole: Vector3, headingRad: number): Vector3 {
-  const radial = pole.dot(up);
-  const tangent = Math.sqrt(Math.max(0, 1 - radial * radial));
-  return up
-    .clone()
-    .multiplyScalar(radial)
-    .addScaledVector(headingVector(up, pole, headingRad), tangent)
-    .normalize();
+/** The heading a view carries: the way its screen-up points on the
+ *  ground, measured from north. Read when the head takes over from
+ *  the orbit, so the view it arrives with is the view it keeps. */
+export function headingOf(up: Vector3, pole: Vector3, screenUp: Vector3): number {
+  const { north, east } = tangentFrame(up, pole);
+  return Math.atan2(screenUp.dot(east), screenUp.dot(north));
 }

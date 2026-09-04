@@ -1,6 +1,6 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { alignedPole, gazeQuaternion, rebasedHeading, tangentFrame } from './cameraGaze';
+import { gazeQuaternion, headingOf, tangentFrame } from './cameraGaze';
 
 const Y = new Vector3(0, 1, 0);
 
@@ -99,31 +99,12 @@ describe('tangentFrame', () => {
   });
 });
 
-describe('rebasedHeading', () => {
-  it('swaps the pole under the heading without moving the view', () => {
-    const pole = new Vector3(-0.4, 0.5, 0.7).normalize();
-    for (const surface of [0, 0.4, 1]) {
-      const before = gazeQuaternion({ up, pole: Y, headingRad: 2.1, pitchRad: 0.2, surface });
-      const headingRad = rebasedHeading(up, Y, 2.1, pole);
-      const after = gazeQuaternion({ up, pole, headingRad, pitchRad: 0.2, surface });
-      expect(Math.abs(before.dot(after))).toBeCloseTo(1, 9);
+describe('headingOf', () => {
+  it('reads back the heading a nadir view was built with', () => {
+    for (const headingRad of [0, 1.1, -2.4, 3]) {
+      const q = gazeQuaternion({ up, pole: Y, headingRad, pitchRad: 0, surface: 0 });
+      const screenUp = new Vector3(0, 1, 0).applyQuaternion(q);
+      expect(Math.cos(headingOf(up, Y, screenUp) - headingRad)).toBeCloseTo(1, 9);
     }
-  });
-});
-
-describe('alignedPole', () => {
-  it('is the pole itself when the head faces north', () => {
-    const aligned = alignedPole(up, Y, 0);
-    expect(aligned.dot(Y)).toBeCloseTo(1, 9);
-  });
-
-  it('keeps the tilt out of the ground and names the same view with a zero heading', () => {
-    const headingRad = -1.3;
-    const aligned = alignedPole(up, Y, headingRad);
-    expect(aligned.dot(up)).toBeCloseTo(Y.dot(up), 9);
-    expect(rebasedHeading(up, Y, headingRad, aligned)).toBeCloseTo(0, 9);
-    const before = gazeQuaternion({ up, pole: Y, headingRad, pitchRad: 0, surface: 0 });
-    const after = gazeQuaternion({ up, pole: aligned, headingRad: 0, pitchRad: 0, surface: 0 });
-    expect(Math.abs(before.dot(after))).toBeCloseTo(1, 9);
   });
 });
