@@ -111,7 +111,14 @@ import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
-import { pendingNebulaBakes, requestNebulaVolume, resetNebulaBakes } from './nebulaService';
+import {
+  holdNebulaVolume,
+  pendingNebulaBakes,
+  releaseNebulaVolume,
+  requestNebulaVolume,
+  resetNebulaBakes,
+  shelvedNebulaVolume,
+} from './nebulaService';
 import { residencyWeight } from '../universe/galaxy/residency';
 import type { PerfStats } from './ui/perfReadout';
 import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
@@ -543,6 +550,9 @@ export class UnifiedViewer {
   /** Landed bakes by cloud seed: the body, and its ionized region. */
   private coarseBakes = new Map<bigint, NebulaVolumeBake>();
   private fineBakes = new Map<bigint, NebulaVolumeBake>();
+  /** The bakes each standing volume stands on, held on the shelf for
+   *  as long as it does. */
+  private heldBakes = new Map<bigint, NebulaVolumeBake[]>();
   /** Where the camera stood when residency was last decided. */
   private residencyAt: GalacticPosition | null = null;
   /** Last frame's clock, for the volume crossfades' rate limit. */
@@ -1866,14 +1876,45 @@ export class UnifiedViewer {
       volume.retiring = !this.wantedNebulae.has(seed);
     }
 
-    // A newcomer stands up at the first grade; the climb to its own
-    // grade is metered against the frame by the controller, so a
-    // residency of thirty never lands as thirty full bakes at once.
+    // A newcomer stands up at the finest grade the shelf still holds
+    // for it, else the first; the climb to its own grade is metered
+    // against the frame by the controller, so a residency of thirty
+    // never lands as thirty full bakes at once.
     for (const { cloud } of chosen) {
       if (!this.nebulaVolumes.has(cloud.seed)) {
-        this.requestVolumeFor(cloud, this.viewpointPc, orientation, NEBULA_VOLUME_FIRST_SIZE);
+        this.requestVolumeFor(
+          cloud,
+          this.viewpointPc,
+          orientation,
+          this.arrivalGrade(cloud, positionPc),
+        );
       }
     }
+  }
+
+  /** The grid a cloud entering residency stands up at: what the shelf
+   *  holds for it, up to the grade its apparent size deserves — so a
+   *  cloud the camera swings back to arrives as it left, rather than
+   *  climbing from the first grade again. */
+  private arrivalGrade(cloud: MolecularCloud, positionPc: GalacticPosition): number {
+    const distance = Math.hypot(
+      cloud.positionPc.xPc - positionPc.xPc,
+      cloud.positionPc.yPc - positionPc.yPc,
+      cloud.positionPc.zPc - positionPc.zPc,
+    );
+    const reach = cloudReachPc(cloud);
+    const grade = this.gradeFor(reach / Math.max(1, distance));
+    const grades = [NEBULA_VOLUME_FIRST_SIZE, NEBULA_VOLUME_SIZE, NEBULA_VOLUME_NEAR_SIZE];
+    const shelved = shelvedNebulaVolume(cloud, reach, grades.filter((size) => size <= grade));
+    return shelved?.size ?? NEBULA_VOLUME_FIRST_SIZE;
+  }
+
+  /** Let go of the bakes a volume stood on. */
+  private releaseHeld(seed: bigint): void {
+    const held = this.heldBakes.get(seed);
+    if (!held) return;
+    for (const bake of held) releaseNebulaVolume(bake);
+    this.heldBakes.delete(seed);
   }
 
   /**
@@ -1931,9 +1972,14 @@ export class UnifiedViewer {
 
   /** The grid a standing volume deserves at its apparent size. */
   private nebulaGrade(volume: NebulaVolume): number {
-    const apparent =
+    return this.gradeFor(
       (volume.mesh.material as ShaderMaterial).uniforms.uHalfPc.value /
-      Math.max(1, volume.cameraDistancePc);
+        Math.max(1, volume.cameraDistancePc),
+    );
+  }
+
+  /** The grid an apparent size (reach over distance) deserves. */
+  private gradeFor(apparent: number): number {
     return apparent >= NEBULA_NEAR_ANGULAR ? NEBULA_VOLUME_NEAR_SIZE : NEBULA_VOLUME_SIZE;
   }
 
@@ -2113,14 +2159,13 @@ export class UnifiedViewer {
     if (existing) {
       this.pipeline.sky.scene.remove(existing.mesh);
       existing.dispose();
+      this.releaseHeld(seed);
     }
-    const volume = new NebulaVolume(
-      coarse,
-      this.fineBakes.get(seed) ?? null,
-      viewpoint,
-      orientation,
-      this.skyFloorRadiance,
-    );
+    const fine = this.fineBakes.get(seed) ?? null;
+    const volume = new NebulaVolume(coarse, fine, viewpoint, orientation, this.skyFloorRadiance);
+    const held = fine ? [coarse, fine] : [coarse];
+    for (const bake of held) holdNebulaVolume(bake);
+    this.heldBakes.set(seed, held);
     volume.setInstrument(this.skyInstrument, this.skyExposure);
     // A fresh volume dissolves in from nothing; a reinstall — the fine
     // bake landing over the coarse one — picks the fade up where the
@@ -3996,6 +4041,7 @@ export class UnifiedViewer {
       this.nebulaVolumes.clear();
       setStarNebulaExtinction([]);
     }
+    for (const seed of [...this.heldBakes.keys()]) this.releaseHeld(seed);
     this.retireEnclosingCarrier();
     this.wantedNebulae.clear();
     this.coarseBakes.clear();
@@ -4468,6 +4514,7 @@ export class UnifiedViewer {
             this.pipeline.sky.scene.remove(volume.mesh);
             volume.dispose();
             this.nebulaVolumes.delete(seed);
+            this.releaseHeld(seed);
             this.coarseBakes.delete(seed);
             this.fineBakes.delete(seed);
             continue;
