@@ -29,7 +29,7 @@ describe('detentsFor', () => {
 });
 
 describe('openingIndex', () => {
-  it('opens on the clock every half minute', () => {
+  it('opens on the clock every minute', () => {
     const detents = detentsFor(ORBIT);
     const opening = detents[openingIndex(detents)];
     expect(opening.clock).toBe(ORBIT);

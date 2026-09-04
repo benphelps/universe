@@ -28,7 +28,7 @@ export const REAL_RATE = 1 / SECONDS_PER_DAY;
  *  slowest first. */
 export const DETENT_SECONDS = [3600, 1800, 900, 300, 180, 120, 60, 30, 15, 5, 1] as const;
 /** The stop a focus opens on. */
-export const OPENING_SECONDS = 30;
+export const OPENING_SECONDS = 60;
 
 /** A stop on the slider: a rate, and the clock and pace it names. */
 export interface Detent {
@@ -56,7 +56,7 @@ export function detentsFor(clock: Clock | null): Detent[] {
   return detents;
 }
 
-/** Where a focus opens: its clock turning once in half a minute. */
+/** Where a focus opens: its clock turning once a minute. */
 export function openingIndex(detents: Detent[]): number {
   const index = detents.findIndex((detent) => detent.seconds === OPENING_SECONDS);
   return Math.max(0, index);
