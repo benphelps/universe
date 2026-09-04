@@ -32,23 +32,21 @@ export function tangentFrame(up: Vector3, pole: Vector3): { north: Vector3; east
  * One gaze for every altitude. In orbit the camera looks straight
  * down at its anchor with the pole up the screen — the turntable's
  * own view. Descending tips that resting gaze from nadir up to the
- * horizon; the head's heading and pitch ride on top of it and keep
- * their whole range the whole way, so a head half way down can still
- * look at its own zenith. The tip is a pure pitch about the camera's
- * right axis: what lies up the screen is never rolled to meet a
- * compass, so the only way the view turns is by the hand turning it.
+ * horizon, and the head's own pitch comes in with the tip, so the
+ * gaze is exactly nadir at the top of the band and exactly where the
+ * head aimed it at the floor. The heading rides the whole way: what
+ * the head faced is what lies up the screen at nadir. The tip is a
+ * pure pitch about the camera's right axis — nothing here ever rolls
+ * the view to meet a compass, so the only way it turns is by the
+ * hand turning it.
  */
 export function gazeQuaternion(gaze: Gaze, out = new Quaternion()): Quaternion {
   const { up, headingRad, pitchRad } = gaze;
   const surface = Math.min(1, Math.max(0, gaze.surface));
   const t = surface * surface * (3 - 2 * surface);
-  const { north, east } = tangentFrame(up, gaze.pole);
-  const heading = north
-    .clone()
-    .multiplyScalar(Math.cos(headingRad))
-    .addScaledVector(east, Math.sin(headingRad));
+  const heading = headingVector(up, gaze.pole, headingRad);
   const restPitch = -(Math.PI / 2) * (1 - t);
-  const pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, restPitch + pitchRad));
+  const pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, restPitch + pitchRad * t));
   const forward = heading
     .clone()
     .multiplyScalar(Math.cos(pitch))
@@ -63,8 +61,38 @@ export function gazeQuaternion(gaze: Gaze, out = new Quaternion()): Quaternion {
   );
 }
 
-/** The same angle, wrapped into (-π, π]. */
-export function wrapAngle(rad: number): number {
-  const wrapped = rad - 2 * Math.PI * Math.floor((rad + Math.PI) / (2 * Math.PI));
-  return wrapped <= -Math.PI ? wrapped + 2 * Math.PI : wrapped;
+/** The way the head faces on the ground: the gaze's horizontal part. */
+export function headingVector(up: Vector3, pole: Vector3, headingRad: number): Vector3 {
+  const { north, east } = tangentFrame(up, pole);
+  return north.multiplyScalar(Math.cos(headingRad)).addScaledVector(east, Math.sin(headingRad));
+}
+
+/** The heading that faces the same way measured from another pole,
+ *  so swapping the pole under it leaves the view exactly where it is. */
+export function rebasedHeading(
+  up: Vector3,
+  pole: Vector3,
+  headingRad: number,
+  newPole: Vector3,
+): number {
+  const facing = headingVector(up, pole, headingRad);
+  const { north, east } = tangentFrame(up, newPole);
+  return Math.atan2(facing.dot(east), facing.dot(north));
+}
+
+/**
+ * The pole turned about the local vertical to stand behind the
+ * heading: the same tilt out of the ground, facing the way the head
+ * does. A camera climbing out of the surface takes this as its
+ * turntable axis, so whatever it faced down there is up from then on
+ * and a heading of zero names that view.
+ */
+export function alignedPole(up: Vector3, pole: Vector3, headingRad: number): Vector3 {
+  const radial = pole.dot(up);
+  const tangent = Math.sqrt(Math.max(0, 1 - radial * radial));
+  return up
+    .clone()
+    .multiplyScalar(radial)
+    .addScaledVector(headingVector(up, pole, headingRad), tangent)
+    .normalize();
 }

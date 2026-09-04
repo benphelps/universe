@@ -1,6 +1,6 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { gazeQuaternion, tangentFrame, wrapAngle } from './cameraGaze';
+import { alignedPole, gazeQuaternion, rebasedHeading, tangentFrame } from './cameraGaze';
 
 const Y = new Vector3(0, 1, 0);
 
@@ -67,11 +67,14 @@ describe('gazeQuaternion', () => {
     expect(screenUp.dot(heading)).toBeCloseTo(1, 6);
   });
 
-  it('keeps the head pitch range half way down', () => {
-    const q = gazeQuaternion({ up, pole: Y, headingRad: 0, pitchRad: Math.PI / 2, surface: 0.5 });
-    const { forward } = axes(q);
-    // Rest pitch is -45°; the head adds +90°: the gaze reaches 45° above the horizon.
-    expect(forward.dot(up)).toBeCloseTo(Math.sin(Math.PI / 4), 6);
+  it('brings the head pitch in with the tip', () => {
+    const half = gazeQuaternion({ up, pole: Y, headingRad: 0, pitchRad: Math.PI / 2, surface: 0.5 });
+    // Rest pitch is -45°; half the head's +90° comes in: the horizon.
+    expect(axes(half).forward.dot(up)).toBeCloseTo(0, 6);
+    const top = gazeQuaternion({ up, pole: Y, headingRad: 0.4, pitchRad: 1, surface: 0 });
+    expect(axes(top).forward.dot(up)).toBeCloseTo(-1, 6);
+    const floor = gazeQuaternion({ up, pole: Y, headingRad: 0, pitchRad: 0.3, surface: 1 });
+    expect(axes(floor).forward.dot(up)).toBeCloseTo(Math.sin(0.3), 6);
   });
 
   it('takes any pole as north', () => {
@@ -96,12 +99,31 @@ describe('tangentFrame', () => {
   });
 });
 
-describe('wrapAngle', () => {
-  it('folds into the half-open turn', () => {
-    expect(wrapAngle(0)).toBe(0);
-    expect(wrapAngle(Math.PI)).toBeCloseTo(Math.PI, 12);
-    expect(wrapAngle(-Math.PI)).toBeCloseTo(Math.PI, 12);
-    expect(wrapAngle(3 * Math.PI + 0.1)).toBeCloseTo(-Math.PI + 0.1, 12);
-    expect(wrapAngle(-7)).toBeCloseTo(-7 + 2 * Math.PI, 12);
+describe('rebasedHeading', () => {
+  it('swaps the pole under the heading without moving the view', () => {
+    const pole = new Vector3(-0.4, 0.5, 0.7).normalize();
+    for (const surface of [0, 0.4, 1]) {
+      const before = gazeQuaternion({ up, pole: Y, headingRad: 2.1, pitchRad: 0.2, surface });
+      const headingRad = rebasedHeading(up, Y, 2.1, pole);
+      const after = gazeQuaternion({ up, pole, headingRad, pitchRad: 0.2, surface });
+      expect(Math.abs(before.dot(after))).toBeCloseTo(1, 9);
+    }
+  });
+});
+
+describe('alignedPole', () => {
+  it('is the pole itself when the head faces north', () => {
+    const aligned = alignedPole(up, Y, 0);
+    expect(aligned.dot(Y)).toBeCloseTo(1, 9);
+  });
+
+  it('keeps the tilt out of the ground and names the same view with a zero heading', () => {
+    const headingRad = -1.3;
+    const aligned = alignedPole(up, Y, headingRad);
+    expect(aligned.dot(up)).toBeCloseTo(Y.dot(up), 9);
+    expect(rebasedHeading(up, Y, headingRad, aligned)).toBeCloseTo(0, 9);
+    const before = gazeQuaternion({ up, pole: Y, headingRad, pitchRad: 0, surface: 0 });
+    const after = gazeQuaternion({ up, pole: aligned, headingRad: 0, pitchRad: 0, surface: 0 });
+    expect(Math.abs(before.dot(after))).toBeCloseTo(1, 9);
   });
 });

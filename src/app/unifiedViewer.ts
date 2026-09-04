@@ -166,7 +166,7 @@ import { getGalacticLandmarks } from './landmarkService';
 import { cancelSkyBuilds, getSkyField, skyPending, skyProgress, watchSkyBuild } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
-import { gazeQuaternion, wrapAngle } from './cameraGaze';
+import { alignedPole, gazeQuaternion, rebasedHeading } from './cameraGaze';
 import { OrbitTurntable } from './orbitTurntable';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
@@ -183,11 +183,6 @@ const IDENTITY_MATRIX = new Matrix3();
 const PC_KM = PARSEC / 1000;
 /** How long the orbit keeps gliding after the hand comes off, seconds. */
 const ORBIT_EASE_SECONDS = 0.05;
-/** How long the view takes to square up once the wheel has been quiet:
- *  the head back to the turntable's nadir, the pole to the scale's. */
-const GAZE_SETTLE_SECONDS = 0.15;
-/** Zoom input this recent holds the gaze exactly where it is. */
-const ZOOM_HOLD_MS = 150;
 /** Altitude ratio per unit of wheel delta: the one ride at every scale. */
 const WHEEL_BASE = 1.0016;
 /** Wheel events closer together than this run as one streak, and each
@@ -269,8 +264,8 @@ const NEBULA_HOME_REACH_PC = 400;
 const NEBULA_GATEWAY_STANDOFF_PC = 200;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
-/** Beyond this distance from the system the galaxy is the body in
- *  view, and the turntable turns about its pole instead. */
+/** Beyond this distance from the focus the galaxy is the body in view,
+ *  and the turntable turns about its pole instead. */
 const GALAXY_POLE_HANDOVER_PC = (GALAXY_FADE_NEAR_PC + GALAXY_FADE_FAR_PC) / 2;
 const ORIGIN = new Vector3();
 
@@ -418,6 +413,9 @@ function markerColor(
   const peak = Math.max(...raw, 1e-3);
   return new Color((raw[0] / peak) * 0.85, (raw[1] / peak) * 0.85, (raw[2] / peak) * 0.85);
 }
+
+/** What the turntable turns about at the camera's scale. */
+type PoleRegime = 'ground' | 'body' | 'galaxy';
 
 /**
  * The unified system viewer (units: km): one scene from a star's
@@ -658,13 +656,14 @@ export class UnifiedViewer {
   private panHeld = false;
   /** Wheel ride input, applied to the altitude during the next frame. */
   private pendingWheelFactor = 1;
-  /** When zoom input last arrived: a wheel event or a pinch. */
-  private zoomInputAtMs = -Infinity;
   private lastWheelMs = -Infinity;
   private lastWheelSign = 0;
   private wheelStreak = 0;
-  /** The turntable's axis and the screen's up, eased to the scale's pole. */
+  /** The turntable's axis, and what a zero heading faces: the body's
+   *  pole, the up a surface visit left, or the galactic pole. */
   private readonly pole = new Vector3(0, 1, 0);
+  /** Which of those the pole is following. */
+  private poleRegime: PoleRegime = 'body';
   /** Auto wheel ride: >0 while the slow pull-back to the galaxy runs. */
   private rideOutRate = 0;
   /** Fired when the automatic ride out starts, ends, or is cut short. */
@@ -782,7 +781,6 @@ export class UnifiedViewer {
       // Spreading the fingers descends, the way scrolling up does.
       this.stopRideOut();
       this.pendingWheelFactor *= this.pinchSpan / span;
-      this.zoomInputAtMs = performance.now();
     }
     this.pinchSpan = span;
   }
@@ -828,47 +826,63 @@ export class UnifiedViewer {
     return 1 - Math.min(1, this.altitudeKm / (0.12 * this.radiusKm));
   }
 
-  /** The axis this scale turns about: the focus body's own pole until
-   *  the galaxy is the body in view, then the galactic pole. */
-  private wantedPole(): Vector3 {
+  /** Unit direction from the orbit anchor to the camera. */
+  private anchorUp(): Vector3 {
+    const anchor = this.controls.target;
+    return anchor.lengthSq() >= 1
+      ? this.camera.position.clone().sub(anchor).normalize()
+      : this.camera.position.clone().normalize();
+  }
+
+  private galacticPole(): Vector3 | null {
     const m = this.sceneOrientation;
-    if (this.coreView || !m || this.camera.position.length() / PC_KM < GALAXY_POLE_HANDOVER_PC) {
-      return new Vector3(0, 1, 0);
-    }
-    return new Vector3(m[2], m[5], m[8]).applyQuaternion(this.frameQuat).normalize();
+    return m ? new Vector3(m[2], m[5], m[8]).applyQuaternion(this.frameQuat).normalize() : null;
+  }
+
+  private scalePoleRegime(): PoleRegime {
+    if (this.coreView) return 'body';
+    if (this.surfaceBlend() > 0) return 'ground';
+    return this.camera.position.length() / PC_KM >= GALAXY_POLE_HANDOVER_PC ? 'galaxy' : 'body';
+  }
+
+  /** Put another pole under the heading: the view does not move. */
+  private rebasePole(pole: Vector3): void {
+    this.headingRad = rebasedHeading(this.anchorUp(), this.pole, this.headingRad, pole);
+    this.pole.copy(pole);
   }
 
   /**
-   * Square the view up once the wheel has been quiet. In orbit the
-   * head's heading and pitch ease back to the turntable's nadir and
-   * the pole eases to the scale's own; a zoom never turns the view by
-   * itself, so both wait for the zoom to end. Inside the horizon band
-   * the head is the user's, and only the pole is brought home, so the
-   * ground's north is the one the flight's compass uses.
+   * The turntable's axis follows the scale, and the camera never
+   * turns for it: every hand-over re-parameterizes the same view.
+   * Inside the horizon band the axis is the body's own pole, the frame
+   * the flight's compass uses. Climbing out, the pole is turned to
+   * stand behind whatever the head faced, so the up the ground left
+   * is the orbit's up from then on and the drag still follows the
+   * hand. Out in the galaxy the axis is the galactic pole however the
+   * sky happens to lie, so a drag spins the galaxy in its own plane;
+   * coming back in, the body's pole is turned behind the view again.
    */
-  private settleGaze(dtSeconds: number): void {
-    const ease = 1 - Math.exp(-dtSeconds / GAZE_SETTLE_SECONDS);
-    if (this.surfaceBlend() > 0) {
-      this.pole.lerp(new Vector3(0, 1, 0), ease).normalize();
-      return;
+  private followScale(): void {
+    const regime = this.scalePoleRegime();
+    if (regime === 'galaxy') {
+      // Every frame: the pole turns with the ground-fixed frame.
+      const pole = this.galacticPole();
+      if (pole) this.rebasePole(pole);
+    } else if (regime !== this.poleRegime) {
+      this.rebasePole(new Vector3(0, 1, 0));
+      if (regime === 'body') {
+        this.rebasePole(alignedPole(this.anchorUp(), this.pole, this.headingRad));
+      }
     }
-    if (this.rideOutRate > 0 || performance.now() - this.zoomInputAtMs < ZOOM_HOLD_MS) return;
-    this.headingRad = wrapAngle(this.headingRad) * (1 - ease);
-    this.pitchRad *= 1 - ease;
-    this.pole.lerp(this.wantedPole(), ease).normalize();
+    this.poleRegime = regime;
   }
 
   /** Point the camera: at its anchor from orbit, along the head's gaze
    *  near the ground, and on every frame between. */
   private aimCamera(): void {
-    const anchor = this.controls.target;
-    const up =
-      anchor.lengthSq() >= 1
-        ? this.camera.position.clone().sub(anchor).normalize()
-        : this.camera.position.clone().normalize();
     gazeQuaternion(
       {
-        up,
+        up: this.anchorUp(),
         pole: this.pole,
         headingRad: this.headingRad,
         pitchRad: this.pitchRad,
@@ -1351,7 +1365,6 @@ export class UnifiedViewer {
       e.preventDefault();
       this.stopRideOut();
       this.pendingWheelFactor *= WHEEL_BASE ** this.wheelStep(e);
-      this.zoomInputAtMs = performance.now();
     };
     const canvas = this.pipeline.renderer.domElement;
     canvas.addEventListener('wheel', onWheel, { passive: false });
@@ -2596,7 +2609,8 @@ export class UnifiedViewer {
     // rise straight ahead instead of sweeping sideways.
     this.headingRad = 0;
     this.pitchRad = 0;
-    this.pole.copy(this.wantedPole());
+    this.pole.set(0, 1, 0);
+    this.poleRegime = 'body';
     this.aimCamera();
   }
 
@@ -3470,6 +3484,7 @@ export class UnifiedViewer {
     this.headingRad = 0;
     this.pitchRad = 0;
     this.pole.set(0, 1, 0);
+    this.poleRegime = 'body';
     this.aimCamera();
     this.galaxyFade = 1;
     // Stopped down while standing in the cluster and back up on the way
@@ -4148,6 +4163,7 @@ export class UnifiedViewer {
       // ground flight, the flight camera owns the position outright.
       const flying = this.flight.active;
       const freeFlight = this.freeFlightAvailable();
+      this.followScale();
       this.syncControlsEnabled();
       if (!flying) {
         if (!freeFlight && this.controls.target.lengthSq() > 0) {
@@ -4245,7 +4261,6 @@ export class UnifiedViewer {
       // one; inward input, with nowhere to go, drops it.
       if (!this.flight.active || this.pendingWheelFactor < 1) this.pendingWheelFactor = 1;
 
-      this.settleGaze(dtSeconds);
       this.aimCamera();
 
       // Near tracks altitude (nothing sits closer than the ground below,
