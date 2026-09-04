@@ -7,18 +7,21 @@ import {
   formatMultiplier,
   openingIndex,
   OPENING_SECONDS,
+  orderNote,
   REAL_RATE,
   REAL_TIME,
 } from './clocks';
 
 const DAY = { label: 'day', periodDays: 0.846 };
-/** A close moon: its month is shorter than the day. */
-const MONTH = { label: 'month', periodDays: 0.32 };
+const MONTH = { label: 'month', periodDays: 27.3 };
 const YEAR = { label: 'year', periodDays: 434 };
 const WORLD = [REAL_TIME, DAY, MONTH, YEAR];
+/** A close moon: its month is shorter than the day. */
+const QUICK_MONTH = { label: 'month', periodDays: 0.32 };
+const SLOW_WORLD = { owner: 'd', subject: 'this world', clocks: [REAL_TIME, DAY, QUICK_MONTH, YEAR] };
 
 describe('detentsFor', () => {
-  it('runs real time, then each clock whole, in the order the focus names them', () => {
+  it('runs real time, then each clock whole, shortest clock first', () => {
     const detents = detentsFor(WORLD);
     expect(detents[0]).toEqual({ rate: REAL_RATE, clock: null, seconds: null });
     expect(detents).toHaveLength(1 + 3 * DETENT_SECONDS.length);
@@ -31,7 +34,15 @@ describe('detentsFor', () => {
     const paces = detents.slice(1, 9).map((d) => d.seconds);
     expect(paces).toEqual([3600, 1800, 300, 60, 30, 15, 5, 1]);
     expect(detents[8].rate).toBeCloseTo(0.846, 9);
-    expect(detents[9].rate).toBeCloseTo(0.32 / 3600, 9);
+    expect(detents[9].rate).toBeCloseTo(27.3 / 3600, 9);
+  });
+
+  it('puts a quick month before a long day, and says so', () => {
+    const clocks = detentsFor(SLOW_WORLD.clocks).slice(1).map((d) => d.clock?.label);
+    expect(clocks.slice(0, 8)).toEqual(Array(8).fill('month'));
+    expect(clocks.slice(8, 16)).toEqual(Array(8).fill('day'));
+    expect(orderNote(SLOW_WORLD)).toBe("this world's day is longer than its month");
+    expect(orderNote({ owner: 'i', subject: 'this world', clocks: WORLD })).toBeNull();
   });
 
   it('names a clock where its run begins', () => {
@@ -45,10 +56,10 @@ describe('detentsFor', () => {
 });
 
 describe('openingIndex', () => {
-  it('opens on the first clock every half minute', () => {
-    const detents = detentsFor(WORLD);
+  it('opens on the shortest clock every half minute', () => {
+    const detents = detentsFor(SLOW_WORLD.clocks);
     const opening = detents[openingIndex(detents)];
-    expect(opening.clock).toBe(DAY);
+    expect(opening.clock).toBe(QUICK_MONTH);
     expect(opening.seconds).toBe(OPENING_SECONDS);
     expect(openingIndex(detentsFor([REAL_TIME]))).toBe(0);
   });

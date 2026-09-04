@@ -15,6 +15,7 @@ import {
   detentsFor,
   formatMultiplier,
   openingIndex,
+  orderNote,
   REAL_TIME,
   type FocusClocks,
 } from '../clocks';
@@ -31,7 +32,7 @@ const PLAY = (
   </svg>
 );
 
-const NO_CLOCKS: FocusClocks = { owner: '', clocks: [REAL_TIME] };
+const NO_CLOCKS: FocusClocks = { owner: '', subject: '', clocks: [REAL_TIME] };
 /** The axis has this much in from each end for the cursor's own width. */
 const AXIS_INSET_PX = 14;
 /** Shift with an arrow key steps this many stops. */
@@ -47,15 +48,18 @@ const WHEEL_STEP_MS = 60;
  * every 30 s". The pill is the slider: press and drag sideways and the
  * rate axis unfolds above, and the cursor steps between the focus's
  * stops — real time, then each clock's whole run of paces from a turn
- * an hour to a turn a second, clock after clock, spaced evenly. Only
- * the clocks are ticked and named, each where its run begins; the
- * paces along it are felt, not shown. Let go and the axis folds
- * away. A double-click is real time, a scroll steps a stop,
+ * an hour to a turn a second, clock after clock, shortest first,
+ * spaced evenly. Only the clocks are ticked and named, each where its
+ * run begins; the paces along it are felt, not shown, and a line
+ * above the axis says why the order is what it is when a day outlasts
+ * a month. Let go and the axis folds away. A double-click is real time, a scroll steps a stop,
  * arrows step, shift-arrows leap. Each focus opens at its own pace.
  */
 export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode {
-  const { owner, clocks } = useMemo(() => (snap ? clocksFor(snap) : NO_CLOCKS), [snap]);
+  const focus = useMemo(() => (snap ? clocksFor(snap) : NO_CLOCKS), [snap]);
+  const { owner, clocks } = focus;
   const detents = useMemo(() => detentsFor(clocks), [clocks]);
+  const note = useMemo(() => orderNote(focus), [focus]);
   const [index, setIndex] = useState(() => openingIndex(detents));
   const [paused, setPaused] = useState(false);
   const [engaged, setEngaged] = useState(false);
@@ -171,6 +175,7 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
         <span className="phrase">{phrase}</span>
       </button>
       <div id="time-axis" className={engaged ? 'show' : ''} aria-hidden="true">
+        {note && <span className="note">{note}</span>}
         <div className="fill" style={{ width: position(at) }} />
         {detents.map((stop, i) =>
           i === 0 || beginsRun(stop) ? (

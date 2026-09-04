@@ -41,19 +41,25 @@ export interface Detent {
   seconds: number | null;
 }
 
+/** The focus's clocks shortest first: the order their runs take on
+ *  the slider, slowest pace to fastest. */
+export function byLength(clocks: Clock[]): Clock[] {
+  return clocks
+    .filter((clock) => clock.periodDays !== null)
+    .sort((a, b) => (a.periodDays as number) - (b.periodDays as number));
+}
+
 /**
  * The slider's stops for a focus: real time, then each clock's whole
  * run of paces from a turn an hour down to a turn a second, clock
- * after clock in the order the focus names them — a day's run, then a
- * month's, then a year's, whatever their lengths (a close moon's
- * month can be shorter than the day). The stops are spaced evenly on
+ * after clock, shortest clock first — a day's run, then a month's,
+ * then a year's, slowest to fastest. The stops are spaced evenly on
  * the slider, so it reads as "which clock, and how fast", not as a
  * number line; the rate itself is whatever those two name.
  */
 export function detentsFor(clocks: Clock[]): Detent[] {
   const detents: Detent[] = [{ rate: REAL_RATE, clock: null, seconds: null }];
-  for (const clock of clocks) {
-    if (clock.periodDays === null) continue;
+  for (const clock of byLength(clocks)) {
     for (const seconds of DETENT_SECONDS) {
       detents.push({ rate: (clock.periodDays as number) / seconds, clock, seconds });
     }
@@ -61,7 +67,7 @@ export function detentsFor(clocks: Clock[]): Detent[] {
   return detents;
 }
 
-/** Where a focus opens: its first clock turning once in half a
+/** Where a focus opens: its shortest clock turning once in half a
  *  minute — a day at a world, the innermost orbit on a map. */
 export function openingIndex(detents: Detent[]): number {
   const index = detents.findIndex((detent) => detent.seconds === OPENING_SECONDS);
@@ -71,6 +77,25 @@ export function openingIndex(detents: Detent[]): number {
 /** Whether a stop begins a clock's run, where the slider names it. */
 export function beginsRun(detent: Detent): boolean {
   return detent.seconds === DETENT_SECONDS[0];
+}
+
+/**
+ * Why the runs stand in a surprising order, when they do: the focus
+ * names its clocks day, month, year, but a close moon's month can be
+ * shorter than the day and a star's spin slower than its innermost
+ * orbit, and the slider runs shortest first. Null when the named
+ * order is the slider's.
+ */
+export function orderNote(focus: FocusClocks): string | null {
+  const named = focus.clocks.filter((clock) => clock.periodDays !== null);
+  const sorted = byLength(named);
+  for (let i = 0; i < named.length; i++) {
+    if (named[i] === sorted[i]) continue;
+    const longer = named[i];
+    const shorter = sorted[i];
+    return `${focus.subject}'s ${longer.label} is longer than its ${shorter.label}`;
+  }
+  return null;
 }
 
 /** The rate as a multiple of real time, short: ×1, ×86, ×4.3k, ×12M. */
@@ -98,10 +123,13 @@ export function describeDetent(detent: Detent): string {
   return `${article} ${detent.clock.label} ${everyPace(detent.seconds)}`;
 }
 
-/** The clocks of a focus: whose they are, and what turns. Real time
- *  is always first; a place where nothing turns has only that. */
+/** The clocks of a focus: whose they are, what to call the thing
+ *  that carries them, and what turns. Real time is always first; a
+ *  place where nothing turns has only that. */
 export interface FocusClocks {
   owner: string;
+  /** "this world", "this star": the subject of a note about its clocks. */
+  subject: string;
   clocks: Clock[];
 }
 
@@ -114,16 +142,19 @@ export function clocksFor(snap: AppSnapshot): FocusClocks {
   if (snap.coreView) {
     return {
       owner: 'Galactic Core',
+      subject: 'the core',
       clocks: [
         REAL_TIME,
         { label: 'inner orbit', periodDays: galacticNucleus().iscoPeriodS / SECONDS_PER_DAY },
       ],
     };
   }
-  if (snap.cloud) return { owner: cloudTitle(snap.cloud.name, snap.cloud.kind), clocks: [REAL_TIME] };
+  if (snap.cloud) {
+    return { owner: cloudTitle(snap.cloud.name, snap.cloud.kind), subject: 'this cloud', clocks: [REAL_TIME] };
+  }
 
   const { star, planets, companion } = host(snap);
-  if (snap.viewMode === 'galaxy') return { owner: star.designation, clocks: [REAL_TIME] };
+  if (snap.viewMode === 'galaxy') return { owner: star.designation, subject: 'this star', clocks: [REAL_TIME] };
 
   const yearDays = (planet: Planet): number =>
     orbitalPeriod(
@@ -141,10 +172,14 @@ export function clocksFor(snap: AppSnapshot): FocusClocks {
   const spin: Clock = { label: 'spin', periodDays: star.activity.rotationPeriodDays };
 
   if (snap.viewMode === 'system') {
-    return { owner: `${star.designation} system`, clocks: [REAL_TIME, ...(orbitClocks.length ? orbitClocks : [spin])] };
+    return {
+      owner: `${star.designation} system`,
+      subject: 'this system',
+      clocks: [REAL_TIME, ...(orbitClocks.length ? orbitClocks : [spin])],
+    };
   }
   if (snap.viewMode === 'star' || snap.planetFocus === 'empty') {
-    return { owner: star.designation, clocks: [REAL_TIME, spin, ...orbitClocks] };
+    return { owner: star.designation, subject: 'this star', clocks: [REAL_TIME, spin, ...orbitClocks] };
   }
 
   if (snap.planetFocus === 'asteroid') {
@@ -152,6 +187,7 @@ export function clocksFor(snap: AppSnapshot): FocusClocks {
     const mu = muOf(G * snap.system.centralMassSolar * SOLAR_MASS);
     return {
       owner: asteroidDesignation(asteroid),
+      subject: 'this asteroid',
       clocks: [
         REAL_TIME,
         { label: 'spin', periodDays: asteroid.spinPeriodHours / 24 },
@@ -171,6 +207,7 @@ export function clocksFor(snap: AppSnapshot): FocusClocks {
     const moon = planet.moons[snap.moonIndex];
     return {
       owner: moon.name,
+      subject: 'this moon',
       clocks: [
         REAL_TIME,
         { label: 'day', periodDays: moon.physical.rotation.periodHours / 24 },
@@ -181,6 +218,7 @@ export function clocksFor(snap: AppSnapshot): FocusClocks {
   }
   return {
     owner: planet.name,
+    subject: 'this world',
     clocks: [
       REAL_TIME,
       { label: 'day', periodDays: planet.physical.rotation.periodHours / 24 },
