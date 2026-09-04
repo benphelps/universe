@@ -734,7 +734,9 @@ table.props td:first-child {
 }
 
 #time-lens {
-  min-width: 190px;
+  /* One width whatever it says, so the axis above never shifts under
+     a drag. */
+  width: 250px;
   justify-content: flex-start;
   cursor: ew-resize;
   touch-action: none;
@@ -756,6 +758,9 @@ table.props td:first-child {
 }
 
 #time-lens .phrase {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--dim);
 }
 

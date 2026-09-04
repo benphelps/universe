@@ -26,30 +26,65 @@ const SECONDS_PER_DAY = 86400;
 
 /** Real time, in the simulation's own unit: days per screen second. */
 export const REAL_RATE = 1 / SECONDS_PER_DAY;
-/** The fastest the slider goes: a hundred million times real time. */
-export const MAX_RATE = REAL_RATE * 1e8;
-/** A clock's landmark on the rate axis is where one turn of it takes
- *  this long on screen. */
-export const LANDMARK_SECONDS = 10;
-/** A focus opens with its quickest clock turning once in this long —
- *  a day at a world, the innermost orbit on a map. */
-const OPENING_SECONDS = 30;
+/** How long one turn of a clock takes on screen, detent by detent,
+ *  slowest first. */
+export const DETENT_SECONDS = [3600, 1800, 900, 300, 60, 30, 15, 5, 1] as const;
+/** The detent a focus opens on, and the one its clock is labelled at. */
+export const OPENING_SECONDS = 30;
+/** Two detents this close in rate are one; the labelled one wins. */
+const SAME_RATE = 1.25;
 
-/** Where a rate stands on the slider, 0 at real time and 1 at the top. */
-export function ratePosition(rate: number): number {
-  return Math.min(1, Math.max(0, Math.log10(rate / REAL_RATE) / Math.log10(MAX_RATE / REAL_RATE)));
+/** A stop on the slider: a rate, and the clock and pace it names. */
+export interface Detent {
+  rate: number;
+  /** Null for real time. */
+  clock: Clock | null;
+  /** One turn of the clock in this many seconds on screen; null for real time. */
+  seconds: number | null;
 }
 
-export function rateAtPosition(position: number): number {
-  const t = Math.min(1, Math.max(0, position));
-  return REAL_RATE * Math.pow(MAX_RATE / REAL_RATE, t);
+/**
+ * The slider's stops for a focus: real time first, then every clock's
+ * ladder of paces merged into one ascending run, so the slider turns
+ * through the slow paces of a slow clock and on into the fast paces of
+ * a fast one without a gap or a doubling. Stops are spaced evenly on
+ * the slider whatever their rates, which is what keeps real time and
+ * the crawl above it from taking most of its length.
+ */
+export function detentsFor(clocks: Clock[]): Detent[] {
+  const ladder: Detent[] = [];
+  for (const clock of clocks) {
+    if (clock.periodDays === null) continue;
+    for (const seconds of DETENT_SECONDS) {
+      ladder.push({ rate: clock.periodDays / seconds, clock, seconds });
+    }
+  }
+  ladder.sort((a, b) => a.rate - b.rate);
+  const detents: Detent[] = [{ rate: REAL_RATE, clock: null, seconds: null }];
+  for (const next of ladder) {
+    const last = detents[detents.length - 1];
+    if (next.rate / last.rate < SAME_RATE) {
+      if (next.seconds === OPENING_SECONDS && last.seconds !== OPENING_SECONDS) {
+        detents[detents.length - 1] = next;
+      }
+      continue;
+    }
+    detents.push(next);
+  }
+  return detents;
 }
 
-/** The rate a focus opens at: its quickest clock, or real time. */
-export function openingRate(clocks: Clock[]): number {
-  const turning = clocks.filter((clock) => clock.periodDays !== null);
-  if (turning.length === 0) return REAL_RATE;
-  return Math.min(...turning.map((clock) => clock.periodDays as number)) / OPENING_SECONDS;
+/** Where a focus opens: its quickest clock turning once in half a
+ *  minute — a day at a world, the innermost orbit on a map. */
+export function openingIndex(detents: Detent[]): number {
+  let quickest = -1;
+  detents.forEach((detent, index) => {
+    if (detent.seconds !== OPENING_SECONDS) return;
+    if (quickest < 0 || (detent.clock?.periodDays ?? 0) < (detents[quickest].clock?.periodDays ?? 0)) {
+      quickest = index;
+    }
+  });
+  return Math.max(0, quickest);
 }
 
 /** The rate as a multiple of real time, short: ×1, ×86, ×4.3k, ×12M. */
@@ -58,35 +93,22 @@ export function formatMultiplier(rate: number): string {
   if (m < 1.5) return '×1';
   if (m < 1000) return `×${Math.round(m)}`;
   if (m < 1e6) return `×${(m / 1e3).toFixed(m < 1e4 ? 1 : 0)}k`;
-  return `×${(m / 1e6).toFixed(m < 1e7 ? 1 : 0)}M`;
+  if (m < 1e9) return `×${(m / 1e6).toFixed(m < 1e7 ? 1 : 0)}M`;
+  return `×${(m / 1e9).toFixed(m < 1e10 ? 1 : 0)}G`;
 }
 
 function formatSeconds(seconds: number): string {
-  if (seconds < 10) return `${seconds.toFixed(1)} s`;
-  if (seconds < 60) return `${Math.round(seconds)} s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
-  if (seconds < SECONDS_PER_DAY) return `${(seconds / 3600).toFixed(1)} h`;
-  return `${Math.round(seconds / SECONDS_PER_DAY)} d`;
+  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 3600) return `${seconds / 60} min`;
+  return `${seconds / 3600} h`;
 }
 
-/**
- * What a rate means here: the largest of the focus's clocks that still
- * turns inside ten minutes, and how long one turn takes — "a day every
- * 17 s", "a year every 4 min" — so the phrase stays legible at every
- * speed instead of counting years a second. Real time says so; a place
- * where nothing turns has nothing to say.
- */
-export function describeRate(rate: number, clocks: Clock[]): string {
-  if (rate <= REAL_RATE * 1.05) return 'real time';
-  const turning = clocks
-    .filter((clock) => clock.periodDays !== null)
-    .map((clock) => ({ label: clock.label, seconds: (clock.periodDays as number) / rate }))
-    .sort((a, b) => a.seconds - b.seconds);
-  if (turning.length === 0) return 'nothing here turns';
-  let pick = turning[0];
-  for (const clock of turning) if (clock.seconds <= 600) pick = clock;
-  const article = /^[aeiou]/.test(pick.label) ? 'an' : 'a';
-  return `${article} ${pick.label} every ${formatSeconds(pick.seconds)}`;
+/** What a stop means here: "a day every 15 s", "an orbit every 5 min",
+ *  or real time. */
+export function describeDetent(detent: Detent): string {
+  if (!detent.clock || detent.seconds === null) return 'real time';
+  const article = /^[aeiou]/.test(detent.clock.label) ? 'an' : 'a';
+  return `${article} ${detent.clock.label} every ${formatSeconds(detent.seconds)}`;
 }
 
 /** The clocks of a focus: whose they are, and what turns. Real time
