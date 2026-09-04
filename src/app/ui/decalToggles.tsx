@@ -83,7 +83,7 @@ export function DecalToggles(): ReactNode {
             setDecal(key, next);
           }}
         >
-          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+          <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
             {icon}
           </svg>
         </button>

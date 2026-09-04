@@ -476,8 +476,8 @@ table.props td:first-child {
 }
 
 /* The frame's instruments, top-left of the viewport: a pill with the
-   rate that opens into the full readout in the same spot, its corners
-   as round as the pill's ends. */
+   rate that opens into the full readout in the same spot, unfolding
+   from the pill's corner, its corners as round as the pill's ends. */
 #perf-pill {
   position: absolute;
   top: 12px;
@@ -489,9 +489,9 @@ table.props td:first-child {
   display: inline-flex;
   align-items: center;
   width: auto;
-  height: 28px;
-  padding: 0 11px;
-  border-radius: 14px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
   font: 11px/1 var(--mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -509,10 +509,27 @@ table.props td:first-child {
   background: rgba(10, 14, 20, 0.8);
   backdrop-filter: blur(6px);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 16px;
   font: 11px/1.5 var(--mono);
   color: var(--dim);
   cursor: pointer;
+  transform-origin: top left;
+  animation: unfold 140ms ease-out;
+}
+
+/* A panel opening from its button grows out of the button's corner. */
+@keyframes unfold {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #perf,
+  #settings-menu {
+    animation: none;
+  }
 }
 
 #perf:hover {
@@ -541,19 +558,35 @@ table.props td:first-child {
   font-variant-numeric: tabular-nums;
 }
 
+/* The instrument settings unfold from the cog itself: the panel's
+   top-right corner is the cog's, the cog stays there as the fold, and
+   the panel's corners are as round as the orbs. */
+#settings-toggle {
+  z-index: 1;
+}
+
+#settings-toggle.open {
+  border-color: transparent;
+  background: none;
+  backdrop-filter: none;
+  color: var(--accent);
+}
+
 #settings-menu {
   position: absolute;
-  top: calc(100% + 8px);
+  top: 0;
   right: 0;
   width: 272px;
-  padding: 12px 14px;
+  padding: 40px 14px 12px;
   display: flex;
   flex-direction: column;
   gap: 9px;
-  background: rgba(10, 14, 20, 0.92);
-  backdrop-filter: blur(8px);
+  background: rgba(10, 14, 20, 0.8);
+  backdrop-filter: blur(6px);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 16px;
+  transform-origin: top right;
+  animation: unfold 140ms ease-out;
 }
 
 #settings-menu[hidden] {
@@ -607,8 +640,8 @@ table.props td:first-child {
 .orb {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 50%;
@@ -649,10 +682,10 @@ table.props td:first-child {
   outline-offset: 2px;
 }
 
-/* The decal rail: four orbs in a row under the gizmo. */
+/* The decal rail: four orbs in a row under the gizmo, bottom-left. */
 #decals {
   position: absolute;
-  right: 12px;
+  left: 12px;
   bottom: 12px;
   z-index: 6;
   display: flex;
@@ -716,12 +749,13 @@ table.props td:first-child {
 /* ---- the clock strip ---- */
 
 /* The clock along the foot of the view: pause, and the rate as a pill
-   that is also the slider. Press the pill and drag sideways and the
-   rate axis unfolds above the whole row, from the pause orb's left
-   edge to the pill's right; let go and it folds away. */
+   that is also the slider — press it and drag sideways and the rate
+   steps along. It stands at the foot's centre where the view is wide
+   enough to keep it clear of the gizmo column, and at the right where
+   it is not. */
 #clock-strip {
   position: absolute;
-  left: 12px;
+  right: 12px;
   bottom: 12px;
   z-index: 6;
 }
@@ -764,70 +798,6 @@ table.props td:first-child {
   color: var(--dim);
 }
 
-#time-axis {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 8px);
-  height: 28px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(10, 14, 20, 0.92);
-  backdrop-filter: blur(6px);
-  opacity: 0;
-  transition: opacity 120ms;
-  pointer-events: none;
-}
-
-#time-axis.show {
-  opacity: 1;
-}
-
-#time-axis .fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  /* Round with the axis at the left, square against the cursor. */
-  border-radius: 14px 0 0 14px;
-  background: var(--accent-soft);
-}
-
-#time-axis .tick {
-  position: absolute;
-  top: 20px;
-  width: 1px;
-  height: 5px;
-  background: var(--faint);
-}
-
-#time-axis .tick label {
-  position: absolute;
-  left: 50%;
-  bottom: 8px;
-  transform: translateX(-50%);
-  font: 600 8px/1 var(--display);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--faint);
-  white-space: nowrap;
-}
-
-#time-axis .cursor {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--accent-hi);
-}
-
-#sidebar button:hover {
-  border-color: var(--accent);
-  color: var(--ink);
-}
-
-#sidebar button:focus-visible,
 #settings-menu input:focus-visible {
   outline: 1px solid var(--accent-hi);
   outline-offset: 1px;
@@ -1013,7 +983,7 @@ table.props td:first-child {
    the dial or the next button along. */
 #reorient [data-tip]::after,
 #decals [data-tip]::after {
-  right: calc(100% + 8px);
+  left: calc(100% + 8px);
   top: 50%;
   transform: translateY(-50%);
 }
@@ -1272,21 +1242,21 @@ table.props td:first-child {
    under it and the touch chrome stacks above. */
 #reorient {
   position: absolute;
-  right: 12px;
-  bottom: 48px;
+  left: 12px;
+  bottom: 52px;
   z-index: 6;
-  /* As wide as the decal rail above, so the corners fall in line with
+  /* As wide as the decal rail below, so the corners fall in line with
      its outer orbs. */
-  width: 124px;
-  height: 124px;
+  width: 140px;
+  height: 140px;
 }
 
 #reorient .dial {
   position: absolute;
-  left: 18px;
-  top: 18px;
-  width: 88px;
-  height: 88px;
+  left: 20px;
+  top: 20px;
+  width: 100px;
+  height: 100px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -1300,8 +1270,8 @@ table.props td:first-child {
 
 #reorient .compass {
   display: block;
-  width: 88px;
-  height: 88px;
+  width: 100px;
+  height: 100px;
 }
 
 #reorient .ring {
@@ -1366,8 +1336,8 @@ table.props td:first-child {
 
 #reorient .scale {
   position: absolute;
-  left: 28px;
-  right: 28px;
+  left: 32px;
+  right: 32px;
   bottom: 2px;
   text-align: center;
   font: 600 8px/1 var(--display);
@@ -1387,7 +1357,7 @@ table.props td:first-child {
 #drag-mode {
   position: absolute;
   right: 20px;
-  bottom: 180px;
+  bottom: 20px;
   z-index: 6;
   display: grid;
   place-items: center;
@@ -1413,7 +1383,7 @@ table.props td:first-child {
 #fly-stick {
   position: absolute;
   right: 12px;
-  bottom: 180px;
+  bottom: 12px;
   z-index: 6;
   display: grid;
   place-items: center;
@@ -1519,27 +1489,28 @@ table.props td:first-child {
 
   /* ---- the clock strip, for one thumb ---- */
 
-  /* The clock keeps the foot, and the right-hand column stacks above
-     it, clear of the home indicator. */
+  /* The clock keeps the foot's right, the gizmo column stacks above
+     it on the left, and the touch chrome stands above the clock, all
+     clear of the home indicator. */
   #clock-strip {
-    left: calc(8px + env(safe-area-inset-left));
+    right: calc(8px + env(safe-area-inset-right));
     bottom: calc(8px + env(safe-area-inset-bottom));
   }
 
   #decals {
-    right: calc(12px + env(safe-area-inset-right));
-    bottom: calc(60px + env(safe-area-inset-bottom));
+    left: calc(8px + env(safe-area-inset-left));
+    bottom: calc(64px + env(safe-area-inset-bottom));
   }
 
   #reorient {
-    right: calc(12px + env(safe-area-inset-right));
-    bottom: calc(96px + env(safe-area-inset-bottom));
+    left: calc(8px + env(safe-area-inset-left));
+    bottom: calc(104px + env(safe-area-inset-bottom));
   }
 
   #drag-mode,
   #fly-stick {
     right: calc(16px + env(safe-area-inset-right));
-    bottom: calc(228px + env(safe-area-inset-bottom));
+    bottom: calc(56px + env(safe-area-inset-bottom));
   }
 
   #instruments-corner {
@@ -1560,6 +1531,18 @@ table.props td:first-child {
 
   #welcome-card {
     padding: 22px 20px 20px;
+  }
+}
+
+/* ---- the clock at the foot's centre, where the view is wide ---- */
+
+/* Wide enough that the centred row stays clear of the gizmo column:
+   the column, the row, and a margin either side. */
+@container (min-width: 680px) {
+  #clock-strip {
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
   }
 }
 

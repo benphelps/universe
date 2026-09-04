@@ -19,37 +19,32 @@ import {
 import { setTimeScale, type AppSnapshot } from '../store';
 
 const PAUSE = (
-  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+  <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
     <path d="M5.5 3.5v9M10.5 3.5v9" />
   </svg>
 );
 const PLAY = (
-  <svg viewBox="0 0 16 16" width="14" height="14">
+  <svg viewBox="0 0 16 16" width="16" height="16">
     <path d="M5 3.1v9.8L13 8z" fill="currentColor" />
   </svg>
 );
 
 const NO_CLOCK: FocusClock = { owner: '', clock: null };
-/** The axis has this much in from each end for the cursor's own width. */
-const AXIS_INSET_PX = 14;
 /** Shift with an arrow key steps this many stops. */
 const BIG_STEP = 5;
-/** The axis stays up this long after a wheel or key step. */
-const SHOW_MS = 500;
 /** Wheel events closer than this are one step. */
 const WHEEL_STEP_MS = 60;
 
 /**
  * The clock: a pause orb and, beside it, the rate as a pill — the
- * multiple of real time and what that means here, "×2.4k · a day
- * every 30 s". The pill is the slider: press and drag sideways and the
- * rate axis unfolds above, and the cursor steps between the stops —
- * real time, then the focus's one clock at every pace from a turn an
- * hour to a turn a second, spaced evenly. Real time and the clock are
- * ticked, the clock named where its run begins; the paces along it
- * are felt, not shown. Let go and the axis folds away. A double-click
- * is real time, a scroll steps a stop, arrows step, shift-arrows
- * leap. Each focus opens at its own pace.
+ * multiple of real time and what that means here, "×1.2k · a day
+ * every minute". The pill is the slider: press and drag sideways and
+ * the rate steps between the stops — real time, then the focus's one
+ * clock at every pace from a turn an hour to a turn a second, a drag
+ * across the pill's width running the whole range. The pill's own
+ * words are the readout; there is no scale to show. A double-click is
+ * real time, a scroll steps a stop, arrows step, shift-arrows leap.
+ * Each focus opens at its own pace.
  */
 export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode {
   const { owner, clock } = snap ? clockFor(snap) : NO_CLOCK;
@@ -62,9 +57,9 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
   const [index, setIndex] = useState(() => openingIndex(detents));
   const [paused, setPaused] = useState(false);
   const [engaged, setEngaged] = useState(false);
-  const row = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ pointerId: number; startX: number; startIndex: number } | null>(null);
-  const hide = useRef(0);
+  const drag = useRef<{ pointerId: number; startX: number; startIndex: number; width: number } | null>(
+    null,
+  );
   const lastWheel = useRef(0);
 
   // A new focus opens at its own pace.
@@ -72,7 +67,6 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
   useEffect(() => {
     setIndex(opening);
   }, [owner, opening]);
-  useEffect(() => () => window.clearTimeout(hide.current), []);
 
   const last = detents.length - 1;
   const at = Math.min(index, last);
@@ -82,30 +76,26 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
   }, [paused, detent]);
 
   const step = (to: number): void => setIndex(Math.max(0, Math.min(last, Math.round(to))));
-  /** The axis's usable width in pixels: the row's, less the insets. */
-  const axisWidth = (): number =>
-    Math.max(1, (row.current?.getBoundingClientRect().width ?? 200) - 2 * AXIS_INSET_PX);
-  const showBriefly = (): void => {
-    setEngaged(true);
-    window.clearTimeout(hide.current);
-    hide.current = window.setTimeout(() => setEngaged(false), SHOW_MS);
-  };
 
   const onPointerDown = (e: PointerEvent<HTMLButtonElement>): void => {
     if (e.button !== 0) return;
-    drag.current = { pointerId: e.pointerId, startX: e.clientX, startIndex: at };
+    drag.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startIndex: at,
+      width: Math.max(1, e.currentTarget.getBoundingClientRect().width),
+    };
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
       // Without capture the drag simply ends at the pill's edge.
     }
-    window.clearTimeout(hide.current);
     setEngaged(true);
   };
   const onPointerMove = (e: PointerEvent<HTMLButtonElement>): void => {
     const d = drag.current;
     if (!d || e.pointerId !== d.pointerId) return;
-    step(d.startIndex + ((e.clientX - d.startX) / axisWidth()) * last);
+    step(d.startIndex + ((e.clientX - d.startX) / d.width) * last);
   };
   const onPointerEnd = (e: PointerEvent<HTMLButtonElement>): void => {
     if (drag.current?.pointerId !== e.pointerId) return;
@@ -117,7 +107,6 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
     if (now - lastWheel.current < WHEEL_STEP_MS || e.deltaY === 0) return;
     lastWheel.current = now;
     step(at - Math.sign(e.deltaY));
-    showBriefly();
   };
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
     const direction =
@@ -134,15 +123,12 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
     if (!direction) return;
     e.preventDefault();
     step(at + direction * (e.shiftKey ? BIG_STEP : 1));
-    showBriefly();
   };
 
-  const position = (i: number): string =>
-    `calc(${AXIS_INSET_PX}px + ${last > 0 ? i / last : 0} * (100% - ${2 * AXIS_INSET_PX}px))`;
   const pauseTip = paused ? 'resume time' : 'pause time';
   const phrase = describeDetent(detent);
   return (
-    <div id="time-row" ref={row}>
+    <div id="time-row">
       <button
         id="time-pause"
         className={paused ? 'orb active' : 'orb'}
@@ -173,15 +159,6 @@ export function TimeControls({ snap }: { snap: AppSnapshot | null }): ReactNode 
         <span className="sep">·</span>
         <span className="phrase">{phrase}</span>
       </button>
-      <div id="time-axis" className={engaged ? 'show' : ''} aria-hidden="true">
-        <div className="fill" style={{ width: position(at) }} />
-        {detents.slice(0, 2).map((stop, i) => (
-          <div className="tick" key={i} style={{ left: position(i) }}>
-            {stop.clock && <label>{stop.clock.label}</label>}
-          </div>
-        ))}
-        <div className="cursor" style={{ left: position(at) }} />
-      </div>
     </div>
   );
 }

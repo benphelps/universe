@@ -33,7 +33,7 @@ const PRESS_TIPS: Record<Exclude<GizmoScale, 'hidden'>, string> = {
 };
 
 /** The dial's size, and its geometry in the same pixels. */
-const DIAL = 88;
+const DIAL = 100;
 const CENTRE = DIAL / 2;
 const RING = CENTRE - 4;
 const NEEDLE_TIP = CENTRE - RING + 11;
@@ -45,7 +45,7 @@ const END_ON_EXTENT = 0.02;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ICON_ATTRS =
-  'viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"';
+  'viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"';
 const ICONS = {
   focus: `<svg ${ICON_ATTRS}><circle cx="8" cy="8" r="2.2"/><path d="M8 2v2.2M8 11.8V14M2 8h2.2M11.8 8H14"/></svg>`,
   ride: `<svg ${ICON_ATTRS}><path d="M9.5 6.5 13 3M13 3H9.8M13 3v3.2"/><path d="M6.5 9.5 3 13M3 13h3.2M3 13V9.8"/></svg>`,

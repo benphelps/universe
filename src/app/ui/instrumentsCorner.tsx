@@ -3,7 +3,7 @@ import { captureView } from '../store';
 import { SettingsMenu } from './settingsMenu';
 
 const CAMERA = (
-  <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+  <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
     <path d="M2.2 5.6h2.6l1.2-1.8h4l1.2 1.8h2.6v7H2.2z" />
     <circle cx="8" cy="9" r="2.3" />
   </svg>

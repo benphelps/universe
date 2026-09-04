@@ -17,7 +17,7 @@ const SKY_MODES: Array<{ name: SkyInstrumentName; label: string; title: string }
 ];
 
 const COG = (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3" />
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
   </svg>
@@ -25,7 +25,9 @@ const COG = (
 
 /**
  * The cog at the top-right of the view: instrument dials, folded away
- * until asked for. Time lives on the clock strip along the foot.
+ * until asked for. A press unfolds the panel from the cog itself —
+ * its top-right corner is the cog's, and the cog stays there as the
+ * fold. Time lives on the clock strip along the foot.
  */
 export function SettingsMenu(): ReactNode {
   const [open, setOpen] = useState(false);
@@ -53,8 +55,8 @@ export function SettingsMenu(): ReactNode {
       <button
         id="settings-toggle"
         className={open ? 'orb open' : 'orb'}
-        data-tip="instrument settings"
-        aria-label="instrument settings"
+        data-tip={open ? 'fold the settings' : 'instrument settings'}
+        aria-label={open ? 'fold the instrument settings' : 'instrument settings'}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
