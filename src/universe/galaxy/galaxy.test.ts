@@ -10,7 +10,14 @@ import {
   massBitsOf,
   seedForIdentity,
 } from '../star/identity';
-import { CATALOG_ROWS, luminosityCeiling, rowCells, starsNear, type CatalogCell } from './catalog';
+import {
+  CATALOG_ROWS,
+  luminosityCeiling,
+  rowCells,
+  starsNear,
+  sweepRowStars,
+  type CatalogCell,
+} from './catalog';
 import {
   projectSurveys,
   rowSweepRadiusPc,
@@ -230,6 +237,42 @@ describe('catalog', () => {
     expect(expectedSum / fieldSum).toBeGreaterThan(0.75);
     expect(expectedSum / fieldSum).toBeLessThan(1.35);
   });
+
+  it('a cell holds the same stars whatever ball or taper asks for them', () => {
+    // Every slot takes the same draws whether visited, out of reach,
+    // thinned, or thinned against the density, so a wider sweep sees
+    // the narrower one's stars exactly, and a taper only leaves out.
+    const near = starsNear(HOME_POSITION, 12);
+    const wide = starsNear(HOME_POSITION, 40).filter((star) => {
+      const { xPc, yPc, zPc } = star.positionPc;
+      return (
+        Math.hypot(xPc - HOME_POSITION.xPc, yPc - HOME_POSITION.yPc, zPc - HOME_POSITION.zPc) <=
+        12
+      );
+    });
+    expect(near.length).toBeGreaterThan(100);
+    expect(wide.map((star) => star.seed)).toEqual(near.map((star) => star.seed));
+    expect(wide.map((star) => star.positionPc)).toEqual(near.map((star) => star.positionPc));
+
+    const row = CATALOG_ROWS[0];
+    const visited = (taper?: { innerPc: number; outerPc: number }): Map<bigint, number> => {
+      const seen = new Map<bigint, number>();
+      sweepRowStars(row, HOME_POSITION, 60, (x, y, z, massBits, ageBits, entropy) => {
+        seen.set(
+          seedForIdentity(massBits, ageBits, entropy),
+          Math.hypot(x - HOME_POSITION.xPc, y - HOME_POSITION.yPc, z - HOME_POSITION.zPc),
+        );
+      }, taper);
+      return seen;
+    };
+    const whole = visited();
+    const tapered = visited({ innerPc: 20, outerPc: 60 });
+    expect(tapered.size).toBeLessThan(whole.size);
+    for (const [seed, distance] of tapered) expect(whole.get(seed)).toBe(distance);
+    for (const [seed, distance] of whole) {
+      if (distance <= 20) expect(tapered.get(seed)).toBe(distance);
+    }
+  }, 30000);
 
   it('a survey taken with reach projects a neighbouring sky to the bit', () => {
     // The sky coordinator keeps cell surveys from earlier skies and
