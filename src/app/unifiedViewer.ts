@@ -55,7 +55,6 @@ import {
   extendedSkyVisibility,
   instellation,
   pointStarVisibility,
-  SKYGLOW_FLUX_RATIO,
   starlight,
 } from '../render/lighting/starlight';
 import {
@@ -70,6 +69,7 @@ import { luminosityMultiplierAt } from '../universe/star/variability';
 import { foldShaderTime } from '../render/shaderTime';
 import {
   reflectedFluxRatio,
+  reflectedLightColor,
   shineTint,
   type ShineBody,
 } from '../render/lighting/reflectedLight';
@@ -3200,7 +3200,7 @@ export class UnifiedViewer {
     if (!hostNode || !hostStar) return null;
     const hostDistanceKm = Math.max(hostNode.object.group.position.distanceTo(worldPos), 1);
     const hostFlux = hostStar.luminosity / hostDistanceKm ** 2;
-    let bestRatio = 0.004;
+    let bestRatio = 0;
     let bestIndex = -1;
     for (let i = 0; i < this.starNodes.length; i++) {
       if (i === hostIndex) continue;
@@ -3222,7 +3222,7 @@ export class UnifiedViewer {
     const star =
       bestIndex === 0 ? this.system.star : this.system.companions[bestIndex - 1].star;
     const scale =
-      Math.min(bestRatio, 4) *
+      bestRatio *
       adapted(instellation(hostStar.luminosity, hostDistanceKm)) *
       luminosityMultiplierAt(star, simTimeDays);
     return {
@@ -3591,7 +3591,6 @@ export class UnifiedViewer {
     for (const material of [this.terrainMaterial, this.scatterMaterial]) {
       applySurfaceLight(material, VACUUM);
       clearRingShadow(material);
-      material.uniforms.uNightFloor.value = 0;
     }
     this.surveying = false;
     for (const mesh of [
@@ -4705,27 +4704,12 @@ export class UnifiedViewer {
       return;
     }
     const { atmosphere } = focusBody;
-    const sunElevation = Math.max(0, sunDir.dot(up));
 
-    // Reflected light joins the night: the brightest sunlit companion
-    // body — a moon over its planet, the parent planet over its moon —
-    // becomes the surface's second light. The flux ratio is physical
-    // (a full Moon delivers ~2e-6 of sunlight); what the display adds
-    // is a scotopic lift (ratio^0.2) fading in as the sun sets —
-    // disclosed eye adaptation, not extra photons — so moonlight
-    // shapes the night and vanishes into daylight as it should. The
-    // exponent is calibrated so a bright gibbous renders near a tenth
-    // of a day exposure — the brightness a dark-adapted eye reports.
-    // Adaptation belongs to a ground observer: from altitude the day
-    // limb fills the view and the eye stays light-adapted, so the lift
-    // fades out well below orbit — otherwise the second light's
-    // brightness visibly tracks the camera around the body.
-    const grounded = Math.max(
-      0,
-      Math.min(1, (0.6 - this.altitudeKm / Math.max(this.radiusKm, 1)) / 0.4),
-    );
-    const nightness =
-      (1 - Math.min(1, sunElevation / 0.03)) * grounded * grounded * (3 - 2 * grounded);
+    // The brightest sunlit companion body — a moon over its planet, the
+    // parent planet over its moon — can be the surface's second light. Its
+    // flux is always mixed linearly with the host star. The old path raised
+    // the ratio to a display-adaptation power inside a narrow sunset gate;
+    // that was the terrain-color snap, not a change in either light source.
     let surf2 = light2;
     let bestLum = surf2
       ? surf2.color[0] * 0.2126 + surf2.color[1] * 0.7152 + surf2.color[2] * 0.0722
@@ -4735,12 +4719,7 @@ export class UnifiedViewer {
       sunAtBody.copy(hostWorld).sub(body.positionKm).normalize();
       const ratio = reflectedFluxRatio(body, sunAtBody);
       if (ratio <= 0) continue;
-      const scale = ratio + (adapted(ratio) - ratio) * nightness;
-      const color: [number, number, number] = [
-        lightColor[0] * body.tint[0] * scale,
-        lightColor[1] * body.tint[1] * scale,
-        lightColor[2] * body.tint[2] * scale,
-      ];
+      const color = reflectedLightColor(lightColor, body.tint, ratio);
       const lum = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
       if (lum > bestLum) {
         bestLum = lum;
@@ -4752,13 +4731,6 @@ export class UnifiedViewer {
           reach: distanceKm - body.radiusKm,
         };
       }
-    }
-    // The same eye on a moonless ground: the sky's own glow, lifted
-    // as the moonlight is, gone from orbit where the day limb keeps
-    // the eye light-adapted. One floor for ground, sea, and cloud.
-    const nightFloor = adapted(SKYGLOW_FLUX_RATIO) * nightness;
-    for (const material of this.groundMaterials()) {
-      if (material.uniforms.uNightFloor) material.uniforms.uNightFloor.value = nightFloor;
     }
     // The stars by day: the atmosphere's own zenith radiance sets their
     // contrast. Point sources become detectable against much brighter

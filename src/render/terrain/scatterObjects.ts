@@ -70,7 +70,7 @@ void main() {
     float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, up, shadow2, diffuseShadow(shadow2));
   }
-  vec3 color = vColor * (light + uNightFloor);
+  vec3 color = vColor * light;
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,
   // red under a low sun, nothing in a vacuum.

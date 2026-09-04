@@ -77,7 +77,7 @@ void main() {
     float shadow2 = shadowFactor(shellPoint, uLight2Dir, uStar2AngularRadius, uLight2Reach);
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, cloudNormal, p, shadow2, diffuseShadow(shadow2));
   }
-  vec3 color = uCloudColor * mix(0.65, 1.12, cloud.z) * (light + uNightFloor);
+  vec3 color = uCloudColor * mix(0.65, 1.12, cloud.z) * light;
   // Below the deck we see transmitted diffuse flux, not an arbitrary shaded
   // copy of the sunlit top. An optically thick scattering slab passes roughly
   // 1/(1+3τ/4) of the incident diffuse field.

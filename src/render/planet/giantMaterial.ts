@@ -119,7 +119,7 @@ void main() {
   if (lit2) {
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, diffuseShadow(shadow2));
   }
-  vec3 color = surface * (light + uNightFloor);
+  vec3 color = surface * light;
   float xv = airmass(dot(normal, viewDir));
   color = color * airColumnThrough(vec3(0.0), uOpticalDepth, xv)
     + uLightColor * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl), -dot(viewDir, uLightDir))

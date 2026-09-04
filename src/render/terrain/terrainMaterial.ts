@@ -82,8 +82,8 @@ void main() {
   );
 
   // Each sun through the column above this ground, eclipsed by any
-  // moon or ring standing in its way; the night keeps the sky's own
-  // glow as the viewer's adaptation allows.
+  // moon or ring standing in its way. Night illumination comes only
+  // from physical secondary sources supplied by the viewer.
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, dir, shadow, diffuseShadow(shadow));
   bool lit2 = secondSunLit();
@@ -91,7 +91,7 @@ void main() {
     float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, dir, shadow2, diffuseShadow(shadow2));
   }
-  vec3 color = ground * (light + uNightFloor);
+  vec3 color = ground * light;
 
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,

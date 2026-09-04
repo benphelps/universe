@@ -17,7 +17,6 @@ uniform vec3 uAerosolFraction;          // the haze's share of scattering, per c
 uniform vec3 uScatteringAlbedo;         // scattering / extinction, per channel
 uniform float uHorizonAirmass;
 uniform float uAerosolHorizonAirmass;
-uniform float uNightFloor;
 uniform float uPlanetRadius;            // world units
 uniform float uScaleHeight;             // world units
 uniform float uAerosolScaleHeight;      // world units
@@ -403,7 +402,6 @@ export function surfaceLightUniforms(air: SurfaceAir = VACUUM): Record<string, {
     uAerosolHorizonAirmass: {
       value: horizonAirmass(air.radius, air.scaleHeight * air.aerosolScaleHeightRatio),
     },
-    uNightFloor: { value: 0 },
     uPlanetRadius: { value: air.radius },
     uScaleHeight: { value: air.scaleHeight },
     uAerosolScaleHeight: { value: air.scaleHeight * air.aerosolScaleHeightRatio },

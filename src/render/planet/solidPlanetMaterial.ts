@@ -139,18 +139,18 @@ void main() {
       * pow(max(dot(normal, halfDir2), 0.0), 90.0) * sheen * max(ndotl2, 0.0) * shadow2;
   }
 
-  vec3 solidGround = surface * (groundLight + uNightFloor) + specular;
+  vec3 solidGround = surface * groundLight + specular;
   float magmaEmissivity = mix(0.84, 0.94, magma.y);
   float thermalRatio = pow(magma.x / max(uMagmaTemperatureK, 1.0), 4.0);
   vec3 moltenGround =
     uThermalColor * uThermalStrength * thermalRatio * magmaEmissivity * uLavaGlow
-    + surface * (groundLight + uNightFloor) * (1.0 - magmaEmissivity)
+    + surface * groundLight * (1.0 - magmaEmissivity)
     + specular;
   vec3 groundColor = mix(solidGround, moltenGround, liquid);
   // Optical opacity determines whether the ground shows through; height
   // independently gives thick towers bright tops and darker shoulders.
   vec3 cloudSurface = uCloudColor * mix(0.65, 1.12, cloud.z);
-  vec3 cloudColor = cloudSurface * (cloudLight + uNightFloor * mix(0.45, 0.8, cloud.y));
+  vec3 cloudColor = cloudSurface * cloudLight;
   vec3 color = mix(groundColor, cloudColor, cloudMask);
   vec3 tau = mix(uOpticalDepth, uCloudAirDepth, cloudMask);
 

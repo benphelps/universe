@@ -14,8 +14,9 @@ export interface ShineBody {
 /**
  * Reflected flux at the focus origin relative to direct sunlight
  * there: albedo × (R/d)² × Lambert-sphere phase. A full Moon over
- * Earth comes out ~2×10⁻⁶ — the real number, far below what a linear
- * display can show; the caller owns any adaptation lift.
+ * Earth comes out ~2×10⁻⁶ — the real number. It stays a physical ratio
+ * when mixed with the host light; adaptation belongs to the completed
+ * image, not to this source switching on at sunset.
  */
 export function reflectedFluxRatio(body: ShineBody, sunDirAtBody: Vector3): number {
   const dKm = body.positionKm.length();
@@ -32,6 +33,22 @@ export function reflectedFluxRatio(body: ShineBody, sunDirAtBody: Vector3): numb
   const phase = Math.acos(Math.min(1, Math.max(-1, cosPhase)));
   const lambert = ((Math.PI - phase) * Math.cos(phase) + Math.sin(phase)) / Math.PI;
   return body.bondAlbedo * (body.radiusKm / dKm) ** 2 * Math.max(0, lambert);
+}
+
+/** A reflected body's contribution on the host light's existing display
+ * scale. Keeping the physical flux ratio linear prevents a colored body from
+ * changing the ground palette when an arbitrary day/night gate is crossed. */
+export function reflectedLightColor(
+  hostLight: readonly [number, number, number],
+  tint: readonly [number, number, number],
+  fluxRatio: number,
+): [number, number, number] {
+  const ratio = Math.max(0, fluxRatio);
+  return [
+    hostLight[0] * tint[0] * ratio,
+    hostLight[1] * tint[1] * ratio,
+    hostLight[2] * tint[2] * ratio,
+  ];
 }
 
 /** What color a body's reflected light carries: its clouds where they

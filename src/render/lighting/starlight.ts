@@ -12,7 +12,8 @@ const AU_KM = AU / 1000;
 export const ADAPTATION_EXPONENT = 0.2;
 
 /** A moonless sky's own light — starlight and airglow — as a fraction
- *  of full sunlight, about a millilux against a hundred kilolux. */
+ * of full sunlight, about a millilux against a hundred kilolux. Used as
+ * a measured visibility floor for the sky, not injected into surfaces. */
 export const SKYGLOW_FLUX_RATIO = 1.5e-8;
 
 /**

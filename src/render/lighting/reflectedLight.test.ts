@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { reflectedFluxRatio, shineTint } from './reflectedLight';
+import { reflectedFluxRatio, reflectedLightColor, shineTint } from './reflectedLight';
 
 const moonAnalog = (positionKm: Vector3) => ({
   positionKm,
@@ -35,6 +35,23 @@ describe('reflectedFluxRatio', () => {
     const far = reflectedFluxRatio(moonAnalog(new Vector3(384400, 0, 0)), new Vector3(-1, 0, 0));
     const near = reflectedFluxRatio(moonAnalog(new Vector3(192200, 0, 0)), new Vector3(-1, 0, 0));
     expect(near / far).toBeCloseTo(4, 1);
+  });
+});
+
+describe('reflectedLightColor', () => {
+  it('keeps reflected light linear through the former night threshold', () => {
+    const host = [1, 0.8, 0.6] as const;
+    const tint = [0.7, 0.8, 1] as const;
+    const dim = reflectedLightColor(host, tint, 0.004 - 1e-6);
+    const bright = reflectedLightColor(host, tint, 0.004 + 1e-6);
+
+    for (let channel = 0; channel < 3; channel++) {
+      expect(dim[channel]).toBeGreaterThan(0);
+      expect(bright[channel] / dim[channel]).toBeCloseTo(
+        (0.004 + 1e-6) / (0.004 - 1e-6),
+        8,
+      );
+    }
   });
 });
 

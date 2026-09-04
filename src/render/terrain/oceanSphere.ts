@@ -65,7 +65,7 @@ void main() {
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
     sheen += sunSheen(normal, viewDir, uLight2Dir, uLight2Color, shadow2);
   }
-  vec3 color = uColor * (light + uNightFloor) + sheen;
+  vec3 color = uColor * light + sheen;
 
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,
@@ -197,7 +197,7 @@ void main() {
   float emissivity = mix(0.84, 0.94, magma.y);
   float thermalRatio = pow(magma.x / max(uMagmaTemperatureK, 1.0), 4.0);
   vec3 thermal = uThermalColor * uThermalStrength * thermalRatio * emissivity;
-  vec3 reflected = uColor * (light + uNightFloor) * (1.0 - emissivity) + sheen;
+  vec3 reflected = uColor * light * (1.0 - emissivity) + sheen;
   vec3 color = thermal + reflected;
 
   // Aerial perspective: the air along the run to the eye keeps some of
