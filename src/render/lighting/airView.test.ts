@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { airZenithRadianceGreen, type AirView } from './airView';
+import { AIR_VIEW_GLSL, airZenithRadianceGreen, type AirView } from './airView';
 
 function earthAir(sunElevationRad: number, over: Partial<AirView> = {}): AirView {
   return {
@@ -36,5 +36,12 @@ describe('airZenithRadianceGreen', () => {
     const clear = airZenithRadianceGreen(earthAir(1));
     expect(airZenithRadianceGreen(earthAir(1, { sunIntensity: 0.5 }))).toBeCloseTo(clear / 2, 9);
     expect(airZenithRadianceGreen(earthAir(1, { eclipse: 0.1 }))).toBeCloseTo(clear * 0.1, 9);
+  });
+});
+
+describe('eclipse background contrast', () => {
+  it('uses the observer eclipse fraction without inventing a directional cutout', () => {
+    expect(AIR_VIEW_GLSL).toContain('float eclipseLight = uAirEclipse;');
+    expect(AIR_VIEW_GLSL).not.toContain('overheadShare');
   });
 });

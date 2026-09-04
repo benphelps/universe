@@ -49,10 +49,13 @@ vec3 airTransmittanceTo(vec3 worldPos) {
 // Directional daylight contrast for stellar backgrounds. The global
 // intensity is seated against the zenith; this ratio corrects each
 // sightline so stars emerge first in the darker anti-solar sky and
-// remain washed out around the sunset aureole. During totality the
-// umbra darkens the overhead column most while the distant horizon
-// retains its illuminated ring. The zenith's own value depends on
-// nothing but uniforms, so it arrives as one computed once a frame.
+// remain washed out around the sunset aureole. Eclipse visibility is
+// the direct-disc fraction measured at the observer. The sky dome
+// integrates the moon shadow parcel by parcel and supplies the actual
+// directional horizon ring; inventing a second directional eclipse
+// shape here leaves a hard, black cutout when those shapes disagree.
+// The zenith's own value depends on nothing but uniforms, so it arrives
+// as one computed once a frame.
 float airSkyRadianceGreen(vec3 dir) {
   if (uAirTau.g <= 0.0 || uAirSunIntensity <= 0.0) return 0.0;
   float muView = dot(dir, uAirUp);
@@ -74,8 +77,10 @@ float airSkyRadianceGreen(vec3 dir) {
     : tv * exp(-tv);
   float cosTheta = dot(dir, uAirSunDir);
   float phase = 0.1875 * (1.0 + cosTheta * cosTheta) * uAirScatteringAlbedo;
-  float overheadShare = smoothstep(0.0, 0.5, max(muView, 0.0));
-  float eclipseLight = mix(1.0, uAirEclipse, overheadShare);
+  // Apply the observer's eclipse state uniformly to background
+  // contrast. Real directional eclipse light is already composited by
+  // the atmospheric volume in front of this background.
+  float eclipseLight = uAirEclipse;
   float scatterTau = uAirTau.g * uAirScatteringAlbedo;
   float interacted = 1.0 - exp(-scatterTau * xs);
   float survived = exp(-uAirTau.g * (1.0 - uAirScatteringAlbedo) * 0.5 * (xs + xv));
