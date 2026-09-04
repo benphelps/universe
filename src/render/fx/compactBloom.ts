@@ -66,25 +66,51 @@ void main() {
 
 const BLUR_FRAGMENT = /* glsl */ `
 uniform sampler2D colorTexture;
+uniform sampler2D depthTexture;
 uniform vec2 invSize;
 uniform vec2 direction;
+uniform float reversedDepth;
 uniform float gaussianCoefficients[KERNEL_RADIUS];
 varying vec2 vUv;
+
+// Depth is reciprocal under both projection conventions once standard
+// depth is reflected about one. Clear sky is zero; larger values stand
+// closer to the camera. A foreground pixel may gather glare from its own
+// depth layer, but not from an emitter behind it. Sky remains unmasked so
+// the point-spread function can still form naturally around a visible sun.
+float proximityAt(vec2 uv) {
+  float depth = texture2D(depthTexture, clamp(uv, vec2(0.0), vec2(1.0))).r;
+  return mix(1.0 - depth, depth, reversedDepth);
+}
+
+float visibilityAt(float centerProximity, vec2 sampleUv) {
+  if (centerProximity <= 1e-7) return 1.0;
+  float sampleProximity = proximityAt(sampleUv);
+  // Leave room for the depth slope across a curved or rugged surface.
+  // A stellar or clear-sky source behind terrain is orders of magnitude
+  // farther away and falls cleanly below this relative interval.
+  return smoothstep(centerProximity * 0.65, centerProximity * 0.82, sampleProximity);
+}
+
 void main() {
-  float weightSum = gaussianCoefficients[0];
-  vec3 diffuseSum = texture2D(colorTexture, vUv).rgb * weightSum;
+  float centerProximity = proximityAt(vUv);
+  float centerWeight = gaussianCoefficients[0];
+  vec3 diffuseSum = texture2D(colorTexture, vUv).rgb * centerWeight;
   for (int i = 1; i < KERNEL_RADIUS; i++) {
     float x = float(i);
     float w = gaussianCoefficients[i];
     vec2 uvOffset = direction * invSize * x;
-    vec3 sample1 = texture2D(colorTexture, vUv + uvOffset).rgb;
-    vec3 sample2 = texture2D(colorTexture, vUv - uvOffset).rgb;
-    diffuseSum += (sample1 + sample2) * w;
+    vec2 uv1 = vUv + uvOffset;
+    vec2 uv2 = vUv - uvOffset;
+    vec3 sample1 = texture2D(colorTexture, uv1).rgb;
+    vec3 sample2 = texture2D(colorTexture, uv2).rgb;
+    diffuseSum += sample1 * w * visibilityAt(centerProximity, uv1);
+    diffuseSum += sample2 * w * visibilityAt(centerProximity, uv2);
   }
   gl_FragColor = vec4(diffuseSum, 1.0);
 }`;
 
-function blurMaterial(kernelRadius: number): ShaderMaterial {
+function blurMaterial(kernelRadius: number, reversedDepth: boolean): ShaderMaterial {
   const sigma = kernelRadius / 3;
   const coefficients: number[] = [];
   for (let i = 0; i < kernelRadius; i++) {
@@ -94,8 +120,10 @@ function blurMaterial(kernelRadius: number): ShaderMaterial {
     defines: { KERNEL_RADIUS: kernelRadius },
     uniforms: {
       colorTexture: { value: null },
+      depthTexture: { value: null },
       invSize: { value: new Vector2(1, 1) },
       direction: { value: HORIZONTAL },
+      reversedDepth: { value: reversedDepth ? 1 : 0 },
       gaussianCoefficients: { value: coefficients },
     },
     vertexShader: VERTEX,
@@ -148,33 +176,43 @@ export class CompactBloomPass extends Pass {
   private readonly brightMaterial: ShaderMaterial;
   private readonly blurMaterials: ShaderMaterial[] = [];
   private readonly blend: ShaderMaterial;
+  private readonly levels: readonly { kernelRadius: number; weight: number }[];
   private readonly quad = new FullScreenQuad();
   private readonly black = new Color(0, 0, 0);
   private readonly savedClearColor = new Color();
 
   constructor(
     strength: number,
-    private readonly levels: readonly { kernelRadius: number; weight: number }[] = BLOOM_LEVELS,
+    options: {
+      levels?: readonly { kernelRadius: number; weight: number }[];
+      reversedDepth?: boolean;
+    } = {},
   ) {
     super();
     this.needsSwap = false;
+    this.levels = options.levels ?? BLOOM_LEVELS;
+    const reversedDepth = options.reversedDepth ?? true;
     const half = { type: HalfFloatType };
     this.bright = new WebGLRenderTarget(1, 1, half);
-    for (const level of levels) {
+    for (const level of this.levels) {
       this.horizontal.push(new WebGLRenderTarget(1, 1, half));
       this.vertical.push(new WebGLRenderTarget(1, 1, half));
-      this.blurMaterials.push(blurMaterial(level.kernelRadius));
+      this.blurMaterials.push(blurMaterial(level.kernelRadius, reversedDepth));
     }
     this.brightMaterial = new ShaderMaterial({
       uniforms: { tDiffuse: { value: null } },
       vertexShader: VERTEX,
       fragmentShader: BRIGHT_FRAGMENT,
     });
-    this.blend = blendMaterial(levels, strength);
+    this.blend = blendMaterial(this.levels, strength);
   }
 
   get brightShader(): string {
     return this.brightMaterial.fragmentShader;
+  }
+
+  get blurShader(): string {
+    return this.blurMaterials[0]?.fragmentShader ?? '';
   }
 
   /** Each level's target size, finest first. */
@@ -212,6 +250,7 @@ export class CompactBloomPass extends Pass {
     let input = this.bright;
     this.levels.forEach((_, i) => {
       const blur = this.blurMaterials[i];
+      blur.uniforms.depthTexture.value = readBuffer.depthTexture;
       blur.uniforms.colorTexture.value = input.texture;
       blur.uniforms.direction.value = HORIZONTAL;
       this.draw(renderer, blur, this.horizontal[i]);

@@ -9,6 +9,14 @@ describe('compact bloom', () => {
     expect(pass.brightShader).toContain('isinf');
   });
 
+  it('rejects glare samples hidden behind foreground depth', () => {
+    const pass = new CompactBloomPass(0.18);
+    expect(pass.blurShader).toContain('uniform sampler2D depthTexture');
+    expect(pass.blurShader).toContain('centerProximity <= 1e-7');
+    expect(pass.blurShader).toContain('visibilityAt(centerProximity, uv1)');
+    expect(pass.blurShader).toContain('visibilityAt(centerProximity, uv2)');
+  });
+
   it('keeps a short pyramid whose wings fade', () => {
     expect(BLOOM_LEVELS.length).toBeLessThanOrEqual(3);
     for (let i = 1; i < BLOOM_LEVELS.length; i++) {

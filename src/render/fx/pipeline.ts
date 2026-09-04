@@ -1,4 +1,13 @@
-import { ACESFilmicToneMapping, WebGLRenderer, type Camera, type Scene } from 'three';
+import {
+  ACESFilmicToneMapping,
+  DepthTexture,
+  HalfFloatType,
+  UnsignedIntType,
+  WebGLRenderer,
+  WebGLRenderTarget,
+  type Camera,
+  type Scene,
+} from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -47,12 +56,23 @@ export class RenderPipeline {
     this.renderer.toneMappingExposure = 1;
     container.appendChild(this.renderer.domElement);
 
-    this.composer = new EffectComposer(this.renderer);
+    // Keep the beauty pass's depth available to post-processing. This
+    // display-glare cue should spread through open sky, but must not make
+    // a nearer solid surface look translucent. A sampled depth attachment
+    // keeps that rule geometric instead of special-casing planets or sunsets.
+    const sceneTarget = new WebGLRenderTarget(1, 1, {
+      type: HalfFloatType,
+      depthBuffer: true,
+      depthTexture: new DepthTexture(1, 1, UnsignedIntType),
+    });
+    this.composer = new EffectComposer(this.renderer, sceneTarget);
     this.composer.addPass(new RenderPass(scene, camera));
     // Glare is a compact optical cue around HDR emitters: a broad
     // point-spread turns the physically small solar disc into a white
     // bank across the horizon, hiding sunset color and eclipse contacts.
-    this.bloom = new CompactBloomPass(0.18);
+    this.bloom = new CompactBloomPass(0.18, {
+      reversedDepth: this.renderer.capabilities.reversedDepthBuffer,
+    });
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new DiagramPass(scene, camera));
