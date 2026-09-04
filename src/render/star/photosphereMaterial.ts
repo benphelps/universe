@@ -4,11 +4,16 @@ import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { seedOffset } from './seedOffset';
 import { stellarSurfaceModel, stellarSurfaceStateAt } from './surfaceModel';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
+import {
+  HORIZON_OCCLUSION_GLSL,
+  horizonOcclusionUniforms,
+} from '../lighting/horizonOcclusion';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
 varying vec3 vWorldNormal;
 varying vec3 vViewDir;
+varying vec3 vWorldPos;
 
 ${AIR_REFRACT_GLSL}
 
@@ -17,7 +22,8 @@ void main() {
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldNormal = normalize(mat3(modelMatrix) * normal);
   vViewDir = normalize(cameraPosition - worldPos.xyz);
-  gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
+  vWorldPos = airRefractPosition(worldPos.xyz);
+  gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPos, 1.0);
 }
 `;
 
@@ -25,8 +31,10 @@ const FRAGMENT = /* glsl */ `
 varying vec3 vObjPos;
 varying vec3 vWorldNormal;
 varying vec3 vViewDir;
+varying vec3 vWorldPos;
 
 ${AIR_VIEW_GLSL}
+${HORIZON_OCCLUSION_GLSL}
 
 uniform sampler2D uLut;
 uniform float uTeff;
@@ -125,6 +133,7 @@ void activeMasks(
 }
 
 void main() {
+  if (horizonOccludes(vWorldPos)) discard;
   vec3 p = normalize(vObjPos);
   float latitude = asin(clamp(p.y, -1.0, 1.0));
   float mu = clamp(dot(normalize(vWorldNormal), normalize(vViewDir)), 0.0, 1.0);
@@ -238,6 +247,7 @@ export function createPhotosphereMaterial(star: Star, lut: DataTexture): ShaderM
     fragmentShader: FRAGMENT,
     uniforms: {
       ...airViewUniforms(),
+      ...horizonOcclusionUniforms(),
       uLut: { value: lut },
       uTeff: { value: star.tEff },
       uRotationPhase: { value: state.rotationPhase },

@@ -5,7 +5,11 @@ import {
   SURFACE_LIGHT_GLSL,
   surfaceLightUniforms,
 } from '../lighting/surfaceLight';
-import { atmosphereColumn, columnAbove } from '../../universe/planet/atmosphere';
+import {
+  aerosolSurfaceExposure,
+  atmosphereColumn,
+  columnAbove,
+} from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
@@ -164,7 +168,11 @@ export function createCloudShell(
   // triangulation sag, or quad centers dip below mountaintops and the
   // depth test punches a grid of holes through the clouds.
   const { baseKm, topKm: deckKm } = bounds;
-  const column = atmosphereColumn(atmosphere, bulk);
+  const column = atmosphereColumn(
+    atmosphere,
+    bulk,
+    aerosolSurfaceExposure(atmosphere, physical.climate.iceCapLatitudeRad),
+  );
   const material = new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,

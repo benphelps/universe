@@ -14,6 +14,7 @@ import {
 import type { Star } from '../../universe/star/types';
 import { luminosityMultiplierAt } from '../../universe/star/variability';
 import { applyAirView, type AirView } from '../lighting/airView';
+import { applyHorizonOcclusion } from '../lighting/horizonOcclusion';
 import { ADAPTATION_EXPONENT, adapted, instellation } from '../lighting/starlight';
 import { CORONA_SIZE_FACTOR, createCoronaMaterial } from './coronaMaterial';
 import { createPhotosphereMaterial } from './photosphereMaterial';
@@ -159,6 +160,15 @@ export class StarObject {
   setAirView(air: AirView | null): void {
     if (this.photosphere) applyAirView(this.photosphere, air);
     if (this.corona) applyAirView(this.corona, air);
+  }
+
+  /**
+   * Close the focused body's distant horizon behind streamed terrain. The
+   * exact terrain depth still wins wherever a local ridge is resident.
+   */
+  setHorizonOccluder(center: Vector3 | null, radiusKm = 0): void {
+    if (this.photosphere) applyHorizonOcclusion(this.photosphere, center, radiusKm);
+    if (this.corona) applyHorizonOcclusion(this.corona, center, radiusKm);
   }
 
   dispose(): void {

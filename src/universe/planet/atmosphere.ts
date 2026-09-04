@@ -149,13 +149,20 @@ const RAYLEIGH_PER_BAR: Record<AtmosphereClass, number> = {
  * extinction spectrum, and the share returned as scattered light. A
  * clear terrestrial sky's thin aerosol, a
  * giant's stratospheric haze, Venus's sulfur veil above the deck,
- * Mars's dust, Titan's tholins. A class property, not a pressure one —
- * the dust in a thin CO₂ sky is what makes it, not how much gas holds
- * it up.
+ * Mars's dust, Titan's tholins. Each depth belongs to a measured
+ * reference column; terrestrial columns scale by their actual P/g,
+ * and surface-fed dust also needs exposed mineral ground below it.
  */
 const AEROSOL: Record<
   AtmosphereClass,
   {
+    /** Measured reference column carrying `depth`, kg m⁻². Null where
+     *  the visible deck, rather than the generated deep pressure, owns
+     *  the aerosol column. */
+    referenceColumnKgM2: number | null;
+    /** Mineral dust needs exposed ground; photochemical and condensate
+     *  hazes do not. */
+    surfaceSourced: boolean;
     depth: number;
     extinctionHue: [number, number, number];
     singleScatteringAlbedo: [number, number, number];
@@ -163,54 +170,81 @@ const AEROSOL: Record<
   }
 > = {
   none: {
+    referenceColumnKgM2: null,
+    surfaceSourced: false,
     depth: 0,
     extinctionHue: [1, 1, 1],
     singleScatteringAlbedo: [0, 0, 0],
     scaleHeightRatio: 1,
   },
   'hydrogen-helium': {
+    referenceColumnKgM2: null,
+    surfaceSourced: false,
     depth: 0.25,
     extinctionHue: [0.9, 1, 1.2],
     singleScatteringAlbedo: [0.96, 0.91, 0.76],
     scaleHeightRatio: 0.65,
   },
   nitrogen: {
+    referenceColumnKgM2: 1e5 / EARTH_GRAVITY_MS2,
+    surfaceSourced: false,
     depth: 0.03,
     extinctionHue: [0.95, 1, 1.08],
     singleScatteringAlbedo: [0.95, 0.94, 0.9],
     scaleHeightRatio: 0.22,
   },
   'nitrogen-oxygen': {
+    referenceColumnKgM2: 1e5 / EARTH_GRAVITY_MS2,
+    surfaceSourced: false,
     depth: 0.03,
     extinctionHue: [0.95, 1, 1.08],
     singleScatteringAlbedo: [0.95, 0.94, 0.9],
     scaleHeightRatio: 0.22,
   },
   'co2-hothouse': {
+    referenceColumnKgM2: (92e5) / 8.87,
+    surfaceSourced: false,
     depth: 2.5,
     extinctionHue: [0.72, 1, 1.45],
     singleScatteringAlbedo: [0.98, 0.92, 0.62],
     scaleHeightRatio: 0.55,
   },
   'thin-co2': {
+    referenceColumnKgM2: 636 / 3.721,
+    surfaceSourced: true,
     depth: 0.35,
     extinctionHue: [0.72, 1, 1.35],
     singleScatteringAlbedo: [0.96, 0.83, 0.52],
     scaleHeightRatio: 0.35,
   },
   'nitrogen-methane': {
+    referenceColumnKgM2: (1.47e5) / 1.352,
+    surfaceSourced: false,
     depth: 3,
     extinctionHue: [0.7, 1, 1.55],
     singleScatteringAlbedo: [0.96, 0.78, 0.34],
     scaleHeightRatio: 0.8,
   },
   'rock-vapor': {
+    referenceColumnKgM2: 10 / EARTH_GRAVITY_MS2,
+    surfaceSourced: false,
     depth: 1,
     extinctionHue: [0.78, 1, 1.3],
     singleScatteringAlbedo: [0.9, 0.72, 0.45],
     scaleHeightRatio: 0.45,
   },
 };
+
+/** Fraction of mineral ground available to feed a surface-sourced haze.
+ *  `iceCapLatitudeRad` is π/2 with no caps and zero for a snowball, so
+ *  its sine is the exposed area fraction of the sphere. */
+export function aerosolSurfaceExposure(
+  atmosphere: PlanetAtmosphere,
+  iceCapLatitudeRad: number,
+): number {
+  if (!AEROSOL[atmosphere.class].surfaceSourced) return 1;
+  return Math.sin(Math.min(Math.PI / 2, Math.max(0, iceCapLatitudeRad)));
+}
 
 /** The two scatterers of a visible column, per channel: the gas's
  *  Rayleigh depth and the class's aerosol haze. */
@@ -239,15 +273,30 @@ export function visibleOpticalDepth(
   return [k * RAYLEIGH_HUE[0], k * RAYLEIGH_HUE[1], k * RAYLEIGH_HUE[2]];
 }
 
-/** Vertical aerosol extinction optical depth of the haze, per channel. */
-export function aerosolExtinctionDepth(atmosphere: PlanetAtmosphere): [number, number, number] {
-  const { depth, extinctionHue } = AEROSOL[atmosphere.class];
-  return [depth * extinctionHue[0], depth * extinctionHue[1], depth * extinctionHue[2]];
+/** Vertical aerosol extinction optical depth of the haze, per channel.
+ *  A reference depth is a measured mass-mixing state, not a fixed sky
+ *  opacity: for the same composition the aerosol column follows P/g. */
+export function aerosolExtinctionDepth(
+  atmosphere: PlanetAtmosphere,
+  bulk: PlanetBulk,
+  surfaceExposure = 1,
+): [number, number, number] {
+  const { depth, extinctionHue, referenceColumnKgM2, surfaceSourced } =
+    AEROSOL[atmosphere.class];
+  const columnKgM2 = (atmosphere.surfacePressureBar * 1e5) / Math.max(bulk.gravityMs2, 0.1);
+  const columnScale = referenceColumnKgM2 ? columnKgM2 / referenceColumnKgM2 : 1;
+  const sourceScale = surfaceSourced ? Math.min(1, Math.max(0, surfaceExposure)) : 1;
+  const tau = depth * columnScale * sourceScale;
+  return [tau * extinctionHue[0], tau * extinctionHue[1], tau * extinctionHue[2]];
 }
 
 /** Vertical aerosol scattering optical depth, after absorptive losses. */
-export function aerosolOpticalDepth(atmosphere: PlanetAtmosphere): [number, number, number] {
-  const extinction = aerosolExtinctionDepth(atmosphere);
+export function aerosolOpticalDepth(
+  atmosphere: PlanetAtmosphere,
+  bulk: PlanetBulk,
+  surfaceExposure = 1,
+): [number, number, number] {
+  const extinction = aerosolExtinctionDepth(atmosphere, bulk, surfaceExposure);
   const { singleScatteringAlbedo } = AEROSOL[atmosphere.class];
   return [
     extinction[0] * singleScatteringAlbedo[0],
@@ -256,11 +305,15 @@ export function aerosolOpticalDepth(atmosphere: PlanetAtmosphere): [number, numb
   ];
 }
 
-export function atmosphereColumn(atmosphere: PlanetAtmosphere, bulk: PlanetBulk): AirColumn {
+export function atmosphereColumn(
+  atmosphere: PlanetAtmosphere,
+  bulk: PlanetBulk,
+  surfaceExposure = 1,
+): AirColumn {
   return {
     rayleigh: visibleOpticalDepth(atmosphere, bulk),
-    aerosol: aerosolOpticalDepth(atmosphere),
-    aerosolExtinction: aerosolExtinctionDepth(atmosphere),
+    aerosol: aerosolOpticalDepth(atmosphere, bulk, surfaceExposure),
+    aerosolExtinction: aerosolExtinctionDepth(atmosphere, bulk, surfaceExposure),
     aerosolScaleHeightRatio: AEROSOL[atmosphere.class].scaleHeightRatio,
   };
 }
@@ -274,8 +327,9 @@ export function atmosphericBondAlbedo(
   atmosphere: PlanetAtmosphere,
   bulk: PlanetBulk,
   incidentRgb: readonly [number, number, number],
+  surfaceExposure = 1,
 ): number {
-  const column = atmosphereColumn(atmosphere, bulk);
+  const column = atmosphereColumn(atmosphere, bulk, surfaceExposure);
   const photopic = [0.2126, 0.7152, 0.0722] as const;
   const weights = photopic.map((weight, i) => weight * Math.max(incidentRgb[i], 0));
   const weightSum = Math.max(weights[0] + weights[1] + weights[2], 1e-9);

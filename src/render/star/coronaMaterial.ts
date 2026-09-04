@@ -3,6 +3,10 @@ import type { Star } from '../../universe/star/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { seedOffset } from './seedOffset';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
+import {
+  HORIZON_OCCLUSION_GLSL,
+  horizonOcclusionUniforms,
+} from '../lighting/horizonOcclusion';
 
 /** Corona billboard extent as a multiple of the stellar radius. */
 export const CORONA_SIZE_FACTOR = 8;
@@ -10,6 +14,7 @@ export const CORONA_SIZE_FACTOR = 8;
 const VERTEX = /* glsl */ `
 varying vec3 vRel;
 varying vec3 vAirDir;
+varying vec3 vWorldPos;
 
 ${AIR_REFRACT_GLSL}
 
@@ -20,15 +25,18 @@ void main() {
   // from the model matrix, so the shader works in any scene unit.
   float halfWidth = 0.5 * length(vec3(modelMatrix[0]));
   vRel = (worldPos.xyz - (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz) / halfWidth;
-  gl_Position = projectionMatrix * viewMatrix * vec4(airRefractPosition(worldPos.xyz), 1.0);
+  vWorldPos = airRefractPosition(worldPos.xyz);
+  gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPos, 1.0);
 }
 `;
 
 const FRAGMENT = /* glsl */ `
 varying vec3 vRel;
 varying vec3 vAirDir;
+varying vec3 vWorldPos;
 
 ${AIR_VIEW_GLSL}
+${HORIZON_OCCLUSION_GLSL}
 
 uniform vec3 uColor;
 uniform vec3 uSeedOffset;
@@ -78,6 +86,7 @@ float evolvingNoise(vec3 p) {
 }
 
 void main() {
+  if (horizonOccludes(vWorldPos)) discard;
   // The billboard cuts through the star's center perpendicular to the view,
   // so its fragments sample a 3D star-anchored field with true parallax.
   vec3 rel = vRel;
@@ -140,6 +149,7 @@ export function createCoronaMaterial(star: Star): ShaderMaterial {
       uSeedOffset: { value: seedOffset(star) },
       uDiscRadius: { value: 2 / CORONA_SIZE_FACTOR },
       ...airViewUniforms(),
+      ...horizonOcclusionUniforms(),
       uIntensity: { value: 0.2 },
       uAxialTilt: { value: star.activity.axialTiltRad },
       uRotationPhase: { value: 0 },

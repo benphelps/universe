@@ -35,7 +35,6 @@ export function computeClimate(
 ): PlanetClimate {
   const instellation = luminosity / aAu ** 2;
   const envelope = atmosphere.class === 'hydrogen-helium';
-  const airAlbedo = envelope ? 0 : atmosphericBondAlbedo(atmosphere, bulk, incidentRgb);
 
   // Water inventory: ice-rich beyond the frost line, trace delivery inside.
   const waterMassFraction =
@@ -137,6 +136,14 @@ export function computeClimate(
       0.95,
       surfaceAlbedo * (1 - iceFraction) + 0.45 * iceFraction + waterCloudAlbedo,
     );
+    // A thin CO₂ atmosphere's mineral aerosol can only be replenished
+    // from exposed ground. As ice advances, the dust column and its
+    // reflected share disappear continuously inside the same albedo
+    // iteration instead of remaining a fixed Mars-colored veil.
+    const surfaceExposure = Math.sin(iceCapLatitudeRad);
+    const airAlbedo = envelope
+      ? 0
+      : atmosphericBondAlbedo(atmosphere, bulk, incidentRgb, surfaceExposure);
     // Adding-doubling for an atmosphere over a reflecting lower boundary:
     // the down-and-up transmission is (1-A)^2 and repeated bounces form the
     // denominator. No atmosphere class is assigned a predetermined albedo.

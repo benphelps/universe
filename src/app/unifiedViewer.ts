@@ -48,6 +48,7 @@ import { RenderPipeline } from '../render/fx/pipeline';
 import { SKY_POINT_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
 import { StarObject } from '../render/star/starObject';
 import { applyAirView, type AirView } from '../render/lighting/airView';
+import { applyHorizonOcclusion } from '../render/lighting/horizonOcclusion';
 import { applySecondSun, type SecondSun } from '../render/lighting/secondSun';
 import {
   adapted,
@@ -63,7 +64,7 @@ import {
   totalDepth,
   VACUUM,
 } from '../render/lighting/surfaceLight';
-import { atmosphereColumn } from '../universe/planet/atmosphere';
+import { aerosolSurfaceExposure, atmosphereColumn } from '../universe/planet/atmosphere';
 import { luminosityMultiplierAt } from '../universe/star/variability';
 import { foldShaderTime } from '../render/shaderTime';
 import {
@@ -2602,7 +2603,11 @@ export class UnifiedViewer {
     // one brings its own, standing in the ground frame's XZ plane.
     const horizon = horizonAirmass(this.radiusKm, physical.atmosphere.scaleHeightKm);
     const air = {
-      ...atmosphereColumn(physical.atmosphere, physical.bulk),
+      ...atmosphereColumn(
+        physical.atmosphere,
+        physical.bulk,
+        aerosolSurfaceExposure(physical.atmosphere, physical.climate.iceCapLatitudeRad),
+      ),
       horizon,
       radius: this.radiusKm,
       scaleHeight: Math.max(physical.atmosphere.scaleHeightKm, 0.1),
@@ -4750,12 +4755,33 @@ export class UnifiedViewer {
     // take it as they are placed; the stellar tiers take it once the
     // sun's geometry is known below.
     const air = this.airView(up);
+    // The depth-only globe sits below the deepest possible excavation so it
+    // cannot fill crater bowls. At ground level that necessary undersizing
+    // leaves a distant annulus through which a stellar HDR source can leak
+    // before bloom. Give both the star meshes and unresolved glints a
+    // camera-safe analytic horizon at the datum (or the local surface when it
+    // lies below datum); streamed terrain still supplies the exact silhouette.
+    const horizonRadius =
+      solid && !this.focusAsteroid
+        ? Math.max(
+            1e-6,
+            Math.min(this.radiusKm, this.camera.position.length() - this.altitudeKm),
+          )
+        : 0;
     const spritePositions = this.starSprites?.geometry.getAttribute('position') as
       | BufferAttribute
       | undefined;
+    if (this.starSprites) {
+      applyHorizonOcclusion(
+        this.starSprites.material as ShaderMaterial,
+        horizonRadius > 0 ? ORIGIN : null,
+        horizonRadius,
+      );
+    }
     for (let i = 0; i < this.starNodes.length; i++) {
       const node = this.starNodes[i];
       node.object.group.position.copy(toFocusWorld(starPositions[i]));
+      node.object.setHorizonOccluder(horizonRadius > 0 ? ORIGIN : null, horizonRadius);
       node.object.update(this.simTimeDays, this.camera);
       node.object.setAirView(air);
       if (node.hole) this.updateStellarHole(node, node.object.group.position);

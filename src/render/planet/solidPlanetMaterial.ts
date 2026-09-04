@@ -1,6 +1,10 @@
 import { Color, ShaderMaterial } from 'three';
 import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
-import { atmosphereColumn, columnAbove } from '../../universe/planet/atmosphere';
+import {
+  aerosolSurfaceExposure,
+  atmosphereColumn,
+  columnAbove,
+} from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
 import { exposedMagmaTemperatureK } from '../../universe/planet/thermodynamics';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
@@ -173,7 +177,11 @@ void main() {
 export function createSolidPlanetMaterial(physical: Characterization): ShaderMaterial {
   const { appearance, bulk, atmosphere } = physical;
   const radiusKm = bulk.radiusEarth * 6371;
-  const column = atmosphereColumn(atmosphere, bulk);
+  const column = atmosphereColumn(
+    atmosphere,
+    bulk,
+    aerosolSurfaceExposure(atmosphere, physical.climate.iceCapLatitudeRad),
+  );
   // The distant sphere sees the same physically placed top as the focus
   // shell (terrain clearance is the only focus-only adjustment).
   const deckKm = appearance.clouds.topAltitudeKm;

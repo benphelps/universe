@@ -20,6 +20,10 @@ import type { Neighborhood } from '../../universe/galaxy/neighborhood';
 import { fieldPointUniforms } from '../displayTransfer';
 import { glslFloat as f } from '../glsl/format';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
+import {
+  HORIZON_OCCLUSION_GLSL,
+  horizonOcclusionUniforms,
+} from '../lighting/horizonOcclusion';
 
 /**
  * A resident nebula extinguishes the star field behind it.
@@ -130,6 +134,7 @@ uniform mat3 uCameraToGalaxy;
 
 ${AIR_VIEW_GLSL}
 ${AIR_REFRACT_GLSL}
+${HORIZON_OCCLUSION_GLSL}
 
 out vec3 vColor;
 out float vAlpha;
@@ -225,12 +230,13 @@ void main() {
   vec3 hue = mix(
     vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
     starColor, sat);
-  vec3 skyDir = normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition);
+  vec3 worldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+  vec3 skyDir = normalize(worldPos - cameraPosition);
   vColor = hue * energy * uIntensity * extinction * skyVisibility(skyDir) * airTransmittance(skyDir);
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
   gl_PointSize = drawn;
-  gl_Position = projectionMatrix * viewMatrix
-    * vec4(airRefractPosition((modelMatrix * vec4(position, 1.0)).xyz), 1.0);
+  vec3 apparentWorldPos = airRefractPosition(worldPos);
+  gl_Position = projectionMatrix * viewMatrix * vec4(apparentWorldPos, 1.0);
   // Sky points sit far beyond the camera's far plane at low altitude,
   // and the far plane cuts on view depth — a camera-rotation-dependent
   // filter that has no business editing the sky. Under the reversed-Z
@@ -243,7 +249,9 @@ void main() {
   gl_Position.z = clamp(gl_Position.z, 1e-24 * gl_Position.w, gl_Position.w);
   // A point that has gone costs no fragments: put it outside the clip
   // volume and the rasterizer never sees it.
-  if (held <= 0.0) gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+  if (held <= 0.0 || horizonOccludes(apparentWorldPos)) {
+    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+  }
 }
 `;
 
@@ -270,6 +278,7 @@ export function createStarPointsMaterial(kmPerPc: number, zeroPoint = 17): Shade
     fragmentShader: FRAGMENT,
     uniforms: {
       ...airViewUniforms(),
+      ...horizonOcclusionUniforms(),
       uKmPerPc: { value: kmPerPc },
       uIntensity: { value: 1 },
       uZeroPoint: { value: zeroPoint },

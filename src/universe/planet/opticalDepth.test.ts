@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aerosolExtinctionDepth,
   aerosolOpticalDepth,
+  aerosolSurfaceExposure,
   atmosphericBondAlbedo,
   atmosphereColumn,
   columnAbove,
@@ -57,14 +58,38 @@ describe('atmosphericBondAlbedo', () => {
 
 describe('aerosolOpticalDepth', () => {
   it('keeps clear air thin and makes methane haze orange through blue absorption', () => {
-    const [r, g, b] = aerosolOpticalDepth(air({}));
+    const [r, g, b] = aerosolOpticalDepth(air({}), earthBulk);
     expect(g).toBeLessThan(0.04);
     expect(g).toBeGreaterThan(0.02);
-    const [tr, tg, tb] = aerosolOpticalDepth(air({ class: 'nitrogen-methane' }));
+    const titanBulk = { gravityMs2: 1.352 } as PlanetBulk;
+    const titanAir = air({ class: 'nitrogen-methane', surfacePressureBar: 1.47 });
+    const [tr, tg, tb] = aerosolOpticalDepth(titanAir, titanBulk);
     expect(tg).toBeGreaterThan(1);
     expect(tr).toBeGreaterThan(tb);
-    const [er, , eb] = aerosolExtinctionDepth(air({ class: 'nitrogen-methane' }));
+    const [er, , eb] = aerosolExtinctionDepth(titanAir, titanBulk);
     expect(eb).toBeGreaterThan(er * 2);
+  });
+
+  it('scales a dusty CO2 column with pressure over gravity', () => {
+    const marsAir = air({ class: 'thin-co2', surfacePressureBar: 0.00636 });
+    const marsBulk = { gravityMs2: 3.721 } as PlanetBulk;
+    const sparseAir = air({ class: 'thin-co2', surfacePressureBar: 0.00107 });
+    const sparseBulk = { gravityMs2: 3.527 } as PlanetBulk;
+    const mars = aerosolExtinctionDepth(marsAir, marsBulk)[1];
+    const sparse = aerosolExtinctionDepth(sparseAir, sparseBulk)[1];
+    expect(mars).toBeCloseTo(0.35, 6);
+    expect(sparse).toBeGreaterThan(0);
+    expect(sparse).toBeLessThan(mars * 0.25);
+  });
+
+  it('removes surface-fed mineral dust as an ice sheet covers its source', () => {
+    const co2 = air({ class: 'thin-co2', surfacePressureBar: 0.00636 });
+    const marsBulk = { gravityMs2: 3.721 } as PlanetBulk;
+    const clear = aerosolSurfaceExposure(co2, 0);
+    const halfExposed = aerosolSurfaceExposure(co2, Math.PI / 6);
+    expect(clear).toBe(0);
+    expect(halfExposed).toBeCloseTo(0.5, 8);
+    expect(aerosolExtinctionDepth(co2, marsBulk, clear)).toEqual([0, 0, 0]);
   });
 });
 
