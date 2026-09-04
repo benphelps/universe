@@ -44,17 +44,16 @@ export interface Detent {
 /**
  * The slider's stops for a focus: real time, then each clock's whole
  * run of paces from a turn an hour down to a turn a second, clock
- * after clock, quickest clock first — a day's run, then a month's,
- * then a year's. The stops are spaced evenly on the slider, so the
- * slider reads as "which clock, and how fast", not as a number line;
- * the rate itself is whatever those two name.
+ * after clock in the order the focus names them — a day's run, then a
+ * month's, then a year's, whatever their lengths (a close moon's
+ * month can be shorter than the day). The stops are spaced evenly on
+ * the slider, so it reads as "which clock, and how fast", not as a
+ * number line; the rate itself is whatever those two name.
  */
 export function detentsFor(clocks: Clock[]): Detent[] {
   const detents: Detent[] = [{ rate: REAL_RATE, clock: null, seconds: null }];
-  const turning = clocks
-    .filter((clock) => clock.periodDays !== null)
-    .sort((a, b) => (a.periodDays as number) - (b.periodDays as number));
-  for (const clock of turning) {
+  for (const clock of clocks) {
+    if (clock.periodDays === null) continue;
     for (const seconds of DETENT_SECONDS) {
       detents.push({ rate: (clock.periodDays as number) / seconds, clock, seconds });
     }
@@ -62,7 +61,7 @@ export function detentsFor(clocks: Clock[]): Detent[] {
   return detents;
 }
 
-/** Where a focus opens: its quickest clock turning once in half a
+/** Where a focus opens: its first clock turning once in half a
  *  minute — a day at a world, the innermost orbit on a map. */
 export function openingIndex(detents: Detent[]): number {
   const index = detents.findIndex((detent) => detent.seconds === OPENING_SECONDS);
@@ -185,8 +184,8 @@ export function clocksFor(snap: AppSnapshot): FocusClocks {
     clocks: [
       REAL_TIME,
       { label: 'day', periodDays: planet.physical.rotation.periodHours / 24 },
-      year,
       ...(planet.moons.length > 0 ? [{ label: 'month', periodDays: monthDays(0) }] : []),
+      year,
     ],
   };
 }
