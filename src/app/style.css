@@ -1060,29 +1060,6 @@ table.props td:first-child {
   z-index: 4;
 }
 
-#recenter {
-  position: absolute;
-  left: 50%;
-  top: 14px;
-  transform: translateX(-50%);
-  z-index: 6;
-  padding: 6px 16px;
-  font: 600 12px/1.4 var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--accent);
-  background: rgba(10, 14, 20, 0.8);
-  border: 1px solid var(--accent);
-  border-radius: 3px;
-  backdrop-filter: blur(6px);
-  cursor: pointer;
-}
-
-#recenter:hover {
-  color: var(--accent-hi);
-  border-color: var(--accent-hi);
-}
-
 #welcome-card .galaxy-choices {
   display: flex;
   gap: 10px;
@@ -1239,6 +1216,146 @@ table.props td:first-child {
 #welcome-continue:hover {
   background: rgba(70, 174, 198, 0.22);
   color: #b5ecf8;
+}
+
+/* ---- the reorient gizmo ---- */
+
+/* A compass dial in the corner above the instrument bar: the needle
+   is where the scale's pole lies on screen, the dial rolls it up, and
+   the four corners carry the camera's other moves. It lifts above the
+   touch chrome when a finger has the corner. */
+#reorient {
+  position: absolute;
+  right: 12px;
+  bottom: 96px;
+  z-index: 6;
+  width: 104px;
+  height: 104px;
+}
+
+#reorient.lifted {
+  bottom: 160px;
+}
+
+#reorient .dial {
+  position: absolute;
+  left: 24px;
+  top: 24px;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+
+#reorient .dial[aria-disabled='true'] {
+  cursor: default;
+}
+
+#reorient .compass {
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+
+#reorient .ring {
+  fill: rgba(10, 14, 20, 0.72);
+  stroke: rgba(170, 210, 255, 0.22);
+  stroke-width: 1;
+}
+
+#reorient .tick {
+  stroke: var(--faint);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+#reorient .tick.top {
+  stroke-width: 1.4;
+  opacity: 1;
+}
+
+#reorient .needle {
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transition: stroke 200ms;
+}
+
+#reorient .tip {
+  fill: var(--accent-hi);
+  transition: fill 200ms;
+}
+
+#reorient .hub {
+  fill: var(--dim);
+}
+
+#reorient .letter {
+  font: 600 9px var(--display);
+  letter-spacing: 0.1em;
+  fill: var(--dim);
+}
+
+#reorient .compass.aligned .needle {
+  stroke: var(--faint);
+}
+
+#reorient .compass.aligned .tip {
+  fill: var(--dim);
+}
+
+#reorient .dial:hover .ring {
+  stroke: var(--accent);
+}
+
+#reorient .corner {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(10, 14, 20, 0.8);
+  backdrop-filter: blur(6px);
+  color: var(--dim);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#reorient .corner.tl { left: 0; top: 0; }
+#reorient .corner.tr { right: 0; top: 0; }
+#reorient .corner.bl { left: 0; bottom: 0; }
+#reorient .corner.br { right: 0; bottom: 0; }
+
+#reorient .corner:hover {
+  border-color: var(--accent);
+  color: var(--accent-hi);
+}
+
+#reorient .corner[aria-disabled='true'] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+#reorient .corner[aria-disabled='true']:hover {
+  border-color: var(--line);
+  color: var(--dim);
+}
+
+#reorient .corner.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#reorient .dial:focus-visible,
+#reorient .corner:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Which drag one finger is doing — the switch a mouse doesn't need,
@@ -1405,12 +1522,20 @@ table.props td:first-child {
     bottom: calc(104px + env(safe-area-inset-bottom));
   }
 
+  #reorient {
+    right: calc(10px + env(safe-area-inset-right));
+    bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  #reorient.lifted {
+    bottom: calc(160px + env(safe-area-inset-bottom));
+  }
+
   #settings-menu {
     width: min(76vw, 272px);
   }
 
   /* The overlays sit clear of the drawer handle and the cog. */
-  #recenter,
   #walk-hint,
   #perf {
     top: calc(62px + env(safe-area-inset-top));

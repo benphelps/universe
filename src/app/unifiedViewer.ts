@@ -168,6 +168,8 @@ import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { FlightCamera, type FlightSurface } from './flightCamera';
 import { gazeQuaternion, headingOf } from './cameraGaze';
 import { OrbitArcball } from './orbitArcball';
+import { easeInOut, edgeOn, faceOn, lookingFrom, poleOnScreen, rolledToPole } from './reorient';
+import { ReorientGizmo } from './ui/reorientGizmo';
 import { fmt } from './ui/format';
 import type { Planet, StarSystem } from '../universe/system/types';
 
@@ -267,6 +269,11 @@ const NEBULA_HOME_REACH_PC = 400;
 const NEBULA_GATEWAY_STANDOFF_PC = 200;
 const GALAXY_FADE_NEAR_PC = 60;
 const GALAXY_FADE_FAR_PC = 450;
+/** Beyond this distance from the focus the galaxy is the body in view,
+ *  and the reorient gizmo measures up against its pole. */
+const GALAXY_UP_PC = (GALAXY_FADE_NEAR_PC + GALAXY_FADE_FAR_PC) / 2;
+/** How long a reorient takes: the one eased move the camera makes on request. */
+const REORIENT_MS = 350;
 const ORIGIN = new Vector3();
 
 /** A backdrop standing before the sweep has no stars of its own yet. */
@@ -844,6 +851,74 @@ export class UnifiedViewer {
     );
   }
 
+  /** The up this scale is measured against: the body's pole, or the
+   *  galactic pole once the galaxy is the body in view. */
+  private scalePole(): Vector3 {
+    const m = this.sceneOrientation;
+    if (this.coreView || !m || this.camera.position.length() / PC_KM < GALAXY_UP_PC) {
+      return BODY_POLE.clone();
+    }
+    return new Vector3(m[2], m[5], m[8]).applyQuaternion(this.frameQuat).normalize();
+  }
+
+  /** The gizmo's press: in space, roll the scale's pole up the screen;
+   *  on the ground, face north and level the gaze. */
+  private reorient(): void {
+    if (this.inBand || this.flight.active) {
+      this.headMove = {
+        h0: Math.atan2(Math.sin(this.headingRad), Math.cos(this.headingRad)),
+        p0: this.pitchRad,
+        t0: performance.now(),
+      };
+      return;
+    }
+    const q1 = rolledToPole(this.camera.quaternion, this.scalePole());
+    if (q1) this.moveCamera(q1, false);
+  }
+
+  /** Turn to look at the focus from where the camera stands, and
+   *  anchor the orbit on it again. */
+  private returnToFocus(): void {
+    if (this.controls.target.lengthSq() < 1) return;
+    this.controls.target.set(0, 0, 0);
+    const back = this.camera.position.clone().normalize();
+    const screenUp = new Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    this.moveCamera(lookingFrom(this.camera.quaternion, back, screenUp), false);
+  }
+
+  /** Ease the camera to an orientation. An orbiting move carries the
+   *  position round the anchor with it; a turn in place leaves the
+   *  position where it is. */
+  private moveCamera(q1: Quaternion, orbit: boolean): void {
+    if (this.inBand || this.flight.active) return;
+    this.cameraMove = { q0: this.camera.quaternion.clone(), q1, t0: performance.now(), orbit };
+  }
+
+  /** Advance whatever the gizmo asked for. */
+  private advanceMoves(): void {
+    const now = performance.now();
+    const move = this.cameraMove;
+    if (move) {
+      const e = easeInOut((now - move.t0) / REORIENT_MS);
+      const anchor = this.controls.target;
+      const distance = this.camera.position.distanceTo(anchor);
+      this.camera.quaternion.slerpQuaternions(move.q0, move.q1, e);
+      if (move.orbit) {
+        this.camera.position
+          .copy(anchor)
+          .addScaledVector(new Vector3(0, 0, 1).applyQuaternion(this.camera.quaternion), distance);
+      }
+      if (e >= 1) this.cameraMove = null;
+    }
+    const head = this.headMove;
+    if (head) {
+      const e = easeInOut((now - head.t0) / REORIENT_MS);
+      this.headingRad = head.h0 * (1 - e);
+      this.pitchRad = head.p0 * (1 - e);
+      if (e >= 1) this.headMove = null;
+    }
+  }
+
   /**
    * One wheel event's share of the ride, in delta units. Lines and
    * pages become pixels, and events in quick succession — a wheel
@@ -1004,7 +1079,11 @@ export class UnifiedViewer {
   private readonly flight = new FlightCamera();
   private walkHint: HTMLDivElement | null = null;
   private walkHintText = '';
-  private recenter: HTMLButtonElement | null = null;
+  private gizmo: ReorientGizmo | null = null;
+  /** An eased turn in space, asked for by the gizmo. */
+  private cameraMove: { q0: Quaternion; q1: Quaternion; t0: number; orbit: boolean } | null = null;
+  /** An eased turn of the head, asked for on the ground. */
+  private headMove: { h0: number; p0: number; t0: number } | null = null;
   /** Hold-to-fly, the ground regime's control on a touch device. */
   private flyStick: HTMLButtonElement | null = null;
   private oceanMaterial: ShaderMaterial | null = null;
@@ -1351,15 +1430,14 @@ export class UnifiedViewer {
     this.walkHint.id = 'walk-hint';
     this.walkHint.style.display = 'none';
     container.appendChild(this.walkHint);
-    // Panning moves the orbit anchor off the focus; this brings it home.
-    this.recenter = document.createElement('button');
-    this.recenter.id = 'recenter';
-    this.recenter.textContent = 'return to focus';
-    this.recenter.style.display = 'none';
-    this.recenter.addEventListener('click', () => {
-      this.controls.target.set(0, 0, 0);
+    // The corner's compass, and the camera's other moves around it.
+    this.gizmo = new ReorientGizmo(container, {
+      up: () => this.reorient(),
+      faceOn: () => this.moveCamera(faceOn(this.camera.quaternion, this.scalePole()), true),
+      edgeOn: () => this.moveCamera(edgeOn(this.camera.quaternion, this.scalePole()), true),
+      focus: () => this.returnToFocus(),
+      ride: () => (this.rideOutRate > 0 ? this.stopRideOut() : this.startRideOut()),
     });
-    container.appendChild(this.recenter);
     // On foot a finger has no WASD: look with the drag, hold this to
     // fly where you look. It shares the flight camera's key path.
     this.flyStick = document.createElement('button');
@@ -1417,6 +1495,9 @@ export class UnifiedViewer {
       this.cursor = null;
     });
     this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
+      // The hand takes over from any move the gizmo asked for.
+      this.cameraMove = null;
+      this.headMove = null;
       this.dragTravelPx = 0;
       if (e.button === 0) this.pointerDownAt = [e.clientX, e.clientY];
     });
@@ -3259,6 +3340,8 @@ export class UnifiedViewer {
     window.removeEventListener('keyup', this.onKeyChange);
     window.removeEventListener('blur', this.onWindowBlur);
     this.controls.dispose();
+    this.gizmo?.dispose();
+    this.gizmo = null;
     this.clearFocus();
     this.dropHeldSky();
     this.clearSystem();
@@ -3476,6 +3559,7 @@ export class UnifiedViewer {
     this.controls.enabled = !this.multiTouched;
     this.controls.target.set(0, 0, 0);
     this.controls.update(dtSeconds);
+    this.advanceMoves();
 
     if (this.rideOutRate > 0) {
       if (this.altitudeKm >= this.maxAltitudeKm() * 0.999) this.stopRideOut();
@@ -3493,6 +3577,7 @@ export class UnifiedViewer {
     this.camera.near = Math.max(this.altitudeKm * 1e-4, 1);
     this.camera.far = Math.max(this.camera.position.length() * 2.5, NEIGHBOR_RADIUS_PC * PC_KM * 2.5);
     this.camera.updateProjectionMatrix();
+    this.updateGizmo();
 
     const identity = new Matrix3();
     const pixelsPerRadian =
@@ -4053,11 +4138,26 @@ export class UnifiedViewer {
     };
   }
 
-  /** One quiet line of guidance for the ground regime. */
-  private updateRecenter(): void {
-    if (!this.recenter) return;
-    const panned = !this.flight.active && this.controls.target.lengthSq() >= 1;
-    this.recenter.style.display = panned ? '' : 'none';
+  /** Feed the corner's compass: where the scale's pole lies on screen,
+   *  or north on the ground, and which of its moves apply. */
+  private updateGizmo(): void {
+    if (!this.gizmo) return;
+    const ground = this.inBand || this.flight.active;
+    let rollRad = -this.headingRad;
+    let extent = 1;
+    if (!ground) {
+      const seen = poleOnScreen(this.camera.quaternion, this.scalePole());
+      rollRad = seen.rollRad;
+      extent = seen.extent;
+    }
+    this.gizmo.update({
+      mode: this.system || this.coreView ? (ground ? 'ground' : 'space') : 'hidden',
+      rollRad,
+      extent,
+      panned: this.controls.target.lengthSq() >= 1,
+      riding: this.rideOutRate > 0,
+      lifted: this.touchMode,
+    });
   }
 
   private updateWalkHint(): void {
@@ -4118,6 +4218,7 @@ export class UnifiedViewer {
         }
         this.controls.update(dtSeconds);
       }
+      this.advanceMoves();
 
       let up = this.camera.position.clone().normalize();
       const terrainM = this.field ? this.field.heightAt(up) : 0;
@@ -4262,7 +4363,7 @@ export class UnifiedViewer {
       this.updateHover();
       this.resolveTap();
       this.updateWalkHint();
-      this.updateRecenter();
+      this.updateGizmo();
 
       if (this.skyHandover?.advance(dtSeconds, this.backdrop !== null)) this.dropHeldSky();
       if (this.backdrop?.group.visible || this.skyHandover) {
