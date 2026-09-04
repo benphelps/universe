@@ -400,8 +400,16 @@ budget the cap answers to, `NEBULA_VOLUME_REACH_PC`,
   asking — the neighbourhood's `starsNear` and the sky's census could
   disagree in boundary cells. Every slot now takes the same draws. Open:
   the neighbourhood could be served from the same surveys instead of
-  being recomputed on the main thread at every arrival; the background
-  bake is now the critical path of a nearby jump.
+  being recomputed on the main thread at every arrival.
+- **The bake stands in through a short jump — landed.** The background
+  bake is the critical path of a nearby jump, so within the survey
+  reach the viewer holds the last sky's backdrop (`skyHandover.ts`):
+  the same group, turned into the new system's frame by the relative
+  rotation of the two `sceneFromGalaxy` frames, following the camera,
+  the air, the instrument and the standing volumes like the backdrop
+  it was, and crossfaded out over a second once the new bake lands. A
+  stand-in, not the sky: a nearby cloud sits a few degrees from where
+  it will land, for as long as the bake takes.
 - **Residency ranking — landed.** Admission was by projected size alone,
   so a bright emission complex could lose its slot to bigger dark rifts.
   `residencyWeight` ranks by what is at stake on the sky: the cloud's

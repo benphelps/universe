@@ -74,6 +74,7 @@ import {
   type ShineBody,
 } from '../render/lighting/reflectedLight';
 import { StarfieldBackdrop } from '../render/starfield/starfieldBackdrop';
+import { SkyHandover } from '../render/starfield/skyHandover';
 import {
   createNeighborStars,
   createStarPointsMaterial,
@@ -150,6 +151,7 @@ import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { holeDonors } from '../universe/system/holeDonors';
 import { rotateToScene, sceneFromGalaxy, sceneFromUpAxis } from '../universe/galaxy/orientation';
+import { SURVEY_REACH_PC } from '../universe/galaxy/skySurvey';
 import {
   meanPopulationLuminosity,
   type SkyField,
@@ -460,6 +462,9 @@ export class UnifiedViewer {
   private beltMaterials: ShaderMaterial[] = [];
   private cometObjects: CometObject[] = [];
   private backdrop: StarfieldBackdrop | null = null;
+  /** The last sky's bake, standing in through a short jump until the
+   *  next one lands. */
+  private skyHandover: SkyHandover | null = null;
   /** Slabs of the sky drawn while the rest of it is still being swept. */
   private skyPreview: Points[] = [];
   /** The rotation those slabs are placed with, known before the field
@@ -1394,6 +1399,17 @@ export class UnifiedViewer {
 
   /** Build the system-wide content: stars, planets, belts, comets, overlay. */
   setSystem(system: StarSystem): void {
+    // From a neighbouring star the baked sky is very nearly this one's,
+    // and stands in until this one's lands rather than going dark.
+    const shortJump =
+      this.system !== null &&
+      Math.hypot(
+        system.localePc.xPc - this.viewpointPc.xPc,
+        system.localePc.yPc - this.viewpointPc.yPc,
+        system.localePc.zPc - this.viewpointPc.zPc,
+      ) <= SURVEY_REACH_PC;
+    if (shortJump) this.holdSky();
+    else this.dropHeldSky();
     this.clearFocus();
     this.clearCore();
     this.clearSystem();
@@ -1482,6 +1498,7 @@ export class UnifiedViewer {
 
     const galaxyOrientation = sceneFromGalaxy(seedFromHex(system.seedHex));
     this.sceneOrientation = galaxyOrientation;
+    this.skyHandover?.aim(galaxyOrientation);
     // The same rotation the finished field will carry, so a slab drawn
     // early sits exactly where its star ends up.
     this.skyPreviewFrame = galaxyOrientation;
@@ -3172,6 +3189,7 @@ export class UnifiedViewer {
     window.removeEventListener('blur', this.onWindowBlur);
     this.controls.dispose();
     this.clearFocus();
+    this.dropHeldSky();
     this.clearSystem();
     this.terrainMaterial.dispose();
     this.scatterMaterial.dispose();
@@ -3291,6 +3309,7 @@ export class UnifiedViewer {
   setCoreView(): void {
     this.clearFocus();
     this.clearCore();
+    this.dropHeldSky();
     this.clearSystem();
     this.coreView = true;
 
@@ -3544,16 +3563,18 @@ export class UnifiedViewer {
    * bends is the sky the eye is already looking at.
    */
   private captureWithSkyAt(sky: LensedSky, atWorldKm: Vector3, hidden: Mesh[]): void {
-    const backdrop = this.backdrop?.group;
-    const was = backdrop?.position.clone();
-    backdrop?.position.copy(atWorldKm);
+    const skies = [this.backdrop?.group, this.skyHandover?.group].filter(
+      (group): group is Group => group !== undefined,
+    );
+    const were = skies.map((group) => group.position.clone());
+    for (const group of skies) group.position.copy(atWorldKm);
     // The volume domes reach the frame as a screen-space composite,
     // which a cube camera must not photograph: for the capture the
     // domes themselves stand in, recentred the way the backdrop is.
     const domes = this.pipeline.sky.lendTo(this.scene, atWorldKm);
     sky.capture(this.pipeline.renderer, this.scene, atWorldKm, hidden);
     this.pipeline.sky.reclaim(domes);
-    if (backdrop && was) backdrop.position.copy(was);
+    skies.forEach((group, i) => group.position.copy(were[i]));
   }
 
   private scaleSprites(scale: number): void {
@@ -3667,6 +3688,24 @@ export class UnifiedViewer {
       positions.count,
     );
     this.pcGroup.add(this.neighborPoints);
+  }
+
+  /** Keep the standing bake up through the jump: it leaves the
+   *  backdrop's place for the next bake to take, and stays in the
+   *  scene until that one stands. A bake already held stays held
+   *  while nothing newer has landed. */
+  private holdSky(): void {
+    if (!this.backdrop || !this.sceneOrientation) return;
+    this.dropHeldSky();
+    this.skyHandover = new SkyHandover(this.backdrop, this.sceneOrientation);
+    this.backdrop = null;
+  }
+
+  private dropHeldSky(): void {
+    if (!this.skyHandover) return;
+    this.scene.remove(this.skyHandover.group);
+    this.skyHandover.backdrop.dispose();
+    this.skyHandover = null;
   }
 
   private clearSystem(): void {
@@ -3803,6 +3842,7 @@ export class UnifiedViewer {
     this.skyInstrument = instrument;
     this.skyExposure = exposure;
     this.backdrop?.setInstrument(instrument, exposure);
+    this.skyHandover?.backdrop.setInstrument(instrument, exposure);
     for (const volume of this.nebulaVolumes.values()) {
       volume.setInstrument(instrument, exposure, this.skyFloorRadiance);
     }
@@ -3834,12 +3874,17 @@ export class UnifiedViewer {
     // The backdrop fades out as the volumetric galaxy fades in — its
     // sky-sphere geometry is wrong once the camera has real parallax.
     // The neighborhood points are true 3D and stay: they simply recede.
-    if (this.backdrop) {
-      this.backdrop.setVisibility(
-        pointValue * (1 - this.galaxyFade),
-        extendedValue * (1 - this.galaxyFade),
-      );
-    }
+    // Through a short jump the held bake carries the sky until the
+    // next one stands, then hands it over.
+    const nextShare = this.skyHandover?.nextShare ?? 1;
+    this.backdrop?.setVisibility(
+      pointValue * (1 - this.galaxyFade) * nextShare,
+      extendedValue * (1 - this.galaxyFade) * nextShare,
+    );
+    this.skyHandover?.backdrop.setVisibility(
+      pointValue * (1 - this.galaxyFade) * this.skyHandover.heldShare,
+      extendedValue * (1 - this.galaxyFade) * this.skyHandover.heldShare,
+    );
     // Smooth galaxy and nebula light has a much lower contrast against
     // twilight than a stellar point. Its occlusion fades with its light,
     // so a rift cannot punch a dark hole through the atmosphere.
@@ -4204,11 +4249,16 @@ export class UnifiedViewer {
       this.updateWalkHint();
       this.updateRecenter();
 
-      if (this.backdrop?.group.visible) {
-        this.backdrop.group.position.copy(this.camera.position);
+      if (this.skyHandover?.advance(dtSeconds, this.backdrop !== null)) this.dropHeldSky();
+      if (this.backdrop?.group.visible || this.skyHandover) {
         const centerDistSq = this.camera.position.lengthSq();
         const tangentKm = Math.sqrt(Math.max(0, centerDistSq - this.radiusKm * this.radiusKm));
-        this.backdrop.group.scale.setScalar(Math.max(1, (tangentKm * 1.35) / 2000));
+        const skyScale = Math.max(1, (tangentKm * 1.35) / 2000);
+        if (this.backdrop?.group.visible) {
+          this.backdrop.group.position.copy(this.camera.position);
+          this.backdrop.group.scale.setScalar(skyScale);
+        }
+        this.skyHandover?.follow(this.frameQuat, this.camera.position, skyScale);
       }
       if (this.galaxyVolume) {
         const worldToScene = new Matrix3().setFromMatrix4(
@@ -4256,10 +4306,11 @@ export class UnifiedViewer {
           );
           byDistance.push(volume);
         }
-        if (this.backdrop) {
+        if (this.backdrop || this.skyHandover) {
           this.volumeFades.clear();
           for (const [seed, volume] of this.nebulaVolumes) this.volumeFades.set(seed, volume.fade);
-          this.backdrop.setNebulaVolumeFades(this.volumeFades);
+          this.backdrop?.setNebulaVolumeFades(this.volumeFades);
+          this.skyHandover?.backdrop.setNebulaVolumeFades(this.volumeFades);
         }
         // Farther volumes draw first so a near cloud composites over a
         // far one. Reversed-Z inverts renderOrder: lowest draws LAST,
@@ -4775,6 +4826,7 @@ export class UnifiedViewer {
       air.eclipse = eclipse;
     }
     this.backdrop?.setAirView(air);
+    this.skyHandover?.backdrop.setAirView(air);
     this.pipeline.sky.setAirView(air);
     for (const points of [this.starSprites, this.farPoints, this.neighborPoints]) {
       if (points) applyAirView(points.material as ShaderMaterial, air);
