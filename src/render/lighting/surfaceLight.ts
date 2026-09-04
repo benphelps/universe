@@ -579,12 +579,29 @@ export function curvedZenithSkyRadiance(
   const phaseAerosol = hazePhase(phaseCosine);
   const viewDepth = [0, 0, 0];
   const radiance = [0, 0, 0];
+  // Up the vertical, the planet's own shadow ends where a parcel's
+  // horizon dips as far as the sun has set, less the disc's upper
+  // limb. The ray is cut there, so no sample straddles the boundary
+  // and the washout follows the shadow up without stepping.
+  const sunDepression = Math.max(-Math.asin(phaseCosine) - Math.max(sunAngularRadius, 1e-5), 0);
+  const shadowTop = air.radius / Math.cos(sunDepression) - air.radius - altitude;
 
   for (let sample = 0; sample < count; sample++) {
     const q0 = sample / count;
     const q1 = (sample + 1) / count;
     const start = distance * q0 * q0;
     const end = distance * q1 * q1;
+    const cut = Math.min(Math.max(shadowTop, start), end);
+    for (const [from, to] of [
+      [start, cut],
+      [cut, end],
+    ]) {
+      if (to <= from) continue;
+      integrate(from, to);
+    }
+  }
+
+  function integrate(start: number, end: number): void {
     const ds = end - start;
     const sampleAltitude = altitude + (start + end) * 0.5;
     const gasDensity = Math.exp(-sampleAltitude / gasHeight);
@@ -607,7 +624,8 @@ export function curvedZenithSkyRadiance(
       air.radius,
       aerosolHeight,
     );
-    const sunVisible = Number.isFinite(gasSunColumn) && Number.isFinite(aerosolSunColumn);
+    const sunVisible =
+      end > shadowTop && Number.isFinite(gasSunColumn) && Number.isFinite(aerosolSunColumn);
 
     for (let channel = 0; channel < 3; channel++) {
       const extinction =

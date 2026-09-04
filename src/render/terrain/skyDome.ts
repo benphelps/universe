@@ -106,11 +106,65 @@ float sunDiscVisibility(float radiusAtParcel, float mu, float angularRadius) {
   return smoothstep(-halfWidth, halfWidth, elevation + horizonDip);
 }
 
+// Where a ray runs through the planet's own shadow behind its light:
+// past the plane through the centre and inside the cylinder the planet
+// casts, drawn in by the disc's upper limb so the penumbra stays with
+// the lit side. Distances along the ray, empty when from >= to.
+vec2 shadowSpan(vec3 origin, vec3 dir, vec3 lightDir, float angularRadius, float reachAlong) {
+  float originAlong = dot(origin, lightDir);
+  float dirAlong = dot(dir, lightDir);
+  float nightFrom = 0.0;
+  float nightTo = reachAlong;
+  if (abs(dirAlong) < 1e-9) {
+    if (originAlong >= 0.0) return vec2(0.0);
+  } else {
+    float atPlane = -originAlong / dirAlong;
+    if (dirAlong > 0.0) nightTo = min(nightTo, atPlane);
+    else nightFrom = max(nightFrom, atPlane);
+  }
+  if (nightTo <= nightFrom) return vec2(0.0);
+  vec3 originAcross = origin - originAlong * lightDir;
+  vec3 dirAcross = dir - dirAlong * lightDir;
+  float a = dot(dirAcross, dirAcross);
+  float b = dot(originAcross, dirAcross);
+  float c0 = dot(originAcross, originAcross);
+  float radius = uPlanetRadius;
+  vec2 span = vec2(0.0);
+  for (int pass = 0; pass < 2; pass++) {
+    float c = c0 - radius * radius;
+    float from = nightFrom;
+    float to = nightTo;
+    if (a < 1e-12) {
+      if (c >= 0.0) return vec2(0.0);
+    } else {
+      float discriminant = b * b - a * c;
+      if (discriminant <= 0.0) return vec2(0.0);
+      float root = sqrt(discriminant);
+      from = max(from, (-b - root) / a);
+      to = min(to, (-b + root) / a);
+    }
+    if (to <= from) return vec2(0.0);
+    span = vec2(from, to);
+    // The exit's altitude sets how far into the geometric shadow the
+    // disc's upper limb still reaches.
+    float exitRadius = length(origin + dir * to);
+    radius = uPlanetRadius
+      - angularRadius * sqrt(max(exitRadius * exitRadius - uPlanetRadius * uPlanetRadius, 0.0));
+  }
+  return span;
+}
+
 // One light's share of the sky, integrated through the curved
-// atmosphere. Every sample carries its own density, route to the eye,
+// atmosphere. Every piece carries its own density, route to the eye,
 // route to the sun, and eclipse state. High parcels therefore remain
 // sunlit after the observer's sunset and fade continuously upward and
 // outward as the planetary shadow climbs through the air.
+//
+// The ray is cut at every boundary the model has along it — the cloud
+// deck, and where the planet's own shadow begins and ends — so no
+// piece straddles one. Sampled whole, a segment would switch its deck
+// or its shadow on and off as the view turned, and the sky would show
+// each switch as a band.
 vec3 scattered(
   vec3 dir,
   vec3 lightDir,
@@ -131,44 +185,58 @@ vec3 scattered(
     sphereExit(cameraPosition, dir, uPlanetRadius + topAltitude),
     groundDistance(cameraPosition, dir)
   );
+  vec2 shade = shadowSpan(cameraPosition, dir, lightDir, angularRadius, distance);
+  float nearCut = min(deck.x, shade.x);
+  float farCut = max(deck.x, shade.x);
+  vec3 cuts = vec3(nearCut, min(farCut, shade.y), max(farCut, shade.y));
+
   vec3 viewDepth = vec3(0.0);
   vec3 radiance = vec3(0.0);
   float cosTheta = clamp(dot(dir, lightDir), -1.0, 1.0);
   vec3 phase = uRayleighDepth * rayleighPhase(cosTheta) / gasHeight;
   vec3 haze = uAerosolScatterDepth * hazePhase(cosTheta) / aerosolHeight;
+  float deckView = displayTransmittance(deck.y);
+  float deckSource = displayTransmittance(meanDeckTransmission);
 
   for (int i = 0; i < SKY_SAMPLES; i++) {
     float q0 = float(i) / float(SKY_SAMPLES);
     float q1 = float(i + 1) / float(SKY_SAMPLES);
     float start = distance * q0 * q0;
     float end = distance * q1 * q1;
-    float ds = end - start;
-    vec3 parcel = cameraPosition + dir * (0.5 * (start + end));
-    float radiusAtParcel = length(parcel);
-    float altitude = max(radiusAtParcel - uPlanetRadius, 0.0);
-    vec3 parcelUp = parcel / max(radiusAtParcel, 1e-6);
-    float gasDensity = exp(-altitude / gasHeight);
-    float aerosolDensity = exp(-altitude / aerosolHeight);
-    vec3 segmentDepth = (
-      uRayleighDepth * gasDensity / gasHeight
-        + uAerosolExtinction * aerosolDensity / aerosolHeight
-    ) * ds;
-    vec3 viewBeam = exp(-(viewDepth + 0.5 * segmentDepth));
-    if (0.5 * (start + end) > deck.x) {
-      viewBeam *= displayTransmittance(deck.y);
-    }
+    float from = start;
+    for (int k = 0; k < 4; k++) {
+      float cut = k == 0 ? cuts.x : k == 1 ? cuts.y : k == 2 ? cuts.z : end;
+      float to = clamp(cut, start, end);
+      float ds = to - from;
+      if (ds <= 0.0) continue;
+      float mid = 0.5 * (from + to);
+      from = to;
+      vec3 parcel = cameraPosition + dir * mid;
+      float radiusAtParcel = length(parcel);
+      float altitude = max(radiusAtParcel - uPlanetRadius, 0.0);
+      vec3 parcelUp = parcel / max(radiusAtParcel, 1e-6);
+      float gasDensity = exp(-altitude / gasHeight);
+      float aerosolDensity = exp(-altitude / aerosolHeight);
+      vec3 pieceDepth = (
+        uRayleighDepth * gasDensity / gasHeight
+          + uAerosolExtinction * aerosolDensity / aerosolHeight
+      ) * ds;
+      vec3 viewBeam = exp(-(viewDepth + 0.5 * pieceDepth));
+      if (mid > deck.x) viewBeam *= deckView;
+      viewDepth += pieceDepth;
+      if (mid > shade.x && mid < shade.y) continue;
 
-    float muSun = dot(lightDir, parcelUp);
-    float discVisible = sunDiscVisibility(radiusAtParcel, muSun, angularRadius);
-    float tangentMu = -sqrt(max(
-      1.0 - (uPlanetRadius * uPlanetRadius) / (radiusAtParcel * radiusAtParcel),
-      0.0
-    ));
-    float sourceMu = max(muSun, tangentMu);
-    float gasSun = sunColumn(
-      altitude, radiusAtParcel, sourceMu, gasHeight, uHorizonAirmass
-    );
-    if (discVisible > 0.0) {
+      float muSun = dot(lightDir, parcelUp);
+      float discVisible = sunDiscVisibility(radiusAtParcel, muSun, angularRadius);
+      if (discVisible <= 0.0) continue;
+      float tangentMu = -sqrt(max(
+        1.0 - (uPlanetRadius * uPlanetRadius) / (radiusAtParcel * radiusAtParcel),
+        0.0
+      ));
+      float sourceMu = max(muSun, tangentMu);
+      float gasSun = sunColumn(
+        altitude, radiusAtParcel, sourceMu, gasHeight, uHorizonAirmass
+      );
       float aerosolSun = sunColumn(
         altitude,
         radiusAtParcel,
@@ -181,13 +249,9 @@ vec3 scattered(
       ));
       vec3 source = phase * gasDensity + haze * aerosolDensity;
       float visible = shadowFactor(parcel, lightDir, angularRadius, reach);
-      float sourceDeck = radiusAtParcel < uCloudBaseRadius
-        ? meanDeckTransmission
-        : 1.0;
-      radiance += source * sunBeam * viewBeam * visible * discVisible
-        * displayTransmittance(sourceDeck) * ds;
+      float sourceDeck = radiusAtParcel < uCloudBaseRadius ? deckSource : 1.0;
+      radiance += source * sunBeam * viewBeam * visible * discVisible * sourceDeck * ds;
     }
-    viewDepth += segmentDepth;
   }
   return lightColor * radiance;
 }
