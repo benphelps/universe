@@ -477,7 +477,7 @@ table.props th {
 
 /* Nothing to list, said in a box the height of a rung — the rows an
    empty level sits among — with its text starting where names do. */
-.empty {
+#level .empty {
   margin: 0 -5px;
   padding: 6px 5px 6px 24px;
   font-size: 11.5px;
