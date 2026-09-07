@@ -1,123 +1,56 @@
+<p  align="center">
+  <img src="docs/images/previews/ui.jpg" width="100%" alt="The system view: a star's planets on their orbits, with the survey panel open">
+</p>
+
+<p align="center">
+  <a href="docs/images/previews/nebula.jpg"><img src="docs/images/previews/nebula.jpg" width="24%" alt="A glowing nebula shot through with dark clouds"></a>
+  <a href="docs/images/previews/red-surface.jpg"><img src="docs/images/previews/red-surface.jpg" width="24%" alt="Sunset over a dry red world"></a>
+  <a href="docs/images/previews/backlit-giant-moon.jpg"><img src="docs/images/previews/backlit-giant-moon.jpg" width="24%" alt="Dunes on a moon, its giant's rings arcing overhead"></a>
+  <a href="docs/images/previews/giant.jpg"><img src="docs/images/previews/giant.jpg" width="24%" alt="A ringed gas giant"></a>
+</p>
+
+<p align="center"><a href="https://benphelps.github.io/universe/"><b>Open the app →</b></a></p>
+
 # Universe
 
-**[Open the survey →](https://benphelps.github.io/universe/)**
+A whole galaxy in a browser tab. Zoom out until the spiral arms come into view, pick any star out of the sky, fly to it, drop into its planets, and land on the ground. No downloads, no loading screens between scales.
 
-An explorable galaxy in a browser tab. Ride out until the spiral arms resolve, pick any star out of the sky and travel to it, fall into its system, and descend to the ground of one of its worlds — with continuous navigation and streamed detail between scales.
+## What's out there
 
-The model combines astrophysical distributions, reduced physical calculations and procedural geometry. Locations are generated from seeds, so the same address and model version reproduce the same system. Shared model fields connect the large-scale galaxy to its stars, nebulae and worlds.
+- **A galaxy to cross.** Arms, dust lanes, a bright core, and billions of stars. Pull all the way back and it is the same galaxy you were just standing in, seen from outside.
+- **A sky you can read.** Every star you can see is a real place with a name, a colour and a distance. Click one and go. Each home system draws its own constellations from its own view.
+- **A black hole at the centre.** Its shadow, its ring of light, and the stars behind it bent into arcs.
+- **Systems with things happening.** Planets on live orbits, moons throwing eclipse shadows, ringed giants, comets growing tails as they swing in, asteroid belts you can pick a single rock out of.
+- **Worlds with weather.** Oceans, ice caps, deserts, river valleys, crater plains. Sunsets look the way that world's air makes them look. Moons rise and set.
+- **A camera you can fly.** Skim a valley floor or cross a mountain range in first person.
 
-## What you can do
+## Getting around
 
-- **Cross the galaxy.** Pull back far enough and the whole disk is there — arms, bulge, dust lanes, the bright core — and it is the same galaxy you were just standing in, seen from outside.
-- **Read the sky.** Resolved survey stars have spectral types, distances and destinations. Statistical populations supply distant unresolved light. Dark rifts and illuminated nebulae follow the shared cloud and dust model. Constellations are cut around the landmarks your particular sky shows, so every home system letters its own.
-- **Stand at the galactic centre.** A supermassive black hole with its shadow, its photon ring, its glowing accretion flow, and the star field behind it bent into Einstein rings.
-- **Explore a system.** Planets on live orbits under a real photosphere, moons casting eclipse shadows, ringed giants, comets that grow tails as they come in, and asteroid belts you can pick a single rock out of and land on.
-- **Descend to a world.** Interiors, atmospheres and climate decide what is waiting: oceans, ice caps, deserts, dune fields, river valleys, crater plains. Terrain resolves continuously from orbit to eye height, and the sky overhead scatters its own star's light through its own air — hazy worlds look hazy, twilight grades the way twilight does, moons rise and set.
-- **Fly the surface.** A first-person camera over the landscape, clamped just above the ground and the water, fast enough to cross a mountain range and slow enough to skim a valley floor.
+- **Scroll** to move between scales, from the ground to the whole galaxy.
+- **Drag** to orbit, **right-drag** to pan, **click** any glint to travel there.
+- **Touch:** pinch to zoom, drag to orbit, double-tap to travel.
+- **On the ground:** `W` `A` `S` `D` to fly, `Space` and `C` for altitude, `Shift` to go fast.
 
-## Model scope
+Two finders help you find things worth seeing. **Scenic** hunts for photogenic places nearby, from ringed giants to glowing nebulae, and ranks them for you. **Eclipse** finds the next eclipse visible from any surface and drops you there just before it starts, with time paused.
 
-Generation is deterministic within a model version; scientific improvements can intentionally change older seeds. Initial mass functions, stellar evolution, material budgets, orbital constraints, atmospheric columns and climate response constrain the generated worlds. Geometry, chemistry, weather and dynamics still use bounded approximations. The [model references](docs/README.md) document the sources and limits.
+## Sharing a place
 
-## Quick start
+The address bar is your location. Copy it and anyone can stand where you stand. The link button beside the shutter goes further: it captures the camera angle and the moment in time, so the reader sees exactly the view you saw.
 
-Node 22+ (CI pins 22).
+Everything is generated from seeds, so the same address always leads to the same place. Your first visit asks whether you want the shared galaxy that everyone else explores, or a private one of your own.
 
-```bash
-npm install && npm run dev
-```
+## What it runs on
 
-The viewer opens at `http://localhost:5173`. First visit asks which galaxy to chart — the shared one everyone knows, or a personal one of your own.
+A modern browser with WebGL2. Everything is computed on your machine, so expect the fans to spin, and give it a gigabyte or so of graphics memory.
 
-| Script | Does |
-| --- | --- |
-| `npm run dev` | Vite dev server |
-| `npm run build` | Production bundle to `dist/` |
-| `npm run preview` | Serve the built bundle |
-| `npm test` | Full Vitest suite |
-| `npm run test:watch` | Vitest in watch mode |
-| `npm run typecheck` | Type-check application and retained diagnostic tools |
-| `npm run validate:build` | Build browser diagnostics into ignored `.artifacts/validation/` |
-| `npm run bench:generation -- .artifacts/generation stars` | Generation timing, checksum and CPU profile |
+## The science, briefly
 
-### Controls
+Behind the pictures is a model that tries to get the physics right rather than just the look.
 
-Scroll to ride between scales · drag to orbit · right-drag (or right-shift + drag) to pan through space · click any glint to travel there. On touch: pinch to ride, drag to orbit or pan, double-tap a glint to travel.
+Stars are drawn from measured mass distributions and aged with stellar evolution, so their colours, sizes and lifetimes are what a real star of that mass would have. Planets form from what a system has to build with: material budgets, orbital stability and tidal locking decide what ends up where. Each world's interior, atmosphere and climate are worked out before its surface is drawn, so an ocean, an ice cap or a dune field is a consequence, not a paint job. The sky over a surface scatters its own star's light through its own air, with the right twilight colours and haze. Nebulae, dust lanes and the galaxy's structure all share one underlying cloud model, which is why a dark rift you saw from a planet is the same one you see in the arm from outside.
 
-On a planet's surface: `W`/`A`/`S`/`D` flies where you look, `Space`/`C` for altitude, `Shift` to boost.
+Generation is deterministic within a model version. When the science improves, older seeds can change on purpose. The [model references](docs/README.md) document every source and every known shortcut.
 
-For photographic locations, open **Finders → Scenic**, choose a scene type, and select **Find scenes**. Surveys rank nearby worlds, local nebulae, galaxy shapes, and catalog nuclei by physical traits. Candidates stand as rows under their scene types; the chips narrow a mixed shortlist to one type, and a row opens to show its reasons and a framing suggestion and to travel to the candidate. The shortlist stays after a trip, even the clean boot into another galaxy, and says where it was surveyed from; **Scan more** extends it while you are still there. World rankings include sampled visible starlight, atmospheric clarity, reflection, and lava emission; nebula rankings include estimated optical power per area. Galaxy-shape candidates still need a visual lighting check. These are scouting destinations, not precomposed camera poses or guaranteed sunsets.
+## For developers
 
-The **Finders → Eclipse** tab searches active or next-day events from planetary and lunar surfaces, including airless worlds. Filter for a moon crossing the star, a parent planet eclipsing it from a moon, mutual moon eclipses, or another planet's transit. Results name the observing world and blocking body, then land you shortly before first contact with time paused; the list stays for the next event, with its timing read against the clock. Small planetary transits down to 0.1% stellar coverage are included; predictions use spherical body silhouettes. The survey runs in a cancellable worker.
-
-### Addresses
-
-The URL records your location and selected body. Share it to revisit that destination with the same model version. The address bar carries the body; the link orb beside the shutter copies a link that also carries the picture — the camera's stance and gaze and the clock held at this moment — so the reader lands on exactly this view, with time paused there. Viewing settings are not encoded.
-
-| Parameter | Meaning |
-| --- | --- |
-| `galaxy` | Which galaxy. Absent means your own. |
-| `seed` | The star system. |
-| `at` | `x_y_z` in parsecs — where that system actually sits in the galaxy. |
-| `view` | `galaxy`, `star`, `system` or `planet` |
-| `planet`, `moon`, `companion` | Which body is in focus |
-| `cloud` | The molecular cloud being framed, rather than the star sharing its patch of space |
-| `core` | Stand at the galactic nucleus |
-| `cam` | The camera, from the link orb only: `g` on the ground or `o` in orbit, then its position in km from the body's centre, its orientation, its heading and pitch, and a panned anchor when there is one |
-| `t` | The clock, in simulation days, held there on arrival |
-
-A link decides only the trip, never your home galaxy — that is set once, by choosing it. Every trip within a galaxy is a history entry, so the browser's back and forward buttons retrace them body by body; a trip into another galaxy is a page of its own.
-
-## Architecture
-
-```
-src/
-  app/       unified viewer, camera controls, store, survey console (React)
-  render/    Three.js scenes, materials, shaders, LOD streaming
-  universe/  pure procedural model: plain-data bodies from seeds
-  core/      RNG, hashing, math, units, noise, constants, color
-  workers/   terrain, sky, nebula, landmark and locale generation
-```
-
-Dependencies point downward only, and the model is fully decoupled from what draws it: `core/` and `universe/` carry no Three.js imports and touch no DOM, which is what keeps the whole simulation testable headless and runnable in workers. [`src/layering.test.ts`](src/layering.test.ts) enforces that boundary in the test suite.
-
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) covers the rest: determinism, data flow, and how one renderer spans twenty-two orders of magnitude.
-
-## Requirements
-
-- **WebGL2** is required. Web Workers carry generation; `OffscreenCanvas` with float render targets bakes the sky and nebulae on the GPU, with a CPU path where it is unavailable.
-- Everything is computed on the client. Expect sustained CPU and GPU load and more than a gigabyte of GPU memory.
-
-## Testing
-
-```bash
-npm test
-```
-
-Vitest, node environment, `src/**/*.test.ts`. Four kinds of test carry the project:
-
-- **Determinism** — the same seed twice is deep-equal, and shuffling sibling generation order changes nothing.
-- **Solar System fixtures** — the Sun's color and luminosity, Earth's equilibrium temperature, Jupiter's radius, the Moon's lock state, Io's tidal heating, Kirkwood gap positions. Generators are validated by feeding them real inputs and asserting real outputs.
-- **Population statistics** — sampled IMF against Kroupa slopes, planet occurrence and period ratios, naked-eye star counts to the right order of magnitude.
-- **The layering rule** — see above.
-
-## Deployment
-
-[`.github/workflows/pages.yml`](.github/workflows/pages.yml): a push to `main` runs the suite, builds with `--base=/universe/`, and publishes to GitHub Pages.
-
-## Status and documentation
-
-The galaxy-to-surface audit has reached an integration checkpoint, including varied galaxy structure, conserved nebula budgets, bounded generation/streaming, atmosphere transport, shared optical light and seasonal cover. Remaining priorities are loading stability, viewing instruments and targeted scientific calibration.
-
-| Document | Scope |
-| --- | --- |
-| [Documentation index](docs/README.md) | Current model references and documentation policy |
-| [Architecture](docs/ARCHITECTURE.md) | Layering, generation, rendering and resource ownership |
-| [Validation](docs/VALIDATION.md) | Tests, diagnostic pages and reproducible regressions |
-| [Performance](docs/PERFORMANCE.md) | Budgets, measurement guidance and known limits |
-| [Roadmap](docs/ROADMAP.md) | Next priorities and deferred fidelity |
-| [Audit archive](docs/ARCHIVE.md) | Restore the original investigations and individual fix history |
-
-## Stack
-
-TypeScript (strict) · Vite · React · Three.js on WebGL2 · Web Workers · Vitest.
+Build, test and contribute: see [DEVELOPMENT.md](DEVELOPMENT.md).
