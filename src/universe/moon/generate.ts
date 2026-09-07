@@ -1,12 +1,14 @@
+import type { PlanetForcing } from '../planet/illumination';
 import type { OrbitalElements } from '../../core/math/orbit';
 import { orbitalPeriod } from '../../core/math/orbit';
 import { mu as muOf } from '../../core/physics/units';
-import { AU, EARTH_MASS, EARTH_RADIUS, G } from '../../core/physics/constants';
+import { AU, EARTH_MASS, EARTH_RADIUS, G, SOLAR_MASS } from '../../core/physics/constants';
 import { logNormal } from '../../core/rng/distributions';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import { computeAppearance } from '../planet/appearance';
-import { computeAtmosphere } from '../planet/atmosphere';
+import { computeAtmosphere, finalizeAtmosphere } from '../planet/atmosphere';
+import { solarDayHours } from '../planet/rotation';
 import { computeBulk } from '../planet/bulk';
 import { computeClimate } from '../planet/climate';
 import { computeInterior } from '../planet/interior';
@@ -20,12 +22,52 @@ const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
 export interface MoonContext {
   star: Star;
   centralLuminosity: number;
+  centralMassSolar: number;
   zones: SystemZones;
 }
 
 /** Fluid Roche limit in planet radii for a satellite of density rhoMoon (g/cc). */
 export function rocheLimitPlanetRadii(planetDensityGcc: number, moonDensityGcc: number): number {
   return 2.44 * (planetDensityGcc / moonDensityGcc) ** (1 / 3);
+}
+
+/** Conservative analytic satellite screen, not an N-body lifetime.
+ *  Domingos et al. (2006), doi:10.1111/j.1365-2966.2006.11104.x,
+ *  gives the eccentricity-dependent semimajor axis limit in units of
+ *  the Hill radius at the planet's semimajor axis. Also require the
+ *  satellite's apoapsis to fit within the pericenter Hill sphere. */
+export function satelliteOuterLimitM(
+  planet: Planet, centralMassSolar: number, eccentricity: number, retrograde: boolean,
+): number {
+  const hill = planet.elements.semiMajorAxis *
+    Math.cbrt(planet.physical.bulk.massEarth * EARTH_MASS / (3 * centralMassSolar * SOLAR_MASS));
+  const ep = planet.elements.eccentricity;
+  const critical = retrograde
+    ? 0.9309 * (1 - 1.0764 * ep - 0.9812 * eccentricity)
+    : 0.4895 * (1 - 1.0305 * ep - 0.2738 * eccentricity);
+  return hill * Math.max(0, Math.min(critical, (1 - ep) / (1 + eccentricity)));
+}
+
+function survivingMoons(moons: Moon[], planet: Planet, centralMassSolar: number): Moon[] {
+  const originalInner = new Map(moons.map((moon, i) => [moon, moons[i - 1]]));
+  const survivors: Moon[] = [];
+  const bulk = planet.physical.bulk;
+  for (const moon of moons.sort((a, b) => a.elements.semiMajorAxis - b.elements.semiMajorAxis)) {
+    const { semiMajorAxis: a, eccentricity: e } = moon.elements;
+    const roche = rocheLimitPlanetRadii(bulk.densityGcc, moon.physical.bulk.densityGcc) * bulk.radiusEarth * EARTH_RADIUS;
+    if (a * (1 - e) <= Math.max(bulk.radiusEarth * EARTH_RADIUS, roche)) continue;
+    if (a >= satelliteOuterLimitM(planet, centralMassSolar, e, moon.retrograde)) continue;
+    const inner = survivors.at(-1);
+    if (inner) {
+      const mutualHill = (a + inner.elements.semiMajorAxis) / 2 *
+        Math.cbrt((moon.physical.bulk.massEarth + inner.physical.bulk.massEarth) / (3 * bulk.massEarth));
+      if (a * (1 - e) - inner.elements.semiMajorAxis * (1 + inner.elements.eccentricity) < 3.5 * mutualHill) continue;
+    }
+    if (!inner || inner !== originalInner.get(moon)) moon.resonanceWithInner = null;
+    survivors.push(moon);
+  }
+  survivors.forEach((moon, i) => { moon.name = `${planet.name} ${ROMAN[Math.min(i, ROMAN.length - 1)]}`; });
+  return survivors;
 }
 
 /** Io-calibrated planet-raised tidal heat flux, W/m². */
@@ -53,7 +95,7 @@ export function generateMoons(seed: bigint, planet: Planet, context: MoonContext
   const moons = envelope
     ? giantSystem(rng, seed, planet, context)
     : terrestrialSystem(rng, seed, planet, context);
-  return moons;
+  return survivingMoons(moons, planet, context.centralMassSolar);
 }
 
 function giantSystem(rng: Rng, seed: bigint, planet: Planet, context: MoonContext): Moon[] {
@@ -69,9 +111,15 @@ function giantSystem(rng: Rng, seed: bigint, planet: Planet, context: MoonContex
   const moons: Moon[] = [];
   let aPlanetRadii = roche * rng.range(1.3, 2.2);
   let previousResonant = false;
+  let previousMass = 0;
   for (let i = 0; i < count; i++) {
     const massEarth = Math.max(1e-8, (totalMass * shares[i]) / shareSum);
     const resonant = i > 0 && rng.bool(0.5);
+    if (i > 0) {
+      aPlanetRadii *= resonant
+        ? 2 ** (2 / 3) * ((planetMass + massEarth) / (planetMass + previousMass)) ** (1 / 3)
+        : rng.range(1.6, 2.3);
+    }
     // Resonance keeps eccentricity pumped against tidal circularization.
     const eccentricity = resonant || previousResonant ? rng.range(0.002, 0.01) : rng.range(0.0003, 0.003);
     moons.push(
@@ -88,8 +136,7 @@ function giantSystem(rng: Rng, seed: bigint, planet: Planet, context: MoonContex
       }),
     );
     previousResonant = resonant;
-    // 2:1 period ratio when resonant, otherwise free spacing.
-    aPlanetRadii *= resonant ? 2 ** (2 / 3) : rng.range(1.6, 2.3);
+    previousMass = massEarth;
   }
 
   const irregularCount = rng.int(4);
@@ -197,10 +244,13 @@ function buildMoon(seed: bigint, planet: Planet, context: MoonContext, spec: Moo
   const locked = spec.channel !== 'capture' || spec.aPlanetRadii < 40;
   const rotation: PlanetRotation = {
     periodHours: locked ? periodHours : rng.range(5, 60),
-    obliquityRad: 0,
+    obliquityRad: spec.retrograde ? Math.PI : 0,
     locked,
+    lockTarget: locked ? 'planet' : undefined,
     spinOrbitResonance: null,
   };
+  const yearHours = orbitalPeriod(muOf(G * (context.centralMassSolar * SOLAR_MASS + planetBulk.massEarth * EARTH_MASS)), planet.elements.semiMajorAxis) / 3600;
+  rotation.solarDayHours = solarDayHours(rotation, yearHours);
 
   const ironCoreFraction = icyZone ? rng.range(0.08, 0.2) : rng.range(0.2, 0.4);
   const bulk = computeBulk(
@@ -229,7 +279,7 @@ function buildMoon(seed: bigint, planet: Planet, context: MoonContext, spec: Moo
     0,
     tidalFlux,
   );
-  const atmosphere = computeAtmosphere(
+  let atmosphere = computeAtmosphere(
     rng.fork('atmosphere'),
     'rocky',
     bulk,
@@ -240,6 +290,9 @@ function buildMoon(seed: bigint, planet: Planet, context: MoonContext, spec: Moo
     zones.habitableInnerAu,
     aAu,
   );
+  const forcing: PlanetForcing = { ...(planet.physical.forcing ?? { sources: [{ luminositySolar: centralLuminosity, path: [] }], origin: [],
+      orbit: { elements: planet.elements, mu: muOf(G * (context.centralMassSolar * SOLAR_MASS + planetBulk.massEarth * EARTH_MASS)) } }),
+      satellite: { elements, mu } };
   const climate = computeClimate(
     rng.fork('climate'),
     'rocky',
@@ -251,7 +304,9 @@ function buildMoon(seed: bigint, planet: Planet, context: MoonContext, spec: Moo
     centralLuminosity,
     aAu,
     star.ageGyr,
+    forcing,
   );
+  atmosphere = finalizeAtmosphere(atmosphere, climate, bulk);
   const appearance = computeAppearance(
     rng.fork('appearance'),
     'rocky',
@@ -276,6 +331,7 @@ function buildMoon(seed: bigint, planet: Planet, context: MoonContext, spec: Moo
 
   const physical: Characterization = {
     seedHex: seedToHex(seed),
+    forcing,
     bulk,
     interior,
     rotation,

@@ -2,6 +2,13 @@ import { cloudReachPc, type MolecularCloud } from './clouds';
 import { displayPedestal, displaySurfaceBrightness } from './displayLaw';
 import { MEMBER_SPREAD, nebulaLightSolar, type Nebula } from './nebula';
 
+/** Sufficient for ranking, without retaining a cloud's full stellar population. */
+export interface ResidencyLight { radiusPc: number; luminositySolar: number }
+export function residencyLight(cloud: MolecularCloud, nebula: Nebula | null): ResidencyLight | null {
+  return nebula ? { radiusPc: nebula.bubbleRadiusPc > 0 ? nebula.bubbleRadiusPc : MEMBER_SPREAD * cloud.radiusPc,
+    luminositySolar: nebulaLightSolar(nebula) } : null;
+}
+
 /**
  * What a cloud is worth drawing as a volume from a viewpoint: the
  * display energy at stake if it were left to the sprite, through the
@@ -19,14 +26,20 @@ export function residencyWeight(
   distancePc: number,
   pedestalRadiance: number,
 ): number {
+  return residencyWeightFromLight(cloud, residencyLight(cloud, nebula), distancePc, pedestalRadiance);
+}
+
+export function residencyWeightFromLight(
+  cloud: MolecularCloud, light: ResidencyLight | null, distancePc: number, pedestalRadiance: number,
+): number {
   const distance = Math.max(1, distancePc);
   const reach = cloudReachPc(cloud) / distance;
   let weight = Math.PI * reach * reach * displayPedestal(pedestalRadiance);
-  if (nebula) {
-    const litPc = nebula.bubbleRadiusPc > 0 ? nebula.bubbleRadiusPc : MEMBER_SPREAD * cloud.radiusPc;
+  if (light) {
+    const litPc = light.radiusPc;
     const lit = Math.max(1e-6, litPc / distance);
     const solidAngle = Math.PI * lit * lit;
-    const surface = nebulaLightSolar(nebula) / (4 * Math.PI * distance * distance * solidAngle);
+    const surface = light.luminositySolar / (4 * Math.PI * distance * distance * solidAngle);
     weight += solidAngle * displaySurfaceBrightness(surface, pedestalRadiance);
   }
   return weight;

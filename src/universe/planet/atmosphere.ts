@@ -1,11 +1,129 @@
 import { K_B } from '../../core/physics/constants';
+import { columnStateAt, type HydrostaticColumn } from './hydrostaticColumn';
+import { partitionWater, waterColumnInventory, WATER_MOLECULAR_MASS } from './waterInventory';
 import { logNormal } from '../../core/rng/distributions';
 import type { Rng } from '../../core/rng/rng';
 import type { Star } from '../star/types';
 import type { PlanetClass } from '../system/types';
-import type { AtmosphereClass, PlanetAtmosphere, PlanetBulk, PlanetInterior } from './types';
+import type { AtmosphericGas, AtmosphereClass, PlanetAtmosphere, PlanetBulk, PlanetClimate, PlanetInterior } from './types';
 
 const AMU = 1.66054e-27;
+
+/** Representative bulk mixtures, not a photochemical equilibrium solver.
+ *  The rock-vapor preset is a surrogate until elemental inventories exist. */
+const MIXTURES: Record<AtmosphereClass, Partial<Record<AtmosphericGas, number>>> = {
+  none: {}, 'hydrogen-helium': { H2: 0.85, He: 0.15 }, nitrogen: { N2: 1 },
+  'nitrogen-oxygen': { N2: 0.79, O2: 0.21 }, 'co2-hothouse': { CO2: 1 },
+  'thin-co2': { CO2: 1 }, 'nitrogen-methane': { N2: 0.95, CH4: 0.05 },
+  'rock-vapor': { SiO: 0.5, O2: 0.3, Na: 0.2 },
+};
+const GAS_PROPERTIES: Record<AtmosphericGas, { mass: number; cp: number; rayleigh: number }> = {
+  H2: { mass: 2, cp: 14300, rayleigh: 2.84 }, He: { mass: 4, cp: 5193, rayleigh: 0.005 },
+  N2: { mass: 28, cp: 1040, rayleigh: 1 }, O2: { mass: 32, cp: 918, rayleigh: 1 },
+  CO2: { mass: 44, cp: 844, rayleigh: 1.6 }, CH4: { mass: 16, cp: 2200, rayleigh: 1 },
+  SiO: { mass: 44, cp: 1000, rayleigh: 1 }, Na: { mass: 23, cp: 900, rayleigh: 1 },
+  // Constant-cp dilute vapor; visible scattering retains the neutral-gas
+  // proxy pending wavelength-resolved molecular cross sections.
+  H2O: { mass: WATER_MOLECULAR_MASS, cp: 1850, rayleigh: 1 },
+};
+
+function gasInventory(atmosphere: PlanetAtmosphere): Partial<Record<AtmosphericGas, number>> {
+  return atmosphere.partialPressuresBar ?? Object.fromEntries(
+    Object.entries(MIXTURES[atmosphere.class]).map(([gas, fraction]) => [gas, fraction * atmosphere.surfacePressureBar]),
+  );
+}
+
+/** Derive all bulk molecular properties from the same final inventory.
+ *  Partial pressure fractions are mole fractions; cp and scattering per
+ *  unit column mass therefore use mass fractions, not mole fractions. */
+export function atmosphereAtTemperature(atmosphere: PlanetAtmosphere, temperatureK: number, bulk: PlanetBulk): PlanetAtmosphere {
+  const partial = gasInventory(atmosphere);
+  let pressure = 0, molecularWeight = 0, heatCapacity = 0, scattering = 0;
+  for (const [name, p] of Object.entries(partial)) {
+    const gas = GAS_PROPERTIES[name as AtmosphericGas];
+    pressure += p;
+    molecularWeight += p * gas.mass;
+    heatCapacity += p * gas.mass * gas.cp;
+    scattering += p * gas.mass * gas.rayleigh;
+  }
+  const molecularMass = pressure > 0 ? molecularWeight / pressure : 0;
+  let kind = atmosphere.class;
+  if (pressure <= 0) kind = 'none';
+  else if ((partial.CO2 ?? 0) / pressure >= 0.5) kind = pressure > 1 ? 'co2-hothouse' : 'thin-co2';
+  else if ((partial.H2 ?? 0) / pressure > 0.5) kind = 'hydrogen-helium';
+  else if (((partial.SiO ?? 0) + (partial.Na ?? 0)) / pressure > 0.5) kind = 'rock-vapor';
+  else if ((partial.CH4 ?? 0) / pressure > 0.01) kind = 'nitrogen-methane';
+  else if ((partial.O2 ?? 0) / pressure > 0.01 && (partial.N2 ?? 0) / pressure > 0.4) kind = 'nitrogen-oxygen';
+  else if ((partial.N2 ?? 0) > 0) kind = 'nitrogen';
+  return {
+    ...atmosphere, class: kind, partialPressuresBar: { ...partial }, surfacePressureBar: pressure,
+    aerosolClass: atmosphere.aerosolClass ?? atmosphere.class,
+    meanMolecularMassAmu: molecularMass,
+    specificHeatJkgK: molecularWeight > 0 ? heatCapacity / molecularWeight : 1000,
+    rayleighPerBar: molecularWeight > 0 ? scattering / molecularWeight : 0,
+    scaleHeightKm: molecularMass > 0 ? K_B * temperatureK / (molecularMass * AMU * bulk.gravityMs2) / 1000 : 0,
+    scatteringColor: SCATTERING_COLOR[kind],
+  };
+}
+
+/** Replace the extra CO2 reservoir, including when called repeatedly during
+ *  climate iteration. The original CO2 and newly supplied CO2 absorb as one
+ *  column under the existing gray pressure law. */
+export function withThermostatCo2(atmosphere: PlanetAtmosphere, co2Bar: number, temperatureK: number, bulk: PlanetBulk): PlanetAtmosphere {
+  atmosphere = withoutWaterVapor(atmosphere, temperatureK, bulk);
+  const partial = { ...gasInventory(atmosphere) };
+  const oldCo2 = partial.CO2 ?? 0;
+  const added = Math.max(0, co2Bar);
+  const newCo2 = Math.max(0, oldCo2 - (atmosphere.thermostatCo2Bar ?? 0)) + added;
+  if (newCo2 > 0) partial.CO2 = newCo2;
+  else delete partial.CO2;
+  return atmosphereAtTemperature({
+    ...atmosphere, partialPressuresBar: partial, thermostatCo2Bar: added,
+    opticalDepth: Math.max(0, atmosphere.opticalDepth + 5.8 * (newCo2 ** 0.7 - oldCo2 ** 0.7)),
+  }, temperatureK, bulk);
+}
+
+export function thermostatCo2ForOpticalDepth(atmosphere: PlanetAtmosphere, targetTau: number): number {
+  const initialCo2 = gasInventory(atmosphere).CO2 ?? 0;
+  const otherTau = atmosphere.opticalDepth - 5.8 * initialCo2 ** 0.7;
+  return Math.max(0, (Math.max(0, targetTau - otherTau) / 5.8) ** (1 / 0.7) - initialCo2);
+}
+
+/** Shared planet/moon finalization, including biosphere and scale height. */
+export function finalizeAtmosphere(atmosphere: PlanetAtmosphere, climate: PlanetClimate, bulk: PlanetBulk): PlanetAtmosphere {
+  const dry = withoutWaterVapor(atmosphere, climate.surfaceMeanK, bulk);
+  return withWaterVapor(withThermostatCo2(climate.biosphere ? withOxygen(dry) : dry,
+    climate.co2Bar, climate.surfaceMeanK, bulk), climate.waterMassFraction, climate.surfaceMeanK, bulk);
+}
+
+/** Remove only water while preserving each dry species' column mass. */
+function withoutWaterVapor(atmosphere: PlanetAtmosphere, temperatureK: number, bulk: PlanetBulk): PlanetAtmosphere {
+  const partial = gasInventory(atmosphere), water = partial.H2O ?? 0;
+  if (!(water > 0)) return atmosphere;
+  const mixture = atmosphereAtTemperature(atmosphere, temperatureK, bulk);
+  const pressure = mixture.surfacePressureBar, dryPressure = pressure - water * WATER_MOLECULAR_MASS / mixture.meanMolecularMassAmu!;
+  const scale = dryPressure / (pressure - water);
+  const dry = Object.fromEntries(Object.entries(partial).filter(([name]) => name !== 'H2O').map(([name, p]) => [name, p * scale]));
+  return atmosphereAtTemperature({ ...atmosphere, partialPressuresBar: dry, waterReservoir: undefined }, temperatureK, bulk);
+}
+
+/** Install a finite vapor reservoir after the dry gas/CO2/biosphere pass.
+ * The existing gray IR coefficient remains a bulk opacity proxy (including
+ * unresolved absorbers), not a species-resolved H2O opacity calibration. */
+export function withWaterVapor(atmosphere: PlanetAtmosphere, waterMassFraction: number | undefined,
+  temperatureK: number, bulk: PlanetBulk): PlanetAtmosphere {
+  if (waterMassFraction === undefined || atmosphere.class === 'hydrogen-helium') return atmosphere;
+  const dry = atmosphereAtTemperature(withoutWaterVapor(atmosphere, temperatureK, bulk), temperatureK, bulk);
+  const reservoir = partitionWater(waterColumnInventory(waterMassFraction, bulk), dry.surfacePressureBar * 1e5,
+    dry.meanMolecularMassAmu ?? 0, bulk.gravityMs2, temperatureK);
+  const { partialPa, weightPa, ...waterReservoir } = reservoir;
+  if (waterReservoir.status !== 'dilute' || partialPa === 0) return { ...dry, waterReservoir };
+  const pressurePa = dry.surfacePressureBar * 1e5 + weightPa;
+  const scale = (pressurePa - partialPa) / (dry.surfacePressureBar * 1e5);
+  const partial = Object.fromEntries(Object.entries(gasInventory(dry)).map(([name, p]) => [name, p * scale]));
+  partial.H2O = partialPa / 1e5;
+  return atmosphereAtTemperature({ ...dry, partialPressuresBar: partial, waterReservoir }, temperatureK, bulk);
+}
 
 /** Mean molecular mass (amu) and greenhouse coefficient τ = k·P^0.7 per class. */
 const CLASS_PROPERTIES: Record<AtmosphereClass, { molecularMass: number; greenhouseK: number }> = {
@@ -104,21 +222,28 @@ function build(
     atmosphereClass === 'none'
       ? 0
       : (K_B * temperatureK) / (properties.molecularMass * AMU * bulk.gravityMs2) / 1000;
-  return {
+  return atmosphereAtTemperature({
     class: atmosphereClass,
     surfacePressureBar,
     scaleHeightKm,
     opticalDepth: properties.greenhouseK * surfacePressureBar ** 0.7,
     scatteringColor: SCATTERING_COLOR[atmosphereClass],
-  };
+  }, temperatureK, bulk);
 }
 
 /** Promote a nitrogen atmosphere to oxygen-bearing (used when a biosphere emerges). */
 export function withOxygen(atmosphere: PlanetAtmosphere): PlanetAtmosphere {
+  const partial = { ...gasInventory(atmosphere) };
+  const nitrogen = partial.N2 ?? 0;
+  // Idempotent oxygenation of the nitrogen/oxygen reservoir.
+  const dry = nitrogen + (partial.O2 ?? 0);
+  partial.N2 = dry * 0.79;
+  partial.O2 = dry * 0.21;
   return {
     ...atmosphere,
     class: 'nitrogen-oxygen',
     scatteringColor: SCATTERING_COLOR['nitrogen-oxygen'],
+    partialPressuresBar: partial,
   };
 }
 
@@ -242,7 +367,7 @@ export function aerosolSurfaceExposure(
   atmosphere: PlanetAtmosphere,
   iceCapLatitudeRad: number,
 ): number {
-  if (!AEROSOL[atmosphere.class].surfaceSourced) return 1;
+  if (!AEROSOL[atmosphere.aerosolClass ?? atmosphere.class].surfaceSourced) return 1;
   return Math.sin(Math.min(Math.PI / 2, Math.max(0, iceCapLatitudeRad)));
 }
 
@@ -269,7 +394,7 @@ export function visibleOpticalDepth(
 ): [number, number, number] {
   if (atmosphere.class === 'none') return [0, 0, 0];
   const column = (atmosphere.surfacePressureBar * EARTH_GRAVITY_MS2) / Math.max(bulk.gravityMs2, 0.1);
-  const k = RAYLEIGH_TAU_GREEN_1BAR * column * RAYLEIGH_PER_BAR[atmosphere.class];
+  const k = RAYLEIGH_TAU_GREEN_1BAR * column * (atmosphere.rayleighPerBar ?? RAYLEIGH_PER_BAR[atmosphere.class]);
   return [k * RAYLEIGH_HUE[0], k * RAYLEIGH_HUE[1], k * RAYLEIGH_HUE[2]];
 }
 
@@ -282,7 +407,7 @@ export function aerosolExtinctionDepth(
   surfaceExposure = 1,
 ): [number, number, number] {
   const { depth, extinctionHue, referenceColumnKgM2, surfaceSourced } =
-    AEROSOL[atmosphere.class];
+    AEROSOL[atmosphere.aerosolClass ?? atmosphere.class];
   const columnKgM2 = (atmosphere.surfacePressureBar * 1e5) / Math.max(bulk.gravityMs2, 0.1);
   const columnScale = referenceColumnKgM2 ? columnKgM2 / referenceColumnKgM2 : 1;
   const sourceScale = surfaceSourced ? Math.min(1, Math.max(0, surfaceExposure)) : 1;
@@ -297,7 +422,7 @@ export function aerosolOpticalDepth(
   surfaceExposure = 1,
 ): [number, number, number] {
   const extinction = aerosolExtinctionDepth(atmosphere, bulk, surfaceExposure);
-  const { singleScatteringAlbedo } = AEROSOL[atmosphere.class];
+  const { singleScatteringAlbedo } = AEROSOL[atmosphere.aerosolClass ?? atmosphere.class];
   return [
     extinction[0] * singleScatteringAlbedo[0],
     extinction[1] * singleScatteringAlbedo[1],
@@ -314,7 +439,7 @@ export function atmosphereColumn(
     rayleigh: visibleOpticalDepth(atmosphere, bulk),
     aerosol: aerosolOpticalDepth(atmosphere, bulk, surfaceExposure),
     aerosolExtinction: aerosolExtinctionDepth(atmosphere, bulk, surfaceExposure),
-    aerosolScaleHeightRatio: AEROSOL[atmosphere.class].scaleHeightRatio,
+    aerosolScaleHeightRatio: AEROSOL[atmosphere.aerosolClass ?? atmosphere.class].scaleHeightRatio,
   };
 }
 
@@ -354,8 +479,8 @@ export function atmosphericBondAlbedo(
  * stand where the column above them is still thin, wherever the
  * model's "surface" pressure sits below.
  */
-export function deckOpticalDepth(atmosphere: PlanetAtmosphere, bulk: PlanetBulk): AirColumn {
-  const column = atmosphereColumn(atmosphere, bulk);
+export function deckOpticalDepth(atmosphere: PlanetAtmosphere, bulk: PlanetBulk, surfaceExposure = 1): AirColumn {
+  const column = atmosphereColumn(atmosphere, bulk, surfaceExposure);
   return atmosphere.class === 'hydrogen-helium' ? columnAbove(column, atmosphere, 0) : column;
 }
 
@@ -364,20 +489,20 @@ export function deckOpticalDepth(atmosphere: PlanetAtmosphere, bulk: PlanetBulk)
 const CLOUD_TOP_MAX_TAU = 0.3;
 
 /**
- * The column above a deck standing this high: the surface column
- * thinned by the scale height, but never deeper than a deck can be
- * seen through — under a hothouse the visible tops ride the top of
- * the haze, wherever the geometric deck was placed.
+ * Overlying gas follows the thermal column when one is supplied. Only
+ * envelopes retain the visible-pressure-level surrogate: solid-world
+ * decks may be obscured by the atmosphere above their actual altitude.
  */
-export function columnAbove(column: AirColumn, atmosphere: PlanetAtmosphere, deckKm: number): AirColumn {
-  const gasAbove = Math.exp(-deckKm / Math.max(atmosphere.scaleHeightKm, 0.1));
+export function columnAbove(column: AirColumn, atmosphere: PlanetAtmosphere, deckKm: number, thermal?: HydrostaticColumn | null): AirColumn {
+  const gasAbove = thermal ? columnStateAt(thermal, deckKm * 1000).pressureFraction
+    : Math.exp(-Math.max(0, deckKm) / Math.max(atmosphere.scaleHeightKm, 0.1));
   const aerosolAbove = Math.exp(
-    -deckKm /
+    -Math.max(0, deckKm) /
       Math.max(atmosphere.scaleHeightKm * column.aerosolScaleHeightRatio, 0.1),
   );
   const green =
     column.rayleigh[1] * gasAbove + column.aerosolExtinction[1] * aerosolAbove;
-  const cap = green > 0 ? Math.min(1, CLOUD_TOP_MAX_TAU / green) : 1;
+  const cap = atmosphere.class === 'hydrogen-helium' && green > 0 ? Math.min(1, CLOUD_TOP_MAX_TAU / green) : 1;
   const scale = (v: [number, number, number], factor: number): [number, number, number] => [
     v[0] * factor,
     v[1] * factor,

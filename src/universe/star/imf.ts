@@ -21,6 +21,13 @@ function segmentCount(index: number, from: number, to: number): number {
 const weights = KROUPA_SEGMENTS.map((s, i) => segmentCount(i, s.min, s.max));
 const totalWeight = weights.reduce((a, b) => a + b, 0);
 
+/** Number probability per solar mass, with the same normalization as
+ * the inverse CDF used by catalogue identities. */
+export function initialMassDensity(mass: number): number {
+  const i = KROUPA_SEGMENTS.findIndex(s => mass >= s.min && mass <= s.max);
+  return i < 0 ? 0 : coefficients[i] * mass ** -KROUPA_SEGMENTS[i].alpha / totalWeight;
+}
+
 /**
  * The IMF as an explicit inverse CDF: a single unit value maps
  * monotonically to a zero-age mass. Making the map explicit (rather than

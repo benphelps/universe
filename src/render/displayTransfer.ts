@@ -87,12 +87,14 @@ export function seatPointInstrument(
   instrument: DisplayInstrument,
   exposure: number,
 ): void {
+  const continuum = Math.max(0, instrument.continuumShare);
+  const filteredExposure = Math.max(1e-30, exposure * continuum);
   uniforms.uGamma.value = instrument.gamma;
   uniforms.uGain.value = instrument.gain;
-  uniforms.uLogPivot.value = Math.log2(instrument.pivotLsunPc2 / exposure);
-  uniforms.uFloor.value = instrument.floor;
+  uniforms.uLogPivot.value = Math.log2(instrument.pivotLsunPc2 / filteredExposure);
+  uniforms.uFloor.value = instrument.floor * continuum ** instrument.gamma;
   uniforms.uCeil.value = instrument.ceil;
-  uniforms.uCutoff.value = instrument.cutoffLsunPc2 / exposure;
+  uniforms.uCutoff.value = instrument.cutoffLsunPc2 / filteredExposure;
   uniforms.uPointColorKnee.value = instrument.pointColorKnee;
 }
 
@@ -104,12 +106,14 @@ export function seatFieldPointInstrument(
   instrument: DisplayInstrument,
   exposure: number,
 ): void {
+  const continuum = Math.max(0, instrument.continuumShare);
+  const filteredExposure = Math.max(1e-30, exposure * continuum);
   uniforms.uGamma.value = instrument.gamma;
   uniforms.uGain.value = instrument.gain;
-  uniforms.uFloor.value = instrument.floor;
+  uniforms.uFloor.value = instrument.floor * continuum ** instrument.gamma;
   uniforms.uCeil.value = instrument.ceil;
-  uniforms.uZeroShift.value = Math.log2(exposure / instrument.pivotLsunPc2) - 17;
-  uniforms.uCutoff.value = instrument.cutoffLsunPc2 / exposure;
+  uniforms.uZeroShift.value = Math.log2(filteredExposure / instrument.pivotLsunPc2) - 17;
+  uniforms.uCutoff.value = instrument.cutoffLsunPc2 / filteredExposure;
   uniforms.uPointColorKnee.value = instrument.pointColorKnee;
 }
 

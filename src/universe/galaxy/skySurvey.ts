@@ -1,8 +1,9 @@
-import { buildTemperatureLut } from '../../core/color/blackbody';
+import { stellarOpticalResponse } from '../../core/color/stellarOpticalResponse';
+import { rgbLuminance } from '../../core/color/optical';
 import { initialMassFromUnit } from '../star/imf';
 import { MASS_BIT_SPAN, seedForIdentity, unitFromBits } from '../star/identity';
 import {
-  luminosityCeiling,
+  systemLuminosityCeiling,
   rowCells,
   sweepCellStars,
   taperKeep,
@@ -13,7 +14,7 @@ import {
 } from './catalog';
 import type { GalacticPosition } from './density';
 import { NEIGHBOR_RADIUS_PC, neighborRadiusPc } from './neighborhood';
-import { companionLuminosity, starPhotometry } from './photometry';
+import { unresolvedStarLight } from './photometry';
 import { makeAccum, packAccum, pushTo, type StarAccum, type SweepSlab } from './skyStars';
 
 /**
@@ -30,7 +31,7 @@ import { makeAccum, packAccum, pushTo, type StarAccum, type SweepSlab } from './
  * the move brings newly into range are swept.
  */
 
-/** Keep far stars down to apparent magnitude ≈ 9. */
+/** Optical source-power survey limit, L☉ pc⁻², before foreground extinction. */
 export const MIN_FAR_IRRADIANCE = 1.5e-4;
 
 /**
@@ -82,9 +83,10 @@ export function surveyFrameAt(center: GalacticPosition, reachPc = SURVEY_REACH_P
   return { center, reachPc, censusHeldPc: nearPc * NEAR_TAPER + nearPc };
 }
 
-/** Doubles per surveyed star: x, y, z (pc), luminosity, companion
- *  luminosity (L☉), effective temperature (K). */
-export const SURVEY_STRIDE = 6;
+/** Doubles per surveyed star: x, y, z (pc), primary effective
+ * temperature (K), combined optical RGB power. The seed recovers
+ * component bolometric properties when the system is inspected. */
+export const SURVEY_STRIDE = 7;
 
 /** One cell's stars, surveyed under a frame. */
 export interface CellSurvey {
@@ -132,14 +134,16 @@ export function surveyCell(
         if (row.skyRadiusPc <= 0) return;
         if (nearest > row.skyRadiusPc * SWEEP_TAPER) return;
         const mass = initialMassFromUnit(unitFromBits(massBits, MASS_BIT_SPAN));
-        if (luminosityCeiling(mass) / nearestSq < MIN_FAR_IRRADIANCE) return;
+        if (systemLuminosityCeiling(mass) * stellarOpticalResponse.maxFraction / nearestSq < MIN_FAR_IRRADIANCE) return;
       }
       const seed = seedForIdentity(massBits, ageBits, entropy);
       const position = { xPc: x, yPc: y, zPc: z };
-      const physical = starPhotometry(seed, position);
-      if (physical.luminosity <= 0) return;
-      if (!censused && physical.luminosity / nearestSq < MIN_FAR_IRRADIANCE) return;
-      stars.push(x, y, z, physical.luminosity, companionLuminosity(seed, position), physical.tEff);
+      const light = unresolvedStarLight(seed, position);
+      const physical = light.primary;
+      const power = rgbLuminance(light.rgb);
+      if (power <= 0) return;
+      if (!censused && power / nearestSq < MIN_FAR_IRRADIANCE) return;
+      stars.push(x, y, z, physical.tEff, ...light.rgb);
       seeds.push(seed);
     },
     taper,
@@ -203,7 +207,6 @@ export function projectSurvey(
   row: CatalogRow,
   viewpoint: GalacticPosition,
   nearPc: number,
-  lut: Float32Array,
   near: StarAccum,
   far: StarAccum,
 ): void {
@@ -231,18 +234,18 @@ export function projectSurvey(
     }
     // The home star itself: travel arrives exactly on a slot.
     if (d2 < 2.5e-5) continue;
-    const luminosity = stars[at + 3];
-    const light = luminosity + stars[at + 4];
-    const tEff = stars[at + 5];
+    const sourceRgb = [stars[at + 4], stars[at + 5], stars[at + 6]];
+    const light = rgbLuminance(sourceRgb);
+    const tEff = stars[at + 3];
     const censused =
       d2 <= nearSq || unitAtPosition(x, y, z) < taperKeep(nearTaper, distance);
     if (censused) {
-      pushTo(d2 <= nearSq ? near : far, lut, dx, dy, dz, light, tEff, seeds[i]);
+      pushTo(d2 <= nearSq ? near : far, dx, dy, dz, light, tEff, seeds[i], sourceRgb);
       continue;
     }
     if (distance > reachTaper.outerPc) continue;
-    if (luminosity / d2 < MIN_FAR_IRRADIANCE) continue;
-    pushTo(far, lut, dx, dy, dz, light, tEff, seeds[i]);
+    if (light / d2 < MIN_FAR_IRRADIANCE) continue;
+    pushTo(far, dx, dy, dz, light, tEff, seeds[i], sourceRgb);
   }
 }
 
@@ -253,11 +256,10 @@ export function projectSurveys(
   viewpoint: GalacticPosition,
 ): SweepSlab {
   const nearPc = neighborRadiusPc(viewpoint);
-  const lut = buildTemperatureLut(96);
   const near = makeAccum();
   const far = makeAccum();
   for (const survey of surveys) {
-    projectSurvey(survey, rows[survey.rowIndex], viewpoint, nearPc, lut, near, far);
+    projectSurvey(survey, rows[survey.rowIndex], viewpoint, nearPc, near, far);
   }
   return { near: packAccum(near), far: packAccum(far) };
 }
@@ -275,14 +277,13 @@ export function sweepRow(
 ): SweepSlab {
   const frame = surveyFrameAt(viewpoint, 0);
   const nearPc = neighborRadiusPc(viewpoint);
-  const lut = buildTemperatureLut(96);
   const near = makeAccum();
   const far = makeAccum();
   const cells = rowCells(row, viewpoint, rowSweepRadiusPc(row));
   for (let i = 0; i < cells.length; i++) {
     onProgress?.(i / cells.length);
     const survey = surveyCell(row, rowIndex, cells[i], frame);
-    projectSurvey(survey, row, viewpoint, nearPc, lut, near, far);
+    projectSurvey(survey, row, viewpoint, nearPc, near, far);
   }
   return { near: packAccum(near), far: packAccum(far) };
 }

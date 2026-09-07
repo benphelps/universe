@@ -1,7 +1,8 @@
+import { spiralCellContrastCeiling } from './spiralStructure';
 import { poisson } from '../../core/rng/distributions';
 import { deriveSeed, mix64 } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
-import { ARM_BOOST_MAX, armBoost, dustDensity, HOME_POSITION, type GalacticPosition } from './density';
+import { SMOOTH_MODEL, armBoost, dustDensity, HOME_POSITION, type GalacticPosition } from './density';
 import { galaxyRoot } from './galaxySeed';
 
 /**
@@ -56,9 +57,11 @@ function tracerHomeOf(): number {
  *  the centre and the midplane, with the arm at its maximum. */
 function tracerCeiling(ix: number, iy: number, iz: number): number {
   const nearest = (lo: number): number => Math.min(Math.max(0, lo), lo + CELL_PC);
+  const bound = spiralCellContrastCeiling(ix * CELL_PC, iy * CELL_PC, CELL_PC);
   return (
-    dustDensity({ xPc: nearest(ix * CELL_PC), yPc: nearest(iy * CELL_PC), zPc: nearest(iz * CELL_PC) }) *
-    (0.4 + 0.6 * ARM_BOOST_MAX)
+    Math.exp(-Math.hypot(nearest(ix * CELL_PC), nearest(iy * CELL_PC)) / SMOOTH_MODEL.dustScaleLengthPc) *
+    Math.exp(-Math.abs(nearest(iz * CELL_PC)) / SMOOTH_MODEL.dustScaleHeightPc) * (1 + SMOOTH_MODEL.dustLaneWeight * bound.lane) *
+    (1 + 0.6 * bound.boost)
   );
 }
 
@@ -79,7 +82,7 @@ export function clustersInCell(ix: number, iy: number, iz: number): OpenCluster[
   );
   const rng = new Rng(seed);
   const ceiling = tracerCeiling(ix, iy, iz) / tracerHomeOf();
-  const count = poisson(rng, Math.min(HOME_DENSITY_PER_PC3 * CELL_PC ** 3 * ceiling, 40));
+  const count = poisson(rng, HOME_DENSITY_PER_PC3 * CELL_PC ** 3 * ceiling);
   const clusters: OpenCluster[] = [];
   for (let i = 0; i < count; i++) {
     const positionPc = {

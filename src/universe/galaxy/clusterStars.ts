@@ -1,216 +1,161 @@
-import { buildTemperatureLut, temperatureToLutCoord } from '../../core/color/blackbody';
+import { opticalRgbInterpolator, rgbLuminance } from '../../core/color/optical';
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
-import { evolve } from '../star/evolution';
-import { KROUPA_SEGMENTS, massUnitForMass } from '../star/imf';
 import { galaxyRoot } from './galaxySeed';
 import { nuclearStarCluster } from './spheroid';
-import { meanStellarMass } from './stellarMass';
+import { galaxyNuclearStarCount } from './stellarMass';
+import { populationMoments } from './populationMoments';
+import { visitPopulationSamples } from './populationQuadrature';
+import { nuclearMassBounds } from './nuclearMassBounds';
+import { NUCLEAR_EPOCHS } from './nuclearPopulation';
+import { nuclearProfileRadius, nuclearColumnTable, type NuclearColumnTable } from './nuclearProfile';
 
-/**
- * The nuclear star cluster as a sky to stand inside: tens of millions
- * of stars within a few parsecs, of which the ones worth drawing are
- * the ones bright enough to be picked out.
- *
- * So the cluster is surveyed the way the star catalog surveys the disk
- * — down to a depth, not by a quota. Its luminosity function is built
- * from the initial mass function crossed with the two epochs the
- * centre holds, an ancient bulk and a young disc that star formation
- * reaches in bursts; the cut falls where the count of stars above it
- * matches what can be drawn, and every point past that is one real
- * star with its own mass, age, luminosity and colour. The rest — the
- * overwhelming majority by number, carrying the remainder of the light
- * — stays unresolved, which is what a cluster's glow is.
- */
-export interface ClusterStars {
-  /** Galactic-frame positions relative to the centre, pc. */
-  positionsPc: Float32Array;
-  /** Linear sRGB hue per star. */
-  colors: Float32Array;
-  /** Solar luminosities, each star's own. */
-  luminosities: Float32Array;
-  /** Total cluster luminosity, L☉, resolved and unresolved together. */
+export interface NuclearLightBudget {
+  starCount: number;
+  massSolar: number;
+  resolvedStars: number;
+  resolvedMassSolar: number;
+  unresolvedMassSolar: number;
+  /** Ensemble averages, distinct from this finite bright-star realization. */
+  expectedLuminosity: number;
+  expectedOpticalRgb: [number, number, number];
+  expectedResolvedStars: number;
+  expectedResolvedLuminosity: number;
+  expectedResolvedOpticalRgb: [number, number, number];
   totalLuminosity: number;
-  /** Faintest star drawn, L☉ — the survey depth. */
+  resolvedLuminosity: number;
+  unresolvedLuminosity: number;
+  totalOpticalRgb: [number, number, number];
+  resolvedOpticalRgb: [number, number, number];
+  unresolvedOpticalRgb: [number, number, number];
+}
+export interface ClusterStars {
+  column: NuclearColumnTable;
+  positionsPc: Float32Array;
+  /** Unit-luminance optical RGB hue, never peak normalized. */
+  colors: Float32Array;
+  /** Actual bolometric luminosities of the drawn physical samples. */
+  luminosities: Float32Array;
+  opticalLuminosities: Float32Array;
+  initialMasses: Float64Array;
+  agesGyr: Float64Array;
+  epochIndices: Uint8Array;
+  totalLuminosity: number;
+  /** Minimum bolometric luminosity actually drawn (not the survey cut). */
   cutLuminosity: number;
-  /** Share of the cluster's light standing in the drawn stars. */
+  /** Brightest-first optical survey cutoff, L☉ in 380–780 nm. */
+  cutOpticalLuminosity: number;
+  /** Actual drawn bolometric power / cluster bolometric power. */
   resolvedFraction: number;
+  epochs: NuclearLightBudget[];
 }
 
-/**
- * How many of the cluster's stars are drawn. Standing inside it, every
- * one of these is nearer than a parsec or two and the sky-point
- * material saturates on most of them, so more points past this buy a
- * whiter sky rather than a richer one — and they are paid for on every
- * frame and every face of the sky capture.
- */
-const POINT_COUNT = 18000;
-/** The young nuclear disc: a small fraction by number, most of the
- *  ultraviolet, and gathered far tighter than the ancient bulk —
- *  star formation reaches the centre in bursts and close in. */
-const YOUNG_FRACTION = 0.07;
-const YOUNG_RADIUS_PC = 0.6;
-/**
- * Where the cluster ends, in scale radii. A Hernquist sphere has no
- * edge — sampled to its tail it puts members tens of kiloparsecs out,
- * which is not a cluster but a spray across the galaxy. Real nuclear
- * clusters do end, at tens of parsecs, where the surrounding bulge
- * takes the stars over.
- */
-const TRUNCATION = 12;
-
+export const NUCLEAR_POINT_COUNT = 18000;
+/** The bright tail is represented by phase-aware quadrature nodes.
+ * These are physical (mass, age) samples, not mass/age rectangles to
+ * jitter across a giant/remnant transition. Refinement tests compare
+ * this discrete luminosity function with the population integral. */
+export const NUCLEAR_MASS_BINS = 256;
+const MIN_OPTICAL_LUMINOSITY = 1;
 interface Member {
-  /** Representative luminosity, for ranking the survey by depth. */
-  luminosity: number;
-  /** Share of the cluster's stars in this bin. */
   weight: number;
-  massLow: number;
-  massHigh: number;
-  ageLow: number;
-  ageSpan: number;
-  young: boolean;
+  luminosity: number;
+  optical: number;
+  color: [number, number, number];
+  initialMass: number;
+  currentMass: number;
+  age: number;
+  epoch: number;
+}
+
+/** Uncached: runs in the nuclear worker in production. */
+export function buildNuclearClusterStars(massBins = NUCLEAR_MASS_BINS, quadratureOrder: 2 | 4 | 8 = 2): ClusterStars {
+  const cluster = nuclearStarCluster(), starCount = galaxyNuclearStarCount();
+  const rng = new Rng(deriveSeed(galaxyRoot(0x4e534331n), 'cluster-stars'));
+  const opticalRgb = opticalRgbInterpolator();
+  const members: Member[] = [];
+  const epochs: NuclearLightBudget[] = NUCLEAR_EPOCHS.map((epoch, index) => {
+    const count = starCount * epoch.numberShare, moments = populationMoments(epoch.component);
+    visitPopulationSamples(epoch.component, massBins, (weight, initialMass, age, star) => {
+      if (star.luminosity < MIN_OPTICAL_LUMINOSITY || star.tEff <= 0) return;
+      const rgb = opticalRgb(star.tEff), optical = star.luminosity * rgbLuminance(rgb);
+      if (optical < MIN_OPTICAL_LUMINOSITY) return;
+      const y = rgbLuminance(rgb);
+      members.push({ weight: count * weight, luminosity: star.luminosity, optical,
+        color: [rgb[0] / y, rgb[1] / y, rgb[2] / y], initialMass, currentMass: star.mass, age, epoch: index });
+    // Old giant curves need four nodes per interval; the densely split
+    // young reference tracks converge with two and dominate sample cost.
+    }, massBins === NUCLEAR_MASS_BINS ? nuclearMassBounds[index] : undefined, index === 0 && quadratureOrder === 2 ? 4 : quadratureOrder);
+    return { starCount: count, massSolar: count * moments.massSolar, resolvedStars: 0, resolvedMassSolar: 0, unresolvedMassSolar: 0,
+      expectedLuminosity: count * moments.luminositySolar,
+      expectedOpticalRgb: moments.opticalRgbSolar.map(v => v * count) as [number, number, number],
+      expectedResolvedStars: 0, expectedResolvedLuminosity: 0, expectedResolvedOpticalRgb: [0, 0, 0],
+      totalLuminosity: count * moments.luminositySolar, resolvedLuminosity: 0, unresolvedLuminosity: 0,
+      totalOpticalRgb: moments.opticalRgbSolar.map(v => v * count) as [number, number, number],
+      resolvedOpticalRgb: [0, 0, 0], unresolvedOpticalRgb: [0, 0, 0] };
+  });
+  members.sort((a, b) => b.optical - a.optical);
+  const drawn: Member[] = [], cdf: number[] = [];
+  let represented = 0;
+  for (const member of members) {
+    const take = Math.min(member.weight, NUCLEAR_POINT_COUNT - represented);
+    if (take <= 0) break;
+    const epoch = epochs[member.epoch];
+    epoch.expectedResolvedStars += take;
+    epoch.expectedResolvedLuminosity += take * member.luminosity;
+    for (let c = 0; c < 3; c++) epoch.expectedResolvedOpticalRgb[c] += take * member.optical * member.color[c];
+    drawn.push(member); represented += take; cdf.push(represented);
+  }
+  const count = Math.floor(represented);
+  const positionsPc = new Float32Array(count * 3), colors = new Float32Array(count * 3);
+  const luminosities = new Float32Array(count), opticalLuminosities = new Float32Array(count);
+  const initialMasses = new Float64Array(count), agesGyr = new Float64Array(count), epochIndices = new Uint8Array(count);
+  let cutLuminosity = Infinity;
+  // Stratify the sorted luminosity CDF: rare bright bins are sampled
+  // without the large aggregate fluctuations of 18000 independent draws.
+  for (let i = 0; i < count; i++) {
+    const target = (i + rng.float()) / count * represented;
+    let lo = 0, hi = cdf.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (cdf[mid] < target) lo = mid + 1; else hi = mid; }
+    const member = drawn[lo], budget = epochs[member.epoch];
+    const scale = NUCLEAR_EPOCHS[member.epoch].scalePc ?? cluster.scaleRadiusPc;
+    const radius = scale * nuclearProfileRadius(rng.float());
+    const z = 2 * rng.float() - 1, r = Math.sqrt(Math.max(0, 1 - z * z)), phi = 2 * Math.PI * rng.float();
+    positionsPc[i * 3] = radius * r * Math.cos(phi); positionsPc[i * 3 + 1] = radius * r * Math.sin(phi); positionsPc[i * 3 + 2] = radius * z;
+    luminosities[i] = member.luminosity; opticalLuminosities[i] = member.optical;
+    initialMasses[i] = member.initialMass; agesGyr[i] = member.age; epochIndices[i] = member.epoch;
+    for (let c = 0; c < 3; c++) {
+      colors[i * 3 + c] = member.color[c];
+      budget.resolvedOpticalRgb[c] += opticalLuminosities[i] * colors[i * 3 + c];
+    }
+    budget.resolvedLuminosity += luminosities[i];
+    budget.resolvedMassSolar += member.currentMass; budget.resolvedStars++;
+    cutLuminosity = Math.min(cutLuminosity, luminosities[i]);
+  }
+  // Replace the ensemble's bright tail with its actual finite realization.
+  // Subtracting actual giant light from an ensemble mean can make the faint
+  // remainder negative: rare stars fluctuate even with a stratified survey.
+  // The remaining number stays N - actual resolved N within each epoch.
+  for (const epoch of epochs) {
+    const remainingCountScale = (epoch.starCount - epoch.resolvedStars) / (epoch.starCount - epoch.expectedResolvedStars);
+    epoch.unresolvedLuminosity = (epoch.expectedLuminosity - epoch.expectedResolvedLuminosity) * remainingCountScale;
+    epoch.totalLuminosity = epoch.resolvedLuminosity + epoch.unresolvedLuminosity;
+    epoch.unresolvedMassSolar = epoch.massSolar - epoch.resolvedMassSolar;
+    if (epoch.unresolvedLuminosity < 0 || epoch.unresolvedMassSolar < 0 || epoch.resolvedStars > epoch.starCount) {
+      throw new Error('Nuclear point survey overdraws its population inventory');
+    }
+    for (let c = 0; c < 3; c++) {
+      epoch.unresolvedOpticalRgb[c] = (epoch.expectedOpticalRgb[c] - epoch.expectedResolvedOpticalRgb[c]) * remainingCountScale;
+      epoch.totalOpticalRgb[c] = epoch.resolvedOpticalRgb[c] + epoch.unresolvedOpticalRgb[c];
+      if (epoch.unresolvedOpticalRgb[c] < 0) throw new Error('Nuclear point survey overdraws its optical population budget');
+    }
+  }
+  const totalLuminosity = epochs.reduce((sum, e) => sum + e.totalLuminosity, 0);
+  return { column: nuclearColumnTable(), positionsPc, colors, luminosities, opticalLuminosities, initialMasses, agesGyr, epochIndices,
+    totalLuminosity, cutLuminosity: count ? cutLuminosity : 0,
+    cutOpticalLuminosity: drawn.at(-1)?.optical ?? 0,
+    resolvedFraction: epochs.reduce((sum, e) => sum + e.resolvedLuminosity, 0) / totalLuminosity, epochs };
 }
 
 let cached: ClusterStars | null = null;
-
-export function nuclearClusterStars(): ClusterStars {
-  if (cached) return cached;
-  const cluster = nuclearStarCluster();
-  const rng = new Rng(deriveSeed(galaxyRoot(0x4e534331n), 'cluster-stars'));
-  const lut = buildTemperatureLut(96);
-
-  const starCount = cluster.massSolar / meanStellarMass();
-  const members = population();
-  let totalLuminosity = 0;
-  for (const m of members) totalLuminosity += m.weight * m.luminosity;
-  totalLuminosity *= starCount;
-
-  // Survey depth: brightest first until the count of stars that bright
-  // fills the points there are to draw. The bin the budget runs out in
-  // is taken in part rather than skipped — whole bins hold thousands of
-  // stars each, and dropping one would leave the survey far short.
-  members.sort((a, b) => b.luminosity - a.luminosity);
-  const drawn: Member[] = [];
-  let counted = 0;
-  let resolvedLight = 0;
-  for (const member of members) {
-    const inBin = member.weight * starCount;
-    const take = Math.min(inBin, POINT_COUNT - counted);
-    if (take <= 0) break;
-    drawn.push(take < inBin ? { ...member, weight: member.weight * (take / inBin) } : member);
-    counted += take;
-    resolvedLight += take * member.luminosity;
-  }
-  const cutLuminosity = drawn[drawn.length - 1].luminosity;
-
-  // One draw picks a star from the surveyed population by number.
-  const cdf = new Float64Array(drawn.length);
-  let running = 0;
-  for (let i = 0; i < drawn.length; i++) {
-    running += drawn[i].weight;
-    cdf[i] = running;
-  }
-
-  const count = Math.min(POINT_COUNT, Math.max(1, Math.round(counted)));
-  const positions = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 3);
-  const luminosities = new Float32Array(count);
-
-  for (let i = 0; i < count; i++) {
-    const cell = drawn[pick(cdf, rng.float() * running)];
-    // The cell is a bin, not a star: draw a mass and an age from
-    // inside it and evolve those, or every star in the bin would come
-    // out identical and the sky would band into a few brightnesses.
-    const mass = cell.massLow * (cell.massHigh / cell.massLow) ** rng.float();
-    const star = evolve(mass, cell.ageLow + cell.ageSpan * rng.float());
-    // Hernquist mass profile inverted: M(<r)/M = r²/(r+a)², with the
-    // draw renormalised to the mass inside the truncation so the
-    // profile keeps its shape and simply stops.
-    const scale = cell.young ? YOUNG_RADIUS_PC : cluster.scaleRadiusPc;
-    const held = (TRUNCATION / (TRUNCATION + 1)) ** 2;
-    const root = Math.sqrt(rng.float() * held);
-    const radius = (scale * root) / (1 - root);
-    const cosTheta = 2 * rng.float() - 1;
-    const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
-    const phi = rng.float() * 2 * Math.PI;
-    positions[i * 3] = radius * sinTheta * Math.cos(phi);
-    positions[i * 3 + 1] = radius * sinTheta * Math.sin(phi);
-    positions[i * 3 + 2] = radius * cosTheta;
-
-    const index = Math.min(95, Math.floor(temperatureToLutCoord(Math.max(star.tEff, 1)) * 95)) * 4;
-    colors[i * 3] = lut[index];
-    colors[i * 3 + 1] = lut[index + 1];
-    colors[i * 3 + 2] = lut[index + 2];
-    luminosities[i] = Math.max(star.luminosity, 0);
-  }
-
-  cached = {
-    positionsPc: positions,
-    colors,
-    luminosities,
-    totalLuminosity,
-    cutLuminosity,
-    resolvedFraction: resolvedLight / Math.max(totalLuminosity, 1e-9),
-  };
-  return cached;
-}
-
-/** First index whose cumulative weight passes the target. */
-function pick(cdf: Float64Array, target: number): number {
-  let lo = 0;
-  let hi = cdf.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (cdf[mid] < target) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-/**
- * The cluster's stars as a mass × age grid: the IMF by number, crossed
- * with its two epochs, each cell evolved to what it is now.
- *
- * The mass axis is spaced logarithmically, not by equal share of the
- * population — spaced by share, a single bin would hold everything
- * from a solar mass to a hundred, and the whole bright tail the survey
- * is looking for would collapse into one number. Logarithmic bins put
- * the resolution where the luminosity range is.
- */
-function population(): Member[] {
-  const massBins = 220;
-  const low = KROUPA_SEGMENTS[0].min;
-  const high = KROUPA_SEGMENTS[KROUPA_SEGMENTS.length - 1].max;
-  const epochs: Array<{ low: number; span: number; share: number; young: boolean }> = [];
-  const oldBins = 12;
-  const youngBins = 8;
-  for (let i = 0; i < oldBins; i++) {
-    epochs.push({ low: 8 + (4 * i) / oldBins, span: 4 / oldBins, share: (1 - YOUNG_FRACTION) / oldBins, young: false });
-  }
-  for (let i = 0; i < youngBins; i++) {
-    epochs.push({ low: 0.005 + (0.1 * i) / youngBins, span: 0.1 / youngBins, share: YOUNG_FRACTION / youngBins, young: true });
-  }
-
-  const members: Member[] = [];
-  for (let m = 0; m < massBins; m++) {
-    const m0 = low * (high / low) ** (m / massBins);
-    const m1 = low * (high / low) ** ((m + 1) / massBins);
-    const share = massUnitForMass(m1) - massUnitForMass(m0);
-    if (share <= 0) continue;
-    const mass = Math.sqrt(m0 * m1);
-    for (const epoch of epochs) {
-      const star = evolve(mass, epoch.low + epoch.span * 0.5);
-      if (star.luminosity <= 0 || star.tEff <= 0) continue;
-      members.push({
-        luminosity: star.luminosity,
-        weight: share * epoch.share,
-        massLow: m0,
-        massHigh: m1,
-        ageLow: epoch.low,
-        ageSpan: epoch.span,
-        young: epoch.young,
-      });
-    }
-  }
-  return members;
-}
+export function nuclearClusterStars(): ClusterStars { return cached ??= buildNuclearClusterStars(); }

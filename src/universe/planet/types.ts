@@ -1,3 +1,6 @@
+import type { SurfaceTemperatureField } from './surfaceClimate';
+import type { PlanetForcing } from './illumination';
+import type { WaterReservoir } from './waterInventory';
 export interface PlanetBulk {
   massEarth: number;
   radiusEarth: number;
@@ -9,7 +12,7 @@ export interface PlanetBulk {
   oblateness: number;
 }
 
-export type GeologicalRegime = 'dead' | 'stagnant-lid' | 'active-tectonics' | 'magma' | 'gas';
+export type GeologicalRegime = 'dead' | 'stagnant-lid' | 'active-tectonics' | 'volcanic' | 'magma' | 'gas';
 
 export interface PlanetInterior {
   ironCoreFraction: number;
@@ -25,6 +28,10 @@ export interface PlanetRotation {
   periodHours: number;
   obliquityRad: number;
   locked: boolean;
+  /** The body followed by synchronous rotation; legacy fixtures default to star. */
+  lockTarget?: 'star' | 'planet';
+  /** Interval between stellar noons; null for permanent stellar illumination. */
+  solarDayHours?: number | null;
   /** Mercury-style spin-orbit resonance when not fully locked. */
   spinOrbitResonance: '3:2' | null;
 }
@@ -40,6 +47,7 @@ export type AtmosphereClass =
   | 'rock-vapor';
 
 export interface PlanetAtmosphere {
+  waterReservoir?: WaterReservoir;
   class: AtmosphereClass;
   surfacePressureBar: number;
   scaleHeightKm: number;
@@ -47,17 +55,39 @@ export interface PlanetAtmosphere {
   opticalDepth: number;
   /** Rayleigh/haze scattering color for limb and sky, linear sRGB. */
   scatteringColor: [number, number, number];
+  /** Bulk gas inventory, expressed as partial pressures (bar). */
+  partialPressuresBar?: Partial<Record<AtmosphericGas, number>>;
+  meanMolecularMassAmu?: number;
+  specificHeatJkgK?: number;
+  rayleighPerBar?: number;
+  /** Aerosols retain their formation source when gas composition changes. */
+  aerosolClass?: AtmosphereClass;
+  /** Included thermostat reservoir, so re-finalization replaces rather than adds it. */
+  thermostatCo2Bar?: number;
 }
+
+export type AtmosphericGas = 'H2' | 'He' | 'N2' | 'O2' | 'CO2' | 'CH4' | 'SiO' | 'Na' | 'H2O';
 
 export type Hydrosphere = 'none' | 'oceans' | 'ice-sheet' | 'magma';
 
 export interface PlanetClimate {
+  /** Static annual energy-balance field; seasonal inertia remains separate. */
+  surfaceField?: SurfaceTemperatureField;
+  /** Retained bulk water supply for future vapor/condensate partitioning. */
+  waterMassFraction?: number;
   /** Equilibrium temperature with the converged Bond albedo, K. */
   equilibriumK: number;
-  /** Mean surface (or cloud-top, for envelopes) temperature, K. */
+  /** Effective radiating temperature including internal power. Optional
+   *  only for older hand-authored fixtures; generation always supplies it. */
+  effectiveK?: number;
+  /** Background outside lava patches and temperature of those patches. */
+  surfaceBackgroundK?: number;
+  magmaTemperatureK?: number;
+  /** Area-mean surface temperature; effective emission temperature for envelopes. */
   surfaceMeanK: number;
   bondAlbedo: number;
-  /** Latitude where permanent ice begins (π/2 = no caps, 0 = snowball). */
+  /** Equivalent polar-cap latitude for the total permanent ice area.
+   * Actual ice can be equatorial or longitude-dependent in surfaceField. */
   iceCapLatitudeRad: number;
   hydrosphere: Hydrosphere;
   /** Fraction of the surface covered by water or exposed silicate melt. */
@@ -96,6 +126,8 @@ export type CloudCondensate =
  *  the atmosphere column instead, so a Titan-like haze is not mistaken
  *  for an opaque global cloud deck. */
 export interface PlanetCloudLayer {
+  /** Global area-mean suspended mass; a subset of the retained condensate. */
+  condensateColumnKgM2?: number;
   condensate: CloudCondensate;
   /** Fraction of the globe covered when averaged over weather time. */
   coverage: number;
@@ -131,6 +163,8 @@ export interface PlanetAppearance {
 }
 
 export interface Characterization {
+  /** Serializable source/orbit geometry; absent only in legacy physical fixtures. */
+  forcing?: PlanetForcing;
   seedHex: string;
   bulk: PlanetBulk;
   interior: PlanetInterior;

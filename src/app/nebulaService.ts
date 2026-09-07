@@ -2,8 +2,13 @@ import { seedToHex } from '../core/rng/hash';
 import { galaxySeed } from '../universe/galaxy/galaxySeed';
 import type { MolecularCloud } from '../universe/galaxy/clouds';
 import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
+import type { NebulaVolumePair } from '../universe/galaxy/nebulaPair';
 import type { NebulaBakeResult, NebulaBakeTask } from '../workers/nebulaWorker';
 import { NebulaShelf } from './nebulaShelf';
+import { NebulaBakePool } from './nebulaBakePool';
+import { NEBULA_POOL_SIZE, NEBULA_LOOSE_BYTES, NEBULA_WORKING_BYTES } from './nebulaMemory';
+import { nebulaBakeMemory } from '../universe/galaxy/nebulaBakeMemory';
+import { nebulaFor } from '../universe/galaxy/nebula';
 
 /**
  * Nebula volumes, baked off the frame thread. Camera-led work: what is
@@ -11,25 +16,50 @@ import { NebulaShelf } from './nebulaShelf';
  * before it lands and the answer for a cloud nobody is looking at any
  * more is simply dropped.
  */
-/** A few workers rather than one. With the GPU bake a volume is tens
- *  of milliseconds and the pool barely matters; where a worker cannot
- *  reach a GPU it falls back to seconds of CPU march, and the pool is
+/** A few workers rather than one. GPU gas sampling is followed by a
+ *  shared CPU transport solve; where a worker cannot reach a GPU the
+ *  gas march takes longer too, and the pool is
  *  what keeps an arrival's later residents from queueing behind the
  *  first. Small, because the sky and terrain workers share the cores. */
-const POOL_SIZE = 3;
-let workers: Worker[] = [];
-let nextWorker = 0;
+const pool = new NebulaBakePool(NEBULA_POOL_SIZE, onBake, undefined, NEBULA_WORKING_BYTES);
 /** Requests in flight, so the same volume is never asked for twice. */
 const queued = new Set<string>();
 /** Who is still interested in each one. */
-const waiting = new Map<string, (bake: NebulaVolumeBake) => void>();
+const waiting = new Map<string, (pair: NebulaVolumePair) => void>();
+/** Independent portrait subscribers must survive a resident re-ranking. */
+const subscribers = new Map<string, Set<(pair: NebulaVolumePair | null) => void>>();
 /** Landed bakes for the clouds the camera may swing back to. Standing
  *  volumes hold theirs; the loose rest are bounded by this much. An
  *  orbit around a complex churns some sixty clouds through residency,
  *  and at the far grade a lit one is seven megabytes. */
-const LOOSE_SHELF_BYTES = 256 << 20;
-const shelf = new NebulaShelf(LOOSE_SHELF_BYTES);
+const shelf = new NebulaShelf(NEBULA_LOOSE_BYTES);
 const keyOf = new WeakMap<NebulaVolumeBake, string>();
+let estimates = new WeakMap<MolecularCloud, Map<number, ReturnType<typeof nebulaBakeMemory>>>();
+
+/** A worker selection carries the same exact source/box admission estimates.
+ * Its structured-cloned cloud has a fresh identity on every delivery. */
+export function rememberNebulaEstimates(cloud: MolecularCloud, values: Record<number, ReturnType<typeof nebulaBakeMemory>>): void {
+  estimates.set(cloud, new Map(Object.entries(values).map(([size, value]) => [Number(size), value])));
+}
+
+/** Reuse the small source/box plan while a resident is being ranked. */
+function estimate(cloud: MolecularCloud, size: number): ReturnType<typeof nebulaBakeMemory> {
+  let grades = estimates.get(cloud);
+  if (!grades) { grades = new Map(); estimates.set(cloud, grades); }
+  let memory = grades.get(size);
+  if (memory === undefined) { memory = nebulaBakeMemory(cloud, nebulaFor(cloud), size); grades.set(size, memory); }
+  return memory;
+}
+
+export function nebulaWorkingBytes(cloud: MolecularCloud, size: number): number { return estimate(cloud, size).workingBytes; }
+export function nebulaDomains(cloud: MolecularCloud, size: number): number { return estimate(cloud, size).domains; }
+
+export function pendingNebulaGrade(cloud: MolecularCloud): number {
+  const prefix = `${seedToHex(galaxySeed())}@${seedToHex(cloud.seed)}@paired@`;
+  let grade = 0;
+  for (const key of waiting.keys()) if (key.startsWith(prefix)) grade = Math.max(grade, Number(key.slice(prefix.length)));
+  return grade;
+}
 
 /**
  * Drop every bake the old locale was still waiting on, workers and all.
@@ -42,10 +72,13 @@ const keyOf = new WeakMap<NebulaVolumeBake, string>();
  * cancellation; what already landed stays cached.
  */
 export function resetNebulaBakes(): void {
-  for (const worker of workers) worker.terminate();
-  workers = [];
+  pool.reset();
   queued.clear();
   waiting.clear();
+  estimates = new WeakMap();
+  const abandoned = [...subscribers.values()].flatMap(listeners => [...listeners]);
+  subscribers.clear();
+  for (const answer of abandoned) answer(null);
 }
 
 /** How many volumes are still queued at the pool — what the
@@ -54,31 +87,37 @@ export function pendingNebulaBakes(): number {
   return queued.size;
 }
 
-function onBake(event: MessageEvent<NebulaBakeResult>): void {
-  const answer = waiting.get(event.data.key);
-  waiting.delete(event.data.key);
-  queued.delete(event.data.key);
-  if (!event.data.bake) return;
-  shelf.put(event.data.key, event.data.bake);
-  keyOf.set(event.data.bake, event.data.key);
+/** Re-ranking or reducing residency should not bake the abandoned queue. */
+export function retainNebulaBakes(seeds: ReadonlySet<bigint>): void {
+  const wanted = new Set([...seeds].map(seedToHex));
+  for (const key of waiting.keys()) if (!wanted.has(key.split('@')[1])) waiting.delete(key);
+  pruneUnwanted();
+}
+
+function pruneUnwanted(): void {
+  const keys = new Set([...waiting.keys(), ...subscribers.keys()]);
+  for (const key of pool.retainKeys(keys)) queued.delete(key);
+}
+
+function onBake(result: NebulaBakeResult): void {
+  const answer = waiting.get(result.key);
+  waiting.delete(result.key);
+  queued.delete(result.key);
+  const listeners = subscribers.get(result.key);
+  subscribers.delete(result.key);
+  const pair = result.pair;
+  if (!pair) { for (const listener of listeners ?? []) listener(null); return; }
+  for (const [part, bake] of [['coarse', pair.coarse], ['fine', pair.fine]] as const) {
+    if (!bake) continue;
+    const key = `${result.key}@${part}`;
+    shelf.put(key, bake);
+    keyOf.set(bake, key);
+  }
   // A bake the camera has moved on from is still worth keeping — it
   // is the answer for a cloud that may come back into view — but only
   // the request that is still waiting hears about it.
-  answer?.(event.data.bake);
-}
-
-function nextInPool(): Worker {
-  if (workers.length === 0) {
-    for (let i = 0; i < POOL_SIZE; i++) {
-      const worker = new Worker(new URL('../workers/nebulaWorker.ts', import.meta.url), {
-        type: 'module',
-      });
-      worker.onmessage = onBake;
-      workers.push(worker);
-    }
-  }
-  nextWorker = (nextWorker + 1) % workers.length;
-  return workers[nextWorker];
+  answer?.(pair);
+  for (const listener of listeners ?? []) listener(pair);
 }
 
 /**
@@ -90,8 +129,18 @@ function nextInPool(): Worker {
  *  outside, its ionized bubble from within — and at more than one
  *  resolution, since a sky-filling volume earns a finer grid. Both are
  *  part of what is being asked for, not just the cloud. */
-function volumeKey(cloud: MolecularCloud, size: number, boxPc: number | undefined): string {
-  return `${seedToHex(cloud.seed)}@${boxPc ? boxPc.toFixed(1) : 'bubble'}@${size}`;
+function volumeKey(cloud: MolecularCloud, size: number): string {
+  return `${seedToHex(galaxySeed())}@${seedToHex(cloud.seed)}@paired@${size}`;
+}
+
+function cachedPair(key: string): NebulaVolumePair | null {
+  const coarse = shelf.get(`${key}@coarse`);
+  if (!coarse) return null;
+  const fine = shelf.get(`${key}@fine`) ?? null;
+  // A coupled coarse grid has a dark hole where its fine partner goes.
+  // Never return half a pair, even if the loose shelf evicted one half.
+  if (coarse.compositePhotonLedger && !fine) return null;
+  return { coarse, fine };
 }
 
 /** The finest of these grids the shelf already holds for a cloud, so
@@ -99,12 +148,11 @@ function volumeKey(cloud: MolecularCloud, size: number, boxPc: number | undefine
  *  it left at rather than climbing from the first again. */
 export function shelvedNebulaVolume(
   cloud: MolecularCloud,
-  boxPc: number | undefined,
   sizes: number[],
 ): NebulaVolumeBake | null {
   for (const size of [...sizes].sort((a, b) => b - a)) {
-    const bake = shelf.get(volumeKey(cloud, size, boxPc));
-    if (bake) return bake;
+    const pair = cachedPair(volumeKey(cloud, size));
+    if (pair) return pair.coarse;
   }
   return null;
 }
@@ -120,14 +168,13 @@ export function releaseNebulaVolume(bake: NebulaVolumeBake): void {
   if (key) shelf.release(key);
 }
 
-export function requestNebulaVolume(
+export function requestNebulaPair(
   cloud: MolecularCloud,
   size: number,
-  boxPc: number | undefined,
-  onReady: (bake: NebulaVolumeBake) => void,
-): NebulaVolumeBake | null {
-  const key = volumeKey(cloud, size, boxPc);
-  const cached = shelf.get(key);
+  onReady: (pair: NebulaVolumePair) => void,
+): NebulaVolumePair | null {
+  const key = volumeKey(cloud, size);
+  const cached = cachedPair(key);
   if (cached) return cached;
   // Coming back to a cloud whose bake is still in flight has to leave
   // someone listening for it. Registering the new caller and returning
@@ -142,8 +189,25 @@ export function requestNebulaVolume(
     seedHex: seedToHex(cloud.seed),
     key,
     size,
-    boxPc,
+    workingBytes: nebulaWorkingBytes(cloud, size),
   };
-  nextInPool().postMessage(task);
+  pool.request(task);
   return null;
+}
+
+/** Same physical key/pool/shelf as resident volumes, with an independent
+ * cancellation lease. Cache delivery is synchronous; callers must allow it. */
+export function subscribeNebulaPair(task: NebulaBakeTask, answer: (pair: NebulaVolumePair | null) => void): () => void {
+  const cached = cachedPair(task.key);
+  if (cached) { answer(cached); return () => {}; }
+  let listeners = subscribers.get(task.key);
+  if (!listeners) { listeners = new Set(); subscribers.set(task.key, listeners); }
+  listeners.add(answer);
+  if (!queued.has(task.key)) { queued.add(task.key); pool.request(task); }
+  return () => {
+    const current = subscribers.get(task.key);
+    if (!current?.delete(answer)) return;
+    if (!current.size) subscribers.delete(task.key);
+    pruneUnwanted();
+  };
 }

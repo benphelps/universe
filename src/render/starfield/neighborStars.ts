@@ -1,3 +1,7 @@
+import { GLOBAL_STAR_DUST_GLSL } from '../glsl/globalStarDust';
+import { starGlobalDustUniforms, installStarDustCamera } from './globalDustState';
+import { LOCAL_CLOUD_RADIUS_PC } from '../../universe/galaxy/globalDust';
+import { installPointRaster, pointRasterVertex, pointRasterFragment } from './pointSpread';
 import {
   AdditiveBlending,
   BufferAttribute,
@@ -32,9 +36,8 @@ import {
  * depth, so nothing downstream knows whether a star is in front of a
  * cloud, inside it, or behind. Each star marches the volume itself,
  * over the stretch of its own sightline that falls inside the box —
- * twelve steps for a point, which is nothing, and it is the thing that
- * makes a cloud read as an object with space in front of and behind it
- * rather than a picture hung in the sky.
+ * twelve steps per intersected volume, bounded to four volumes. This
+ * distinguishes foreground, embedded and background stars.
  *
  * The uniform objects are shared by every star material, so a volume
  * arriving or leaving is one assignment rather than a search for
@@ -123,7 +126,7 @@ uniform float uFloor;
 uniform float uCeil;
 uniform float uCutoff;
 uniform float uPointColorKnee;
-uniform float uSizeScale;
+
 uniform sampler3D uNebulaVolume0;
 uniform sampler3D uNebulaVolume1;
 uniform sampler3D uNebulaVolume2;
@@ -132,12 +135,15 @@ uniform vec4 uNebulaBoxes[${MAX_STAR_NEBULAE}];
 uniform float uNebulaDustRefs[${MAX_STAR_NEBULAE}];
 uniform mat3 uCameraToGalaxy;
 
+${GLOBAL_STAR_DUST_GLSL}
+uniform mat3 uStarCameraToGalaxy;
+uniform vec3 uStarObserverOffsetPc;
 ${AIR_VIEW_GLSL}
 ${AIR_REFRACT_GLSL}
 ${HORIZON_OCCLUSION_GLSL}
 
 out vec3 vColor;
-out float vAlpha;
+${pointRasterVertex('out')}
 
 /**
  * Visual optical depth of one resident cloud over the stretch of this
@@ -151,17 +157,21 @@ out float vAlpha;
 float nebulaOpticalDepth(sampler3D volume, vec4 box, float dustRef, vec3 relPc) {
   float halfPc = box.w;
   if (halfPc <= 0.0) return 0.0;
-  vec3 origin = box.xyz;
+  vec3 origin = box.xyz + uStarObserverOffsetPc;
   float reach = length(relPc);
   if (reach < 1e-6) return 0.0;
   vec3 dir = relPc / reach;
-  vec3 inv = 1.0 / dir;
-  vec3 a = (vec3(-halfPc) - origin) * inv;
-  vec3 b = (vec3(halfPc) - origin) * inv;
-  vec3 lo = min(a, b);
-  vec3 hi = max(a, b);
-  float near = max(max(lo.x, lo.y), max(lo.z, 0.0));
-  float far = min(min(hi.x, hi.y), min(hi.z, reach));
+  float near=0.0,far=min(reach,${f(LOCAL_CLOUD_RADIUS_PC)});
+  // A ray parallel to a box face must not evaluate 0 * infinity when
+  // the observer lies on that face. Clip each finite axis explicitly.
+  for(int axis=0;axis<3;axis++) {
+    if(abs(dir[axis])<1e-8) {
+      if(abs(origin[axis])>halfPc)return 0.0;
+    } else {
+      float a=(-halfPc-origin[axis])/dir[axis],b=(halfPc-origin[axis])/dir[axis];
+      near=max(near,min(a,b));far=min(far,max(a,b));
+    }
+  }
   if (far <= near) return 0.0;
   float ds = (far - near) / 12.0;
   float tau = 0.0;
@@ -173,32 +183,52 @@ float nebulaOpticalDepth(sampler3D volume, vec4 box, float dustRef, vec3 relPc) 
   return tau * dustRef * ${DUST_OPACITY_PER_PC.toFixed(4)} * ds;
 }
 
+uniform vec3 uSourceTransmission;
+
 void main() {
+#ifdef REJECT_OFFSCREEN
+  vec3 worldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+  vec3 apparentWorldPos = airRefractPosition(worldPos);
+  gl_Position = projectionMatrix * viewMatrix * vec4(apparentWorldPos, 1.0);
+  // Point clipping uses its centre. Reject after refraction, before
+  // photometry and up to 48 volume samples for a point off screen.
+  // Do not test z: sky depth is deliberately clamped below.
+  if (gl_Position.w <= 0.0 || any(greaterThan(abs(gl_Position.xy), vec2(gl_Position.w)))
+      || horizonOccludes(apparentWorldPos)) {
+    vColor = vec3(0.0);
+    gl_PointSize = 1.0;
+    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+    return;
+  }
+
+#endif
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   float distanceKm = max(length(mvPosition.xyz), 1.0);
   float distancePc = max(distanceKm / uKmPerPc, 1e-9);
   // Same photometric mapping as the backdrop's resolved stars, but with
   // apparent brightness from the camera's true distance — the sky at the
   // home viewpoint matches, and flying toward a star brightens it.
-  // The zero point is where this population sits against the size and
-  // energy ceilings. A night sky seen from a planet is calibrated by
-  // the default; a swarm the camera stands inside is not, and left on
-  // that zero point every one of its stars pins to the largest dot the
-  // material draws — which reads as a field of blurred blobs rather
-  // than as stars of different brightness.
-  float irradiance = max(luminosity / (distancePc * distancePc), 1e-12);
+  // The population zero point is a display exposure offset. The PSF
+  // integrates to that response once; its raster area is not extra light.
+  // All source channels carry optical power, with a unit-Y hue.
+  // Dust and observer air act on that power before the detector curve,
+  // its faint-source release and its instrument detection threshold.
+#ifndef REJECT_OFFSCREEN
+  vec3 worldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+#endif
+  vec3 skyDir = normalize(worldPos - cameraPosition);
+  vec3 relPc = (uCameraToGalaxy * mvPosition.xyz) / uKmPerPc;
+  float tauV = starGlobalOpticalDepth(uStarDustObserverPc,(uStarCameraToGalaxy * mvPosition.xyz)/uKmPerPc)
+    + nebulaOpticalDepth(uNebulaVolume0, uNebulaBoxes[0], uNebulaDustRefs[0], relPc)
+    + nebulaOpticalDepth(uNebulaVolume1, uNebulaBoxes[1], uNebulaDustRefs[1], relPc)
+    + nebulaOpticalDepth(uNebulaVolume2, uNebulaBoxes[2], uNebulaDustRefs[2], relPc)
+    + nebulaOpticalDepth(uNebulaVolume3, uNebulaBoxes[3], uNebulaDustRefs[3], relPc);
+  vec3 transmission = uSourceTransmission * exp(-tauV * vec3(${f(SCATTER_OPACITY_RGB[0])}, 1.0, ${f(SCATTER_OPACITY_RGB[2])})) * airTransmittance(skyDir);
+  vec3 sourceRgb = starColor * luminosity * transmission;
+  float sourceLuminosity = dot(sourceRgb, vec3(.2126,.7152,.0722));
+  vec3 sourceColor = sourceLuminosity > 0.0 ? sourceRgb/sourceLuminosity : vec3(0.0);
+  float irradiance = max(sourceLuminosity / (distancePc * distancePc), 1e-30);
   float logE = log2(irradiance) + uZeroPoint + uZeroShift;
-  float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
-  // Sprite sizes are in pixels, so the same star drawn into a coarser
-  // buffer covers a wider angle. Rendering into one — the black hole's
-  // sky capture — scales them back, or every star read out of it comes
-  // back fatter than the one beside it drawn straight to the screen.
-  // But a sprite's light is its area times its per-pixel energy, so
-  // giving up the area would give up the light with it and hand back a
-  // sky dimmer than the one it stands for. The area lost is returned to
-  // the energy, and the star keeps its brightness at its true size.
-  float drawn = max(size * uSizeScale, 1.0);
-  float restored = (size * size) / (drawn * drawn);
   float raw = uGain * exp2(uGamma * logE);
   // The floor holds a point that would otherwise flicker at the edge
   // of visibility; it is not a promise to draw every star at every
@@ -210,33 +240,31 @@ void main() {
   float held = uFloor > 0.0
     ? smoothstep(-6.64, -3.32, log2(max(raw, 1e-12) / uFloor) / uGamma)
     : 1.0;
-  float energy = clamp(raw, uFloor, uCeil) * restored * held;
+
+#ifdef REJECT_OFFSCREEN
+  if (held <= 0.0) {
+    vColor = vec3(0.0);
+    gl_PointSize = 1.0;
+    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+    return;
+  }
+#endif
+  float energy = max(raw, uFloor) * held;
   // An instrument with a real limit drops the points below it — the
   // same seating the backdrop's stars take, so the two star tiers
   // stay one photometric system under any mode.
   if (uCutoff > 0.0) energy *= smoothstep(uCutoff * 0.6, uCutoff * 1.6, irradiance);
   // Once the star's actual disc resolves, the photosphere carries it.
   energy *= 1.0 - smoothstep(0.002, 0.004, aRadiusKm / distanceKm);
-  // Dust reddens as it dims: the blue band loses about a third more
-  // than the visual, the red band a quarter less (R_V = 3.1), which is
-  // why a star behind a cloud goes red before it goes out.
-  vec3 relPc = (uCameraToGalaxy * mvPosition.xyz) / uKmPerPc;
-  float tauV = nebulaOpticalDepth(uNebulaVolume0, uNebulaBoxes[0], uNebulaDustRefs[0], relPc)
-    + nebulaOpticalDepth(uNebulaVolume1, uNebulaBoxes[1], uNebulaDustRefs[1], relPc)
-    + nebulaOpticalDepth(uNebulaVolume2, uNebulaBoxes[2], uNebulaDustRefs[2], relPc)
-    + nebulaOpticalDepth(uNebulaVolume3, uNebulaBoxes[3], uNebulaDustRefs[3], relPc);
-  vec3 extinction = exp(-tauV * vec3(${f(SCATTER_OPACITY_RGB[0])}, 1.0, ${f(SCATTER_OPACITY_RGB[2])}));
   float sat = uPointColorKnee > 0.0 ? clamp(energy / uPointColorKnee, 0.0, 1.0) : 1.0;
   vec3 hue = mix(
-    vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
-    starColor, sat);
-  vec3 worldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-  vec3 skyDir = normalize(worldPos - cameraPosition);
-  vColor = hue * energy * uIntensity * extinction * skyVisibility(skyDir) * airTransmittance(skyDir);
-  vAlpha = clamp(energy * 4.0, 0.0, 1.0);
-  gl_PointSize = drawn;
+    vec3(dot(sourceColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
+    sourceColor, sat);
+  vColor = hue * energy * uIntensity * skyVisibility(skyDir) * uPointScale * uPointScale;
+#ifndef REJECT_OFFSCREEN
   vec3 apparentWorldPos = airRefractPosition(worldPos);
   gl_Position = projectionMatrix * viewMatrix * vec4(apparentWorldPos, 1.0);
+#endif
   // Sky points sit far beyond the camera's far plane at low altitude,
   // and the far plane cuts on view depth — a camera-rotation-dependent
   // filter that has no business editing the sky. Under the reversed-Z
@@ -246,12 +274,11 @@ void main() {
   // from a surface, near is metres and a parent planet reaches ~1e-11)
   // or the sky wins the reversed GEQUAL test and shines through it;
   // 1e-24 is beyond any body yet still beats the far-plane clear at 0.
+  seatPointRaster(gl_Position);
   gl_Position.z = clamp(gl_Position.z, 1e-24 * gl_Position.w, gl_Position.w);
-  // A point that has gone costs no fragments: put it outside the clip
-  // volume and the rasterizer never sees it.
-  if (held <= 0.0 || horizonOccludes(apparentWorldPos)) {
-    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
-  }
+#ifndef REJECT_OFFSCREEN
+  if (held <= 0.0 || horizonOccludes(apparentWorldPos)) gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+#endif
 }
 `;
 
@@ -259,20 +286,32 @@ const FRAGMENT = /* glsl */ `
 // GLSL 3, for the sampler3D the extinction march reads: a raw shader
 // declares its own varyings and its own output.
 in vec3 vColor;
-in float vAlpha;
+${pointRasterFragment('in')}
 out vec4 fragColor;
 
 void main() {
-  vec2 c = gl_PointCoord * 2.0 - 1.0;
-  float falloff = 1.0 - smoothstep(0.25, 1.0, length(c));
-  fragColor = vec4(vColor * falloff * vAlpha, 1.0);
+  fragColor = vec4(vColor * pointPixelWeight(), 1.0);
 }
 `;
 
-/** Photometric star-point material (positions interpreted in km). The
- *  zero point sets where the population lands against the ceilings. */
+/** Materials are registered only in explicit audit mode for matched A/B
+ * comparisons; disposal removes them from the audit registry. */
+const auditMaterials = new Set<ShaderMaterial>();
+let auditCulling = true;
+export function setStarPointCulling(enabled: boolean): void {
+  auditCulling = enabled;
+  for (const material of auditMaterials) {
+    if (enabled) material.defines.REJECT_OFFSCREEN = 1;
+    else delete material.defines.REJECT_OFFSCREEN;
+    material.needsUpdate = true;
+  }
+}
+
+/** Optical star-point material (positions in km), with the existing
+ * phenomenological display/PSF response. The zero point sets its pivot. */
 export function createStarPointsMaterial(kmPerPc: number, zeroPoint = 17): ShaderMaterial {
-  return new ShaderMaterial({
+  const material = new ShaderMaterial({
+    defines: { REJECT_OFFSCREEN: 1 },
     glslVersion: GLSL3,
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -282,14 +321,23 @@ export function createStarPointsMaterial(kmPerPc: number, zeroPoint = 17): Shade
       uKmPerPc: { value: kmPerPc },
       uIntensity: { value: 1 },
       uZeroPoint: { value: zeroPoint },
-      uSizeScale: { value: 1 },
+      uSourceTransmission: { value: [1, 1, 1] },
       ...fieldPointUniforms(),
+      ...starGlobalDustUniforms,
       ...nebulaUniforms,
     },
     blending: AdditiveBlending,
     transparent: true,
     depthWrite: false,
   });
+  installPointRaster(material);
+  installStarDustCamera(material);
+  if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('benchmark')) {
+    if (!auditCulling) delete material.defines.REJECT_OFFSCREEN;
+    auditMaterials.add(material);
+    material.addEventListener('dispose', () => auditMaterials.delete(material));
+  }
+  return material;
 }
 
 /**

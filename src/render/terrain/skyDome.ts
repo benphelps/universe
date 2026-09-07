@@ -83,13 +83,14 @@ float sunColumn(
   float radiusAtParcel,
   float mu,
   float height,
-  float horizon
+  float horizon,
+  bool gas
 ) {
-  float above = exp(-altitude / max(height, 1e-4));
+  float above = gas ? gasColumnAt(altitude) : exp(-altitude / max(height, 1e-4));
   if (mu >= 0.0) return above * airmassFor(mu, horizon);
   float tangentAltitude = radiusAtParcel * sqrt(max(1.0 - mu * mu, 0.0)) - uPlanetRadius;
   return max(
-    2.0 * exp(-max(tangentAltitude, 0.0) / max(height, 1e-4)) * horizon
+    2.0 * (gas ? gasColumnAt(tangentAltitude) : exp(-max(tangentAltitude, 0.0) / max(height, 1e-4))) * horizon
       - above * airmassFor(-mu, horizon),
     0.0
   );
@@ -215,7 +216,7 @@ vec3 scattered(
       float radiusAtParcel = length(parcel);
       float altitude = max(radiusAtParcel - uPlanetRadius, 0.0);
       vec3 parcelUp = parcel / max(radiusAtParcel, 1e-6);
-      float gasDensity = exp(-altitude / gasHeight);
+      float gasDensity = gasDensityAt(altitude);
       float aerosolDensity = exp(-altitude / aerosolHeight);
       vec3 pieceDepth = (
         uRayleighDepth * gasDensity / gasHeight
@@ -235,14 +236,14 @@ vec3 scattered(
       ));
       float sourceMu = max(muSun, tangentMu);
       float gasSun = sunColumn(
-        altitude, radiusAtParcel, sourceMu, gasHeight, uHorizonAirmass
+        altitude, radiusAtParcel, sourceMu, gasHeight, uHorizonAirmass, true
       );
       float aerosolSun = sunColumn(
         altitude,
         radiusAtParcel,
         sourceMu,
         aerosolHeight,
-        uAerosolHorizonAirmass
+        uAerosolHorizonAirmass, false
       );
       vec3 sunBeam = exp(-(
         uRayleighDepth * gasSun + uAerosolExtinction * aerosolSun

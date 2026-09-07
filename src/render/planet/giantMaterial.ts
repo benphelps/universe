@@ -1,5 +1,5 @@
 import { Color, ShaderMaterial, Vector3 } from 'three';
-import { blackbodyLinearRgb } from '../../core/color/blackbody';
+import { blackbodySurfaceEmission } from '../lighting/thermalEmission';
 import { type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
@@ -55,6 +55,7 @@ uniform float uRegime;                  // 0 banded, 1 locked
 uniform vec3 uHotspotDirObj;
 uniform vec3 uThermalColor;
 uniform float uThermalStrength;
+uniform float uSurfaceExposure;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
@@ -119,7 +120,10 @@ void main() {
   if (lit2) {
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, diffuseShadow(shadow2));
   }
-  vec3 color = surface * light;
+  // Effective radiating temperature is a blackbody photosphere proxy,
+  // not a solved cloud-level temperature. No invented night-side boost.
+  vec3 color = surface * light + (vec3(1.0) - surface)
+    * uThermalColor * uThermalStrength * uSurfaceExposure;
   float xv = airmass(dot(normal, viewDir));
   color = color * airColumnThrough(vec3(0.0), uOpticalDepth, xv)
     + uLightColor * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl), -dot(viewDir, uLightDir))
@@ -129,14 +133,6 @@ void main() {
       * twilight(ndotl2) * shadow2;
   }
 
-  // Hot giants radiate their own heat; the locked hotspot rides east
-  // of the substellar point and carries into the night.
-  if (uThermalStrength > 0.0) {
-    float glow = uRegime > 0.5
-      ? 0.25 + 0.75 * pow(clamp(dot(p, uHotspotDirObj), 0.0, 1.0), 3.0)
-      : mix(0.35, 1.0, 1.0 - smoothstep(-0.1, 0.2, ndotl));
-    color += uThermalColor * uThermalStrength * glow;
-  }
 
   gl_FragColor = vec4(color * airTransmittanceTo(vWorldPos), 1.0);
 }
@@ -148,7 +144,7 @@ export function createGiantMaterial(
   physical: Characterization,
   circulation: Circulation,
 ): ShaderMaterial {
-  const glowing = circulation.thermalGlowK > 700;
+  const emission = blackbodySurfaceEmission(physical.climate.surfaceMeanK);
   const radiusKm = physical.bulk.radiusEarth * 6371;
   const { atmosphere, bulk } = physical;
   return new ShaderMaterial({
@@ -180,10 +176,11 @@ export function createGiantMaterial(
       uRegime: { value: circulation.regime === 'locked' ? 1 : 0 },
       uHotspotDirObj: { value: new Vector3(0, 0, 1) },
       uThermalColor: {
-        value: glowing ? blackbodyLinearRgb(circulation.thermalGlowK) : [0, 0, 0],
+        value: emission.color,
       },
+      uSurfaceExposure: { value: 1 },
       uThermalStrength: {
-        value: glowing ? Math.min(1, (circulation.thermalGlowK / 1800) ** 4) : 0,
+        value: emission.strength,
       },
     },
   });

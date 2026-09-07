@@ -5,6 +5,7 @@ import { PRIME_GALAXY_SEED, setGalaxySeed } from '../universe/galaxy/galaxySeed'
 import { viewpointForSeed } from '../universe/galaxy/sectors';
 import { SkySurveyCache } from '../universe/galaxy/skySurveyCache';
 import { GenerationPermits } from './generationPermits';
+import { SkyPairRequests, type SkyPairResult } from './skyPairRequests';
 import { SkyBackgroundBuilder } from './skyBackground';
 import { makeSkyBuild, runSkyBuild, type SkyBuild } from './skyBuild';
 import { SkySweepPool } from './skySweepPool';
@@ -39,7 +40,8 @@ const post = (message: unknown, transfer: Transferable[] = []): void =>
 
 const permits = new GenerationPermits(post);
 const cache = new SkySurveyCache(SURVEY_STAR_BUDGET);
-const background = new SkyBackgroundBuilder(permits);
+const pairs = new SkyPairRequests(post);
+const background = new SkyBackgroundBuilder(permits, pairs);
 let pool: SkySweepPool | null = null;
 let cacheGalaxy: string | null = null;
 let nextTaskId = 1;
@@ -73,11 +75,12 @@ function cancelAll(): void {
 }
 
 self.onmessage = (
-  event: MessageEvent<SkyRequest | GenerationGrantMessage | SkyCancelMessage>,
+  event: MessageEvent<SkyRequest | GenerationGrantMessage | SkyCancelMessage | SkyPairResult>,
 ) => {
   const data = event.data;
   if ('type' in data) {
     if (data.type === 'sky-cancel') cancelAll();
+    else if (data.type === 'sky-pair-result') pairs.receive(data);
     else permits.grant(data.requestId);
     return;
   }

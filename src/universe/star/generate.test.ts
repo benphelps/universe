@@ -28,13 +28,12 @@ describe('star fixtures', () => {
     expect(star.activity.flareRatePerDay).toBeGreaterThan(0.1);
   });
 
-  it('massive star near end of life is a red supergiant', () => {
-    // Deep in the post-main-sequence window: an 18 M☉ star now lives
-    // ~8.4 Myr on the main sequence (the Eddington floor lengthened
-    // massive lifetimes to what the track grids measure).
+  it('the 15-solar-mass reference track ends as a red supergiant', () => {
+    // Geneva Z=0.014 rotating track: MS ends at 13.447 Myr and the
+    // tabulated evolution ends at 14.955 Myr, measured from ZAMS.
     const star = generateStar(3n, {
-      massInitial: 18,
-      ageGyr: 0.0096,
+      massInitial: 15,
+      ageGyr: 0.01495,
       feH: 0,
       withCompanions: false,
     });
@@ -42,6 +41,15 @@ describe('star fixtures', () => {
     expect(star.radius).toBeGreaterThan(200);
     expect(star.tEff).toBeLessThan(5000);
     expect(star.spectralType).toMatch(/^[KM]\dI$/);
+  });
+
+  it('the late 60-solar-mass reference star is hot and wind-stripped', () => {
+    const star = generateStar(3n, { massInitial: 60, ageGyr: 0.004832, feH: 0, withCompanions: false });
+    expect(star.stage).toBe('supergiant');
+    expect(star.tEff).toBeGreaterThan(60000);
+    expect(star.radius).toBeLessThan(10);
+    expect(star.mass).toBeLessThan(20);
+    expect(star.linearRgb[2]).toBeGreaterThan(star.linearRgb[0]);
   });
 
   it('old solar-mass star has become a white dwarf', () => {

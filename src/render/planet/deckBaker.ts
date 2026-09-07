@@ -10,6 +10,7 @@ import {
   Vector4,
   WebGLCubeRenderTarget,
   type WebGLRenderer,
+  type Object3D,
 } from 'three';
 import {
   activeStorms,
@@ -21,6 +22,7 @@ import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { foldShaderTime } from '../shaderTime';
 import { createPatternUniforms, HEIGHT_SCALE, PATTERN_GLSL } from './giantPattern';
+import { beginLoadingWork, endLoadingWork } from '../../app/loadingWorkAudit';
 
 const BAKE_VERTEX = /* glsl */ `
 varying vec2 vUv;
@@ -108,6 +110,10 @@ export class DeckBaker {
     });
   }
 
+  prepare(compile: (object: Object3D) => Promise<unknown>): Promise<unknown> {
+    return compile(this.mesh);
+  }
+
   /** Render the deck at one sim time into the target's six faces. */
   bake(
     renderer: WebGLRenderer,
@@ -115,6 +121,7 @@ export class DeckBaker {
     timeDays: number,
     lightDirObj: Vector3,
   ): void {
+    const started = beginLoadingWork();
     const uniforms = this.material.uniforms;
     uniforms.uTimeDays.value = foldShaderTime(timeDays);
     (uniforms.uLightDirObj.value as Vector3).copy(lightDirObj);
@@ -139,14 +146,24 @@ export class DeckBaker {
     }
 
     const previous = renderer.getRenderTarget();
-    for (let face = 0; face < 6; face++) {
-      (uniforms.uFaceForward.value as Vector3).copy(FACES[face].forward);
-      (uniforms.uFaceRight.value as Vector3).copy(FACES[face].right);
-      (uniforms.uFaceUp.value as Vector3).copy(FACES[face].up);
-      renderer.setRenderTarget(target, face);
-      renderer.render(this.mesh, this.camera);
+    const previousFace = renderer.getActiveCubeFace(), previousLevel = renderer.getActiveMipmapLevel();
+    const mipmaps = target.texture.generateMipmaps;
+    try {
+      for (let face = 0; face < 6; face++) {
+        // Three rebuilds mipmaps after each render. Wait for all six faces
+        // so one completed cube generates its mip chain exactly once.
+        target.texture.generateMipmaps = mipmaps && face === 5;
+        (uniforms.uFaceForward.value as Vector3).copy(FACES[face].forward);
+        (uniforms.uFaceRight.value as Vector3).copy(FACES[face].right);
+        (uniforms.uFaceUp.value as Vector3).copy(FACES[face].up);
+        renderer.setRenderTarget(target, face);
+        renderer.render(this.mesh, this.camera);
+      }
+    } finally {
+      target.texture.generateMipmaps = mipmaps;
+      renderer.setRenderTarget(previous, previousFace, previousLevel);
+      endLoadingWork(`giant-deck-${target.width}`, started);
     }
-    renderer.setRenderTarget(previous);
   }
 
   dispose(): void {

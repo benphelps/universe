@@ -1,3 +1,6 @@
+import { packContinuumPair } from '../../universe/galaxy/nebulaContinuum';
+import { CONTINUUM_SAMPLE_GLSL } from './nebulaContinuumGlsl';
+import { CELL_TRANSFER_GLSL } from '../../core/physics/radiativeTransfer';
 import {
   BackSide,
   ClampToEdgeWrapping,
@@ -13,17 +16,13 @@ import {
   ShaderMaterial,
   SphereGeometry,
   UnsignedByteType,
+  HalfFloatType,
   Vector3,
+  PerspectiveCamera,
 } from 'three';
 import type { GalacticPosition } from '../../universe/galaxy/density';
 import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
-import {
-  SCATTER_OPACITY_RGB,
-  SCATTER_TABLE_TAU_MAX,
-  SCATTER_TABLE_TAUS,
-  SCATTER_TABLE_MUS,
-} from '../../universe/galaxy/dustScattering';
-import { scatterTableTexture } from './scatterTable';
+import { SCATTER_OPACITY_RGB } from '../../universe/galaxy/dustScattering';
 import {
   SKY_PEDESTAL_LSUN_PC2_SR,
   type DisplayInstrument,
@@ -39,6 +38,7 @@ import { glslFloat as f } from '../glsl/format';
 import { galaxyLutTextures } from './galaxyLuts';
 import { CLUMP_TILE_PERIOD, CLUMP_TILE_RANGE } from './clumpTile';
 import type { StarNebulaExtinction } from '../starfield/neighborStars';
+import { registerSkyVolume, sphereInViewCone } from '../fx/skyVolumeVisibility';
 
 const VERTEX = /* glsl */ `
 // The dome is a unit sphere centered on the camera and never rotated,
@@ -65,13 +65,14 @@ const MAX_STEPS = 160;
 /** Boxes one carrier marches together: the volumes the camera stands
  *  inside, whose gas lies both before and behind each other's along
  *  every ray, so no whole-volume compositing order is right for them.
- *  Three keeps the carrier's samplers — three grids per box, the
- *  detail tile and the scattering table — inside the eight-sampler
- *  minimum a fragment shader is guaranteed times two. */
+ *  Three keeps the carrier at thirteen samplers: gas, fine gas,
+ *  occupancy and packed continuum per box, plus the detail tile.
+ *  This fits the WebGL 2 minimum of sixteen fragment samplers. */
 export const MAX_BOXES = 3;
 const MAX_ITERATIONS = MAX_BOXES * (MAX_STEPS + 3 * OCCUPANCY_SIZE);
 
 export const NEBULA_FRAGMENT = /* glsl */ `
+${CELL_TRANSFER_GLSL}
 #define MAX_BOXES ${MAX_BOXES}
 precision highp sampler3D;
 in vec3 vRay;
@@ -79,6 +80,8 @@ out vec4 fragColor;
 uniform sampler3D uVolume[MAX_BOXES];
 uniform sampler3D uOccupancy[MAX_BOXES];
 uniform sampler3D uFine[MAX_BOXES];
+uniform sampler3D uContinuum[MAX_BOXES];
+uniform vec3 uContinuumRef[MAX_BOXES];
 uniform int uBoxCount;
 uniform vec3 uCentrePc[MAX_BOXES];
 uniform float uHalfPc[MAX_BOXES];
@@ -88,14 +91,13 @@ uniform vec3 uEmissionHot[MAX_BOXES];
 uniform vec3 uEmissionCool[MAX_BOXES];
 uniform vec3 uReflection[MAX_BOXES];
 uniform float uEmissionCoefficient[MAX_BOXES];
+uniform float uEmissionHotCoefficient[MAX_BOXES];
 uniform vec3 uFineOffsetPc[MAX_BOXES];
 uniform float uFineHalfPc[MAX_BOXES];
 uniform float uFineDustRef[MAX_BOXES];
 uniform float uFineDensityRef[MAX_BOXES];
 uniform float uFineEmissionCoefficient[MAX_BOXES];
-uniform vec3 uScatterSourcePc[MAX_BOXES];
-uniform float uScatterLum[MAX_BOXES];
-uniform float uScatterFloorPc2[MAX_BOXES];
+uniform float uFineEmissionHotCoefficient[MAX_BOXES];
 uniform float uDetailAmp[MAX_BOXES];
 uniform float uDetailFreq[MAX_BOXES];
 uniform int uSteps[MAX_BOXES];
@@ -103,20 +105,8 @@ uniform vec3 uCamPc;
 uniform mat3 uWorldToGalaxy;
 uniform float uOpacity;
 uniform sampler3D uDetailNoise;
-uniform sampler2D uScatterTable;
 ${TRANSFER_GLSL}
-
-/** The multiple-scattering table: what a voxel at optical depth tau
- *  from its source sends toward a viewer at scattering-angle cosine
- *  already folded into the y coordinate — every order of scattering,
- *  solved once (universe/galaxy/dustScattering). */
-float scatterM(float tau, float muCoord) {
-  float u = log(1.0 + min(tau, ${f(SCATTER_TABLE_TAU_MAX)})) *
-    ${f(1 / Math.log1p(SCATTER_TABLE_TAU_MAX))};
-  return texture(uScatterTable,
-    vec2(u * ${f((SCATTER_TABLE_TAUS - 1) / SCATTER_TABLE_TAUS)} + ${f(0.5 / SCATTER_TABLE_TAUS)},
-      muCoord)).r;
-}
+${CONTINUUM_SAMPLE_GLSL}
 
 /** Interleaved gradient noise: one cheap dither per pixel, so the
  *  march's step boundaries never line up into shells. */
@@ -157,6 +147,11 @@ vec4 fineAt(int b, vec3 uvw) {
   if (b == 1) return texture(uFine[1], uvw);
   return texture(uFine[2], uvw);
 }
+vec3 continuumAt(int b, vec3 uvw) {
+  if (b == 0) return texture(uContinuum[0], uvw).rgb;
+  if (b == 1) return texture(uContinuum[1], uvw).rgb;
+  return texture(uContinuum[2], uvw).rgb;
+}
 float occupancyAt(int b, vec3 uvw) {
   if (b == 0) return texture(uOccupancy[0], uvw).r;
   if (b == 1) return texture(uOccupancy[1], uvw).r;
@@ -184,8 +179,10 @@ void sampleBox(int b, vec3 p, vec3 dir, out vec3 emission, out vec3 scattered, o
   // The dust byte is a square root, so the thin columns that dim
   // the sky behind a cloud survive the quantization.
   dust = cell.r * cell.r * uDustRef[b];
-  float ionized = cell.g * uDensityRef[b];
-  float coefficient = uEmissionCoefficient[b];
+  float ionized = (cell.g * 256.0 + cell.a) / 257.0 * uDensityRef[b];
+  float coefficient = uEmissionCoefficient[b], hotCoefficient = uEmissionHotCoefficient[b];
+  vec3 lightCoord = (p + shift) / (2.0 * uHalfPc[b]) + 0.5;
+  float lightSlab = 0.0, lightRef = uContinuumRef[b].x;
 
   // A cloud is a hundred parsecs and the bubble its newborns blow is
   // a few: one grid cannot hold both, and a grid that holds the cloud
@@ -197,10 +194,12 @@ void sampleBox(int b, vec3 p, vec3 dir, out vec3 emission, out vec3 scattered, o
     if (all(lessThan(abs(q), vec3(uFineHalfPc[b])))) {
       vec4 fine = fineAt(b, (q + shift) / (2.0 * uFineHalfPc[b]) + 0.5);
       dust = fine.r * fine.r * uFineDustRef[b];
-      ionized = fine.g * uFineDensityRef[b];
+      ionized = (fine.g * 256.0 + fine.a) / 257.0 * uFineDensityRef[b];
       cell.b = fine.b;
       cell.a = fine.a;
-      coefficient = uFineEmissionCoefficient[b];
+      coefficient = uFineEmissionCoefficient[b]; hotCoefficient = uFineEmissionHotCoefficient[b];
+      lightCoord = (q + shift) / (2.0 * uFineHalfPc[b]) + 0.5;
+      lightSlab = 2.0; lightRef = uContinuumRef[b].y;
     }
   }
   if (dust <= 0.0 && ionized <= 0.0) return;
@@ -213,29 +212,15 @@ void sampleBox(int b, vec3 p, vec3 dir, out vec3 emission, out vec3 scattered, o
   // Recombination lines: optically thin, and going as the square of
   // the density because every emission is an electron meeting a
   // proton. The hue is the line mixture at this cell's hardness.
-  emission = mix(uEmissionCool[b], uEmissionHot[b], cell.b) * ionized * ionized * coefficient;
-  // What the dust scatters of the group's light: the flux arriving
-  // from the star it actually comes from, scattered by this cell's
-  // dust through every order at once — the table carries the beam's
-  // attenuation, the phase, and the diffuse field that seeps around
-  // clumps, indexed by the optical depth the bake actually marched
-  // (cell.a) and the scattering angle. Per channel, because the
-  // opacity that drives it rises to the blue: the reason reflection
-  // nebulae are blue at all. The floor keeps the source's own cell
-  // finite rather than singular.
-  vec3 shine = p - uScatterSourcePc[b];
-  float r2 = max(dot(shine, shine), uScatterFloorPc2[b]);
-  float mu = -dot(shine, dir) * inversesqrt(r2);
-  float muCoord = (clamp(mu, -1.0, 1.0) * 0.5 + 0.5) *
-    ${f((SCATTER_TABLE_MUS - 1) / SCATTER_TABLE_MUS)} + ${f(0.5 / SCATTER_TABLE_MUS)};
-  float tau = -log(max(cell.a, 0.0038));
-  vec3 m = vec3(
-    scatterM(tau * ${f(SCATTER_OPACITY_RGB[0])}, muCoord),
-    scatterM(tau, muCoord),
-    scatterM(tau * ${f(SCATTER_OPACITY_RGB[2])}, muCoord));
-  scattered = uReflection[b] *
-    vec3(${f(SCATTER_OPACITY_RGB[0])} * m.r, m.g, ${f(SCATTER_OPACITY_RGB[2])} * m.b) *
-    (uScatterLum[b] * uContinuumShare * dust / r2);
+  emission = mix(uEmissionCool[b] * coefficient, uEmissionHot[b] * hotCoefficient, cell.b) * ionized * ionized;
+  if (lightRef > 0.0) {
+    vec3 irradiance = continuumAt(b, continuumCoord(lightCoord, uContinuumRef[b].z, lightSlab));
+    vec3 moment = 2.0 * continuumAt(b, continuumCoord(lightCoord, uContinuumRef[b].z, lightSlab + 1.0)) - 1.0;
+    scattered = irradiance * irradiance * lightRef * continuumPhase(moment, dir)
+      * (${f(SCATTER_EMISSIVITY_PER_LSUN)} * uContinuumShare * dust);
+    return;
+  }
+
 }
 
 void main() {
@@ -311,9 +296,10 @@ void main() {
       float dust;
       sampleBox(b, p, dir, emission, scattered, dust);
       float extinction = dust * ${DUST_OPACITY_PER_PC.toFixed(4)};
-      light += transmittance * (emission + scattered) * dsOf[b];
-      transmittance *= exp(-extinction * dsOf[b] *
-        vec3(${f(SCATTER_OPACITY_RGB[0])}, 1.0, ${f(SCATTER_OPACITY_RGB[2])}));
+      vec3 depth = extinction * dsOf[b] *
+        vec3(${f(SCATTER_OPACITY_RGB[0])}, 1.0, ${f(SCATTER_OPACITY_RGB[2])});
+      light += transmittance * (emission + scattered) * dsOf[b] * cellEmissionWeight(depth);
+      transmittance *= exp(-depth);
       tSample[b] += dsOf[b];
     }
     // The march may stop once even the display-space transmittance —
@@ -348,6 +334,8 @@ export interface NebulaBox {
   volume: Data3DTexture;
   fine: Data3DTexture;
   occupancy: Data3DTexture;
+  continuum: Data3DTexture;
+  continuumRef: Vector3;
   centrePc: Vector3;
   halfPc: number;
   dustRef: number;
@@ -356,14 +344,13 @@ export interface NebulaBox {
   emissionCool: Vector3;
   reflection: Vector3;
   emissionCoefficient: number;
+  emissionHotCoefficient: number;
   fineOffsetPc: Vector3;
   fineHalfPc: number;
   fineDustRef: number;
   fineDensityRef: number;
   fineEmissionCoefficient: number;
-  scatterSourcePc: Vector3;
-  scatterLum: number;
-  scatterFloorPc2: number;
+  fineEmissionHotCoefficient: number;
   detailFreq: number;
   /** Per frame: sub-cell detail bought by apparent size, and the
    *  march's step count with it. */
@@ -389,8 +376,16 @@ export class NebulaCarrier {
   readonly mesh: Mesh;
   private readonly material: ShaderMaterial;
   private readonly sceneToGalaxy: Matrix3;
+  private boxes: readonly NebulaBox[] = [];
+  private readonly viewForward = new Vector3();
+  private readonly viewDelta = new Vector3();
+  private readonly viewEye = new Vector3();
   private readonly empty = emptyVolume();
   private readonly emptyOccupancy = emptyOccupancy();
+  ready = true;
+  private preparing = false;
+  private prepared = false;
+  private disposed = false;
 
   constructor(
     private readonly viewpointPc: GalacticPosition,
@@ -408,6 +403,8 @@ export class NebulaCarrier {
         uVolume: { value: slots(() => this.empty) },
         uOccupancy: { value: slots(() => this.emptyOccupancy) },
         uFine: { value: slots(() => this.empty) },
+        uContinuum: { value: slots(() => this.empty) },
+        uContinuumRef: { value: slots(() => new Vector3()) },
         uBoxCount: { value: 0 },
         uCentrePc: { value: slots(() => new Vector3()) },
         uHalfPc: { value: slots(() => 1) },
@@ -417,14 +414,13 @@ export class NebulaCarrier {
         uEmissionCool: { value: slots(() => new Vector3()) },
         uReflection: { value: slots(() => new Vector3()) },
         uEmissionCoefficient: { value: slots(() => 0) },
+        uEmissionHotCoefficient: { value: slots(() => 0) },
         uFineOffsetPc: { value: slots(() => new Vector3()) },
         uFineHalfPc: { value: slots(() => 0) },
         uFineDustRef: { value: slots(() => 1) },
         uFineDensityRef: { value: slots(() => 1) },
         uFineEmissionCoefficient: { value: slots(() => 0) },
-        uScatterSourcePc: { value: slots(() => new Vector3()) },
-        uScatterLum: { value: slots(() => 0) },
-        uScatterFloorPc2: { value: slots(() => 1) },
+        uFineEmissionHotCoefficient: { value: slots(() => 0) },
         uDetailAmp: { value: slots(() => 0) },
         uDetailFreq: { value: slots(() => 1) },
         uSteps: { value: slots(() => BASE_STEPS) },
@@ -435,7 +431,6 @@ export class NebulaCarrier {
         // texture: zeros until its worker bake lands, which reads as
         // detail 1 — the plain grid, nothing false.
         uDetailNoise: { value: galaxyLutTextures().clumpTile },
-        uScatterTable: { value: scatterTableTexture() },
         ...transferUniforms(skyFloorRadiance),
       },
       side: BackSide,
@@ -451,10 +446,30 @@ export class NebulaCarrier {
     // Behind the star points and the sky domes, in front of the galaxy.
     this.mesh.renderOrder = -6;
     this.mesh.frustumCulled = false;
+    registerSkyVolume(this.mesh, camera => {
+      if (!(camera instanceof PerspectiveCamera)) return true;
+      this.viewEye.setFromMatrixPosition(camera.matrixWorld);
+      // A capture from another origin needs its own gas coordinates;
+      // retain everything if it is not the eye this carrier was updated for.
+      if (this.viewEye.distanceToSquared(this.mesh.position) > 1e-6) return true;
+      camera.getWorldDirection(this.viewForward).applyMatrix3(this.worldToGalaxy).normalize();
+      const p = camera.projectionMatrix.elements;
+      const viewRadius = Math.atan(Math.hypot((1 + Math.abs(p[8])) / p[0], (1 + Math.abs(p[9])) / p[5]));
+      for (const box of this.boxes) {
+        this.viewDelta.copy(box.centrePc).sub(this.camPc);
+        if (sphereInViewCone(this.viewDelta, Math.sqrt(3) * box.halfPc, this.viewForward, viewRadius)) return true;
+        // Retain a protruding fine domain too, even if a future model
+        // relaxes the current nested-domain containment rule.
+        if (box.fineHalfPc > 0 && sphereInViewCone(this.viewDelta.add(box.fineOffsetPc),
+          Math.sqrt(3) * box.fineHalfPc, this.viewForward, viewRadius)) return true;
+      }
+      return false;
+    });
   }
 
   /** The boxes this carrier marches, in slot order. */
   assign(boxes: readonly NebulaBox[]): void {
+    this.boxes = boxes;
     const u = this.material.uniforms;
     u.uBoxCount.value = Math.min(MAX_BOXES, boxes.length);
     for (let b = 0; b < MAX_BOXES; b++) {
@@ -462,7 +477,9 @@ export class NebulaCarrier {
       (u.uVolume.value as Data3DTexture[])[b] = box?.volume ?? this.empty;
       (u.uFine.value as Data3DTexture[])[b] = box?.fine ?? this.empty;
       (u.uOccupancy.value as Data3DTexture[])[b] = box?.occupancy ?? this.emptyOccupancy;
+      (u.uContinuum.value as Data3DTexture[])[b] = box?.continuum ?? this.empty;
       if (!box) continue;
+      (u.uContinuumRef.value as Vector3[])[b].copy(box.continuumRef);
       (u.uCentrePc.value as Vector3[])[b].copy(box.centrePc);
       (u.uHalfPc.value as number[])[b] = box.halfPc;
       (u.uDustRef.value as number[])[b] = box.dustRef;
@@ -471,18 +488,32 @@ export class NebulaCarrier {
       (u.uEmissionCool.value as Vector3[])[b].copy(box.emissionCool);
       (u.uReflection.value as Vector3[])[b].copy(box.reflection);
       (u.uEmissionCoefficient.value as number[])[b] = box.emissionCoefficient;
+      (u.uEmissionHotCoefficient.value as number[])[b] = box.emissionHotCoefficient;
       (u.uFineOffsetPc.value as Vector3[])[b].copy(box.fineOffsetPc);
       (u.uFineHalfPc.value as number[])[b] = box.fineHalfPc;
       (u.uFineDustRef.value as number[])[b] = box.fineDustRef;
       (u.uFineDensityRef.value as number[])[b] = box.fineDensityRef;
       (u.uFineEmissionCoefficient.value as number[])[b] = box.fineEmissionCoefficient;
-      (u.uScatterSourcePc.value as Vector3[])[b].copy(box.scatterSourcePc);
-      (u.uScatterLum.value as number[])[b] = box.scatterLum;
-      (u.uScatterFloorPc2.value as number[])[b] = box.scatterFloorPc2;
+      (u.uFineEmissionHotCoefficient.value as number[])[b] = box.fineEmissionHotCoefficient;
       (u.uDetailAmp.value as number[])[b] = box.detailAmp;
       (u.uDetailFreq.value as number[])[b] = box.detailFreq;
       (u.uSteps.value as number[])[b] = box.steps;
     }
+  }
+
+  /** Prepare offscreen too: rotating into a loaded volume must not compile
+   * the marcher on its first visible frame. Cancelled carriers retain only
+   * their tiny placeholders/material while the readiness poll finishes. */
+  prepare(compile: (mesh: Mesh) => Promise<unknown>): void {
+    if (this.disposed || this.prepared) return;
+    this.prepared = this.preparing = true;
+    this.ready = this.mesh.visible = false;
+    void Promise.resolve().then(() => this.disposed ? undefined : compile(this.mesh))
+      .catch(() => {}).then(() => {
+        this.preparing = false;
+        if (this.disposed) this.releaseResources();
+        else this.ready = true;
+      });
   }
 
   /** Seat an instrument: the shared transfer over the sky's pedestal —
@@ -495,7 +526,7 @@ export class NebulaCarrier {
 
   set opacity(value: number) {
     this.material.uniforms.uOpacity.value = value;
-    this.mesh.visible = value > 0.002;
+    this.mesh.visible = value > 0.002 && this.ready && !this.disposed;
   }
 
   /** Where the camera stands, in the galaxy's own frame — measured
@@ -531,6 +562,14 @@ export class NebulaCarrier {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.ready = this.mesh.visible = false;
+    this.assign([]);
+    if (!this.preparing) this.releaseResources();
+  }
+
+  private releaseResources(): void {
     this.mesh.geometry.dispose();
     this.material.dispose();
     this.empty.dispose();
@@ -542,6 +581,8 @@ export class NebulaCarrier {
  *  them by, and a carrier of its own. */
 export class NebulaVolume {
   readonly seed: bigint;
+  get ready(): boolean { return this.carrier.ready; }
+  prepare(compile: (mesh: Mesh) => Promise<unknown>): void { this.carrier.prepare(compile); }
   /** How far the camera stood from the box centre at the last update,
    *  pc — what residency ordering and the star march choose by. */
   cameraDistancePc = Infinity;
@@ -552,6 +593,7 @@ export class NebulaVolume {
   private readonly texture: Data3DTexture;
   private readonly fineTexture: Data3DTexture;
   private readonly occupancyTexture: Data3DTexture;
+  private readonly continuumTexture: Data3DTexture;
   private readonly cameraToGalaxy = new Matrix3();
 
   constructor(
@@ -572,8 +614,16 @@ export class NebulaVolume {
     this.fineTexture = fine ? volumeTexture(fine) : emptyVolume();
     this.occupancyTexture = occupancyTexture(fine ? combinedOccupancy(bake, fine) : bake.occupancy);
     this.texture = volumeTexture(bake);
+    const light = packContinuumPair(bake.continuum, fine?.continuum);
+    this.continuumTexture = new Data3DTexture(light.data, light.size, light.size, light.size * 4);
+    this.continuumTexture.format = RGBAFormat; this.continuumTexture.type = HalfFloatType;
+    this.continuumTexture.minFilter = LinearFilter; this.continuumTexture.magFilter = LinearFilter;
+    this.continuumTexture.wrapS = this.continuumTexture.wrapT = this.continuumTexture.wrapR = ClampToEdgeWrapping;
+    this.continuumTexture.needsUpdate = true;
     this.box = {
       volume: this.texture,
+      continuum: this.continuumTexture,
+      continuumRef: new Vector3(bake.continuum?.irradianceRef ?? 0, fine?.continuum?.irradianceRef ?? 0, light.size),
       fine: this.fineTexture,
       occupancy: this.occupancyTexture,
       centrePc: new Vector3(...bake.centrePc),
@@ -584,6 +634,7 @@ export class NebulaVolume {
       emissionCool: new Vector3(...bake.emissionCool),
       reflection: new Vector3(...bake.reflectionColor),
       emissionCoefficient: bake.emissionCoefficient,
+      emissionHotCoefficient: bake.emissionHotCoefficient,
       fineOffsetPc: fine
         ? new Vector3(
             fine.centrePc[0] - bake.centrePc[0],
@@ -595,9 +646,7 @@ export class NebulaVolume {
       fineDustRef: fine?.dustRef ?? 1,
       fineDensityRef: fine?.densityRef ?? 1,
       fineEmissionCoefficient: fine?.emissionCoefficient ?? 0,
-      scatterSourcePc: new Vector3(...bake.scatterSourcePc),
-      scatterLum: bake.scatterLuminositySolar * SCATTER_EMISSIVITY_PER_LSUN,
-      scatterFloorPc2: bake.scatterFloorPc2,
+      fineEmissionHotCoefficient: fine?.emissionHotCoefficient ?? 0,
       // First sub-cell octave at half the cell of each grid.
       detailFreq: bake.size / bake.halfExtentsPc[0],
       detailAmp: 0,
@@ -681,6 +730,7 @@ export class NebulaVolume {
   extinctionFor(cameraRotation: Matrix3): StarNebulaExtinction {
     return {
       volume: this.texture,
+
       halfPc: this.box.halfPc,
       centrePc: this.box.centrePc,
       camPc: this.carrier.camPc,
@@ -697,6 +747,7 @@ export class NebulaVolume {
     this.texture.dispose();
     this.fineTexture.dispose();
     this.occupancyTexture.dispose();
+    this.continuumTexture.dispose();
   }
 }
 

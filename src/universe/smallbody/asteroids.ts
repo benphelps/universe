@@ -4,6 +4,7 @@ import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import type { Belt } from '../system/types';
 import type { Asteroid, AsteroidTaxonomy } from './types';
+import { asteroidAxes } from './appearance';
 
 /** Cumulative size-frequency slope N(>D) ∝ D^-q, collisional equilibrium. */
 export const SFD_SLOPE = 2.3;
@@ -19,12 +20,25 @@ const TAXONOMY_DENSITY_KGM3: Record<AsteroidTaxonomy, number> = {
 /** Surface gravity of a uniform sphere at the mean radius: g = 4πGρr/3.
  *  Rubble piles carry ~25% macroporosity. */
 export function asteroidGravityMs2(asteroid: Asteroid): number {
-  const density = TAXONOMY_DENSITY_KGM3[asteroid.taxonomy] * (asteroid.rubblePile ? 0.75 : 1);
+  const density = asteroidBulkDensityKgM3(asteroid);
   return ((4 / 3) * Math.PI * G * density * asteroid.diameterKm * 1000) / 2;
 }
 
-/** Rubble piles fly apart below this spin period. */
-const SPIN_BARRIER_HOURS = 2.2;
+export function asteroidBulkDensityKgM3(asteroid: Pick<Asteroid, 'bulkDensityKgM3' | 'taxonomy' | 'rubblePile'>): number {
+  return asteroid.bulkDensityKgM3 ?? TAXONOMY_DENSITY_KGM3[asteroid.taxonomy] * (asteroid.rubblePile ? 0.75 : 1);
+}
+
+/** Existing procedural rounding scale, not a universal differentiation threshold. */
+export const ASTEROID_ROUNDING_DIAMETER_KM = 300;
+
+/** Cohesionless surface-shedding screen: centrifugal acceleration at the
+ * longest datum axis must be below GM/a². Exact for the uniform sphere;
+ * the point-mass acceleration is a conservative approximation at the
+ * major tip of a homogeneous ellipsoid. Not a granular failure solver. */
+export function asteroidGravitySpinPeriodHours(asteroid: Pick<Asteroid, 'bulkDensityKgM3' | 'taxonomy' | 'rubblePile' | 'shape'>): number {
+  const major = asteroidAxes(asteroid.shape)[0];
+  return Math.sqrt(3 * Math.PI * major ** 3 / (G * asteroidBulkDensityKgM3(asteroid))) / 3600;
+}
 
 /**
  * Deterministic asteroid instantiation for one cell of a belt. Cells are
@@ -49,7 +63,7 @@ export function instantiateBeltCell(
     if (inGap && rng.float() < 0.92) continue;
 
     const diameterKm = powerLaw(rng, SFD_SLOPE + 1, minDiameterKm, 400);
-    asteroids.push(buildAsteroid(rng, belt, aAu, diameterKm));
+    asteroids.push(buildAsteroid(rng.fork('member', asteroids.length), belt, aAu, diameterKm));
   }
   return asteroids;
 }
@@ -63,17 +77,18 @@ export function buildAsteroid(rng: Rng, belt: Belt, aAu: number, diameterKm: num
   else taxonomy = rng.float() > zoneFraction * 0.8 ? 'S' : 'C';
   const albedo = { S: 0.22, C: 0.06, M: 0.15, D: 0.05 }[taxonomy];
 
-  // Bodies above ~50 km survive as coherent-ish; smaller ones are shattered rubble.
-  const rubblePile = diameterKm > 0.2 && diameterKm < 50 ? rng.bool(0.85) : rng.bool(0.3);
+  // Retain the small-body structural prescription. Once this model rounds
+  // a body under self-gravity, do not label its interior a loose pile.
+  const rubbleCandidate = diameterKm > 0.2 && diameterKm < 50 ? rng.bool(0.85) : rng.bool(0.3);
+  const gravityDominated = diameterKm >= ASTEROID_ROUNDING_DIAMETER_KM;
+  const rubblePile = !gravityDominated && rubbleCandidate;
   let spinPeriodHours = 10 ** rng.normal(Math.log10(8), 0.5);
-  if (rubblePile && spinPeriodHours < SPIN_BARRIER_HOURS) {
-    spinPeriodHours = SPIN_BARRIER_HOURS * rng.range(1.0, 1.6);
-  }
   const tumbling = spinPeriodHours > 40 && rng.bool(0.5);
 
   // Small bodies are lumpy; hydrostatic rounding wins above ~300 km.
-  const roundness = Math.min(1, diameterKm / 300);
-  return {
+  const roundness = Math.min(1, diameterKm / ASTEROID_ROUNDING_DIAMETER_KM);
+  const asteroid: Asteroid = {
+    bulkDensityKgM3: belt.inventory?.bulkDensityKgM3,
     elements: {
       semiMajorAxis: aAu * AU,
       eccentricity: Math.min(0.4, rayleigh(rng, 0.07)),
@@ -96,4 +111,10 @@ export function buildAsteroid(rng: Rng, belt: Belt, aAu: number, diameterKm: num
       noiseSeedHex: seedToHex(deriveSeed(rng.seed, 'shape')),
     },
   };
+  if (rubblePile || gravityDominated) {
+    const limit = asteroidGravitySpinPeriodHours(asteroid);
+    if (spinPeriodHours < limit) spinPeriodHours = limit * rng.range(1, 1.6);
+    asteroid.spinPeriodHours = spinPeriodHours;
+  }
+  return asteroid;
 }

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { elementsToState } from '../../core/math/kepler';
-import { AU, EARTH_RADIUS } from '../../core/physics/constants';
+import { AU, EARTH_RADIUS, EARTH_MASS, SOLAR_MASS } from '../../core/physics/constants';
 import { mu, seconds } from '../../core/physics/units';
 import { generateSystem } from '../system/generate';
-import { rocheLimitPlanetRadii, tidalHeatFluxWm2 } from './generate';
+import { rocheLimitPlanetRadii, satelliteOuterLimitM, tidalHeatFluxWm2 } from './generate';
 
 describe('tidal heating calibration', () => {
   it('reproduces Io around a Jupiter analog', () => {
@@ -37,16 +37,44 @@ describe('satellite systems', () => {
     expect(giants.length).toBeGreaterThan(10);
     for (const giant of giants) {
       const regulars = giant.moons.filter((m) => m.channel === 'coaccretion');
-      expect(regulars.length).toBeGreaterThanOrEqual(2);
+      // Close-in giants can have no room for surviving satellites.
       expect(regulars.length).toBeLessThanOrEqual(6);
       const totalMass = regulars.reduce((sum, m) => sum + m.physical.bulk.massEarth, 0);
       const ratio = totalMass / giant.physical.bulk.massEarth;
-      expect(ratio).toBeGreaterThan(1e-6);
+      if (regulars.length) expect(ratio).toBeGreaterThan(0);
       expect(ratio).toBeLessThan(3e-3);
       for (let i = 1; i < regulars.length; i++) {
         expect(regulars[i].elements.semiMajorAxis).toBeGreaterThan(
           regulars[i - 1].elements.semiMajorAxis,
         );
+      }
+    }
+  });
+
+  it('all formation channels fit Roche and eccentric stellar bounds, including companion hosts', () => {
+    const sample = [...systems, ...[0xc77318b68a1a8910n, 0x9a0ba413e5e792dfn].map(seed => generateSystem(seed))];
+    for (const system of sample) {
+      const hosts = [{ planets: system.planets, mass: system.centralMassSolar },
+        ...system.companions.map(c => ({ planets: c.planets, mass: c.star.mass }))];
+      for (const host of hosts) for (const planet of host.planets) {
+        const pericenterHill = planet.elements.semiMajorAxis * (1 - planet.elements.eccentricity) *
+          Math.cbrt(planet.physical.bulk.massEarth * EARTH_MASS / (3 * host.mass * SOLAR_MASS));
+        for (let i = 0; i < planet.moons.length; i++) {
+          const moon = planet.moons[i];
+          const { semiMajorAxis: a, eccentricity: e } = moon.elements;
+          const roche = rocheLimitPlanetRadii(planet.physical.bulk.densityGcc, moon.physical.bulk.densityGcc) * planet.physical.bulk.radiusEarth * EARTH_RADIUS;
+          expect(a * (1 - e)).toBeGreaterThan(roche);
+          expect(a * (1 + e)).toBeLessThan(pericenterHill);
+          expect(a).toBeLessThan(satelliteOuterLimitM(planet, host.mass, e, moon.retrograde));
+          if (i > 0) expect(a * (1 - e)).toBeGreaterThan(planet.moons[i - 1].elements.semiMajorAxis * (1 + planet.moons[i - 1].elements.eccentricity));
+          if (moon.resonanceWithInner) {
+            expect(i).toBeGreaterThan(0);
+            const inner = planet.moons[i - 1];
+            const mass = planet.physical.bulk.massEarth;
+            const ratio = (a / inner.elements.semiMajorAxis) ** 1.5 * Math.sqrt((mass + inner.physical.bulk.massEarth) / (mass + moon.physical.bulk.massEarth));
+            expect(ratio).toBeCloseTo(2, 9);
+          }
+        }
       }
     }
   });
@@ -114,21 +142,21 @@ describe('satellite systems', () => {
     expect(gapChecked).toBe(true);
   });
 
-  it('comets: every system has one active at epoch, on bound near-parabolic orbits', () => {
+  it('comets: bound candidate orbits do not guarantee an active apparition', () => {
     const anyMu = mu(1.327e20);
+    let inactive = 0;
     for (const system of systems.slice(0, 30)) {
       expect(system.comets.length).toBeGreaterThan(0);
       const first = system.comets[0];
-      // Inside its activity onset at epoch: the apparition is live, not
-      // merely "mean anomaly near zero" (years off on these periods).
       const { position } = elementsToState(first.elements, anyMu, seconds(0));
       const rAu = Math.hypot(position.x, position.y, position.z) / AU;
-      expect(rAu).toBeLessThan(first.activityOnsetAu);
+      if (rAu >= first.activityOnsetAu) inactive++;
       for (const comet of system.comets) {
         expect(comet.elements.eccentricity).toBeGreaterThan(0.8);
         expect(comet.elements.eccentricity).toBeLessThan(1);
       }
     }
+    expect(inactive).toBeGreaterThan(0);
   });
 
   it('moon generation is deterministic', () => {

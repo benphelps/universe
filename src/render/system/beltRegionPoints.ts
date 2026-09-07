@@ -12,21 +12,30 @@ import { meanAnomalyAt, meanMotion } from '../../core/math/orbit';
 import { DAY } from '../../core/physics/constants';
 import { seconds, type Mu } from '../../core/physics/units';
 import type { Asteroid } from '../../universe/smallbody/types';
+import { AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
+import { REFLECTED_GLINT_GLSL } from '../lighting/reflectedGlint';
+import { BELT_LOD_GLSL } from './beltLod';
 
 const VERTEX = /* glsl */ `
 attribute vec4 aOrbit0; // semi-major axis km, eccentricity, inclination, ascending node
 attribute vec4 aOrbit1; // periapsis argument, base mean anomaly, rad/day, pseudo-luminosity
 attribute float aRadiusKm;
-attribute vec2 aFlags;  // host-relative, local-reach-limited
+attribute float aMeshReady;
+attribute float aVisible;
+attribute vec2 aFlags;  // host-relative, reach mode: 1 local / -1 catalogue / 0 unlimited
 
 uniform float uElapsedDays;
 uniform float uKmPerPc;
 uniform float uReachKm;
 uniform vec3 uHostOffsetKm;
 uniform vec3 uColor;
+uniform float uExposure;
 
 varying vec3 vColor;
 varying float vAlpha;
+${AIR_VIEW_GLSL}
+${REFLECTED_GLINT_GLSL}
+${BELT_LOD_GLSL}
 
 void main() {
   float a = aOrbit0.x;
@@ -58,21 +67,36 @@ void main() {
   );
   // Model frame (z out of plane) into the viewer's Y-up world frame.
   vec3 localKm = vec3(reference.x, reference.z, -reference.y);
+  vec3 toSun = mat3(modelMatrix) * -localKm;
   localKm += uHostOffsetKm * aFlags.x;
 
   vec4 mvPosition = modelViewMatrix * vec4(localKm, 1.0);
+  vec3 worldPos = (modelMatrix * vec4(localKm, 1.0)).xyz;
+  vec3 toEye = cameraPosition - worldPos;
   float distanceKm = max(length(mvPosition.xyz), 1.0);
   float distancePc = max(distanceKm / uKmPerPc, 1e-12);
-  // The same marker floor the CPU path used: below true visibility a
-  // nearby member remains a restrained, distance-invariant locator.
-  float luminosity = max(aOrbit1.w, 2.5e-5 * distancePc * distancePc);
-  float logEnergy = log2(max(luminosity / (distancePc * distancePc), 1e-12)) + 17.0;
+  // Stored luminosity is at the semi-major axis; use the actual
+  // heliocentric distance and illuminated phase at this epoch.
+  float luminosity = aOrbit1.w * (a * a / dot(reference, reference))
+    * reflectedPhase(toSun, toEye);
+  float flux = luminosity / (distancePc * distancePc);
+  // The log floor only stabilizes footprint sizing, never adds light.
+  float logEnergy = log2(max(flux, 1e-30)) + 17.0;
   float size = clamp(1.5 + 0.45 * logEnergy, 1.0, 6.5);
-  float energy = clamp(0.055 * exp2(0.36 * logEnergy), 0.012, 1.7);
-  energy *= 1.0 - smoothstep(0.002, 0.004, aRadiusKm / distanceKm);
-  if (aFlags.y > 0.5 && distanceKm > uReachKm) energy = 0.0;
-  vColor = uColor * energy;
+  float energy = reflectedGlintEnergy(flux);
   vAlpha = clamp(energy * 4.0, 0.0, 1.0);
+  // Capacity-limited or notable members retain their glint until a
+  // resolved mesh actually exists. Apply the handoff only once.
+  if (aFlags.y < -0.5) {
+    // Catalogue members yield only where their admitted local point draws.
+    if (aMeshReady > 0.5 && distanceKm <= uReachKm) energy = 0.0;
+  } else {
+    if (aFlags.y > 0.5 && distanceKm > uReachKm) energy = 0.0;
+    energy *= 1.0 - aMeshReady * beltMeshWeight(aRadiusKm / distanceKm);
+  }
+  energy *= aVisible;
+  vec3 dir = normalize(-toEye);
+  vColor = uColor * energy * uExposure * airTransmittance(dir) * skyVisibility(dir);
   gl_PointSize = energy > 0.0 ? size : 0.0;
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -90,30 +114,37 @@ void main() {
 `;
 
 export const BELT_REGION_POINT_CAPACITY = 900;
+const resolvedSlots = new WeakMap<Points, readonly number[]>();
+const hiddenSlots = new WeakMap<Points, readonly number[]>();
 
 /** Local belt glints whose Kepler propagation runs in the vertex shader. */
-export function createBeltRegionPoints(kmPerPc: number, reachKm: number): Points {
+export function createBeltRegionPoints(kmPerPc: number, reachKm: number, capacity = BELT_REGION_POINT_CAPACITY): Points {
   const geometry = new BufferGeometry();
   geometry.setAttribute(
     'position',
-    new BufferAttribute(new Float32Array(BELT_REGION_POINT_CAPACITY * 3), 3),
+    new BufferAttribute(new Float32Array(capacity * 3), 3),
   );
   geometry.setAttribute(
     'aOrbit0',
-    new BufferAttribute(new Float32Array(BELT_REGION_POINT_CAPACITY * 4), 4),
+    new BufferAttribute(new Float32Array(capacity * 4), 4),
   );
   geometry.setAttribute(
     'aOrbit1',
-    new BufferAttribute(new Float32Array(BELT_REGION_POINT_CAPACITY * 4), 4),
+    new BufferAttribute(new Float32Array(capacity * 4), 4),
   );
   geometry.setAttribute(
     'aRadiusKm',
-    new BufferAttribute(new Float32Array(BELT_REGION_POINT_CAPACITY), 1),
+    new BufferAttribute(new Float32Array(capacity), 1),
+  );
+  geometry.setAttribute(
+    'aMeshReady',
+    new BufferAttribute(new Float32Array(capacity), 1),
   );
   geometry.setAttribute(
     'aFlags',
-    new BufferAttribute(new Float32Array(BELT_REGION_POINT_CAPACITY * 2), 2),
+    new BufferAttribute(new Float32Array(capacity * 2), 2),
   );
+  geometry.setAttribute('aVisible', new BufferAttribute(new Float32Array(capacity).fill(1), 1));
   geometry.setDrawRange(0, 0);
 
   const material = new ShaderMaterial({
@@ -125,12 +156,15 @@ export function createBeltRegionPoints(kmPerPc: number, reachKm: number): Points
       uReachKm: { value: reachKm },
       uHostOffsetKm: { value: new Vector3() },
       uColor: { value: new Color(1, 1, 1) },
+      uExposure: { value: 1 },
+      ...airViewUniforms(),
     },
     blending: AdditiveBlending,
     transparent: true,
     depthWrite: false,
   });
   const points = new Points(geometry, material);
+  points.renderOrder = -2;
   points.frustumCulled = false;
   return points;
 }
@@ -146,7 +180,7 @@ export function writeBeltRegionPoint(
   hostRelative: boolean,
   reachLimited: boolean,
 ): number {
-  if (slot >= BELT_REGION_POINT_CAPACITY) return slot;
+  if (slot >= points.geometry.getAttribute('aOrbit0').count) return slot;
   const { elements } = asteroid;
   const orbit0 = points.geometry.getAttribute('aOrbit0') as BufferAttribute;
   const orbit1 = points.geometry.getAttribute('aOrbit1') as BufferAttribute;
@@ -174,9 +208,35 @@ export function writeBeltRegionPoint(
 /** Mark the static orbit attributes dirty after a population rewrite. */
 export function finishBeltRegionPoints(points: Points, count: number): void {
   points.geometry.setDrawRange(0, count);
-  for (const name of ['aOrbit0', 'aOrbit1', 'aRadiusKm', 'aFlags']) {
+  (points.geometry.getAttribute('aMeshReady').array as Float32Array).fill(0);
+  resolvedSlots.delete(points);
+  (points.geometry.getAttribute('aVisible').array as Float32Array).fill(1);
+  hiddenSlots.delete(points);
+  for (const name of ['aOrbit0', 'aOrbit1', 'aRadiusKm', 'aFlags', 'aMeshReady', 'aVisible']) {
     (points.geometry.getAttribute(name) as BufferAttribute).needsUpdate = true;
   }
+}
+
+/** Upload the 3.6 KiB mask only when mesh admission changes. */
+export function setBeltRegionResolvedSlots(points: Points, slots: readonly number[]): void {
+  const previous = resolvedSlots.get(points) ?? [];
+  if (slots.length === previous.length && slots.every((slot, i) => slot === previous[i])) return;
+  const attribute = points.geometry.getAttribute('aMeshReady') as BufferAttribute;
+  (attribute.array as Float32Array).fill(0);
+  for (const slot of slots) if (slot >= 0 && slot < points.geometry.drawRange.count) attribute.setX(slot, 1);
+  attribute.needsUpdate = true;
+  resolvedSlots.set(points, [...slots]);
+}
+
+/** Focused terrain owns its body; do not draw a second glint. */
+export function setBeltRegionHiddenSlots(points: Points, slots: readonly number[]): void {
+  const previous = hiddenSlots.get(points) ?? [];
+  if (slots.length === previous.length && slots.every((slot, i) => slot === previous[i])) return;
+  const attribute = points.geometry.getAttribute('aVisible') as BufferAttribute;
+  (attribute.array as Float32Array).fill(1);
+  for (const slot of slots) if (slot >= 0 && slot < points.geometry.drawRange.count) attribute.setX(slot, 0);
+  attribute.needsUpdate = true;
+  hiddenSlots.set(points, [...slots]);
 }
 
 /** Cheap per-frame state: clock and the shared frame transform only. */

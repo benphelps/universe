@@ -3,17 +3,11 @@ import { fbm } from '../../core/noise/fractal';
 import { createSimplex3 } from '../../core/noise/simplex3';
 import { deriveSeed, seedFromHex } from '../../core/rng/hash';
 import type { Asteroid } from '../smallbody/types';
+import { asteroidAxes, asteroidSurfaceColor } from '../smallbody/appearance';
 import { createCraterField } from './craters';
 import type { SurfaceField } from './field';
 
 type Rgb = [number, number, number];
-
-const TAXONOMY_COLOR: Record<Asteroid['taxonomy'], Rgb> = {
-  S: [0.4, 0.34, 0.27],
-  C: [0.16, 0.152, 0.145],
-  M: [0.4, 0.4, 0.43],
-  D: [0.2, 0.16, 0.13],
-};
 
 /**
  * An asteroid as a pure surface field over the datum sphere: an
@@ -29,18 +23,21 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
   const lobes = fbm(createSimplex3(deriveSeed(seed, 'lobes')), { octaves: 3 });
   const regolith = createSimplex3(deriveSeed(seed, 'regolith'));
   const paletteNoise = fbm(createSimplex3(deriveSeed(seed, 'palette')), { octaves: 3 });
-  const craters = createCraterField(shape.noiseSeedHex, radiusM, 1);
+  // Mobile rubble does not retain the saturated crater population of a
+  // coherent, old crust. Keep the broad body shape legible.
+  const craterRetention = asteroid.rubblePile ? 0.3 : 0.75;
+  const craters = createCraterField(shape.noiseSeedHex, radiusM, craterRetention);
 
-  // Semi-axes: elongation stretches x, flattening squashes the pole.
-  const axisX = 1 / Math.max(0.45, shape.elongation);
-  const axisY = Math.max(0.45, shape.flattening);
+  // Ratios are b/a and c/a. Preserve volume and apply both against the
+  // same major axis; treating c/a as c/b exaggerated polar flattening.
+  const [axisX, axisY, axisZ] = asteroidAxes(shape);
   const lumpiness = Math.min(0.5, 1.1 * (2 - shape.elongation - shape.flattening)) + 0.06;
 
   const shapeRadius = (dir: Vec3): number => {
     let r =
       1 /
       Math.sqrt(
-        (dir.x / axisX) ** 2 + (dir.y / axisY) ** 2 + dir.z ** 2,
+        (dir.x / axisX) ** 2 + (dir.y / axisY) ** 2 + (dir.z / axisZ) ** 2,
       );
     if (shape.contactBinary) {
       // Second lobe: a smaller sphere offset along +x, blended by max.
@@ -60,11 +57,11 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
     // Regolith roughness bands with the usual Nyquist fade, down to
     // boulder scale so close approach never goes featureless.
     for (const [frequency, amplitude] of [
-      [40, radiusM * 0.014],
-      [220, radiusM * 0.0045],
-      [1200, radiusM * 0.0015],
-      [7000, radiusM * 0.0005],
-      [38000, radiusM * 0.00016],
+      [40, radiusM * 0.003],
+      [220, radiusM * 0.00055],
+      [1200, radiusM * 0.000085],
+      [7000, radiusM * 0.000012],
+      [38000, radiusM * 0.000002],
     ] as const) {
       let fade = 1;
       if (lodAngularRad > 0) {
@@ -79,7 +76,7 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
     return h;
   };
 
-  const base = TAXONOMY_COLOR[asteroid.taxonomy];
+  const base = asteroidSurfaceColor(asteroid);
   const colorAt = (dir: Vec3, _heightM: number, slopeCos: number): Rgb => {
     const tone = 0.82 + 0.36 * (0.5 + 0.5 * paletteNoise(dir.x * 6, dir.y * 6, dir.z * 6));
     // Steep faces shed regolith and read slightly darker and bluer.
@@ -100,7 +97,7 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
       magmaCoverage: 0,
       fullyMolten: false,
       tectonics: 'dead',
-      craterAmplitude: 1,
+      craterAmplitude: craterRetention,
       rotationPeriodHours: asteroid.spinPeriodHours,
       erosion: 0.05,
       volcanism: 0,
@@ -109,6 +106,7 @@ export function createAsteroidField(asteroid: Asteroid): SurfaceField {
       lapseKPerKm: 0,
       biosphere: false,
       globalIce: false,
+      surfaceIce: false,
       palette: {
         landA: base,
         landB: base,

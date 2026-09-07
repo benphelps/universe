@@ -1,5 +1,10 @@
+import { dryLapseRateKPerKm, skinTemperatureK } from '../planet/thermodynamics';
+import { columnTemperatureK } from '../planet/hydrostaticColumn';
+import { surfaceTemperatureAt, type SurfaceTemperatureField } from '../planet/surfaceClimate';
+import type { Vec3 } from '../../core/math/vec3';
 import { EARTH_RADIUS } from '../../core/physics/constants';
 import type { Characterization } from '../planet/types';
+import type { AnnualMeanField } from '../planet/annualMean';
 
 export type TectonicStyle = 'active' | 'stagnant' | 'molten' | 'dead';
 
@@ -29,13 +34,18 @@ export interface SurfaceParams {
   volcanism: number;
   /** Mean surface temperature and pole-equator drop for snow/biome lines. */
   surfaceMeanK: number;
+  temperatureField?: SurfaceTemperatureField;
   poleDeltaK: number;
   /** Altitude lapse rate, K per km. */
   lapseKPerKm: number;
+  /** Prescribed column's cold cap; absent in legacy hand-authored recipes. */
+  atmosphericCapK?: number;
   /** Sets the circulation regime: fast rotators band, slow ones don't. */
   rotationPeriodHours: number;
   biosphere: boolean;
   globalIce: boolean;
+  /** Exposed water inventory permits frost/snow; cold dry rock stays rock. */
+  surfaceIce: boolean;
   palette: {
     landA: Rgb;
     landB: Rgb;
@@ -45,7 +55,7 @@ export interface SurfaceParams {
   };
 }
 
-export function deriveSurfaceParams(seedHex: string, physical: Characterization): SurfaceParams {
+export function deriveSurfaceParams(seedHex: string, physical: Characterization, annualMean?: AnnualMeanField): SurfaceParams {
   const { bulk, interior, atmosphere, climate, appearance } = physical;
   const gravityRatio = 9.81 / Math.max(bulk.gravityMs2, 0.5);
 
@@ -60,18 +70,18 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
     climate.hydrosphere === 'magma'
       ? 'molten'
       : interior.regime === 'active-tectonics'
-      ? 'active'
-      : interior.regime === 'stagnant-lid'
+        ? 'active'
+        : interior.regime === 'stagnant-lid' || interior.regime === 'volcanic'
           ? 'stagnant'
           : 'dead';
 
-  // Molten surfaces resurface faster than impacts arrive — Io shows
-  // zero craters.
+  // Rapid volcanic resurfacing retains very few impact scars, even
+  // when the surface is solid and its hydrosphere is not magma.
   const craterRetention =
-    tectonics === 'dead'
-      ? 1
-      : tectonics === 'molten'
-        ? 0.02
+    interior.regime === 'volcanic' || tectonics === 'molten'
+      ? 0.02
+      : tectonics === 'dead'
+        ? 1
         : tectonics === 'stagnant'
           ? 0.35
           : 0.05;
@@ -102,21 +112,27 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
     volcanism:
       interior.regime === 'magma'
         ? 1
-        : interior.regime === 'stagnant-lid'
-          ? 0.5
-          : interior.regime === 'active-tectonics'
-            ? 0.25
-            : 0,
-    surfaceMeanK: climate.surfaceMeanK,
-    poleDeltaK: 30,
-    lapseKPerKm: atmosphere.class === 'none' ? 0 : 5.5,
+        : interior.regime === 'volcanic'
+          ? 0.8
+          : interior.regime === 'stagnant-lid'
+            ? 0.5
+            : interior.regime === 'active-tectonics'
+              ? 0.25
+              : 0,
+    surfaceMeanK: climate.hydrosphere === 'magma' ? climate.surfaceBackgroundK ?? climate.surfaceMeanK : annualMean?.meanK ?? climate.surfaceMeanK,
+    temperatureField: climate.surfaceField && annualMean ? { ...climate.surfaceField, annualMean,
+      meanK: annualMean.meanK, minimumK: annualMean.minimumK, maximumK: annualMean.maximumK, iceFraction: annualMean.iceFraction } : climate.surfaceField,
+    poleDeltaK: 0,
+    lapseKPerKm: dryLapseRateKPerKm(atmosphere, bulk),
+    atmosphericCapK: atmosphere.class === 'none' ? undefined : skinTemperatureK(climate.effectiveK ?? climate.equilibriumK),
     rotationPeriodHours: physical.rotation.periodHours,
     biosphere: climate.biosphere,
     globalIce: climate.hydrosphere === 'ice-sheet',
+    surfaceIce: climate.hydrosphere === 'ice-sheet' || climate.hydrosphere === 'oceans',
     palette: {
       landA: appearance.landColorA,
       landB: appearance.landColorB,
-      rock: [0.3, 0.27, 0.24],
+      rock: appearance.landColorB.map((c) => c * 0.72) as Rgb,
       ice: appearance.iceColor,
       seabed: [
         appearance.oceanColor[0] * 0.6 + 0.05,
@@ -125,4 +141,12 @@ export function deriveSurfaceParams(seedHex: string, physical: Characterization)
       ],
     },
   };
+}
+
+/** Persistent local climate used by terrain, survey and scatter. Legacy
+ * hand-authored recipes preserve their mean rather than cooling every cell. */
+export function localSurfaceTemperatureK(params: SurfaceParams, dir: Vec3, heightM: number): number {
+  const datum = params.temperatureField ? surfaceTemperatureAt(params.temperatureField, dir)
+    : params.surfaceMeanK + params.poleDeltaK * (1 / 3 - dir.y * dir.y);
+  return columnTemperatureK(datum, params.atmosphericCapK ?? 0, params.lapseKPerKm / 1000, heightM);
 }

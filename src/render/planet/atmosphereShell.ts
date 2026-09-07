@@ -1,6 +1,6 @@
 import { AdditiveBlending, Color, Mesh, ShaderMaterial, SphereGeometry } from 'three';
 import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
-import { deckOpticalDepth } from '../../universe/planet/atmosphere';
+import { aerosolSurfaceExposure, deckOpticalDepth } from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { WORLD_NORMAL_GLSL } from '../glsl/worldNormal';
@@ -11,6 +11,7 @@ import {
   surfaceLightUniforms,
 } from '../lighting/surfaceLight';
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
+import { bodyGasProfile } from '../lighting/gasProfile';
 
 const VERTEX = /* glsl */ `
 varying vec3 vWorldPos;
@@ -130,7 +131,8 @@ export function createAtmosphereShell(
       ...createShadowUniforms(),
       ...airViewUniforms(),
       ...surfaceLightUniforms({
-        ...deckOpticalDepth(atmosphere, bulk),
+        gasProfile: bodyGasProfile(physical),
+        ...deckOpticalDepth(atmosphere, bulk, aerosolSurfaceExposure(atmosphere, physical.climate.iceCapLatitudeRad)),
         horizon: horizonAirmass(radiusKm, atmosphere.scaleHeightKm),
         radius: radiusKm,
         scaleHeight: atmosphere.scaleHeightKm,

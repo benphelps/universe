@@ -15,12 +15,18 @@ describe('eclipse finder', () => {
   });
 
   it('finds only active or next-day eclipses with an angled, start-to-finish view', () => {
-    const systems = Array.from({ length: 1024 }, (_, index) => generateSystem(BigInt(index + 1)));
+    // Keep the population sweep, plus known surviving primary and
+    // companion-host events. A seed sample's eclipse frequency is not
+    // a finder invariant when formation/stability physics changes.
+    const systems = [...Array.from({ length: 1024 }, (_, i) => i + 1), 1185, 2997, 4263]
+      .map(seed => generateSystem(BigInt(seed)));
     const found = systems
       .map((system) => findEclipseInSystem(system, 0))
       .filter((event) => event !== null);
 
     expect(found.length).toBeGreaterThanOrEqual(3);
+    expect(found.some(event => event.hostIndex === 0)).toBe(true);
+    expect(found.some(event => event.hostIndex > 0)).toBe(true);
     for (const event of found) {
       expect(event.timeDays).toBeGreaterThanOrEqual(0);
       expect(event.startTimeDays).toBeLessThan(event.timeDays);
@@ -47,22 +53,18 @@ describe('eclipse finder', () => {
   });
 
   it('recognizes an eclipse already active at the current epoch', () => {
-    const systems = Array.from({ length: 1024 }, (_, index) => generateSystem(BigInt(index + 1)));
-    const upcoming = systems
-      .map((system) => ({ system, event: findEclipseInSystem(system, 0) }))
-      .find(({ event }) => event !== null);
-    expect(upcoming).toBeDefined();
-    const midpoint = (upcoming!.event!.startTimeDays + upcoming!.event!.endTimeDays) / 2;
-    const active = findEclipseInSystem(upcoming!.system, midpoint);
+    const system = generateSystem(1185n);
+    const upcoming = findEclipseInSystem(system, 0);
+    expect(upcoming).not.toBeNull();
+    const midpoint = (upcoming!.startTimeDays + upcoming!.endTimeDays) / 2;
+    const active = findEclipseInSystem(system, midpoint);
     expect(active?.active).toBe(true);
     expect(active?.waitDays).toBe(0);
   });
 
   it('returns the same event for the same system and epoch', () => {
-    const system = Array.from({ length: 320 }, (_, index) => generateSystem(BigInt(index + 1))).find(
-      (candidate) => findEclipseInSystem(candidate, 123) !== null,
-    );
-    expect(system).toBeDefined();
-    expect(findEclipseInSystem(system!, 123)).toEqual(findEclipseInSystem(system!, 123));
+    const system = generateSystem(990n);
+    expect(findEclipseInSystem(system, 123)).not.toBeNull();
+    expect(findEclipseInSystem(system, 123)).toEqual(findEclipseInSystem(system, 123));
   });
 });

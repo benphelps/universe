@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from 'react';
 import { seedToHex } from '../../core/rng/hash';
 import { galaxySeed } from '../../universe/galaxy/galaxySeed';
-import { NEIGHBOR_RADIUS_PC } from '../../universe/galaxy/neighborhood';
+import { neighborRadiusPc } from '../../universe/galaxy/neighborhood';
 import { galaxyName } from '../../universe/galaxy/regions';
 import { asteroidDesignation } from '../../universe/smallbody/notable';
 import { shortDesignation, starDesignation } from '../../universe/star/naming';
@@ -18,6 +18,7 @@ import { PoiLevel } from './poiPanel';
 import { SectorLevel } from './sectorPanel';
 import { NearbyLevel } from './starInfoPanel';
 import { CLASS_LABEL, SystemLevel } from './systemInfoPanel';
+import { fmt } from './format';
 
 /** The containment levels, outermost first — and, off the ladder,
  *  the address book. */
@@ -131,7 +132,7 @@ function heads(snap: AppSnapshot): Record<Rung, RungHead> {
           )
         : 'no neighbours',
       kind: nearest ? 'nearest' : undefined,
-      count: `${neighbors.length} within ${NEIGHBOR_RADIUS_PC} pc`,
+      count: `${neighbors.length} within ${fmt(neighborRadiusPc(snap.system.localePc), 3)} pc`,
       here: false,
       empty: !nearest,
     },

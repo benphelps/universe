@@ -15,6 +15,7 @@ self.onmessage = (event: MessageEvent<TerrainRequest>) => {
   if (message.type === 'init') {
     field = createSurfaceField(message.seedHex, message.physical, {
       deferGrid: message.survey === 'defer',
+      annualMean: message.annualMean,
     });
     if (message.survey === 'report') {
       // Only the leader pays for the global grid products. Ship copies
@@ -60,12 +61,15 @@ self.onmessage = (event: MessageEvent<TerrainRequest>) => {
     morph: mesh.morph,
     waterPositions: mesh.waterPositions,
     waterNormals: mesh.waterNormals,
+    waterMorph: mesh.waterMorph,
+    waterIce: mesh.waterIce,
     scatter,
   };
   const transfers = [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.morph.buffer];
-  if (mesh.waterPositions && mesh.waterNormals) {
-    transfers.push(mesh.waterPositions.buffer, mesh.waterNormals.buffer);
+  if (mesh.waterPositions && mesh.waterNormals && mesh.waterMorph) {
+    transfers.push(mesh.waterPositions.buffer, mesh.waterNormals.buffer, mesh.waterMorph.buffer);
   }
   if (scatter) transfers.push(scatter.buffer);
+  if (mesh.waterIce) transfers.push(mesh.waterIce.buffer);
   (self as unknown as Worker).postMessage(response, transfers);
 };

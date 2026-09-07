@@ -8,8 +8,10 @@ import type { PlanetClass } from '../system/types';
 import { buildChunkMesh } from './chunkMesh';
 import { faceUvToDir } from './cubeSphere';
 import { createSurfaceField, surveyOf } from './field';
-import { deriveTreeSpecies, TREE_SPECIES_COUNT } from './flora';
-import { SCATTER_STRIDE, scatterForChunk } from './scatter';
+import { SCATTER_STRIDE, scatterForChunk, scatterLevel } from './scatter';
+import { localSurfaceTemperatureK } from './params';
+import { atmosphericColumnProfile } from '../planet/thermodynamics';
+import { columnStateAt } from '../planet/hydrostaticColumn';
 
 const SUN = generateStar(1n, { massInitial: 1, ageGyr: 4.6, feH: 0, withCompanions: false });
 const CONTEXT: CharacterizeContext = {
@@ -84,6 +86,25 @@ describe('surface field', () => {
       oceanCoverage: 1,
       dayNightDeltaK: 0,
     },
+  });
+
+  it('uses the same local temperature branch as the column, including its cap and cold-datum limit', () => {
+    const physical = characterizePlanet(11n, 'rocky', 1, {
+      semiMajorAxis: AU, eccentricity: 0.02, inclination: 0, longitudeOfAscendingNode: 0,
+      argumentOfPeriapsis: 0, meanAnomalyAtEpoch: 0, epoch: 0,
+    }, CONTEXT);
+    for (const dir of sampleDirs(12)) {
+      const datum = localSurfaceTemperatureK(earthLike.params, dir, 0);
+      const column = atmosphericColumnProfile(physical.atmosphere, physical.climate, physical.bulk, datum)!;
+      for (const altitude of [0, 1000, 5000, 100000]) {
+        expect(localSurfaceTemperatureK(earthLike.params, dir, altitude)).toBe(columnStateAt(column, altitude).temperatureK);
+      }
+    }
+    const cold = { ...earthLike.params, temperatureField: undefined, surfaceMeanK: 150, atmosphericCapK: 200 };
+    expect(localSurfaceTemperatureK(cold, { x: 1, y: 0, z: 0 }, 0)).toBe(150);
+    expect(localSurfaceTemperatureK(cold, { x: 1, y: 0, z: 0 }, 100000)).toBe(150);
+    expect(localSurfaceTemperatureK(moonLike.params, { x: 1, y: 0, z: 0 }, 100000))
+      .toBe(localSurfaceTemperatureK(moonLike.params, { x: 1, y: 0, z: 0 }, 0));
   });
 
   it('is deterministic', () => {
@@ -184,8 +205,8 @@ describe('surface field', () => {
     // Bisect dry/wet sample pairs down to the waterline. Medians, not
     // sums: some coasts are honest wave-cut cliffs and should stay steep.
     const beachSlopes: number[] = [];
-    const dirs = sampleDirs(500);
-    for (let i = 0; i < dirs.length - 1 && beachSlopes.length < 15; i++) {
+    const dirs = sampleDirs(2000);
+    for (let i = 0; i < dirs.length - 1 && beachSlopes.length < 100; i++) {
       let dry = dirs[i];
       let wet = dirs[i + 1];
       if (earthLike.heightAt(dry) < earthLike.seaLevelM) [dry, wet] = [wet, dry];
@@ -209,41 +230,50 @@ describe('surface field', () => {
     expect(median(beachSlopes)).toBeLessThan(median(uplandSlopes) * 0.6);
   });
 
-  it('grows deterministic tree species, and forests stand in the rain', () => {
-    const forestWorld = world(19n, 'rocky', 1, 1);
-    expect(forestWorld.params.biosphere).toBe(true);
-    const species = deriveTreeSpecies(forestWorld.params);
-    expect(species).toEqual(deriveTreeSpecies(forestWorld.params));
-    expect(species.length).toBe(TREE_SPECIES_COUNT);
-    for (const tree of species) {
-      expect(tree.trunkHM).toBeGreaterThan(2);
-      expect(tree.trunkHM).toBeLessThan(15);
-      for (const c of [...tree.barkColor, ...tree.canopyColor]) {
-        expect(c).toBeGreaterThanOrEqual(0);
-        expect(c).toBeLessThanOrEqual(1);
+  it('keeps low growth sparse, deterministic, and restricted to wet mild ground', () => {
+    const natural = world(19n, 'rocky', 1, 1);
+    const field = {
+      ...natural,
+      params: { ...natural.params, biosphere: true, oceanCoverage: 0.5, surfaceMeanK: 294, poleDeltaK: 0 },
+      heightAt: () => 10,
+      waterLevelAt: () => -Infinity,
+      climate: { ...natural.climate!, precipAt: () => 1000 },
+    };
+    const level = scatterLevel(field.params.radiusM);
+    const tile = 2 ** (level - 1);
+    let rocks = 0, growth = 0;
+    for (let x = tile; x < tile + 8; x++) {
+      for (let y = tile; y < tile + 8; y++) {
+        const data = scatterForChunk(field, 4, level, x, y, [0, 0, 0]);
+        expect(data).toEqual(scatterForChunk(field, 4, level, x, y, [0, 0, 0]));
+        if (!data) continue;
+        for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
+          expect(data[i + 5]).toBeLessThan(2);
+          if (data[i + 5] === 1) {
+            growth++;
+            expect(data[i + 3] * 1000).toBeLessThanOrEqual(0.65);
+          } else rocks++;
+          expect(Math.hypot(data[i + 9], data[i + 10], data[i + 11])).toBeCloseTo(1, 5);
+        }
       }
     }
-    // A rainy temperate lowland cell should scatter trees on its tiles.
-    const drainage = forestWorld.drainage!;
-    const climate = forestWorld.climate!;
-    const n = drainage.grid.n;
-    let trees = 0;
-    for (let cell = 0; cell < drainage.grid.cellCount && trees === 0; cell++) {
-      if (drainage.ocean[cell]) continue;
-      if (climate.precipMmYr[cell] < 1100) continue;
-      if (climate.tempK[cell] < 272 || climate.tempK[cell] > 308) continue;
-      const face = Math.floor(cell / (n * n));
-      const rem = cell % (n * n);
-      // A mid-cell tile at quadtree level 13 (tile ≈ 870 m — scatter range).
-      const x = (rem % n) * 64 + 32;
-      const y = Math.floor(rem / n) * 64 + 32;
-      const data = scatterForChunk(forestWorld, face, 13, x, y, [0, 0, 0]);
-      if (!data) continue;
-      for (let i = 0; i < data.length; i += SCATTER_STRIDE) {
-        if (Math.round(data[i + 5]) >= 2) trees++;
+    expect(growth).toBeGreaterThan(0);
+    expect(growth).toBeLessThan(rocks * 0.15);
+    // Refinement and coarsening add no second population.
+    expect(scatterForChunk(field, 4, level + 1, tile * 2, tile * 2, [0, 0, 0])).toBeNull();
+    expect(scatterForChunk(field, 4, level - 1, tile / 2, tile / 2, [0, 0, 0])).toBeNull();
+    // Local lakes count, even though this synthetic world's sea is dry.
+    expect(scatterForChunk({ ...field, waterLevelAt: () => 20 }, 4, level, tile, tile, [0, 0, 0])).toBeNull();
+    for (const dry of [
+      { ...field, climate: { ...field.climate, precipAt: () => 0 } },
+      { ...field, params: { ...field.params, biosphere: false } },
+      { ...field, params: { ...field.params, globalIce: true } },
+    ]) {
+      for (let x = tile; x < tile + 4; x++) {
+        const data = scatterForChunk(dry, 4, level, x, tile, [0, 0, 0]);
+        for (let i = 0; data && i < data.length; i += SCATTER_STRIDE) expect(data[i + 5]).toBe(0);
       }
     }
-    expect(trees).toBeGreaterThan(0);
   });
 
   it('carries walked-scale texture that a coarse LOD does not see', () => {
@@ -314,29 +344,36 @@ describe('chunk meshes', () => {
     );
   });
 
-  it('geomorph deltas reproduce the parent-LOD surface', () => {
+  it('keeps walking-scale crack skirts smaller than their tile', () => {
     const res = 16;
-    const mesh = buildChunkMesh(field, 2, 9, 130, 260, res);
-    const tiles = 2 ** 9;
-    const lod = Math.PI / 2 / tiles / res;
-    for (let j = 0; j <= res; j += 4) {
-      for (let i = 0; i <= res; i += 4) {
-        const index = j * (res + 1) + i;
-        const world = {
-          x: mesh.positions[index * 3] + mesh.centerKm[0],
-          y: mesh.positions[index * 3 + 1] + mesh.centerKm[1],
-          z: mesh.positions[index * 3 + 2] + mesh.centerKm[2],
-        };
-        const l = Math.hypot(world.x, world.y, world.z);
-        const dir = { x: world.x / l, y: world.y / l, z: world.z / l };
-        // Removing the stored delta from the vertex radius lands on the
-        // parent-LOD height — the surface a swap must match exactly.
-        const morphedM = (l - mesh.morph[index * 2]) * 1000 - field.params.radiusM / 1000 * 1000;
-        expect(morphedM).toBeCloseTo(field.heightAt(dir, lod * 2), 0);
-        expect(mesh.morph[index * 2 + 1]).toBeCloseTo(
-          ((Math.PI / 2) * (field.params.radiusM / 1000)) / tiles,
-          6,
-        );
+    const mesh = buildChunkMesh(field, 4, 22, 2 ** 21, 2 ** 21, res);
+    const skirt = (res + 1) ** 2 * 3;
+    const drop = Math.hypot(...[0, 1, 2].map((axis) => mesh.positions[axis] - mesh.positions[skirt + axis]));
+    const tileKm = Math.PI / 2 * field.params.radiusM / 1000 / 2 ** 22;
+    expect(drop).toBeGreaterThan(0);
+    expect(drop).toBeLessThan(tileKm * 0.1);
+  });
+
+  it('geomorph reproduces every parent triangle, including its edge midpoints', () => {
+    const res = 16;
+    const parent = buildChunkMesh(field, 2, 8, 65, 130, res);
+    for (const [cx, cy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+      const child = buildChunkMesh(field, 2, 9, 130 + cx, 260 + cy, res);
+      for (let j = 0; j <= res; j++) {
+        for (let i = 0; i <= res; i++) {
+          const u = cx * res / 2 + i / 2, v = cy * res / 2 + j / 2;
+          const px = Math.min(Math.floor(u), res - 1), py = Math.min(Math.floor(v), res - 1);
+          const fu = u - px, fv = v - py;
+          const a = py * (res + 1) + px, b = a + 1, c = a + res + 1, d = c + 1;
+          const corners = fu + fv <= 1 ? [[a, 1 - fu - fv], [b, fu], [c, fv]] :
+            [[b, 1 - fv], [d, fu + fv - 1], [c, 1 - fu]];
+          const index = j * (res + 1) + i;
+          for (let axis = 0; axis < 3; axis++) {
+            const expected = parent.centerKm[axis] + corners.reduce((sum, [k, w]) => sum + parent.positions[k * 3 + axis] * w, 0);
+            const actual = child.centerKm[axis] + child.positions[index * 3 + axis] - child.morph[index * 4 + axis];
+            expect(Math.abs(actual - expected)).toBeLessThan(2e-6);
+          }
+        }
       }
     }
   });

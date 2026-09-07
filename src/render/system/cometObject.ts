@@ -12,6 +12,7 @@ import { elementsToState } from '../../core/math/kepler';
 import { mu as muOf, seconds, type Mu, type Seconds } from '../../core/physics/units';
 import { AU, G, SOLAR_MASS } from '../../core/physics/constants';
 import type { Comet } from '../../universe/smallbody/types';
+import { AIR_VIEW_GLSL, airViewUniforms, applyAirView, type AirView } from '../lighting/airView';
 
 const SPINE_POINTS = 40;
 const DAY_S = 86400;
@@ -21,23 +22,29 @@ const KM_PER_AU = AU / 1000;
  * Expanding-gas coma: column density of a 1/r² outflow falls as 1/ρ
  * across the disc — a tiny bright condensation inside a wide faint
  * halo, nothing like a shaded ball. The quad clamps to a minimum
- * pixel size so a subpixel coma stays a findable glint at system
- * zoom, and integrated flux is conserved either way: resolved comas
- * are as faint as real ones.
+ * pixel size for stable sampling. Dilute its surface brightness by
+ * the enlarged area so an unresolved coma's flux still falls as 1/d².
  */
 const COMA_VERTEX = /* glsl */ `
 attribute vec2 corner;
 uniform float uSizeAu;
 uniform float uMinRad;
+uniform float uExposure;
 varying vec2 vUv;
 varying float vDim;
+varying vec3 vTransmission;
+${AIR_VIEW_GLSL}
 
 void main() {
   vec4 center = modelViewMatrix * vec4(position, 1.0);
   float distance = max(length(center.xyz), 1e-9);
-  float size = max(uSizeAu, uMinRad * distance);
-  vDim = min(1.0, (uMinRad * distance) / max(size, 1e-12));
+  // Geometry is authored in AU, while view coordinates are world km.
+  float physicalSize = uSizeAu * length(modelMatrix[0].xyz);
+  float size = max(physicalSize, uMinRad * distance);
+  vDim = min(1.0, physicalSize / max(size, 1e-12));
   vDim *= vDim;
+  vec3 dir = normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition);
+  vTransmission = airTransmittance(dir) * skyVisibility(dir) * uExposure;
   vUv = corner;
   gl_Position = projectionMatrix * vec4(center.xyz + vec3(corner * size, 0.0), 1.0);
 }
@@ -46,6 +53,7 @@ void main() {
 const COMA_FRAGMENT = /* glsl */ `
 varying vec2 vUv;
 varying float vDim;
+varying vec3 vTransmission;
 uniform vec3 uColor;
 uniform float uIntensity;
 
@@ -55,7 +63,7 @@ void main() {
   // 1/ρ column density, softly truncated at the edge; a condensed core.
   float halo = (1.0 / max(rho, 0.035) - 1.0) * 0.045;
   float core = exp(-rho * rho * 90.0) * 1.6;
-  gl_FragColor = vec4(uColor * (halo + core) * uIntensity * vDim, 1.0);
+  gl_FragColor = vec4(uColor * (halo + core) * uIntensity * vDim * vTransmission, 1.0);
 }
 `;
 
@@ -65,10 +73,13 @@ attribute float across;
 attribute vec3 tint;
 varying float vAcross;
 varying vec3 vTint;
+uniform float uExposure;
+${AIR_VIEW_GLSL}
 
 void main() {
   vAcross = across;
-  vTint = tint;
+  vec3 dir = normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition);
+  vTint = tint * airTransmittance(dir) * skyVisibility(dir) * uExposure;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
@@ -107,6 +118,7 @@ export class CometObject {
   private readonly mu: Mu;
   private readonly cameraLocal = new Vector3();
   private minWidthRad = 0;
+  private comaContribution = 0;
 
   constructor(
     private readonly comet: Comet,
@@ -124,6 +136,8 @@ export class CometObject {
         uIntensity: { value: 1 },
         uSizeAu: { value: 1e-4 },
         uMinRad: { value: 0.004 },
+        uExposure: { value: 1 },
+        ...airViewUniforms(),
       },
       blending: AdditiveBlending,
       transparent: true,
@@ -137,6 +151,7 @@ export class CometObject {
     );
     quad.setIndex([0, 1, 2, 2, 1, 3]);
     this.coma = new Mesh(quad, this.comaMaterial);
+    this.coma.renderOrder = -2;
     this.coma.frustumCulled = false;
     this.head.add(this.coma);
 
@@ -146,7 +161,7 @@ export class CometObject {
   }
 
   /** cameraWorld: the camera's world position, for ribbon facing.
-   *  radPerPixel: view scale, so a subpixel coma can hold marker size. */
+   *  radPerPixel: view scale for flux-conserving minimum footprints. */
   update(tSeconds: Seconds, cameraWorld: Vector3, radPerPixel: number): void {
     const { position, velocity } = elementsToState(this.comet.elements, this.mu, tSeconds);
     const posAu = new Vector3(position.x / AU, position.y / AU, position.z / AU);
@@ -166,12 +181,16 @@ export class CometObject {
     this.group.worldToLocal(this.cameraLocal);
     this.minWidthRad = radPerPixel;
 
-    // Physical coma, held near the great-comet scale; the marker
-    // clamp in the shader carries it at system zoom.
+    // Physical coma, held near the great-comet scale. The footprint
+    // may grow to a few pixels, but it must dilute rather than add light.
     const comaAu = Math.min(3e5, 2.5e4 + 9e4 * Math.sqrt(activity)) / KM_PER_AU;
     this.comaMaterial.uniforms.uSizeAu.value = comaAu;
     this.comaMaterial.uniforms.uMinRad.value = 7 * radPerPixel;
     this.comaMaterial.uniforms.uIntensity.value = Math.min(1.4, 0.5 + 0.4 * activity);
+    const distanceAu = this.cameraLocal.distanceTo(posAu);
+    this.comaContribution = Math.min(1, comaAu / Math.max(7 * radPerPixel * distanceAu, 1e-12)) ** 2
+      * this.comaMaterial.uniforms.uIntensity.value;
+    this.head.visible = this.comaContribution > 1e-6;
 
     const antiSolar = posAu.clone().normalize();
 
@@ -249,14 +268,13 @@ export class CometObject {
       if (tangent.lengthSq() < 1e-18) tangent.set(1, 0, 0);
       toCamera.copy(this.cameraLocal).sub(spine);
       side.crossVectors(tangent, toCamera).normalize();
-      // A tail thinner than a few pixels vanishes at system zoom: the
-      // width floors at ~3 px and the squeezed light concentrates into
-      // it, so the streak stays findable from anywhere without
-      // brightening the resolved close-up at all.
+      // Expanding the sampling footprint must dilute its light by the
+      // same width ratio. The physical spine supplies the other angular
+      // dimension, so an unresolved ribbon's integrated flux falls as 1/d².
       const physicalW = widthAt(u);
       const floorW = 3 * this.minWidthRad * toCamera.length();
       const half = Math.max(physicalW, floorW) / 2;
-      const gain = Math.min(3, Math.sqrt(Math.max(1, floorW / Math.max(physicalW, 1e-12))));
+      const gain = Math.min(1, physicalW / Math.max(floorW, 1e-12));
       let [r, g, b] = tintAt(u);
       r *= gain;
       g *= gain;
@@ -282,9 +300,20 @@ export class CometObject {
 
   /** Head world position; false while the comet is inactive/hidden. */
   getHeadWorldPosition(target: Vector3): boolean {
-    if (!this.head.visible) return false;
+    if (!this.head.visible || this.comaContribution * this.comaMaterial.uniforms.uExposure.value <= 1e-6) return false;
     this.head.getWorldPosition(target);
     return true;
+  }
+
+  setAirView(air: AirView | null): void {
+    for (const material of [this.comaMaterial, this.ion.mesh.material, this.dust.mesh.material])
+      applyAirView(material as ShaderMaterial, air);
+  }
+
+  setVisibility(point: number, extended: number): void {
+    this.comaMaterial.uniforms.uExposure.value = point;
+    (this.ion.mesh.material as ShaderMaterial).uniforms.uExposure.value = extended;
+    (this.dust.mesh.material as ShaderMaterial).uniforms.uExposure.value = extended;
   }
 
   dispose(): void {
@@ -320,11 +349,13 @@ function makeRibbon(): Ribbon {
     new ShaderMaterial({
       vertexShader: TAIL_VERTEX,
       fragmentShader: TAIL_FRAGMENT,
+      uniforms: { uExposure: { value: 1 }, ...airViewUniforms() },
       blending: AdditiveBlending,
       transparent: true,
       depthWrite: false,
     }),
   );
+  mesh.renderOrder = -2;
   mesh.frustumCulled = false;
   return { mesh, positions, tints };
 }

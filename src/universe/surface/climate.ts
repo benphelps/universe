@@ -36,6 +36,7 @@ export function buildClimate(
   lapseKPerKm: number,
   rotationPeriodHours: number,
   wetness: number,
+  temperatureAt?: (dir: { x: number; y: number; z: number }, heightM: number) => number,
 ): ClimateField {
   const { cellCount, centers } = grid;
   const threeCell = rotationPeriodHours < 120;
@@ -49,9 +50,8 @@ export function buildClimate(
     const y = centers[cell * 3 + 1];
     const z = centers[cell * 3 + 2];
     const latitude = Math.asin(Math.max(-1, Math.min(1, y)));
-    tempK[cell] =
-      surfaceMeanK -
-      poleDeltaK * Math.sin(latitude) ** 2 -
+    tempK[cell] = temperatureAt ? temperatureAt({ x, y, z }, cellHeightsM[cell]) :
+      surfaceMeanK + poleDeltaK * (1 / 3 - y * y) -
       (lapseKPerKm * Math.max(0, cellHeightsM[cell])) / 1000;
 
     // Surface winds by circulation band: trades, westerlies, polar

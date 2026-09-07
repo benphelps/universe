@@ -7,19 +7,18 @@ import {
   WebGLRenderTarget,
   type Camera,
   type Scene,
+  type Object3D,
 } from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { CompactBloomPass } from './compactBloom';
+import { CloudPass } from './cloudPass';
 import { DiagramPass } from './diagramLayer';
 import { SkyLayer } from './skyLayer';
-
-/** The GPU timer extension's two tokens, which the DOM typings lack. */
-interface TimerExtension {
-  TIME_ELAPSED_EXT: number;
-  GPU_DISJOINT_EXT: number;
-}
+import { GpuFrameTimer } from './gpuFrameTimer';
+import { auditGlCalls } from './glCallAudit';
+import { initializeVolumeUnpack } from '../galaxy/volumeUpload';
 
 /**
  * HDR render pipeline: linear half-float rendering → threshold bloom →
@@ -38,8 +37,15 @@ export class RenderPipeline {
   /** Half-resolution home of the volume domes; composited into the
    *  scene pass as a single depth-tested quad. */
   readonly sky = new SkyLayer();
+  readonly clouds: CloudPass;
   private readonly composer: EffectComposer;
   private readonly bloom: CompactBloomPass;
+  private readonly stopGlAudit: () => void;
+  private readonly preparations = new Set<Promise<Object3D>>();
+  private disposed = false;
+  private readonly skipPreparation = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).has('benchmark')
+    && new URLSearchParams(location.search).get('benchmarkPrepare') === 'off';
 
   constructor(
     container: HTMLElement,
@@ -51,6 +57,11 @@ export class RenderPipeline {
     // same far-plane depth and z-fighting in shards. Needs
     // EXT_clip_control; three falls back (with a warning) without it.
     this.renderer = new WebGLRenderer({ antialias: true, reversedDepthBuffer: true });
+    this.stopGlAudit = auditGlCalls(this.renderer.getContext() as WebGL2RenderingContext);
+    initializeVolumeUnpack(this.renderer);
+    // Shader log queries synchronously cross into the driver even after
+    // compileAsync completes. Keep this diagnostic cost in development.
+    this.renderer.debug.checkShaderErrors = import.meta.env.DEV;
     this.renderer.info.autoReset = false;
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
@@ -67,6 +78,8 @@ export class RenderPipeline {
     });
     this.composer = new EffectComposer(this.renderer, sceneTarget);
     this.composer.addPass(new RenderPass(scene, camera));
+    this.clouds = new CloudPass(camera);
+    this.composer.addPass(this.clouds);
     // Glare is a compact optical cue around HDR emitters: a broad
     // point-spread turns the physically small solar disc into a white
     // bank across the horizon, hiding sunset color and eclipse contacts.
@@ -77,9 +90,9 @@ export class RenderPipeline {
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new DiagramPass(scene, camera));
     scene.add(this.sky.quad);
-    this.timer = this.renderer
-      .getContext()
-      .getExtension('EXT_disjoint_timer_query_webgl2') as TimerExtension | null;
+    this.timer = new GpuFrameTimer(this.renderer.getContext() as WebGL2RenderingContext);
+    this.sky.ready = false;
+    void this.prepareSceneObject(this.sky.quad, scene).catch(() => {}).then(() => { this.sky.ready = true; });
   }
 
   /** Size the drawing buffer to the view. The ratio defaults to the
@@ -98,6 +111,27 @@ export class RenderPipeline {
     this.sky.setSize(width, height, ratio);
   }
 
+  /** Compile against the same HDR target as the scene pass. Compiling
+   * against the screen would warm a different tone-mapping variant. */
+  prepareSceneObject(object: Object3D, scene: Scene): Promise<Object3D> {
+    if (this.disposed || this.skipPreparation) return Promise.resolve(object);
+    const target = this.renderer.getRenderTarget();
+    const face = this.renderer.getActiveCubeFace();
+    const level = this.renderer.getActiveMipmapLevel();
+    try {
+      this.renderer.setRenderTarget(this.composer.readBuffer);
+      const pending = this.renderer.compileAsync(object, this.camera, scene);
+      this.preparations.add(pending);
+      void pending.then(() => this.preparations.delete(pending), () => this.preparations.delete(pending));
+      return pending;
+    } finally {
+      this.renderer.setRenderTarget(target, face, level);
+    }
+  }
+
+  /** Explicit profiling control; ordinary rendering leaves bloom enabled. */
+  setBloomEnabled(enabled: boolean): void { this.bloom.enabled = enabled; }
+
   set exposure(value: number) {
     this.renderer.toneMappingExposure = value;
   }
@@ -112,39 +146,53 @@ export class RenderPipeline {
    * quantized to the display's refresh cannot show. Null where the
    * timer extension is missing; callers fall back to the interval.
    */
-  gpuFrameMs: number | null = null;
-  private readonly timer: TimerExtension | null;
-  private readonly timerQueries: WebGLQuery[] = [];
+  get gpuFrameMs(): number | null { return this.timer.elapsedMs; }
+  private readonly timer: GpuFrameTimer;
+  private frameOpen = false;
+
+  /** Called before any offscreen work, including black-hole tracing,
+   *  atmosphere passes and lensed-sky captures. */
+  beginFrame(): void {
+    if (this.frameOpen) return;
+    this.frameOpen = true;
+    this.renderer.info.reset();
+    this.timer.begin();
+  }
 
   render(): void {
-    // The counters cover the whole frame — every pass of the composer
-    // and the sky layer — rather than whichever pass drew last.
-    this.renderer.info.reset();
-    const gl = this.renderer.getContext() as WebGL2RenderingContext;
-    if (this.timer) {
-      for (let i = this.timerQueries.length - 1; i >= 0; i--) {
-        const query = this.timerQueries[i];
-        if (!gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) continue;
-        if (!gl.getParameter(this.timer.GPU_DISJOINT_EXT)) {
-          this.gpuFrameMs = (gl.getQueryParameter(query, gl.QUERY_RESULT) as number) / 1e6;
-        }
-        gl.deleteQuery(query);
-        this.timerQueries.splice(i, 1);
-      }
-      const query = gl.createQuery();
-      if (query) {
-        gl.beginQuery(this.timer.TIME_ELAPSED_EXT, query);
-        this.timerQueries.push(query);
-      }
+    // Standalone captures have no preceding viewer frame.
+    this.beginFrame();
+    try {
+      this.sky.render(this.renderer, this.camera);
+      this.composer.render();
+    } finally {
+      this.timer.end();
+      this.frameOpen = false;
     }
-    this.sky.render(this.renderer, this.camera);
-    this.composer.render();
-    if (this.timer && this.timerQueries.length) gl.endQuery(this.timer.TIME_ELAPSED_EXT);
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.renderer.domElement.remove();
+    // compileAsync polls renderer-owned material properties. Tearing those
+    // down mid-poll can throw or strand deferred body disposal. Allow owner
+    // completion callbacks to release their materials before the renderer.
+    if (this.preparations.size) {
+      void Promise.allSettled([...this.preparations]).then(() => {
+        setTimeout(() => this.releaseResources(), 0);
+      });
+    } else this.releaseResources();
+  }
+
+  private releaseResources(): void {
+    this.stopGlAudit();
+    this.timer.dispose();
+    // Composer disposal owns its two buffers and internal copy pass;
+    // the passes we added retain their own targets/materials.
+    for (const pass of this.composer.passes) pass.dispose();
+    this.composer.dispose();
     this.sky.dispose();
     this.renderer.dispose();
-    this.renderer.domElement.remove();
   }
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { NEIGHBOR_RADIUS_PC } from '../../universe/galaxy/neighborhood';
+import { neighborRadiusPc } from '../../universe/galaxy/neighborhood';
+import type { GalacticPosition } from '../../universe/galaxy/density';
 import { galacticNucleus } from '../../universe/galaxy/nucleus';
 import type { GalacticAddress } from '../../universe/galaxy/regions';
 import type { Star } from '../../universe/star/types';
@@ -14,6 +15,7 @@ export function galaxyPlateSpec(
   current: Star,
   address: GalacticAddress,
   neighborCount: number,
+  localePc: GalacticPosition,
 ): PlateSpec {
   return {
     title: current.designation,
@@ -30,7 +32,7 @@ export function galaxyPlateSpec(
       ['Nearest arm', `the ${address.arm} Arm`],
       ['R_galactic', `${(address.radiusPc / 1000).toFixed(2)} kpc`],
       ['Height', `${address.heightPc >= 0 ? '+' : '−'}${fmt(Math.abs(address.heightPc), 3)} pc`],
-      ['Neighborhood', `${neighborCount} stars within ${NEIGHBOR_RADIUS_PC} pc`],
+      ['Neighborhood', `${neighborCount} stars within ${fmt(neighborRadiusPc(localePc), 3)} pc`],
     ],
   };
 }

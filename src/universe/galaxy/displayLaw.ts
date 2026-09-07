@@ -27,7 +27,7 @@
  * above any background, which is why the eye picks faint stars out
  * of skies it cannot see glow in.
  *
- * Brightness convention: a point source counts as its luminosity over
+ * Brightness convention: a point source counts as its optical luminosity over
  * distance squared, L☉/pc² (the 4π of true flux folded in, as the star
  * accumulators store it). Extended light is radiance, L☉ pc⁻² sr⁻¹ —
  * distance-independent, as surface brightness really is — and enters
@@ -110,11 +110,10 @@ export const CAMERA_INSTRUMENT: DisplayInstrument = {
   continuumShare: 1,
 };
 
-/** The dark-adapted naked eye: stars stop near sixth magnitude
- *  (cutoff at ~1.7×10⁻³ L☉/pc²), the brightest points near unit
- *  display (pivot at a Sirius), rods see the faint sky grey with
- *  colour waking only toward the brightest nebular cores — the honest
- *  answer to how any of this looks from a dark hillside. */
+/** Approximate dark-adapted eye response: fixed optical point cutoff
+ * and brightness pivot, with faint colours drained toward grey. These
+ * retained display settings are not a calibrated V-band magnitude
+ * limit or a dynamic observer-adaptation model. */
 export const EYE_INSTRUMENT: DisplayInstrument = {
   gamma: DISPLAY_GAMMA,
   gain: 1,

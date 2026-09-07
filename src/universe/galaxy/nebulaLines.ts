@@ -8,14 +8,13 @@ import { spectralLinesToXyz } from '../../core/color/xyz';
  * hue rather than a palette — which is why a real-colour photograph of
  * an H II region is pink rather than the teal of a narrowband map.
  *
- * The mixture runs over the three axes that actually move it — the
- * ionizing star's temperature, the local ionization parameter, and the
- * gas metallicity — the grid the plan called for. Intensities are
- * relative to Hβ, Case B at 10⁴ K, anchored on measured regions:
- * Orion's core lands at [O III] 5007/Hβ ≈ 3, 30 Doradus near 6, a
- * B-star region under a half, and [N II]/[S II] carry the low-U skin
- * at their observed shares of Hα. Because metallicity enters, nebular
- * colour varies with galactocentric radius on its own.
+ * Intensities are relative to Hβ, with a low-density, 10⁴ K case-B
+ * hydrogen backbone. Metal and helium strengths are illustrative
+ * functions of source temperature, normalized U and metallicity, not
+ * a calibrated photoionization grid. There is no thermal balance,
+ * element-by-element ionization or collisional de-excitation here.
+ * See docs/model/nebulae.md for reference checks
+ * and the limits of interpreting these colours as spectroscopy.
  */
 
 /** The Balmer backbone, Case B at 10⁴ K — metallicity-blind. */
@@ -101,8 +100,8 @@ export function nebulaEmissionColor(u01: number, tEff = 40000, feH = 0): LinearR
 /**
  * The same point on the grid through the mapped-narrowband instrument:
  * the Hubble palette, [S II] to red, Hα to green, [O III] to blue —
- * false colour by construction and labelled as such, but the channels
- * are the real line strengths, so ionization structure reads directly:
+ * false colour by construction and labelled as such. The channels
+ * use this prescription's line strengths, so its ionization structure reads:
  * hard high-U cores go blue-white, low-U skins go rust.
  */
 export function nebulaNarrowbandColor(u01: number, tEff = 40000, feH = 0): LinearRgb {

@@ -39,6 +39,20 @@ export interface Belt {
   gaps: BeltGap[];
   resonantPopulations: Array<{ semiMajorAxisAu: number; resonance: string }>;
   inclinationDispersionRad: number;
+  /** Finite parent-body inventory; absent only in hand-authored legacy fixtures. */
+  inventory?: BeltInventory;
+}
+
+export interface BeltInventory {
+  initialMassEarth: number;
+  massEarth: number;
+  bulkDensityKgM3: number;
+  minDiameterKm: number;
+  maxDiameterKm: number;
+  /** Cumulative N(>D) slope; the differential exponent is slope + 1. */
+  slope: number;
+  /** Initial catastrophic-collision lifetime of the largest bodies. */
+  collisionLifetimeMyr: number;
 }
 
 /** Distant small-body reservoirs, kept as parameters until bodies are instantiated lazily. */
@@ -65,6 +79,21 @@ export interface StellarCompanion {
   planets: Planet[];
   belts: Belt[];
   zones: SystemZones;
+  formation?: FormationInventory | null;
+}
+
+/** Mass accounting in Earth masses. Remaining solids are unallocated;
+ * loss includes pruning, engulfment and collisionally removed belt mass. */
+export interface FormationInventory {
+  diskMassEarth: number;
+  initialSolidsEarth: number;
+  initialGasEarth: number;
+  remainingSolidsEarth: number;
+  remainingGasEarth: number;
+  planetMassEarth: number;
+  satelliteMassEarth: number;
+  beltMassEarth: number;
+  lostMassEarth: number;
 }
 
 export type SystemConfiguration = 'single' | 's-type' | 'p-type';
@@ -86,4 +115,5 @@ export interface StarSystem {
   comets: Comet[];
   reservoirs: Reservoirs;
   zones: SystemZones;
+  formation?: FormationInventory | null;
 }

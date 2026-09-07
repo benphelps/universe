@@ -1,8 +1,8 @@
 import { G, PARSEC, SOLAR_MASS } from '../../core/physics/constants';
-import { deriveSeed } from '../../core/rng/hash';
-import { Rng } from '../../core/rng/rng';
-import { galaxyRoot } from './galaxySeed';
-import { galaxyStellarMass } from './stellarMass';
+import { galaxyStellarMass, galaxyBulgeStarCount } from './stellarMass';
+import { spheroidParameters, nuclearClusterParameters, type SpheroidKind } from './spheroidParameters';
+import { nuclearHalfMassRadius, nuclearMeanStellarMass, nuclearEnclosedFraction, NUCLEAR_EPOCHS } from './nuclearPopulation';
+export type { SpheroidKind } from './spheroidParameters';
 
 /**
  * The galaxy's central spheroid and the star cluster at its heart —
@@ -18,8 +18,6 @@ import { galaxyStellarMass } from './stellarMass';
  * pseudobulges — the Milky Way among them.
  */
 
-export type SpheroidKind = 'classical' | 'pseudo';
-
 export interface CentralSpheroid {
   kind: SpheroidKind;
   massSolar: number;
@@ -27,7 +25,7 @@ export interface CentralSpheroid {
   effectiveRadiusPc: number;
   /** Hernquist scale radius a = R_e/1.8153, pc. */
   scaleRadiusPc: number;
-  /** One-dimensional stellar velocity dispersion, km/s. */
+  /** Nominal Hernquist one-dimensional velocity dispersion, km/s. */
   dispersionKmS: number;
 }
 
@@ -35,19 +33,15 @@ export interface CentralSpheroid {
  *  the galaxy, a few parsecs across and wrapped around the hole. */
 export interface NuclearStarCluster {
   massSolar: number;
-  /** Projected half-light radius, pc — NSC sizes barely grow with mass. */
+  /** Reference projected radius of the untruncated old component, pc.
+   * The finite old/young mixture need not have this half-light radius. */
   effectiveRadiusPc: number;
   scaleRadiusPc: number;
-  /** Mean stellar number density inside the half-light radius, per pc³. */
+  halfMassRadiusPc: number;
+  /** Mean stellar number density inside the 3D half-mass radius, per pc³. */
   coreDensityPerPc3: number;
 }
 
-/** The nuclear cluster is ancient: its light is dominated by evolved
- *  stars, and its mean member mass is the old-population value. */
-const MEAN_CLUSTER_STAR_MASS = 0.3;
-
-/** Hernquist half-mass radius in units of the scale radius. */
-const HERNQUIST_HALF_MASS = 1 + Math.SQRT2;
 /** Projected half-light radius in units of the scale radius. */
 const HERNQUIST_EFFECTIVE = 1.8153;
 
@@ -58,24 +52,17 @@ let clusterMemo: NuclearStarCluster | null = null;
  * The galaxy's bulge. Its mass is a fraction of the galaxy's own
  * stellar mass — the bulge-to-total ratio, which for spirals runs from
  * a few percent (late types, disk-dominated) to about a third — and
- * its size follows the spheroid mass–size relation. The dispersion is
- * then not a free parameter at all: the virial theorem for a Hernquist
- * sphere fixes σ² = GM/18a exactly.
+ * its size follows the spheroid mass–size relation. The nominal
+ * dispersion uses σ² = GM/18a for an isolated Hernquist sphere;
+ * the finite catalogue core, nuclear cluster and rotation would need
+ * a separate dynamical solution for a self-consistent dispersion.
  */
 export function centralSpheroid(): CentralSpheroid {
   if (spheroidMemo) return spheroidMemo;
-  const rng = new Rng(deriveSeed(galaxyRoot(0x42554c4745n), 'spheroid'));
-  // Pseudobulges dominate the late-type spirals this density model
-  // describes; classical bulges need a major merger in the past.
-  const kind: SpheroidKind = rng.float() < 0.62 ? 'pseudo' : 'classical';
-  // Log-uniform bulge-to-total. Pseudobulges stay under a quarter of
-  // the galaxy — that ceiling is part of what defines them; classical
-  // bulges run from there up to the early-type spiral range.
-  const ratio =
-    kind === 'pseudo' ? 0.05 * 5 ** rng.float() : 0.12 * (0.42 / 0.12) ** rng.float();
-  const massSolar = ratio * galaxyStellarMass();
+  const { kind, massFraction, sizeScatter } = spheroidParameters();
+  const massSolar = massFraction * galaxyStellarMass();
   // Spheroid mass–size relation, anchored near a kiloparsec at 10¹⁰ M☉.
-  const effectiveRadiusPc = 900 * (massSolar / 1e10) ** 0.55 * rng.range(0.75, 1.35);
+  const effectiveRadiusPc = 900 * (massSolar / 1e10) ** 0.55 * sizeScatter;
   const scaleRadiusPc = effectiveRadiusPc / HERNQUIST_EFFECTIVE;
   // Hernquist virial: W = −GM²/6a, so ⟨v²⟩ = GM/6a and σ₁D² = GM/18a.
   const dispersionKmS =
@@ -93,15 +80,18 @@ export function centralSpheroid(): CentralSpheroid {
  */
 export function nuclearStarCluster(): NuclearStarCluster {
   if (clusterMemo) return clusterMemo;
-  const rng = new Rng(deriveSeed(galaxyRoot(0x4e5343n), 'nuclear-cluster'));
-  const massSolar = galaxyStellarMass() * 10 ** rng.normal(-3.3, 0.3);
-  const effectiveRadiusPc = 4.0 * (massSolar / 1e7) ** 0.35 * rng.range(0.7, 1.4);
+  const { massFraction, sizeScatter } = nuclearClusterParameters();
+  const massSolar = galaxyStellarMass() * massFraction;
+  const effectiveRadiusPc = 4.0 * (massSolar / 1e7) ** 0.35 * sizeScatter;
   const scaleRadiusPc = effectiveRadiusPc / HERNQUIST_EFFECTIVE;
   // Half the mass sits inside the half-mass radius, by definition.
-  const halfMassPc = HERNQUIST_HALF_MASS * scaleRadiusPc;
-  const coreDensityPerPc3 =
-    (0.5 * massSolar) / ((4 / 3) * Math.PI * halfMassPc ** 3) / MEAN_CLUSTER_STAR_MASS;
-  clusterMemo = { massSolar, effectiveRadiusPc, scaleRadiusPc, coreDensityPerPc3 };
+  const halfMassPc = nuclearHalfMassRadius(scaleRadiusPc);
+  // Number and mass have different radial weights because young stars
+  // have a different present-day mean mass; use their enclosed counts.
+  const heldCount = massSolar / nuclearMeanStellarMass() * NUCLEAR_EPOCHS.reduce((sum, epoch) =>
+    sum + epoch.numberShare * nuclearEnclosedFraction(halfMassPc, epoch.scalePc ?? scaleRadiusPc), 0);
+  const coreDensityPerPc3 = heldCount / ((4 / 3) * Math.PI * halfMassPc ** 3);
+  clusterMemo = { massSolar, effectiveRadiusPc, scaleRadiusPc, halfMassRadiusPc: halfMassPc, coreDensityPerPc3 };
   return clusterMemo;
 }
 
@@ -113,4 +103,40 @@ export function hernquistMassWithin(
 ): number {
   const x = radiusPc / (radiusPc + scaleRadiusPc);
   return totalSolar * x * x;
+}
+
+/** Finite-resolution Hernquist number density for the field catalogue
+ * and unresolved light. A quartic core replaces the unresolved cusp,
+ * matching its density, slope AND enclosed mass at 0.1a. All exterior
+ * enclosed masses and the projected half-light radius are unchanged.
+ * The nuclear cluster has its own allocated population and renderer. */
+export interface BulgeDensityModel {
+  scalePc: number;
+  corePc: number;
+  coefficient: number;
+  corePolynomial: [number, number, number];
+}
+let bulgeModelMemo: BulgeDensityModel | null = null;
+export function bulgeDensityModel(): BulgeDensityModel {
+  if (bulgeModelMemo) return bulgeModelMemo;
+  const scalePc = centralSpheroid().scaleRadiusPc;
+  const corePc = 0.1 * scalePc;
+  const count = galaxyBulgeStarCount();
+  const coefficient = count * scalePc / (2 * Math.PI);
+  const boundary = coefficient / (corePc * (corePc + scalePc) ** 3);
+  const mean = 3 * count / (4 * Math.PI * corePc * (corePc + scalePc) ** 2);
+  const slope = -boundary * (1 + 3 * corePc / (corePc + scalePc));
+  const c = (35 * (mean - boundary) + 7 * slope) / 8;
+  const b = slope / 2 - 2 * c;
+  const a = boundary - b - c;
+  return bulgeModelMemo = { scalePc, corePc, coefficient, corePolynomial: [a, b, c] };
+}
+
+export function bulgeDensity(radiusPc: number): number {
+  const { scalePc, corePc, coefficient, corePolynomial: [a, b, c] } = bulgeDensityModel();
+  if (radiusPc < corePc) {
+    const t2 = (radiusPc / corePc) ** 2;
+    return (c * t2 + b) * t2 + a;
+  }
+  return coefficient / (radiusPc * (radiusPc + scalePc) ** 3);
 }

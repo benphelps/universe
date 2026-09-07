@@ -1,3 +1,4 @@
+import { deckSizeForView, deckWindowDays } from './deckQuality';
 import {
   Group,
   Mesh,
@@ -7,6 +8,7 @@ import {
   Vector3,
   type WebGLCubeRenderTarget,
   type WebGLRenderer,
+  type Object3D,
 } from 'three';
 import { seedFromHex } from '../../core/rng/hash';
 import { deriveCirculation, type Circulation } from '../../universe/planet/circulation';
@@ -72,11 +74,14 @@ export class PlanetObject {
   private bakedTA = 0;
   private bakedTB = 0;
   private baked = false;
-  private lastSimT = Number.NEGATIVE_INFINITY;
+  private activeDeckSize = 0;
   /** Seeded window stretch, so a system's giants roll on different frames. */
   private readonly bakeStagger: number;
   private readonly bakeIntervalDays: number;
   private readonly deckSize: number;
+  private preparing = false;
+  private prepared = false;
+  private disposed = false;
 
   constructor(
     readonly physical: Characterization,
@@ -115,6 +120,7 @@ export class PlanetObject {
       // holds only until it lands. Prominent bodies (the deckSize the
       // viewer grants focused and parent objects) jump the queue.
       requestSurfaceBake(physical.seedHex, physical, SURFACE_CUBE_SIZE, deckSize > 256).then((bake) => {
+        if (this.disposed) return;
         this.surfaceFaces = bake.faces;
         this.surfaceSize = bake.size;
       });
@@ -153,8 +159,27 @@ export class PlanetObject {
       this.group.add(ringMesh);
     }
 
-    this.group.rotation.z = physical.rotation.obliquityRad;
+    // Inverse of the focused ground frame (bodyFrameQuaternion).
+    this.group.rotation.z = -physical.rotation.obliquityRad;
     this.spinRadPerDay = (2 * Math.PI * 24) / physical.rotation.periodHours;
+  }
+
+  /** Compile all body/limb/ring variants before any first-visible draw.
+   * Offscreen neighbours must be ready when fast time brings them into view.
+   * Keep materials alive until Three's asynchronous readiness poll settles. */
+  prepare(compile: (object: Object3D) => Promise<unknown>): void {
+    if (this.disposed || this.prepared) return;
+    this.prepared = this.preparing = true;
+    const visibility = this.group.children.map(object => ({ object, visible: object.visible }));
+    for (const { object } of visibility) object.visible = false;
+    const work = [() => compile(this.group)];
+    if (this.baker) work.push(() => this.baker!.prepare(compile));
+    void Promise.allSettled(work.map(start => Promise.resolve().then(() => this.disposed ? undefined : start())))
+      .then(() => {
+        this.preparing = false;
+        if (this.disposed) this.releaseResources();
+        else for (const { object, visible } of visibility) object.visible = visible;
+      });
   }
 
   /** Advance spin and update the star-light directions (world space, toward each star).
@@ -165,24 +190,28 @@ export class PlanetObject {
     lightColor: readonly [number, number, number],
     second: SecondSun | null = null,
     renderer?: WebGLRenderer,
+    view?: { diameterPixels: number; daysPerSecond: number; exposure?: number },
   ): void {
+    if (this.disposed) return;
     this.body.rotation.y = simTimeDays * this.spinRadPerDay;
     if (this.surfaceFaces && renderer) {
       this.surfaceCube = uploadSurfaceCube(renderer, this.surfaceFaces, this.surfaceSize);
       const material = this.materials[0];
       material.uniforms.uSurfaceCube.value = this.surfaceCube.texture;
-      material.defines = { ...material.defines, HAS_SURFACE: '' };
-      material.needsUpdate = true;
+      // Texture arrival changes data, not shader source. Recompiling here
+      // could stall a later first-visible neighbour for hundreds of ms.
+      material.uniforms.uHasSurface.value = true;
       this.surfaceFaces = null;
     }
     for (const material of this.materials) {
       const uniforms = material.uniforms;
       uniforms.uLightDir.value = [lightDirWorld.x, lightDirWorld.y, lightDirWorld.z];
       if (uniforms.uLightColor) uniforms.uLightColor.value.setRGB(...lightColor);
+      if (uniforms.uSurfaceExposure) uniforms.uSurfaceExposure.value = view?.exposure ?? 1;
       if (uniforms.uTimeDays) uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
       applySecondSun(material, second);
     }
-    if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld, renderer);
+    if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld, renderer, view);
     if (this.rings) this.updateRingShadow();
   }
 
@@ -229,6 +258,7 @@ export class PlanetObject {
     simTimeDays: number,
     lightDirWorld: Vector3,
     renderer?: WebGLRenderer,
+    view?: { diameterPixels: number; daysPerSecond: number; exposure?: number },
   ): void {
     const circulation = this.circulation!;
     const uniforms = this.materials[0].uniforms;
@@ -242,20 +272,22 @@ export class PlanetObject {
       .normalize();
     (uniforms.uHotspotDirObj.value as Vector3).copy(hotspot);
 
-    if (!renderer || !this.baker) return;
-    if (!this.deckA || !this.deckB) {
-      this.deckA = DeckBaker.createTarget(this.deckSize);
-      this.deckB = DeckBaker.createTarget(this.deckSize);
+    if (!renderer || !this.baker || this.preparing) return;
+    const rate = view?.daysPerSecond ?? 0;
+    const size = deckSizeForView(view?.diameterPixels ?? Infinity, this.deckSize, this.activeDeckSize,
+      Math.abs(rate) * 0.35 > this.bakeIntervalDays);
+    if (size !== this.activeDeckSize) {
+      this.deckA?.dispose(); this.deckB?.dispose();
+      this.deckA = this.deckB = null; this.baked = false;
+      this.activeDeckSize = size;
     }
-    // Fast-forward outruns the base cadence: the window stretches to a
-    // few frames of sim time, so the deck crossfades coarser instead
-    // of restarting every giant's bake every frame — sustained
-    // multi-megapixel rebakes stall the GPU into dropped frames.
-    const step = Number.isFinite(this.lastSimT)
-      ? Math.max(0, simTimeDays - this.lastSimT)
-      : 0;
-    this.lastSimT = simTimeDays;
-    const interval = Math.max(this.bakeIntervalDays, step * 4) * this.bakeStagger;
+    if (!this.deckA || !this.deckB) {
+      this.deckA = DeckBaker.createTarget(size);
+      this.deckB = DeckBaker.createTarget(size);
+    }
+    // Stretch the crossfade window to a bounded real-time cadence when
+    // fast-forward outruns the physical cloud evolution interval.
+    const interval = deckWindowDays(this.bakeIntervalDays, rate, this.bakeStagger);
     if (!this.baked || simTimeDays < this.bakedTA - interval) {
       // First frame, or time ran backwards past the window: bake both.
       this.bakedTA = simTimeDays;
@@ -302,6 +334,13 @@ export class PlanetObject {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.surfaceFaces = null;
+    if (!this.preparing) this.releaseResources();
+  }
+
+  private releaseResources(): void {
     this.baker?.dispose();
     this.deckA?.dispose();
     this.deckB?.dispose();

@@ -1,9 +1,12 @@
+import { localSurfaceTemperatureK } from './params';
+import { columnTemperatureK } from '../planet/hydrostaticColumn';
 import type { Vec3 } from '../../core/math/vec3';
 import { fbm, ridged } from '../../core/noise/fractal';
 import { createSimplex3 } from '../../core/noise/simplex3';
 import { createWorley3 } from '../../core/noise/worley3';
 import { deriveSeed, seedFromHex } from '../../core/rng/hash';
 import type { Characterization } from '../planet/types';
+import type { AnnualMeanField } from '../planet/annualMean';
 import { buildClimate, wrapClimate, type ClimateField } from './climate';
 import { createCraterField } from './craters';
 import { createCubeGrid, type CubeGrid } from './cubeGrid';
@@ -114,12 +117,13 @@ export function createSurfaceField(
   physical: Characterization,
   options?: {
     rivers?: boolean;
+    annualMean?: AnnualMeanField;
     /** Skip the grid sampling and return immediately: climate and
      *  drainage attach later via finishGrid from a worker's survey. */
     deferGrid?: boolean;
   },
 ): SurfaceField {
-  const params = deriveSurfaceParams(seedHex, physical);
+  const params = deriveSurfaceParams(seedHex, physical, options?.annualMean);
   const seed = seedFromHex(seedHex);
 
   const continents = fbm(createSimplex3(deriveSeed(seed, 'continents')), { octaves: 4 });
@@ -150,12 +154,12 @@ export function createSurfaceField(
     erosion > 0.2 && !params.globalIce && params.magmaCoverage === 0
       ? erosion * (0.35 + 0.65 * wetness)
       : 0;
-  const coldestK =
-    params.surfaceMeanK - params.poleDeltaK - (params.lapseKPerKm * reliefM * 0.6) / 1000;
+  const coldestDatumK = params.temperatureField?.minimumK ?? params.surfaceMeanK - params.poleDeltaK;
+  const coldestK = columnTemperatureK(coldestDatumK, params.atmosphericCapK ?? 0, params.lapseKPerKm / 1000, reliefM * 0.6);
   const glacialStrength =
-    erosion > 0.2 && (params.globalIce || coldestK < 268) ? erosion : 0;
+    erosion > 0.2 && params.surfaceIce && (params.globalIce || coldestK < 268) ? erosion : 0;
   const duneStrength =
-    erosion > 0.1 && !params.globalIce && params.oceanCoverage < 0.55
+    erosion > 0.1 && !params.globalIce && params.magmaCoverage === 0 && params.oceanCoverage < 0.55
       ? (1 - 0.8 * wetness) * Math.min(1, erosion * 1.6)
       : 0;
   const windAngle =
@@ -221,7 +225,10 @@ export function createSurfaceField(
     const wavelengthM = (2 * Math.PI * params.radiusM) / frequency;
     const bedrock = wavelengthM ** 2 / (wavelengthM ** 2 + mantleWavelengthM ** 2);
     const capSlope = mantledSlope + (bedrockSlope - mantledSlope) * bedrock;
-    return (capSlope * params.radiusM) / (frequency * (1 + ridge) * Math.sqrt(octaves));
+    // Simplex noise changes several units per domain unit. Accounting
+    // for that derivative gain keeps meter-scale regolith from looking
+    // like folded fabric even when the nominal amplitude is small.
+    return (capSlope * params.radiusM) / (3 * frequency * (1 + ridge) * Math.sqrt(octaves));
   };
   const bandSpec: [frequency: number, octaves: number, coeff: number, ridge: number][] = [
     [45, 3, 0.062, 0.35],
@@ -341,12 +348,12 @@ export function createSurfaceField(
     let h = continents(dir.x * 1.3, dir.y * 1.3, dir.z * 1.3) * reliefM * 0.55;
 
     if (mountainStrength > 0.05) {
-      // Fold belts where cell boundaries pinch (f2 ≈ f1); each plate
-      // also rides at its own elevation, so crossing a boundary steps —
-      // the fault scarp is the discontinuity itself, degraded by
-      // erosion, and belts often bury it under their own ridges.
+      // Plate interiors relax to the same datum at the boundary. A raw
+      // cell identity steps by hundreds of meters at an infinitesimal
+      // crossing and turns into cracks/spikes as tiles refine.
       const cell = boundaries(dir.x * 1.6, dir.y * 1.6, dir.z * 1.6);
-      h += (cell.id1 - 0.5) * reliefM * 0.09 * mountainStrength * (1 - 0.6 * erosion);
+      h += (cell.id1 - 0.5) * smooth01((cell.f2 - cell.f1) / 0.12) *
+        reliefM * 0.09 * mountainStrength * (1 - 0.6 * erosion);
       const boundary = Math.max(0, 1 - (cell.f2 - cell.f1) / 0.22);
       if (boundary > 0) {
         const ridge = mountains(dir.x * 3.2, dir.y * 3.2, dir.z * 3.2);
@@ -367,11 +374,7 @@ export function createSurfaceField(
     // troughs instead of river valleys.
     let glacial = 0;
     if (glacialStrength > 0.02) {
-      const latitude = Math.asin(Math.max(-1, Math.min(1, dir.y)));
-      const provisionalK =
-        params.surfaceMeanK -
-        params.poleDeltaK * Math.sin(latitude) ** 2 -
-        (params.lapseKPerKm * Math.max(h, 0)) / 1000;
+      const provisionalK = localSurfaceTemperatureK(params, dir, h);
       glacial =
         glacialStrength * (params.globalIce ? 1 : smooth01((266 - provisionalK) / 9));
     }
@@ -393,7 +396,7 @@ export function createSurfaceField(
     let wax = dir.x;
     let way = dir.y;
     let waz = dir.z;
-    if (lodAngularRad < 0.011) {
+    {
       wax += 0.004 * warpMacro(dir.x * 60, dir.y * 60, dir.z * 60);
       way += 0.004 * warpMacro(dir.x * 60 + 19.1, dir.y * 60, dir.z * 60);
       waz += 0.004 * warpMacro(dir.x * 60, dir.y * 60 + 47.3, dir.z * 60);
@@ -401,7 +404,7 @@ export function createSurfaceField(
     let wbx = dir.x;
     let wby = dir.y;
     let wbz = dir.z;
-    if (lodAngularRad < 2.5e-6) {
+    if (lodAngularRad === 0 || lodAngularRad < 1 / (2 * detailBands[FINE_BAND].frequency)) {
       wbx += 1.2e-4 * warpMicro(dir.x * 2400, dir.y * 2400, dir.z * 2400);
       wby += 1.2e-4 * warpMicro(dir.x * 2400 + 7.7, dir.y * 2400, dir.z * 2400);
       wbz += 1.2e-4 * warpMicro(dir.x * 2400, dir.y * 2400 + 29.3, dir.z * 2400);
@@ -409,22 +412,12 @@ export function createSurfaceField(
 
     for (let bandIndex = 0; bandIndex < detailBands.length; bandIndex++) {
       const band = detailBands[bandIndex];
-      // Fade each band in across a LOD level: a hard Nyquist cut would
-      // print visible patches wherever neighboring tiles differ in level.
-      // The landscape-scale band never fades: it moves coastlines, and
-      // those must agree across every LOD. Smaller bands sit well inside
-      // the shoreline blend window, so their fading is invisible there.
-      let fade = 1;
-      if (lodAngularRad > 0 && bandIndex > 0) {
-        const wavelengthRatio = 1 / band.frequency / (2 * lodAngularRad);
-        if (wavelengthRatio <= 1) break;
-        // The geomorph absorbs LOD transitions, so detail can arrive
-        // fast; this divisor sets how much of a band survives at the
-        // finest level that can carry it at all.
-        fade = Math.min(1, (wavelengthRatio - 1) / 2.5);
-      }
+      // Filter every octave, including the landscape band. Filtering
+      // only a band's first frequency leaves its higher octaves aliased
+      // into isolated spikes on the coarse orbital mesh.
+      if (lodAngularRad > 0 && band.frequency * 2 * lodAngularRad >= 1) break;
       const offset = 17.31 * (bandIndex + 1);
-      let amplitude = band.amplitudeM * fade * (1 - 0.5 * glacial);
+      let amplitude = band.amplitudeM * (1 - 0.5 * glacial);
       if (bandIndex >= FINE_BAND) amplitude *= substrate;
       const wx = bandIndex < FINE_BAND ? wax : wbx;
       const wy = bandIndex < FINE_BAND ? way : wby;
@@ -432,10 +425,14 @@ export function createSurfaceField(
       let frequency = band.frequency;
       let sum = 0;
       for (let o = 0; o < band.octaves; o++) {
+        const fade = lodAngularRad > 0
+          ? Math.min(1, Math.max(0, (1 / frequency / (2 * lodAngularRad) - 1) / 2.5))
+          : 1;
+        if (fade === 0) break;
         const n = bandNoise(wx * frequency + offset, wy * frequency, wz * frequency);
         const shaped =
           band.ridge > 0 ? (1 - band.ridge) * n + band.ridge * (0.7 - 2 * Math.abs(n)) : n;
-        sum += amplitude * shaped;
+        sum += amplitude * shaped * fade;
         amplitude *= 0.5;
         frequency *= 2.1;
       }
@@ -543,6 +540,7 @@ export function createSurfaceField(
         params.lapseKPerKm,
         params.rotationPeriodHours,
         carvingWetness,
+        (dir, heightM) => localSurfaceTemperatureK(params, dir, heightM),
       );
       // Orbital-scale consumers skip the network build: at their sample
       // spacing every river is sub-texel, but the climate still places
@@ -596,11 +594,7 @@ export function createSurfaceField(
 
   const colorAt = (dir: Vec3, heightM: number, slopeCos: number, lodAngularRad = 0): Rgb => {
     const { palette } = params;
-    const latitude = Math.asin(Math.max(-1, Math.min(1, dir.y)));
-    const temperatureK =
-      params.surfaceMeanK -
-      params.poleDeltaK * Math.sin(latitude) ** 2 -
-      (params.lapseKPerKm * Math.max(heightM, 0)) / 1000;
+    const temperatureK = localSurfaceTemperatureK(params, dir, heightM);
 
     // Smooth land↔seabed transition centered on sea level. Under magma
     // seas the "bed" is chilled basalt — the melt above renders itself.
@@ -647,7 +641,7 @@ export function createSurfaceField(
     }
 
     // Permanent ice fades in as the local mean drops below freezing.
-    const iciness = params.globalIce ? 1 : smooth01((266 - temperatureK) / 8);
+    const iciness = params.globalIce ? 1 : params.surfaceIce ? smooth01((266 - temperatureK) / 8) : 0;
     if (iciness > 0) {
       const gray = 0.9 + 0.1 * paletteNoise(dir.x * 9, dir.y * 9, dir.z * 9);
       ground = mixRgb(
@@ -667,8 +661,8 @@ export function createSurfaceField(
       if (province > 0.25) {
         rock = [rock[0] * 0.55, rock[1] * 0.55, rock[2] * 0.6];
       } else {
-        const strataFade =
-          lodAngularRad > 0 ? Math.max(0, 1 - lodAngularRad / 0.0002) : 1;
+        const grade = Math.sqrt(Math.max(0, 1 - slopeCos * slopeCos)) / Math.max(0.05, slopeCos);
+        const strataFade = 1 - smooth01((lodAngularRad * params.radiusM * grade / strataThicknessM - 0.15) / 0.35);
         if (strataFade > 0.02) {
           const bedding = Math.sin(
             (heightM / strataThicknessM) * 2 * Math.PI +

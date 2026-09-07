@@ -1,6 +1,7 @@
 import type { Characterization } from '../universe/planet/types';
 import { createSurfaceField } from '../universe/surface/field';
 import { bakeSurfaceCube } from '../universe/surface/surfaceBake';
+import { prepareAnnualMean } from '../universe/planet/annualMeanPreparation';
 
 export interface SurfaceBakeRequest {
   id: number;
@@ -20,7 +21,7 @@ export interface SurfaceBakeResponse {
  *  rasters the six cube faces. */
 self.onmessage = (event: MessageEvent<SurfaceBakeRequest>) => {
   const { id, seedHex, physical, size } = event.data;
-  const field = createSurfaceField(seedHex, physical, { rivers: false });
+  const field = createSurfaceField(seedHex, physical, { rivers: false, annualMean: prepareAnnualMean(physical) });
   const faces = bakeSurfaceCube(field, size, physical.appearance.oceanColor);
   const response: SurfaceBakeResponse = { id, size, faces };
   (self as unknown as Worker).postMessage(

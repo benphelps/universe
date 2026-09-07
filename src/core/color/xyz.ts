@@ -12,6 +12,15 @@ export interface Chromaticity {
 }
 
 const STEP_NM = 5;
+// Wavelength-only quadrature weights. Keep doubles and the original
+// evaluation/summation order so this removes work without changing colour.
+const CMF_SAMPLES = Array.from(
+  { length: (VISIBLE_MAX_NM - VISIBLE_MIN_NM) / STEP_NM + 1 },
+  (_, i) => {
+    const nm = VISIBLE_MIN_NM + i * STEP_NM;
+    return { nm, x: xBar(nm), y: yBar(nm), z: zBar(nm) };
+  },
+);
 
 /**
  * Integrate a spectral power distribution (wavelength in nm → relative power)
@@ -21,11 +30,11 @@ export function spectrumToXyz(spectrum: (wavelengthNm: number) => number): Xyz {
   let x = 0;
   let y = 0;
   let z = 0;
-  for (let nm = VISIBLE_MIN_NM; nm <= VISIBLE_MAX_NM; nm += STEP_NM) {
+  for (const { nm, x: wx, y: wy, z: wz } of CMF_SAMPLES) {
     const power = spectrum(nm);
-    x += power * xBar(nm);
-    y += power * yBar(nm);
-    z += power * zBar(nm);
+    x += power * wx;
+    y += power * wy;
+    z += power * wz;
   }
   return { x: x * STEP_NM, y: y * STEP_NM, z: z * STEP_NM };
 }

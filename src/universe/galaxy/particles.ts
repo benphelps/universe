@@ -1,246 +1,42 @@
-import { buildTemperatureLut, temperatureToLutCoord } from '../../core/color/blackbody';
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
-import { armProfile, waveAxisRatio, waveTilt } from './density';
+import { SMOOTH_MODEL } from './density';
+import { spiralAzimuthSampler } from './spiralSampling';
 import { galaxyRoot } from './galaxySeed';
+import { surfaceRadiusSampler } from './radialSampling';
+import { overviewPopulationTable as population } from './overviewPopulationTable';
 
-/**
- * The galaxy as a population of drawable particles — stars, dust
- * billows, dust filament chains, and H II regions — every one placed
- * on an orbit of the same density-wave family the smooth model rides
- * (vocabulary after beltoforion's renderer). Stars sampled uniformly
- * along the tilted ovals crowd exactly where the analytic field says
- * the arms are, so the particle image and the smooth density agree by
- * construction; the graininess, clumping, and broken patches the
- * smooth field cannot show are simply what the discreteness looks
- * like. Deterministic: one fixed seed, one galaxy.
- */
+/** Statistical samples of the thin disc's optical bright tail. They are
+ * light elements without catalogue identities, not decorative emitters.
+ * The diffuse renderer debits the expected selected population first. */
 export interface GalaxyParticleSet {
   count: number;
-  /** Galactic-frame positions, pc, xyz per particle. */
   positionsPc: Float32Array;
-  /** Linear sRGB premultiplied by the particle's magnitude. */
-  colors: Float32Array;
-  /** World radius of the sprite, pc. */
-  sizesPc: Float32Array;
-  /** 0 star · 1 dust billow · 2 filament dust · 3 H2 glow · 4 H2 core. */
-  types: Float32Array;
+  /** Intrinsic optical power RGB, L☉, before any instrument or extinction. */
+  opticalRgb: Float32Array;
+  expectedRgb: readonly [number,number,number];
+  realizedRgb: [number,number,number];
+  /** Selected RGB power per parent thin-disc object, within radiusPc. */
+  selectedMeanRgb: [number,number,number];
+  radiusPc: number;
 }
-
-const GALAXY_RADIUS = 16000;
-/** The sampler's outer bound: far enough that the exponential profile
- *  itself has faded to nothing — the disk ends by getting sparse, not
- *  by being cut. */
-const FAR_FIELD = 26000;
-const STAR_COUNT = 85000;
-const DUST_COUNT = 22000;
-const FILAMENT_CHAINS = 650;
-const H2_COUNT = 520;
-
-/** Radial light profile the star sampler draws from: a de Vaucouleurs
- *  bulge blended into the thin disk's exponential. */
-function radialIntensity(radiusPc: number): number {
-  return (
-    (Math.exp(-radiusPc / 2600) + 5.0 * Math.exp(-1.35 * (radiusPc / 90) ** 0.25)) *
-    outerTaper(radiusPc)
-  );
-}
-
-/** Beyond the break radius the disk's populations decline on the thin
- *  disk's own scale length — the Type-II outer profile real disks
- *  show. 1 inside the break. */
-function outerTaper(radiusPc: number): number {
-  return radiusPc < 11000 ? 1 : Math.exp(-(radiusPc - 11000) / 2600);
-}
-
-/** Numeric inverse CDF of the radial profile (Simpson + resample). */
-function buildRadialCdf(): (unit: number) => number {
-  const steps = 1024;
-  const h = FAR_FIELD / steps;
-  const cumulative = new Float64Array(steps + 1);
-  for (let i = 1; i <= steps; i++) {
-    const a = radialIntensity((i - 1) * h);
-    const b = radialIntensity((i - 0.5) * h);
-    const c = radialIntensity(i * h);
-    cumulative[i] = cumulative[i - 1] + ((a + 4 * b + c) / 6) * h;
-  }
-  const total = cumulative[steps];
-  return (unit: number) => {
-    const target = unit * total;
-    let lo = 0;
-    let hi = steps;
-    while (hi - lo > 1) {
-      const mid = (lo + hi) >> 1;
-      if (cumulative[mid] < target) lo = mid;
-      else hi = mid;
-    }
-    const span = cumulative[hi] - cumulative[lo];
-    return (lo + (span > 0 ? (target - cumulative[lo]) / span : 0)) * h;
-  };
-}
-
-/** A point on the oval orbit of the given guiding radius. */
-function placeOnOrbit(guidingPc: number, t: number): { x: number; y: number } {
-  const q = waveAxisRatio(guidingPc);
-  const tilt = waveTilt(guidingPc);
-  const ex = guidingPc * Math.cos(t);
-  const ey = guidingPc * q * Math.sin(t);
-  const c = Math.cos(tilt);
-  const s = Math.sin(tilt);
-  return { x: ex * c - ey * s, y: ex * s + ey * c };
-}
-
+import { OVERVIEW_RADIUS_PC } from './overviewSurvey';
 let cached: GalaxyParticleSet | null = null;
-
 export function getGalaxyParticles(): GalaxyParticleSet {
   if (cached) return cached;
   const rng = new Rng(deriveSeed(galaxyRoot(0x47414c58n), 'galaxy-particles'));
-  const cdf = buildRadialCdf();
-  const lut = buildTemperatureLut(96);
-
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const sizes: number[] = [];
-  const types: number[] = [];
-
-  const push = (
-    x: number,
-    y: number,
-    z: number,
-    tempK: number,
-    magnitude: number,
-    sizePc: number,
-    type: number,
-  ): void => {
-    const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(tempK) * 95)) * 4;
-    positions.push(x, y, z);
-    colors.push(
-      lut[lutIndex] * magnitude,
-      lut[lutIndex + 1] * magnitude,
-      lut[lutIndex + 2] * magnitude,
-    );
-    sizes.push(sizePc);
-    types.push(type);
-  };
-
-  const laplace = (scalePc: number): number => {
-    const u = rng.float() - 0.5;
-    return -scalePc * Math.sign(u) * Math.log(1 - 2 * Math.abs(u));
-  };
-
-  // Stars: field population everywhere, with the young luminous
-  // fraction accepted preferentially where the wave crowds — they are
-  // born in the arms they light.
-  for (let i = 0; i < STAR_COUNT; i++) {
-    const guiding = cdf(rng.float());
-    const t = rng.float() * 2 * Math.PI;
-    const { x, y } = placeOnOrbit(guiding, t);
-    const z = laplace(90 + 0.03 * guiding);
-    let temp = 3600 + 3400 * rng.float() ** 2;
-    let mag = 0.12 + 0.38 * rng.float() ** 3;
-    let px = x;
-    let py = y;
-    const radius = Math.hypot(x, y);
-    if (radius > 2500) {
-      const { boost } = armProfile(radius, Math.atan2(y, x));
-      if (rng.float() < boost / 3.5) {
-        temp = 7000 + 9000 * rng.float();
-        mag = Math.min(1, mag * 1.7 + 0.1);
-        // Natal scatter: young stars drift off their birth caustic.
-        px += (rng.float() - 0.5) * 320;
-        py += (rng.float() - 0.5) * 320;
-      }
-    }
-    push(px, py, z, temp, mag, 14 + 30 * mag, 0);
+  const radial = surfaceRadiusSampler(r => Math.exp(-r / SMOOTH_MODEL.thinScaleLengthPc), OVERVIEW_RADIUS_PC);
+  const azimuth = spiralAzimuthSampler();
+  const count = population.count, positionsPc = new Float32Array(count*3), opticalRgb = new Float32Array(count*3);
+  const realizedRgb: [number,number,number] = [0,0,0];
+  for (let i=0;i<count;i++) {
+    const radius=radial(rng.float()), theta=azimuth(radius,rng.float()), height=rng.float()-.5;
+    positionsPc[i*3]=radius*Math.cos(theta);positionsPc[i*3+1]=radius*Math.sin(theta);
+    positionsPc[i*3+2]=-SMOOTH_MODEL.thinScaleHeightPc*Math.sign(height)*Math.log(1-2*Math.abs(height));
+    // Stratify the luminosity-function CDF independently of position.
+    const bin=Math.min(population.bins.length-1,Math.floor((i+rng.float())/count*population.bins.length));
+    for(let c=0;c<3;c++){opticalRgb[i*3+c]=population.bins[bin][c];realizedRgb[c]+=opticalRgb[i*3+c];}
   }
-
-  // Dust billows: huge, faint, additive — the luminous haze. Half
-  // follow the light profile, half spread uniformly (the outskirts
-  // keep a whisper of haze). Temperature runs warm inner to bluish
-  // outer — beltoforion's gradient, kept because it reads right.
-  for (let i = 0; i < DUST_COUNT; i++) {
-    let guiding: number;
-    if (i % 2 === 0) {
-      guiding = cdf(rng.float());
-    } else {
-      // The spread-out half fills the disk evenly, then thins along
-      // the outer taper — the rim dissolves instead of cutting.
-      guiding = FAR_FIELD;
-      for (let attempt = 0; attempt < 8; attempt++) {
-        const x = (2 * rng.float() - 1) * FAR_FIELD;
-        const y = (2 * rng.float() - 1) * FAR_FIELD;
-        const candidate = Math.hypot(x, y);
-        if (candidate <= FAR_FIELD && rng.float() < outerTaper(candidate)) {
-          guiding = candidate;
-          break;
-        }
-      }
-      if (guiding >= FAR_FIELD) continue;
-    }
-    const t = rng.float() * 2 * Math.PI;
-    const { x, y } = placeOnOrbit(guiding, t);
-    const z = laplace(70 + 0.015 * guiding);
-    const temp = 4000 + guiding / 4.5;
-    const mag = 0.02 + 0.15 * rng.float();
-    push(x, y, z, temp, mag, 380 + 520 * rng.float(), 1);
-  }
-
-  // Filament chains: clumped strings of smaller dust along one orbit —
-  // the streaming debris differential rotation makes of any cloud.
-  for (let chain = 0; chain < FILAMENT_CHAINS; chain++) {
-    const x0 = (2 * rng.float() - 1) * FAR_FIELD;
-    const y0 = (2 * rng.float() - 1) * FAR_FIELD;
-    let guiding = Math.hypot(x0, y0);
-    if (guiding > FAR_FIELD || guiding < 600) continue;
-    if (rng.float() > outerTaper(guiding)) continue;
-    const t0 = rng.float() * 2 * Math.PI;
-    const chainMag = 0.09 + 0.05 * rng.float();
-    const members = Math.floor(6 + 54 * rng.float());
-    for (let m = 0; m < members; m++) {
-      guiding += (rng.float() - 0.5) * 380;
-      const t = t0 + (rng.float() - 0.5) * 0.35;
-      const { x, y } = placeOnOrbit(Math.max(500, guiding), t);
-      const z = laplace(60);
-      push(x, y, z, 3600 + guiding / 4.5, chainMag + 0.025 * rng.float(), 150 + 190 * rng.float(), 2);
-    }
-  }
-
-  // H II regions: their size is the wave-spacing probe — where the
-  // caustic packs adjacent orbits together, spacing shrinks and the
-  // knot lights; in loose interarm space it never ignites.
-  for (let i = 0; i < H2_COUNT; i++) {
-    const x0 = (2 * rng.float() - 1) * GALAXY_RADIUS;
-    const y0 = (2 * rng.float() - 1) * GALAXY_RADIUS;
-    const guiding = Math.hypot(x0, y0);
-    if (guiding > GALAXY_RADIUS || guiding < 2500) continue;
-    if (rng.float() > outerTaper(guiding)) continue;
-    const t = rng.float() * 2 * Math.PI;
-    const inner = placeOnOrbit(guiding, t);
-    const outer = placeOnOrbit(guiding + 800, t);
-    const spacing = Math.hypot(outer.x - inner.x, outer.y - inner.y);
-    const sizePc = (800 - spacing) * 0.55;
-    if (sizePc < 45) continue;
-    const z = laplace(55);
-    const hx = inner.x + (rng.float() - 0.5) * 280;
-    const hy = inner.y + (rng.float() - 0.5) * 280;
-    const mag = 0.35 + 0.3 * rng.float();
-    const [r, g, b] = [1.0, 0.32, 0.38];
-    positions.push(hx, hy, z);
-    colors.push(r * mag, g * mag, b * mag);
-    sizes.push(Math.min(sizePc, 380));
-    types.push(3);
-    positions.push(hx, hy, z);
-    colors.push(1, 0.94, 0.9);
-    sizes.push(Math.min(sizePc, 380) * 0.2);
-    types.push(4);
-  }
-
-  cached = {
-    count: types.length,
-    positionsPc: new Float32Array(positions),
-    colors: new Float32Array(colors),
-    sizesPc: new Float32Array(sizes),
-    types: new Float32Array(types),
-  };
-  return cached;
+  return cached={count,positionsPc,opticalRgb,expectedRgb:population.expectedRgb,realizedRgb,
+    selectedMeanRgb:population.expectedRgb.map(v=>v/population.parentCount) as [number,number,number],radiusPc:OVERVIEW_RADIUS_PC};
 }

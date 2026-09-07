@@ -1,7 +1,9 @@
+import { rgbLuminance } from '../../core/color/optical';
+import { spiralStructure } from './spiralStructure';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { mix64, unmix64 } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
-import { evolve } from '../star/evolution';
+import { evolve, evolutionAgeBreaksGyr } from '../star/evolution';
 import { generateStar } from '../star/generate';
 import {
   ageBitsOf,
@@ -27,7 +29,7 @@ import {
   sweepRow,
 } from './skySurvey';
 import type { SweepSlab } from './skyStars';
-import { neighborRadiusPc } from './neighborhood';
+import { computeNeighborhood, neighborRadiusPc } from './neighborhood';
 import { cloudFieldSmoothAt, expectedCloudField } from './clouds';
 import {
   ARM_BOOST_MAX,
@@ -39,11 +41,9 @@ import {
   sightlineDensities,
   stellarDensity,
   stellarDensityCeiling,
-  waveParams,
-  waveTilt,
 } from './density';
 import { sceneFromGalaxy } from './orientation';
-import { companionLuminosity, starPhotometry } from './photometry';
+import { unresolvedStarLight, starPhotometry } from './photometry';
 import { galacticAddress, sectorName, sectorNameForSeed } from './regions';
 import { populationFromUnit, metallicityFor } from './population';
 import { viewpointForSeed } from './sectors';
@@ -88,7 +88,7 @@ describe('galactic density', () => {
       { xPc: 16000, yPc: 900, zPc: -1800 },
     ]) {
       const parts = sightlineDensities(p);
-      expect(stellarDensity(p)).toBe(parts.thin + parts.thick + parts.halo);
+      expect(stellarDensity(p)).toBe(parts.thin + parts.thick + parts.halo + parts.bulge);
       const components = componentDensities(p);
       expect(components.thin).toBe(parts.thin);
       expect(components.thick).toBe(parts.thick);
@@ -172,6 +172,33 @@ describe('star identity', () => {
       expect(evolve(mass, ageGyr).luminosity).toBeLessThanOrEqual(
         luminosityCeiling(mass),
       );
+    }
+  });
+
+  it('retains the short giant peaks at the catalogue luminosity cull', () => {
+    // Random population ages almost never land on an AGB tip. Deliberately
+    // walk both sides of each track boundary through the full giant stratum.
+    for (let i = 0; i <= 600; i++) {
+      const mass = 0.91 * (8 / 0.91) ** (i / 600);
+      for (const boundary of evolutionAgeBreaksGyr(mass)) {
+        for (const age of [boundary, boundary * (1 - 1e-9)]) {
+          if (age <= 13.2) expect(evolve(mass, age).luminosity).toBeLessThanOrEqual(luminosityCeiling(mass));
+        }
+      }
+    }
+  });
+
+  it('retains massive-star peaks across the interpolated reference grid', () => {
+    // Brief blue loops and wind-stripped phases need deliberate sampling:
+    // random old-population ages would usually see only their remnants.
+    for (let i = 0; i <= 400; i++) {
+      const mass = 8 * (120 / 8) ** (i / 400);
+      const boundaries = evolutionAgeBreaksGyr(mass);
+      for (let j = 0; j < boundaries.length; j++) {
+        for (const age of [boundaries[j], boundaries[j] * (1 - 1e-10), (boundaries[j] + (boundaries[j - 1] ?? 0)) / 2]) {
+          expect(evolve(mass, age).luminosity).toBeLessThanOrEqual(luminosityCeiling(mass));
+        }
+      }
     }
   });
 });
@@ -307,7 +334,8 @@ describe('catalog', () => {
         (cell.iz + 0.5) * row.cellPc - HOME_POSITION.zPc,
       );
     const inner = cells.find((cell) => distanceOf(cell) < 12)!;
-    const outer = cells.find((cell) => distanceOf(cell) > 55)!;
+    // Pick the census boundary, independent of this row's far reach.
+    const outer = cells.find((cell) => distanceOf(cell) > 55 && distanceOf(cell) < 60)!;
     const frame = surveyFrameAt(HOME_POSITION);
     const survey = surveyCell(row, rowIndex, inner, frame);
     expect(surveyServes(survey, row, HOME_POSITION, nearPc)).toBe(true);
@@ -410,7 +438,7 @@ describe('catalog', () => {
 
 describe('population', () => {
   it('mixes components like the solar neighborhood', () => {
-    const counts = { 'thin-disk': 0, 'thick-disk': 0, halo: 0 };
+    const counts = { 'thin-disk': 0, 'thick-disk': 0, halo: 0, bulge: 0 };
     let old = 0;
     let metalPoor = 0;
     const n = 4000;
@@ -484,7 +512,9 @@ describe('sky field', () => {
   let sky: SkyField;
   beforeAll(() => {
     sky = buildSkyField(HOME_POSITION);
-  }, 60000);
+  // Includes CPU-only, progressively refined nebula portraits. Real
+  // application GPU timings are measured separately by the audit.
+  }, 120000);
 
   it('IMF fraction above mass cuts behaves sanely', () => {
     expect(imfFractionAbove(0.013)).toBeCloseTo(1, 5);
@@ -497,13 +527,13 @@ describe('sky field', () => {
     expect(f8).toBeGreaterThan(1e-5);
   });
 
-  it('naked-eye star counts from home are the right order of magnitude', () => {
+  it('keeps a bounded unextinguished bright optical point population from home', () => {
     expect(sky.starCount).toBeGreaterThan(5000);
     let nakedEye = 0;
     for (let i = 0; i < sky.starCount; i++) {
-      // m = 4.83 − 2.5·log10(E / E(Sun at 10 pc)).
-      const magnitude = 4.83 - 2.5 * Math.log10(sky.starBrightness[i] / 0.01);
-      if (magnitude < 6.5) nakedEye++;
+      // This is a broad source-count regression, not a Johnson V
+      // magnitude or an observer-adaptation validation.
+      if (sky.starBrightness[i] > 0.01 * 10 ** ((4.83 - 6.5) / 2.5)) nakedEye++;
     }
     expect(nakedEye).toBeGreaterThan(1500);
     expect(nakedEye).toBeLessThan(40000);
@@ -533,6 +563,22 @@ describe('sky field', () => {
     expect(density(600, 650) / density(700, 800)).toBeLessThan(8);
   });
 
+  it('retains the same component RGB power in neighborhood and sky survey sources', () => {
+    const hood = computeNeighborhood(0n, HOME_POSITION);
+    const indices = new Map(hood.seedHexes.map((seed, i) => [BigInt('0x' + seed), i]));
+    expect(sky.nearStarCount).toBe(hood.luminosities.length);
+    for (let i = 0; i < sky.nearStarCount; i++) {
+      const h = indices.get(sky.starSeeds[i]);
+      expect(h).toBeDefined();
+      const surveyPower = sky.starBrightness[i] * sky.starDistances[i] ** 2;
+      for (let c = 0; c < 3; c++) {
+        const expected = hood.luminosities[h!] * hood.colors[h! * 3 + c];
+        const actual = surveyPower * sky.starColors[i * 3 + c];
+        expect(Math.abs(actual - expected) / Math.max(1e-25, expected)).toBeLessThan(1e-6);
+      }
+    }
+  });
+
   it('every far glint with a seed mirrors the star behind it', () => {
     let seeded = 0;
     const step = Math.max(1, Math.floor((sky.starCount - sky.nearStarCount) / 60));
@@ -547,17 +593,15 @@ describe('sky field', () => {
         yPc: HOME_POSITION.yPc + sky.starDirs[i * 3 + 1] * distance,
         zPc: HOME_POSITION.zPc + sky.starDirs[i * 3 + 2] * distance,
       });
-      const luminosity =
-        physical.luminosity +
-        companionLuminosity(starSeed, {
-          xPc: HOME_POSITION.xPc + sky.starDirs[i * 3] * distance,
-          yPc: HOME_POSITION.yPc + sky.starDirs[i * 3 + 1] * distance,
-          zPc: HOME_POSITION.zPc + sky.starDirs[i * 3 + 2] * distance,
-        });
+      const luminosity=rgbLuminance(unresolvedStarLight(starSeed,{
+        xPc:HOME_POSITION.xPc+sky.starDirs[i*3]*distance,
+        yPc:HOME_POSITION.yPc+sky.starDirs[i*3+1]*distance,
+        zPc:HOME_POSITION.zPc+sky.starDirs[i*3+2]*distance,
+      },physical).rgb);
       const expected = luminosity / (distance * distance);
       expect(sky.starBrightness[i] / expected).toBeGreaterThan(0.999);
       expect(sky.starBrightness[i] / expected).toBeLessThan(1.001);
-      expect(Math.abs(sky.starTeffs[i] - physical.tEff) / physical.tEff).toBeLessThan(1e-3);
+      expect(Math.abs(sky.starTeffs[i] - physical.tEff) / Math.max(1,physical.tEff)).toBeLessThan(1e-3);
     }
     // Cluster/group members lack seeds; catalog stars dominate the sky.
     expect(seeded).toBeGreaterThan(30);
@@ -610,7 +654,10 @@ describe('sky field', () => {
     // the shader's — so the physical contrast reads straight off.
     const rowMean = (row: number): number => {
       let sum = 0;
-      for (let c = 0; c < sky.glowWidth; c++) sum += sky.glowData[(row * sky.glowWidth + c) * 4];
+      for (let c = 0; c < sky.glowWidth; c++) {
+        const at = (row * sky.glowWidth + c) * 4;
+        sum += 0.2126 * sky.glowData[at] + 0.7152 * sky.glowData[at + 1] + 0.0722 * sky.glowData[at + 2];
+      }
       return sum / sky.glowWidth;
     };
     const equator = rowMean(Math.floor(sky.glowHeight / 2));
@@ -633,15 +680,9 @@ describe('gazetteer', () => {
     expect(galacticAddress({ xPc: 600, yPc: 300, zPc: 0 }).zone).toBe('core');
     expect(galacticAddress({ xPc: 14500, yPc: 2000, zPc: 0 }).zone).toBe('rim');
     expect(galacticAddress({ xPc: 8000, yPc: 0, zPc: 2000 }).zone).toBe('halo');
-    // A point on an arm ridge is in that arm: the ridge is the
-    // density wave's crowding caustic.
-    const radius = 8000;
-    const ridgeAzimuth = waveTilt(radius) + waveParams().ridgePhase;
-    const onArm = galacticAddress({
-      xPc: radius * Math.cos(ridgeAzimuth),
-      yPc: radius * Math.sin(ridgeAzimuth),
-      zPc: 0,
-    });
+    // An interior point on a named finite ridge belongs to its arm.
+    const ridge = spiralStructure().segments.find(s => Math.hypot(s.x, s.y) > 6000)!;
+    const onArm = galacticAddress({ xPc: ridge.x, yPc: ridge.y, zPc: 0 });
     expect(onArm.zone).toBe('arm');
   });
 

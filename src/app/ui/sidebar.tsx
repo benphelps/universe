@@ -92,7 +92,7 @@ function focusSpec(snap: AppSnapshot): PlateSpec {
       // Standing off a cloud, the cloud is the subject.
       return snap.cloud
         ? cloudPlateSpec(snap.cloud)
-        : galaxyPlateSpec(snap.system.star, snap.address, snap.neighbors.length);
+        : galaxyPlateSpec(snap.system.star, snap.address, snap.neighbors.length, snap.system.localePc);
     case 'planet':
       switch (snap.planetFocus) {
         case 'moon':

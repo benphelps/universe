@@ -26,7 +26,7 @@ const DECALS: Array<{ key: keyof DecalState; title: string; icon: ReactNode }> =
   },
   {
     key: 'zones',
-    title: 'habitable zone and belts',
+    title: 'habitable zone and belt guides',
     icon: (
       <>
         <circle cx="8" cy="8" r="6.2" strokeDasharray="2.6 2.1" />

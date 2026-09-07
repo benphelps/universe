@@ -154,8 +154,19 @@ body.console-resizing {
 
 /* ---- catalog plate ---- */
 
+#focus,
+#ladder {
+  scrollbar-color: var(--faint) var(--panel);
+  scrollbar-width: thin;
+}
+
 #focus {
   flex: none;
+  /* Long scientific readouts must not enlarge/scroll the page and move
+     the camera canvas when a lower control receives keyboard focus. */
+  max-height: 60%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 44px 14px 16px;
   border-bottom: 1px solid var(--line);
 }
@@ -1163,6 +1174,7 @@ table.props td:first-child {
   position: relative;
   flex: 1 1 0;
   min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding-top: 4px;

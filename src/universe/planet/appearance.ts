@@ -37,7 +37,7 @@ export function computeAppearance(
       iceColor: [0, 0, 0],
       clouds: { ...NO_CLOUDS },
       lavaGlow: 0,
-      banding: computeBanding(rng, planetClass, climate.equilibriumK, rotation),
+      banding: computeBanding(rng, planetClass, climate.effectiveK ?? climate.equilibriumK, rotation),
     };
   }
 

@@ -103,9 +103,10 @@ describe('columnAbove', () => {
     expect(above.aerosolExtinction[1]).toBeLessThan(above.rayleigh[1] * 0.01);
   });
 
-  it('never hides the deck under a hothouse', () => {
+  it('does not remove overlying gas just to reveal a hothouse deck', () => {
     const hothouse = air({ class: 'co2-hothouse', surfacePressureBar: 90, scaleHeightKm: 15 });
     const above = columnAbove(atmosphereColumn(hothouse, earthBulk), hothouse, 20);
-    expect(above.rayleigh[1] + above.aerosolExtinction[1]).toBeLessThanOrEqual(0.3 + 1e-9);
+    expect(above.rayleigh[1] + above.aerosolExtinction[1]).toBeGreaterThan(0.3);
+    expect(above.rayleigh[1]).toBeCloseTo(atmosphereColumn(hothouse, earthBulk).rayleigh[1] * Math.exp(-20 / 15), 8);
   });
 });

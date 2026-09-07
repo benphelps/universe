@@ -25,6 +25,12 @@ export interface PerfStats {
   bakes: number;
   /** Terrain tiles still in flight. */
   terrain: number;
+  /** Volume-layer sample spacing, CSS pixels. Audit metadata. */
+  skyPixelPitch?: number;
+  /** Ownership counters for bounded travel audits, not a driver/RSS estimate. */
+  resources?: { climateCacheBytes?: number; seasonalTextureBytes?: number; textures: number; geometries: number; programs: number; terrainChunks: number; nebulaBytes: number; heapBytes: number | null };
+  /** Audit-only pose for attributing entry/first-visible rendering failures. */
+  pose?: { position: number[]; quaternion: number[]; altitudeKm: number; timeDays: number };
 }
 
 const fixed = (value: number, digits = 1): string => value.toFixed(digits);

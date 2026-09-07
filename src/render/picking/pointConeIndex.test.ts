@@ -53,9 +53,14 @@ describe('PointConeIndex', () => {
       });
     }
 
+    const received = structuredClone(index.toData());
+    const restored = PointConeIndex.fromData(positions, received);
     for (const query of queries) {
       const actual: number[] = [];
       index.query(...query.origin, ...query.direction, query.tangent, actual);
+      const recovered: number[] = [];
+      restored.query(...query.origin, ...query.direction, query.tangent, recovered);
+      expect(recovered).toEqual(actual);
       expect(actual.sort((a, b) => a - b)).toEqual(
         bruteForce(positions, query.origin, query.direction, query.tangent),
       );

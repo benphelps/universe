@@ -69,7 +69,7 @@ export interface Companion {
   star: Star;
 }
 
-export type StellarPopulation = 'thin-disk' | 'thick-disk' | 'halo';
+export type StellarPopulation = 'thin-disk' | 'thick-disk' | 'halo' | 'bulge';
 
 export interface Star extends StellarPhysical {
   seedHex: string;

@@ -1,30 +1,19 @@
-import { blackbodyLinearRgb } from '../../core/color/blackbody';
-import {
-  AU,
-  SIGMA_SB,
-  SOLAR_LUMINOSITY,
-} from '../../core/physics/constants';
-import { adapted } from './starlight';
-
-const SOLAR_IRRADIANCE_W_M2 = SOLAR_LUMINOSITY / (4 * Math.PI * AU ** 2);
+import { SIGMA_SB } from '../../core/physics/constants';
+import { SOLAR_IRRADIANCE_W_M2, surfaceBandRgb } from './surfaceRadiometry';
 
 export interface ThermalEmission {
-  /** Peak-normalized Planckian hue in linear sRGB. */
+  /** Peak-normalized hue, with absolute band power retained in strength. */
   color: [number, number, number];
-  /** Display-adapted radiance relative to direct sunlight at one AU. */
+  /** Linear radiance / white Lambertian sunlight at one AU; no exposure. */
   strength: number;
 }
 
-/** A diffuse blackbody emits sigma*T^4/pi radiance. Surface lighting uses
- * direct solar irradiance at one AU as its unit, so this puts an incandescent
- * surface and reflected starlight on the same scale before the shared visual
- * adaptation is applied. */
+/** Visible Planck radiance in the same units as reflected starlight.
+ * Bolometric heat alone cannot set visible brightness: most cool-body
+ * power is infrared. Exposure and emissivity belong to the combined light. */
 export function blackbodySurfaceEmission(temperatureK: number): ThermalEmission {
-  const temperature = Math.max(temperatureK, 1);
-  const radianceRelativeToSunlight =
-    (SIGMA_SB * temperature ** 4) / (Math.PI * SOLAR_IRRADIANCE_W_M2);
-  return {
-    color: blackbodyLinearRgb(temperature),
-    strength: adapted(radianceRelativeToSunlight),
-  };
+  const temperature = Number.isFinite(temperatureK) ? Math.max(temperatureK, 0) : 0;
+  const rgb = surfaceBandRgb(SIGMA_SB * temperature ** 4 / SOLAR_IRRADIANCE_W_M2, temperature);
+  const strength = Math.max(...rgb);
+  return { color: strength > 0 ? rgb.map(c => c / strength) as [number, number, number] : [0, 0, 0], strength };
 }

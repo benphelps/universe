@@ -17,6 +17,7 @@ import {
   type WebGLRenderer,
 } from 'three';
 import { AIR_VIEW_GLSL, airViewUniforms, applyAirView, type AirView } from '../lighting/airView';
+import { skyVolumeVisible } from './skyVolumeVisibility';
 
 /**
  * The layer the volume marches live on.
@@ -48,12 +49,13 @@ export const SKY_RESOLUTION_SCALE = 0.5;
  * back. Change it, look at the crops the ledger describes, decide.
  */
 export const SKY_SAMPLE_CSS_PX = 1.4;
+export const SKY_SAMPLE_LEVELS = [SKY_SAMPLE_CSS_PX, 1.6, 1.8, 2] as const;
 
 /** The layer's scale against the drawing buffer at a pixel ratio:
  *  half, or coarser where half of a dense buffer would be finer than
  *  the sample pitch. */
-export function skyResolutionScale(pixelRatio: number): number {
-  return Math.min(SKY_RESOLUTION_SCALE, 1 / (SKY_SAMPLE_CSS_PX * pixelRatio));
+export function skyResolutionScale(pixelRatio: number, sampleCssPx = SKY_SAMPLE_CSS_PX): number {
+  return Math.min(SKY_RESOLUTION_SCALE, 1 / (sampleCssPx * pixelRatio));
 }
 
 /** The last sub-pixel tail of a point fade is not worth submitting. */
@@ -99,6 +101,7 @@ void main() {
 `;
 
 export class SkyLayer {
+  ready = true;
   /** Where the volume domes live now, in place of the main scene. */
   readonly scene = new Scene();
   /** The composite, for the pipeline to seat in the main scene. */
@@ -109,6 +112,29 @@ export class SkyLayer {
   intensity = 1;
   private readonly target: WebGLRenderTarget;
   private readonly savedColor = new Color();
+  private readonly culled: Object3D[] = [];
+  private sampleLevel = 0;
+  private width = 1;
+  private height = 1;
+  private pixelRatio = 1;
+
+  get sampleCssPx(): number { return SKY_SAMPLE_LEVELS[this.sampleLevel]; }
+
+  /** A bounded quality dial for smooth volume light only. Camera/body
+   * buffers keep their own pixel ratio. Returns whether it changed. */
+  shiftSampling(step: -1 | 1): boolean {
+    const next = Math.max(0, Math.min(SKY_SAMPLE_LEVELS.length - 1, this.sampleLevel + step));
+    if (next === this.sampleLevel) return false;
+    this.sampleLevel = next;
+    this.setSize(this.width, this.height, this.pixelRatio);
+    return true;
+  }
+
+  resetSampling(): void {
+    if (this.sampleLevel === 0) return;
+    this.sampleLevel = 0;
+    this.setSize(this.width, this.height, this.pixelRatio);
+  }
 
   constructor() {
     this.target = new WebGLRenderTarget(1, 1, {
@@ -155,7 +181,8 @@ export class SkyLayer {
 
   /** Track the drawing-buffer size; the target keeps its half scale. */
   setSize(width: number, height: number, pixelRatio: number): void {
-    const scale = skyResolutionScale(pixelRatio);
+    this.width = width; this.height = height; this.pixelRatio = pixelRatio;
+    const scale = skyResolutionScale(pixelRatio, this.sampleCssPx);
     this.target.setSize(
       Math.max(1, Math.round(width * pixelRatio * scale)),
       Math.max(1, Math.round(height * pixelRatio * scale)),
@@ -166,11 +193,18 @@ export class SkyLayer {
    *  daylight washing the whole layer out — the composite stands down
    *  and the frame never touches the target. */
   render(renderer: WebGLRenderer, camera: Camera): void {
+    camera.updateWorldMatrix(true, false);
+    for (const child of this.scene.children) {
+      if (child.visible && !skyVolumeVisible(child, camera)) {
+        child.visible = false;
+        this.culled.push(child);
+      }
+    }
     const anything =
-      this.intensity > SKY_EXTENDED_VISIBILITY_FLOOR &&
+      this.ready && this.intensity > SKY_EXTENDED_VISIBILITY_FLOOR &&
       this.scene.children.some((child) => child.visible);
     this.quad.visible = anything;
-    if (!anything) return;
+    if (!anything) { this.restoreCulled(); return; }
     const uniforms = (this.quad.material as ShaderMaterial).uniforms;
     uniforms.uIntensity.value = this.intensity;
     (uniforms.uProjectionInverse.value as Matrix4).copy(camera.projectionMatrixInverse);
@@ -183,10 +217,20 @@ export class SkyLayer {
     renderer.setRenderTarget(this.target);
     renderer.clear(true, false, false);
     renderer.autoClear = false;
-    renderer.render(this.scene, camera);
-    renderer.autoClear = previousAutoClear;
-    renderer.setRenderTarget(previousTarget);
-    renderer.setClearColor(this.savedColor, previousAlpha);
+    try { renderer.render(this.scene, camera); }
+    finally {
+      renderer.autoClear = previousAutoClear;
+      renderer.setRenderTarget(previousTarget);
+      renderer.setClearColor(this.savedColor, previousAlpha);
+      this.restoreCulled();
+    }
+  }
+
+  private restoreCulled(): void {
+    // Visibility is local to this draw. Lensed/cube captures can borrow
+    // all domes afterward, including ones behind the main camera.
+    for (const child of this.culled) child.visible = true;
+    this.culled.length = 0;
   }
 
   /** The air the composite is seen through from a ground. */

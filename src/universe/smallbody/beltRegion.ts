@@ -1,97 +1,144 @@
 import { AU } from '../../core/physics/constants';
-import { deriveSeed, mix64 } from '../../core/rng/hash';
+import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import type { Belt } from '../system/types';
-import { buildAsteroid, SFD_SLOPE } from './asteroids';
+import { buildAsteroid } from './asteroids';
+import { beltRankCount, beltRankDiameter } from './inventory';
 import type { Asteroid } from './types';
 
-/**
- * The belt as a materializable population: orbital cells keyed by
- * semi-major-axis band and epoch mean-longitude sector, so the members
- * near any point in the belt at any time can be instantiated — always
- * identically — by predicting which sectors Keplerian motion has carried
- * there. Counts follow a main-belt-like size–frequency distribution
- * scaled by the belt's annulus area; bodies above the notable threshold
- * are excluded (they ride the stepper as named landmarks).
- */
 export const BELT_SECTORS = 256;
-/** Bodies at or above this size belong to the notables list instead. */
-export const CELL_MAX_DIAMETER_KM = 150;
+export const NOTABLE_DIAMETER_KM = 150;
+export const BELT_CATALOGUE_LIMIT = 512;
+const BODY_CACHE_LIMIT = 4096;
 
-/** Narrow bands keep Keplerian shear predictable over long sim times. */
+/** A power-of-two layout permits a cheap, exactly invertible rank map. */
 export function beltBandCount(belt: Belt): number {
-  return Math.min(160, Math.max(8, Math.round((belt.outerAu - belt.innerAu) / 0.04)));
+  return 2 ** Math.floor(Math.log2(Math.min(128, Math.max(8, (belt.outerAu - belt.innerAu) / .04))));
 }
 
-/** Cumulative count above D km, main-belt-normalized by annulus area. */
-export function beltCountAbove(belt: Belt, diameterKm: number): number {
-  const areaAu2 = Math.PI * (belt.outerAu ** 2 - belt.innerAu ** 2);
-  return 1.3e6 * (areaAu2 / 20) * diameterKm ** -SFD_SLOPE;
+export function beltPopulationSeed(hostSeed: bigint, beltIndex: number): bigint {
+  return deriveSeed(hostSeed, 'belt-population', beltIndex);
 }
 
-/** Bounded-Pareto diameter draw on [minKm, CELL_MAX_DIAMETER_KM]. */
-function drawDiameter(rng: Rng, minKm: number): number {
-  const s = SFD_SLOPE;
-  const ratio = (CELL_MAX_DIAMETER_KM / minKm) ** -s;
-  const u = rng.float();
-  return minKm * (1 - u * (1 - ratio)) ** (-1 / s);
-}
-
-/**
- * The asteroids of one orbital cell. Epoch mean longitudes land inside
- * the sector, so a cell's members stay findable from the sector index
- * however far the epoch drifts.
- */
-export function beltCellAsteroids(
-  beltSeed: bigint,
-  belt: Belt,
-  band: number,
-  sector: number,
-  minDiameterKm: number,
-): Asteroid[] {
-  const bands = beltBandCount(belt);
-  const wrapped = ((sector % BELT_SECTORS) + BELT_SECTORS) % BELT_SECTORS;
-  const seed = mix64(
-    deriveSeed(beltSeed, 'region') ^
-      ((BigInt(band & 0xffff) << 24n) | BigInt(wrapped & 0xffffff)),
-  );
-  const rng = new Rng(seed);
-
-  const inner2 = belt.innerAu ** 2;
-  const outer2 = belt.outerAu ** 2;
-  const a0Sq = inner2 + ((outer2 - inner2) * band) / bands;
-  const a1Sq = inner2 + ((outer2 - inner2) * (band + 1)) / bands;
-  const expected =
-    ((beltCountAbove(belt, minDiameterKm) - beltCountAbove(belt, CELL_MAX_DIAMETER_KM)) *
-      ((a1Sq - a0Sq) / (outer2 - inner2))) /
-    BELT_SECTORS;
-  const count = Math.floor(expected + rng.float());
-
-  const asteroids: Asteroid[] = [];
-  for (let i = 0; i < count; i++) {
-    const aAu = Math.sqrt(a0Sq + rng.float() * (a1Sq - a0Sq));
-    // Kirkwood gaps thin the population here like everywhere else.
-    const inGap = belt.gaps.some((gap) => Math.abs(aAu - gap.semiMajorAxisAu) < gap.widthAu / 2);
-    if (inGap && rng.float() < 0.92) continue;
-
-    const asteroid = buildAsteroid(rng, belt, aAu, drawDiameter(rng, minDiameterKm));
-    const longitude = ((wrapped + rng.float()) * 2 * Math.PI) / BELT_SECTORS;
-    const { elements } = asteroid;
-    elements.meanAnomalyAtEpoch =
-      (((longitude - elements.longitudeOfAscendingNode - elements.argumentOfPeriapsis) %
-        (2 * Math.PI)) +
-        2 * Math.PI) %
-      (2 * Math.PI);
-    asteroids.push(asteroid);
+interface RadialSegment { lo: number; hi: number; weight: number; start: number; end: number }
+const radialCache = new WeakMap<Belt, {segments: RadialSegment[]; total: number}>();
+function radialProfile(belt: Belt) {
+  let cached = radialCache.get(belt);
+  if (cached) return cached;
+  const edges = [belt.innerAu,belt.outerAu];
+  for (const gap of belt.gaps) for (const sign of [-1,1]) {
+    const edge = gap.semiMajorAxisAu + sign * gap.widthAu / 2;
+    if (edge > belt.innerAu && edge < belt.outerAu) edges.push(edge);
   }
-  return asteroids;
+  edges.sort((a,b)=>a-b);
+  const segments: RadialSegment[] = [];
+  let total=0;
+  for(let i=1;i<edges.length;i++) {
+    const mid=(edges[i-1]+edges[i])/2;
+    const weight=belt.gaps.some(gap=>Math.abs(mid-gap.semiMajorAxisAu)<gap.widthAu/2) ? .08 : 1;
+    const lo=Math.sqrt(edges[i-1]),hi=Math.sqrt(edges[i]);
+    const start=total; total+=(hi-lo)*weight;
+    segments.push({lo,hi,weight,start,end:total});
+  }
+  cached={segments,total}; radialCache.set(belt,cached); return cached;
 }
 
-/** Mean motion at a band's center, rad/s, for sector prediction. */
-export function bandMeanMotion(belt: Belt, band: number, mu: number): number {
-  const bands = beltBandCount(belt);
-  const inner2 = belt.innerAu ** 2;
-  const outer2 = belt.outerAu ** 2;
-  const aAu = Math.sqrt(inner2 + ((outer2 - inner2) * (band + 0.5)) / bands);
-  return Math.sqrt(mu / (aAu * AU) ** 3);
+/** Normalized annular solid-column CDF (Sigma proportional to a^-1.5).
+ * Gaps redistribute the same inventory rather than silently deleting it. */
+export function beltRadialQuantile(belt: Belt, aAu: number): number {
+  const {segments,total}=radialProfile(belt),x=Math.sqrt(Math.max(0,aAu));
+  for(const segment of segments) if(x<segment.hi) {
+    return Math.max(0,(segment.start+Math.max(0,x-segment.lo)*segment.weight)/total);
+  }
+  return 1;
+}
+export function beltSemiMajorAxis(belt: Belt, quantile: number): number {
+  const {segments,total}=radialProfile(belt),target=Math.max(0,Math.min(1,quantile))*total;
+  for(const s of segments) if(target<s.end) return (s.lo+(target-s.start)/s.weight)**2;
+  return belt.outerAu;
+}
+
+const counts=new WeakMap<Belt,Map<number,number>>();
+export function beltCountAbove(belt: Belt, diameterKm: number): number {
+  if(!belt.inventory) return 0;
+  let cache=counts.get(belt); if(!cache) {cache=new Map();counts.set(belt,cache);}
+  const found=cache.get(diameterKm); if(found!==undefined) return found;
+  const count=beltRankCount(belt.inventory,diameterKm);
+  if(cache.size>=8) cache.clear(); cache.set(diameterKm,count); return count;
+}
+
+const MULTIPLIER=0x9e3779b1;
+let inverse=1;
+for(let i=0;i<5;i++) inverse=Math.imul(inverse,2-Math.imul(MULTIPLIER,inverse));
+function unshift(value: number, step: number): number {
+  let out=value; for(let s=step;s<32;s+=step) out^=value>>>s; return out;
+}
+function blockKey(seed: bigint,block: number,mask: number): number {
+  let x=Number(seed&0xffffffffn)^Math.imul(block,0x85ebca6b);
+  x^=x>>>16; x=Math.imul(x,0xc2b2ae35); x^=x>>>13; return x&mask;
+}
+function permute(slot: number,key: number,mask: number): number {
+  let x=slot^key; x^=x>>>5; x=Math.imul(x,MULTIPLIER)&mask; return x^(x>>>7);
+}
+function unpermute(cell: number,key: number,mask: number): number {
+  const x=Math.imul(unshift(cell,7),inverse)&mask; return unshift(x,5)^key;
+}
+
+/** Every rank maps to exactly one cell. Each complete block visits all
+ * cells once, in a seeded permutation; lookup never scans the belt. */
+export function beltCellForRank(beltSeed: bigint,belt: Belt,rank: number): {band:number;sector:number} {
+  const size=beltBandCount(belt)*BELT_SECTORS,block=Math.floor(rank/size);
+  const cell=permute(rank%size,blockKey(beltSeed,block,size-1),size-1);
+  return {band:Math.floor(cell/BELT_SECTORS),sector:cell%BELT_SECTORS};
+}
+
+const bodies=new WeakMap<Belt,{seed:bigint;members:Map<number,Asteroid>}>();
+export function beltMember(beltSeed: bigint,belt: Belt,rank: number): Asteroid | null {
+  if(!belt.inventory) return null;
+  let cache=bodies.get(belt);
+  if(!cache || cache.seed!==beltSeed) {cache={seed:beltSeed,members:new Map()};bodies.set(belt,cache);}
+  const found=cache.members.get(rank);
+  if(found) {cache.members.delete(rank);cache.members.set(rank,found);return found;}
+  const diameterKm=beltRankDiameter(belt.inventory,rank);
+  if(!(diameterKm>0)) return null;
+  const rng=new Rng(deriveSeed(beltSeed,'member',rank));
+  const {band,sector}=beltCellForRank(beltSeed,belt,rank);
+  const aAu=beltSemiMajorAxis(belt,(band+rng.float())/beltBandCount(belt));
+  const asteroid=buildAsteroid(rng,belt,aAu,diameterKm);
+  const longitude=(sector+rng.float())*2*Math.PI/BELT_SECTORS;
+  const e=asteroid.elements;
+  e.meanAnomalyAtEpoch=((longitude-e.longitudeOfAscendingNode-e.argumentOfPeriapsis)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);
+  asteroid.population={seedHex:seedToHex(beltSeed),rank};
+  asteroid.bulkDensityKgM3=belt.inventory.bulkDensityKgM3;
+  if(cache.members.size>=BODY_CACHE_LIMIT) cache.members.delete(cache.members.keys().next().value!);
+  cache.members.set(rank,asteroid); return asteroid;
+}
+
+export function sameAsteroid(a: Asteroid | null,b: Asteroid | null): boolean {
+  return a===b || !!(a?.population && b?.population && a.population.seedHex===b.population.seedHex && a.population.rank===b.population.rank);
+}
+
+/** Bounded largest-first materialization, stable under floor/limit changes.
+ * A rendering limit omits fainter bodies; it never increases their light. */
+export function beltCellAsteroids(beltSeed: bigint,belt: Belt,band: number,sector: number,minDiameterKm: number,limit=64): Asteroid[] {
+  const bands=beltBandCount(belt); if(band<0 || band>=bands || limit<=0) return [];
+  const size=bands*BELT_SECTORS,wrapped=((sector%BELT_SECTORS)+BELT_SECTORS)%BELT_SECTORS;
+  const cell=band*BELT_SECTORS+wrapped,count=beltCountAbove(belt,minDiameterKm),out:Asteroid[]=[];
+  for(let block=0;block*size<count && out.length<limit;block++) {
+    const rank=block*size+unpermute(cell,blockKey(beltSeed,block,size-1),size-1);
+    if(rank>=count) continue;
+    const member=beltMember(beltSeed,belt,rank); if(member) out.push(member);
+  }
+  return out;
+}
+
+export function beltCatalogue(beltSeed:bigint,belt:Belt,limit=BELT_CATALOGUE_LIMIT,minKm=6):Asteroid[] {
+  const count=Math.min(limit,beltCountAbove(belt,minKm)),out:Asteroid[]=[];
+  for(let rank=0;rank<count;rank++) {const body=beltMember(beltSeed,belt,rank);if(body)out.push(body);}
+  return out;
+}
+
+export function bandMeanMotion(belt:Belt,band:number,mu:number):number {
+  const aAu=beltSemiMajorAxis(belt,(band+.5)/beltBandCount(belt));
+  return Math.sqrt(mu/(aAu*AU)**3);
 }

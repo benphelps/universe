@@ -75,7 +75,7 @@ export function GenerationIndicator(): ReactNode {
         parts.push(`sky ${Math.round(status.skyProgress * 100)}%${stage}`);
         fills.push(status.skyProgress);
       }
-      note('nebulae', status.nebulae, nebulae.update(status.nebulae));
+      note('nearby clouds', status.nebulae, nebulae.update(status.nebulae));
       note('terrain', status.terrain, terrain.update(status.terrain));
       note('worlds', status.worlds, worlds.update(status.worlds));
       setLine(

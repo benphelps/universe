@@ -1,4 +1,15 @@
+import { surfaceTemperatureAt } from '../universe/planet/surfaceClimate';
+import { bodyGasProfile, gasState, type GasProfile } from '../render/lighting/gasProfile';
+import { bodyFrameQuaternion, orbitWorldPosition, stellarForcing, type StellarForcing } from '../universe/planet/illumination';
+import { seasonalClimateInput, seasonalPointCycle, seasonalPointTemperatureAt, type SeasonalPointCycle, type SeasonalResult } from '../universe/planet/seasonalClimate';
+import { columnTemperatureK } from '../universe/planet/hydrostaticColumn';
+import { seasonalClimateCache } from '../workers/seasonalClimate';
+import { supportsAnnualMean } from '../universe/planet/annualMeanPreparation';
+import type { AnnualMeanField } from '../universe/planet/annualMean';
+import { stellarBandRgb, splitStellarLight } from '../core/color/stellarLight';
+import { beginLoadingWork, endLoadingWork } from './loadingWorkAudit';
 import {
+  type Object3D,
   BufferAttribute,
   BufferGeometry,
   Color,
@@ -51,7 +62,6 @@ import { applyAirView, type AirView } from '../render/lighting/airView';
 import { applyHorizonOcclusion } from '../render/lighting/horizonOcclusion';
 import { applySecondSun, type SecondSun } from '../render/lighting/secondSun';
 import {
-  adapted,
   extendedSkyVisibility,
   instellation,
   pointStarVisibility,
@@ -65,7 +75,8 @@ import {
   VACUUM,
 } from '../render/lighting/surfaceLight';
 import { aerosolSurfaceExposure, atmosphereColumn } from '../universe/planet/atmosphere';
-import { luminosityMultiplierAt } from '../universe/star/variability';
+import { SeasonalSurfaceOverlay, applySeasonalSurface } from '../render/terrain/seasonalSurface';
+import { surfaceLightExposure } from '../render/lighting/surfaceRadiometry';
 import { foldShaderTime } from '../render/shaderTime';
 import {
   reflectedFluxRatio,
@@ -80,16 +91,20 @@ import {
   createStarPointsMaterial,
   MAX_STAR_NEBULAE,
   setStarNebulaExtinction,
+  setStarPointCulling,
   type StarNebulaExtinction,
 } from '../render/starfield/neighborStars';
-import { createBeltPointsForSystem } from '../render/system/beltPoints';
+import { asteroidKey, BELT_LOCAL_REACH_KM, createBeltPointsForSystem, updateBeltCatalogue } from '../render/system/beltPoints';
 import {
   BELT_REGION_POINT_CAPACITY,
   createBeltRegionPoints,
   finishBeltRegionPoints,
+  setBeltRegionResolvedSlots,
   updateBeltRegionPointFrame,
   writeBeltRegionPoint,
 } from '../render/system/beltRegionPoints';
+import { BELT_ROCK_CAPACITY, createBeltRockGeometry, createBeltRockMaterial } from '../render/system/beltRockMaterial';
+import { BELT_MESH_MIN_ANGULAR_RADIUS } from '../render/system/beltLod';
 import { CometObject } from '../render/system/cometObject';
 import { createOrbitLine } from '../render/system/orbitLine';
 import { createBeltAnnulus, createZoneRings } from '../render/system/zoneRings';
@@ -98,34 +113,44 @@ import { PointConeIndex } from '../render/picking/pointConeIndex';
 import { cloudShellBounds, createCloudShell } from '../render/terrain/cloudShell';
 import { createMagmaMaterial, createOceanMaterial } from '../render/terrain/oceanSphere';
 import {
-  createRockGeometry,
   createScatterMaterial,
-  createTreeGeometry,
 } from '../render/terrain/scatterObjects';
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
+import { prepareGroundMaterials } from '../render/terrain/materialPreparation';
 import { BlackHoleObject } from '../render/blackhole/blackHoleObject';
 import { framedFlowRadiusRg, LENSING_SOLID_RG } from '../render/blackhole/geodesicGlsl';
 import { LensedSky } from '../render/blackhole/lensedSky';
 import { stellarBlackHole } from '../universe/star/stellarHole';
-import { GalaxyParticles } from '../render/galaxy/galaxyParticles';
 import { createLandmarkMarkers } from '../render/galaxy/landmarkMarkers';
 import { GalaxyVolume } from '../render/galaxy/galaxyVolume';
 import { markAsDiagram } from '../render/fx/diagramLayer';
 import {
   holdNebulaVolume,
   pendingNebulaBakes,
+  pendingNebulaGrade,
+  nebulaWorkingBytes,
+  nebulaDomains,
   releaseNebulaVolume,
-  requestNebulaVolume,
+  requestNebulaPair,
+  retainNebulaBakes,
   resetNebulaBakes,
   shelvedNebulaVolume,
+  rememberNebulaEstimates,
 } from './nebulaService';
-import { residencyWeight } from '../universe/galaxy/residency';
+import { NebulaResidentBudget, NEBULA_POOL_SIZE, NEBULA_WORKING_BYTES, nebulaApparentSize, nebulaResidentBytes } from './nebulaMemory';
+import { nebulaAuditEnabled, recordNebulaBake } from './nebulaBakeAudit';
+import { NebulaResidencyService } from './nebulaResidencyService';
+import type { ResidencyChoice } from '../universe/galaxy/residencySelection';
 import type { PerfStats } from './ui/perfReadout';
-import { nebulaFor, type Nebula } from '../universe/galaxy/nebula';
+import { createPerformanceCapture, performanceVolumeLimit, performanceViewport } from './performanceCapture';
+import { setDirectionalPatchCulling } from '../render/starfield/directionalPatches';
+import { setSkyVolumeCulling } from '../render/fx/skyVolumeVisibility';
+import { nebulaFor, rememberNebula, type Nebula } from '../universe/galaxy/nebula';
 import { cloudReachPc, cloudsNear, type MolecularCloud } from '../universe/galaxy/clouds';
-import { bubbleNeedsOwnBake, type NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
+import type { NebulaVolumeBake } from '../universe/galaxy/nebulaVolume';
 import { MAX_BOXES, NebulaCarrier, NebulaVolume } from '../render/galaxy/nebulaVolume';
+import { VolumeUpload } from '../render/galaxy/volumeUpload';
 import { NuclearCluster } from '../render/galaxy/nuclearCluster';
 import { SectorChart } from '../render/galaxy/sectorChart';
 import {
@@ -147,20 +172,22 @@ import {
   BELT_SECTORS,
   beltBandCount,
   beltCellAsteroids,
+  beltPopulationSeed,
+  beltRadialQuantile,
+  sameAsteroid,
 } from '../universe/smallbody/beltRegion';
 import { notableAsteroids } from '../universe/smallbody/notable';
 import type { Asteroid } from '../universe/smallbody/types';
 import type { Star } from '../universe/star/types';
 import { createAsteroidField } from '../universe/surface/asteroidField';
+import { asteroidAxes, asteroidSurfaceColor } from '../universe/smallbody/appearance';
 import { maxCraterDepthM } from '../universe/surface/craters';
 import { createSurfaceField, type SurfaceField } from '../universe/surface/field';
-import { deriveTreeSpecies } from '../universe/surface/flora';
 import { companionPlanetMu, planetMu } from '../universe/system/generate';
 import { holeDonors } from '../universe/system/holeDonors';
 import { rotateToScene, sceneFromGalaxy, sceneFromUpAxis } from '../universe/galaxy/orientation';
 import { SURVEY_REACH_PC } from '../universe/galaxy/skySurvey';
 import {
-  meanPopulationLuminosity,
   type SkyField,
   type SkyPreview,
 } from '../universe/galaxy/skyfield';
@@ -216,15 +243,12 @@ const MAX_ALTITUDE_KM = 45_000 * PC_KM;
  *  sweep the residency check pays, not by what deserves one. */
 const NEBULA_VOLUME_REACH_PC = 2000;
 const NEBULA_VOLUME_SIZE = 96;
-/** The grid a resident is first baked at: an eighth of the far grade's
- *  cells, a bake the worker's GPU finishes in a few milliseconds, so an
- *  arrival's whole residency stands within a second instead of the
- *  frame stalling on tens of full bakes at once. Each then climbs to
- *  its grade one at a time, as the frame allows. */
+/** First arrivals use an eighth of the far grade's cells. Transport
+ * still costs seconds for complex clouds; upgrades share bounded CPU
+ * and memory permits after the arrival queue has drained. */
 const NEBULA_VOLUME_FIRST_SIZE = 48;
-/** Grid for a volume large in frame, where a 96³ cell spans degrees of
- *  sky. The GPU bake makes the finer grid a half-second, and only a
- *  handful of residents ever qualify at once. */
+/** Finer grid for sky-filling volumes, admitted only when its source
+ * solve and future CPU/GPU textures fit their byte allocations. */
 const NEBULA_VOLUME_NEAR_SIZE = 160;
 /** Apparent size (reach over distance) above which a volume earns the
  *  near grid. */
@@ -237,8 +261,8 @@ const NEBULA_NEAR_ANGULAR = 0.6;
  * the frame stays comfortably under budget and every requested bake
  * has landed, and shrinks the moment the frame runs over; the floor
  * keeps the subject and its neighbours standing on any machine, the
- * ceiling bounds memory (each resident holds up to two grids, 3.5 MB
- * each at the far grade and 16 MB at the near).
+ * ceiling bounds object count. A separate byte budget includes held
+ * textures, queued upgrades and fading residents.
  */
 const NEBULA_RESIDENTS_START = 32;
 const NEBULA_RESIDENTS_MIN = 12;
@@ -246,12 +270,13 @@ const NEBULA_RESIDENTS_MAX = 64;
 /** The frame the residency controller answers to, ms: sixty frames a
  *  second. Over it the cap shrinks; under this much of it, it grows. */
 const NEBULA_FRAME_BUDGET_MS = 16.7;
-const NEBULA_FRAME_HEADROOM = 0.7;
+// Leave room for submission and presentation as well as GPU work.
+const NEBULA_FRAME_HEADROOM = 0.55;
 /** How often the controller moves, ms, and how far: a quarter off on
  *  a slow frame, a few more on a fast one, so a cap that overshoots
  *  comes back faster than it climbed. */
 const NEBULA_TUNE_INTERVAL_MS = 1500;
-const NEBULA_GROW_BY = 8;
+const NEBULA_GROW_BY = 2;
 const NEBULA_SHRINK_FACTOR = 0.75;
 /** Frames longer than this are hitches or a hidden tab, not the
  *  march's cost, and do not count. */
@@ -363,6 +388,9 @@ interface BeltCandidate {
   spinAxis: Vector3;
   radiusKm: number;
   pseudoLum: number;
+  axes: Vector3;
+  surfaceColor: Color;
+  pointSlot: number;
   pickable: Pickable;
 }
 
@@ -455,6 +483,7 @@ export class UnifiedViewer {
   private readonly lut = createTemperatureLutTexture();
   private readonly terrainMaterial = createTerrainMaterial(SPLIT_RATIO);
   private readonly scatterMaterial = createScatterMaterial();
+  private readonly groundPreparation: Promise<void>;
   /** Heliocentric content riding the focus translation and ground spin. */
   private readonly heliocentric = new Group();
   /** Map-frame subgroups (1 unit = 1 AU, z out of plane) inside it. */
@@ -476,6 +505,7 @@ export class UnifiedViewer {
   private farPoints: Points | null = null;
   private farPointIndex: PointConeIndex | null = null;
   private hostIndex = -1;
+  private stellarGeometry: StellarForcing | null = null;
   private hostStar: Star | null = null;
   private hostBelts: StarSystem['belts'] = [];
   private hostSeedHex = '';
@@ -488,6 +518,8 @@ export class UnifiedViewer {
   private starNodes: StarNode[] = [];
   private planetNodes: PlanetNode[] = [];
   private beltMaterials: ShaderMaterial[] = [];
+  private beltPointLayers: Points[] = [];
+  private beltLocalKeys: ReadonlySet<string> = new Set();
   private cometObjects: CometObject[] = [];
   private backdrop: StarfieldBackdrop | null = null;
   /** The last sky's bake, standing in through a short jump until the
@@ -546,21 +578,36 @@ export class UnifiedViewer {
   /** The clouds residency has asked for — a bake landing for any other
    *  cloud is kept in the cache but never stood up. */
   private wantedNebulae = new Set<bigint>();
+  private readonly residencyService = new NebulaResidencyService();
+  private residencyRequestedAtMs = -Infinity;
+  /** Explicit audit path only: a repeatable 12-second near-plane crossing. */
+  private auditCoreCrossingAt = 0;
+  private auditGroundFlightUntil = 0;
   /** The cloud behind each wanted seed, for the grade climb. */
   private residentClouds = new Map<bigint, MolecularCloud>();
   /** Landed bakes by cloud seed: the body, and its ionized region. */
   private coarseBakes = new Map<bigint, NebulaVolumeBake>();
   private fineBakes = new Map<bigint, NebulaVolumeBake>();
+  private readonly nebulaUploads = new Map<bigint, {
+    volume: NebulaVolume; held: NebulaVolumeBake[]; upload: VolumeUpload;
+  }>();
+  /** Same-build audit control: reproduce the old first-draw upload with
+   * identical bake scheduling and memory admission. Read only at startup. */
+  private readonly immediateNebulaUploads = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).has('benchmark')
+    && new URLSearchParams(location.search).get('benchmarkUpload') === 'immediate';
   /** The bakes each standing volume stands on, held on the shelf for
    *  as long as it does. */
   private heldBakes = new Map<bigint, NebulaVolumeBake[]>();
+  private readonly nebulaMemory = new NebulaResidentBudget();
   /** Where the camera stood when residency was last decided. */
   private residencyAt: GalacticPosition | null = null;
   /** Last frame's clock, for the volume crossfades' rate limit. */
   private nebulaFadeAtMs = 0;
   /** The residency controller: how many volumes may stand, the
    *  smoothed frame it answers to, and when it last moved. */
-  private nebulaResidents = NEBULA_RESIDENTS_START;
+  private readonly performanceVolumeLimit = performanceVolumeLimit();
+  private nebulaResidents = this.performanceVolumeLimit ?? NEBULA_RESIDENTS_START;
   private frameMsSmoothed = 0;
   private residencyTunedAtMs = 0;
   /** How long the last frame's script ran, ms, and the smoothed
@@ -575,7 +622,6 @@ export class UnifiedViewer {
   private readonly volumeFades = new Map<bigint, number>();
   private readonly cameraRotation = new Matrix3();
   private readonly starExtinctions: StarNebulaExtinction[] = [];
-  private galaxyParticles: GalaxyParticles | null = null;
   /** Set while the camera is at the galactic centre: no system at all,
    *  the galaxy around it, and the hole traced at its own scale. */
   private coreView = false;
@@ -591,6 +637,7 @@ export class UnifiedViewer {
    *  inside the disk this is effectively zero — the centre is dozens of
    *  optical depths away — and it only opens up above the dust layer. */
   private coreTransmission = 0;
+  private readonly coreTransmissionAt = new Vector3(NaN, NaN, NaN);
   /** The named complexes as travel targets, in scene-frame pc. */
   private landmarkList: import('../universe/galaxy/regions').GalacticLandmark[] | null = null;
   private landmarkScene: Float32Array | null = null;
@@ -626,12 +673,23 @@ export class UnifiedViewer {
       scriptMs: this.frameScriptMs,
       drawCalls: info.render.calls,
       triangles: info.render.triangles,
-      glints: count(this.neighborPoints) + count(this.farPoints) + count(this.starSprites),
+      glints: count(this.neighborPoints) + count(this.farPoints) + count(this.starSprites) + (this.galaxyVolume?.starCount ?? 0),
       volumes: this.nebulaVolumes.size,
       volumeCap: this.nebulaResidents,
       sprites: this.skyData?.nebulae.length ?? 0,
-      bakes: pendingNebulaBakes(),
+      bakes: pendingNebulaBakes() + this.nebulaUploads.size + Number(this.residencyService.pending),
       terrain: this.chunkManager?.outstanding ?? 0,
+      skyPixelPitch: this.pipeline.sky.sampleCssPx,
+      pose: this.performanceCapture ? { position: this.camera.position.toArray(), quaternion: this.camera.quaternion.toArray(), altitudeKm: this.altitudeKm, timeDays: this.simTimeDays } : undefined,
+      resources: this.performanceCapture ? {
+        ...this.pipeline.renderer.info.memory,
+        programs: this.pipeline.renderer.info.programs?.length ?? 0,
+        terrainChunks: this.chunkManager?.cachedChunks ?? 0,
+        climateCacheBytes: seasonalClimateCache.retainedBytes,
+        seasonalTextureBytes: this.seasonalOverlay?.texture.image.data?.byteLength ?? 0,
+        nebulaBytes: this.nebulaMemory.bytes,
+        heapBytes: (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? null,
+      } : undefined,
     };
   }
 
@@ -643,6 +701,35 @@ export class UnifiedViewer {
 
   set simulationTimeDays(value: number) {
     if (Number.isFinite(value)) this.simTimeDays = value;
+  }
+
+  /** Polled by the inspector, never solved on the animation loop. The
+   * queried ground direction already lives in the rotating body frame. */
+  get seasonalConditions() {
+    const field = this.field, state = this.seasonalResult;
+    if (!state) return null;
+    const seedHex = field?.params.seedHex ?? this.focusMoon?.physical.seedHex ?? this.focusPlanet?.physical.seedHex;
+    if (!seedHex) return null;
+    if (!field) {
+      if (state.status === 'unavailable') return { seedHex, ...state };
+      return { seedHex, status: 'building' as const };
+    }
+    if (state.status !== 'ready') return { seedHex, ...state };
+    const cycle = state.cycle, dir = this.camera.position.clone().normalize();
+    if (!this.seasonalPoint || !this.seasonalPoint.direction.equals(dir)) {
+      const point = seasonalPointCycle(cycle,dir);
+      this.seasonalPoint = point ? {direction:dir,point} : null;
+    }
+    if (!this.seasonalPoint) return {seedHex,status:'unavailable' as const,reason:'not-converged' as const};
+    const datumK = seasonalPointTemperatureAt(this.seasonalPoint.point,this.simTimeDays * DAY);
+    const heightM = Math.max(field.heightAt(dir),field.waterLevelAt(dir));
+    const temperatureK = columnTemperatureK(datumK,field.params.atmosphericCapK ?? 0,field.params.lapseKPerKm / 1000,heightM);
+    return { seedHex, status:'ready' as const, temperatureK, latitudeDeg:Math.asin(dir.y)*180/Math.PI,
+      snowOverlay: this.seasonalOverlay !== null,
+      annualMean: cycle.annualMean, terrainMeanK: field.params.surfaceMeanK,
+      terrainDatumK: field.params.temperatureField ? surfaceTemperatureAt(field.params.temperatureField, dir) : null,
+      mode:cycle.mode, cycleMeanK:cycle.meanK, minimumK:cycle.minimumK, maximumK:cycle.maximumK,
+      heatCapacityJm2K:cycle.heatCapacityJm2K, timeDays:this.simTimeDays, cycleDays:cycle.cycleSeconds / DAY };
   }
 
   /** What the background generators are working on right now: terrain
@@ -663,7 +750,7 @@ export class UnifiedViewer {
       surveying: this.surveying,
       terrain: this.chunkManager?.outstanding ?? 0,
       worlds: bakeQueueDepth(),
-      nebulae: pendingNebulaBakes(),
+      nebulae: pendingNebulaBakes() + this.nebulaUploads.size,
       skies: skyPending(),
       skyProgress: sky.fraction,
       skyStage: sky.stage,
@@ -1129,6 +1216,11 @@ export class UnifiedViewer {
   }
   /** WASD locomotion once the wheel ride touches down. */
   private readonly flight = new FlightCamera();
+  private stopAuditFlight(): void {
+    if (!this.auditGroundFlightUntil) return;
+    this.auditGroundFlightUntil = 0;
+    this.flight.release('KeyW'); this.flight.release('ShiftLeft');
+  }
   private walkHint: HTMLDivElement | null = null;
   private walkHintText = '';
   private gizmo: ReorientGizmo | null = null;
@@ -1154,6 +1246,7 @@ export class UnifiedViewer {
    *  optical depth per channel, scale height, and the horizon's air
    *  mass. Null for a vacuum, an envelope, or no body at all. */
   private focusAir: {
+    gasProfile: GasProfile;
     /** The whole column, gas and haze. */
     tau: [number, number, number];
     rayleigh: [number, number, number];
@@ -1171,6 +1264,11 @@ export class UnifiedViewer {
   } | null = null;
   private moons: MoonEntry[] = [];
   private field: SurfaceField | null = null;
+  private seasonalResult: SeasonalResult | {status:'building'} | null = null;
+  private solidFocusVersion = 0;
+  private cancelSeasonal: (() => void) | null = null;
+  private seasonalOverlay: SeasonalSurfaceOverlay | null = null;
+  private seasonalPoint: {direction:Vector3;point:SeasonalPointCycle} | null = null;
   /** True while the focused world's climate/river survey is still in a
    *  worker — the field stands, its rivers attach when it lands. */
   private surveying = false;
@@ -1198,7 +1296,8 @@ export class UnifiedViewer {
   private starDistanceKm = AU_KM;
   private systemMu: Mu = muOf(1);
   /** Materialized belt members near the camera (see updateBeltRegion). */
-  private readonly beltRockGeometry = createRockGeometry();
+  private readonly beltRockGeometry = createBeltRockGeometry();
+  private readonly beltRockMaterial = createBeltRockMaterial();
   private beltRockMesh: InstancedMesh | null = null;
   private beltRockPoints: Points | null = null;
   private beltCandidates: BeltCandidate[] = [];
@@ -1263,6 +1362,7 @@ export class UnifiedViewer {
   private dragTravelPx = 0;
   /** The regime the switch was last drawn for. */
   private dragModeLooking = false;
+  private flightPointerLockDenied = false;
   /** A second finger joined this gesture: it is no longer a tap. */
   private multiTouched = false;
   /** True once the last input came from a finger: the tooltip arms
@@ -1278,12 +1378,44 @@ export class UnifiedViewer {
   /** Fired when the user clicks a picked body. */
   onPick: ((target: PickTarget) => void) | null = null;
   private lastFrameMs = performance.now();
+  private readonly performanceCapture: ReturnType<typeof createPerformanceCapture>;
+  private capturingImage = false;
   private readonly onResize = () => this.resize();
   private containerObserver: ResizeObserver | null = null;
 
   constructor(private readonly container: HTMLElement) {
     this.camera = new PerspectiveCamera(55, 1, 0.01, 1e6);
     this.pipeline = new RenderPipeline(container, this.scene, this.camera);
+    this.groundPreparation = prepareGroundMaterials(this.terrainMaterial, this.scatterMaterial,
+      object => this.pipeline.prepareSceneObject(object, this.scene)).catch(() => {});
+    this.performanceCapture = createPerformanceCapture((key, enabled) => {
+      if (key === 'bloom') this.pipeline.setBloomEnabled(enabled);
+      if (key === 'culling') setStarPointCulling(enabled);
+      if (key === 'patches') setDirectionalPatchCulling(enabled);
+      if (key === 'volumeCulling') setSkyVolumeCulling(enabled);
+      if (key === 'adaptiveSampling' && !enabled) this.pipeline.sky.resetSampling();
+    }, (action) => {
+      const height = this.pipeline.renderer.domElement.clientHeight;
+      if (action === 'orbit') this.controls.turnBy(height / (4 * this.controls.rotateSpeed), 0);
+      else if (action === 'tilt') this.controls.turnBy(0, height / (12 * this.controls.rotateSpeed));
+      else if (action === 'core-crossing') {
+        if (!this.sceneOrientation || this.field || this.coreView) return;
+        this.auditCoreCrossingAt = performance.now();
+        this.cameraMove = null; this.stopRideOut(); this.pendingWheelFactor = 1;
+        recordNebulaBake({ event: 'center-crossing', fromPc: [2000, 300, 80], toPc: [-2000, 300, 80], durationMs: 12000 });
+      }
+      else if (action.startsWith('season-')) {
+        if (this.seasonalResult?.status !== 'ready') return;
+        const phase = { 'season-zero':0, 'season-quarter':.25, 'season-half':.5, 'season-three-quarter':.75 }[action as 'season-zero'|'season-quarter'|'season-half'|'season-three-quarter'];
+        this.simTimeDays = phase * this.seasonalResult.cycle.cycleSeconds / DAY;
+      }
+      else if (action === 'ground-flight') {
+        if (!this.flight.active) return;
+        this.auditGroundFlightUntil = performance.now() + 12000;
+        this.flight.press('KeyW'); this.flight.press('ShiftLeft');
+      }
+      else this.pendingWheelFactor *= action === 'closer' ? 0.5 : 2;
+    });
 
     this.controls = new OrbitArcball(this.camera, this.pipeline.renderer.domElement);
     this.controls.easeSeconds = ORBIT_EASE_SECONDS;
@@ -1336,26 +1468,41 @@ export class UnifiedViewer {
     // with a cursor that exists again.
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === this.pipeline.renderer.domElement;
+      if (locked) this.flightPointerLockDenied = false;
       if (this.dragLock && !locked) this.dragLock.held = false;
       // A lock granted after the drag that asked for it has already
       // ended would hold the cursor with nothing to steer: give it back.
       if (locked && !this.dragLock?.held && !this.flight.active) document.exitPointerLock();
     });
+    document.addEventListener('pointerlockerror', () => {
+      if (this.flight.active) this.flightPointerLockDenied = true;
+    });
 
     // On foot the mouse is the head: click takes pointer lock, motion
-    // steers the gaze, Escape hands the cursor back.
+    // steers the gaze, Escape hands the cursor back. Drag-look also
+    // works when an embedded browser refuses pointer lock.
     this.pipeline.renderer.domElement.addEventListener('click', () => {
-      if (!this.flight.active || this.touchMode) return;
+      if (!this.flight.active || this.touchMode || this.flightPointerLockDenied) return;
       if (document.pointerLockElement !== this.pipeline.renderer.domElement) {
         // The cursor stops existing the moment it is captured; leaving
         // its last position behind would leave a probe in the sky.
         this.cursor = null;
-        this.pipeline.renderer.domElement.requestPointerLock();
+        try {
+          const request = this.pipeline.renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined;
+          request?.catch?.(() => { this.flightPointerLockDenied = true; });
+        } catch {
+          this.flightPointerLockDenied = true;
+        }
       }
     });
+    this.pipeline.renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (!this.flight.active || e.pointerType === 'touch' || e.button !== 0) return;
+      try { this.pipeline.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* Drag still works in the viewport. */ }
+    });
     this.pipeline.renderer.domElement.addEventListener('pointermove', (e) => {
-      if (document.pointerLockElement !== this.pipeline.renderer.domElement) return;
-      if (!this.flight.active) return;
+      if (!this.flight.active || e.pointerType === 'touch') return;
+      const locked = document.pointerLockElement === this.pipeline.renderer.domElement;
+      if (!locked && ((e.buttons & 1) === 0 || this.rightShiftHeld)) return;
       // Head convention, not the drag handler's grab-the-world sign:
       // mouse right looks right.
       this.headingRad += e.movementX * 0.0022;
@@ -1464,14 +1611,14 @@ export class UnifiedViewer {
       { passive: false },
     );
 
-    const BELT_ROCK_CAP = 320;
-    this.beltRockMesh = new InstancedMesh(this.beltRockGeometry, this.scatterMaterial, BELT_ROCK_CAP);
+    this.beltRockMesh = new InstancedMesh(this.beltRockGeometry, this.beltRockMaterial, BELT_ROCK_CAPACITY);
+    this.beltRockMesh.setColorAt(0, new Color(0, 0, 0));
     this.beltRockMesh.count = 0;
     this.beltRockMesh.frustumCulled = false;
     this.scene.add(this.beltRockMesh);
     this.beltRockPoints = createBeltRegionPoints(
       PC_KM,
-      BELT_REGION_REACH_AU * AU_KM * 1.5,
+      BELT_LOCAL_REACH_KM,
     );
     this.scene.add(this.beltRockPoints);
 
@@ -1597,12 +1744,21 @@ export class UnifiedViewer {
     const height = this.container.clientHeight;
     const display = Math.min(window.devicePixelRatio, 2);
     const ratio = Math.min(display * scale, CAPTURE_MAX_PX / Math.max(width, height));
-    this.pipeline.setSize(width, height, ratio);
-    this.pipeline.render();
-    const canvas = this.pipeline.renderer.domElement;
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-    this.pipeline.setSize(width, height);
-    return blob;
+    const pitch = this.pipeline.sky.sampleCssPx;
+    this.capturingImage = true;
+    try {
+      // Export at the finest volume sampling, independent of the
+      // interactive frame budget that led to this view.
+      this.pipeline.sky.resetSampling();
+      this.pipeline.setSize(width, height, ratio);
+      this.pipeline.render();
+      const canvas = this.pipeline.renderer.domElement;
+      return await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+    } finally {
+      while (this.pipeline.sky.sampleCssPx < pitch) this.pipeline.sky.shiftSampling(1);
+      this.pipeline.setSize(width, height);
+      this.capturingImage = false;
+    }
   }
 
   /** Build the system-wide content: stars, planets, belts, comets, overlay. */
@@ -1622,6 +1778,7 @@ export class UnifiedViewer {
     this.clearCore();
     this.clearSystem();
     this.system = system;
+    this.stellarGeometry = stellarForcing(system.star, system.companions, system.configuration);
 
     // Real photospheres at scene root: the corona billboard orients by
     // copying the camera quaternion, so star groups must not inherit the
@@ -1644,7 +1801,7 @@ export class UnifiedViewer {
       // at zero it has no sprite and casts no light, so the brightest
       // thing for a light-hour around is invisible.
       let luminosity = star.luminosity;
-      let color = star.linearRgb;
+      let temperature = star.tEff;
       if (star.stage === 'black-hole') {
         const model = stellarBlackHole(star, holeDonors(system, index), this.holeAxis(system, index));
         hole = new BlackHoleObject(model, this.lut, IDENTITY_FRAME);
@@ -1652,7 +1809,7 @@ export class UnifiedViewer {
         hole.sky = holeSky.target;
         this.scene.add(hole.mesh);
         luminosity = model.flow.luminosityW / SOLAR_LUMINOSITY;
-        color = blackbodyLinearRgb(model.flow.innerTemperatureK);
+        temperature = model.flow.innerTemperatureK;
       }
       this.starNodes.push({
         object,
@@ -1661,8 +1818,9 @@ export class UnifiedViewer {
         holeSky,
         capturedAt: null,
       });
-      spriteColors.push(...color);
-      spriteLuminosities.push(luminosity);
+      const light = splitStellarLight(stellarBandRgb(luminosity, temperature));
+      spriteColors.push(...light.color);
+      spriteLuminosities.push(light.luminosity);
       spriteRadii.push(Math.max(star.radius, 1e-4) * SOLAR_RADIUS_KM);
     };
     addStar(system.star, 0);
@@ -1711,10 +1869,9 @@ export class UnifiedViewer {
     // early sits exactly where its star ends up.
     this.skyPreviewFrame = galaxyOrientation;
     this.galaxyVolume = new GalaxyVolume(viewpoint, galaxyOrientation);
-    this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
+    this.galaxyVolume.prepare(object => this.pipeline.prepareSceneObject(object, this.scene));
+    this.galaxyVolume.setInstrument(this.skyInstrument, this.skyExposure, this.skyFloorRadiance);
     this.pipeline.sky.scene.add(this.galaxyVolume.mesh);
-    this.galaxyParticles = new GalaxyParticles(viewpoint, galaxyOrientation, PC_KM);
-    this.pcGroup.add(this.galaxyParticles.group);
     this.chooseNebulaVolume(viewpoint, galaxyOrientation);
     // The nuclear cluster waits until something could see it. From
     // anywhere in the disk the centre is a hundred magnitudes of dust
@@ -1754,10 +1911,8 @@ export class UnifiedViewer {
         if (this.disposed || this.system !== system) return;
         this.addSkyPreview(preview);
       },
-      // The gas, dust and glow are built beside the sweep rather than
-      // after it, so they land seconds in. The backdrop draws no stars
-      // — every one of them is 3D content — which means this is the
-      // whole of it and the finished field has nothing to add.
+      // Diffuse light and dark clouds arrive first; measured nebula
+      // portraits fill their fixed atlas slots independently afterward.
       (background) => {
         if (this.disposed || this.system !== system || this.backdrop) return;
         this.skyFloorRadiance = background.skyFloorRadiance;
@@ -1772,13 +1927,19 @@ export class UnifiedViewer {
         // arrive with the next frame.
         this.setSkyInstrument(this.skyInstrument, this.skyExposure);
       },
+      (portrait) => {
+        if (this.disposed || this.system !== system) return;
+        this.backdrop?.updatePortrait(portrait);
+      },
     );
 
-    getSkyField(system.seedHex, viewpoint).then((sky) => {
+    getSkyField(system.seedHex, viewpoint).then(({ sky, drawing }) => {
       if (this.disposed || this.system !== system) return;
+      const handoffStart = beginLoadingWork();
       this.clearSkyPreview();
       this.skyData = sky;
       this.skyFloorRadiance = sky.skyFloorRadiance;
+      this.galaxyVolume?.setInstrument(this.skyInstrument, this.skyExposure, this.skyFloorRadiance);
       // Every resolved star is 3D content (near field above, far field
       // here); the backdrop keeps only the unresolved sky — glow,
       // rifts, nebulae, dark clouds — which the galaxy volume replaces.
@@ -1788,33 +1949,21 @@ export class UnifiedViewer {
         this.backdrop.setInstrument(this.skyInstrument, this.skyExposure);
         this.scene.add(this.backdrop.group);
       }
+      const chartStart = beginLoadingWork();
       this.sectorChart = new SectorChart(sky);
+      this.sectorChart.prepare(group => this.pipeline.prepareSceneObject(group, this.scene));
+      endLoadingWork('sector-chart', chartStart);
       this.pcGroup.add(this.sectorChart.group);
 
       const farCount = sky.starCount - sky.nearStarCount;
       if (farCount > 0) {
-        const positions = new Float32Array(farCount * 3);
-        const luminosities = new Float32Array(farCount);
-        const radii = new Float32Array(farCount);
-        for (let i = 0; i < farCount; i++) {
-          const s = sky.nearStarCount + i;
-          const d = sky.starDistances[s];
-          const [x, y, z] = rotateToScene(
-            sky.sceneFromGalaxy,
-            sky.starDirs[s * 3] * d,
-            sky.starDirs[s * 3 + 1] * d,
-            sky.starDirs[s * 3 + 2] * d,
-          );
-          positions[i * 3] = x;
-          positions[i * 3 + 1] = y;
-          positions[i * 3 + 2] = z;
-          luminosities[i] = sky.starBrightness[s] * d * d;
-        }
+        const pointsStart = beginLoadingWork();
+        const { positions, luminosities, radii } = drawing;
         const geometry = new BufferGeometry();
         geometry.setAttribute('position', new BufferAttribute(positions, 3));
         geometry.setAttribute(
           'starColor',
-          new BufferAttribute(sky.starColors.slice(sky.nearStarCount * 3), 3),
+          new BufferAttribute(drawing.colors, 3),
         );
         geometry.setAttribute('luminosity', new BufferAttribute(luminosities, 1));
         geometry.setAttribute('aRadiusKm', new BufferAttribute(radii, 1));
@@ -1828,8 +1977,12 @@ export class UnifiedViewer {
         this.farPoints.frustumCulled = false;
         this.farPoints.renderOrder = -2;
         this.pcGroup.add(this.farPoints);
-        this.farPointIndex = new PointConeIndex(positions, farCount);
+        endLoadingWork('far-star-geometry', pointsStart);
+        const indexStart = beginLoadingWork();
+        this.farPointIndex = PointConeIndex.fromData(positions, drawing.index);
+        endLoadingWork('far-star-index', indexStart);
       }
+      endLoadingWork('sky-handoff', handoffStart);
     });
   }
 
@@ -1851,33 +2004,34 @@ export class UnifiedViewer {
    * not vanish for no reason better than a handoff.
    */
   private updateNebulaResidency(positionPc: GalacticPosition, orientation: Float32Array): void {
-    // Ranked by what is at stake on the sky: a cloud's solid angle
-    // times the radiance it puts there — its own light for a lit one,
-    // the band it blots out for a rift — so a bright complex is not
-    // outranked by a larger dark cloud, and rifts still rank by size.
-    const candidates: { cloud: MolecularCloud; weight: number }[] = [];
-    for (const cloud of cloudsNear(positionPc, NEBULA_VOLUME_REACH_PC)) {
-      const dx = cloud.positionPc.xPc - positionPc.xPc;
-      const dy = cloud.positionPc.yPc - positionPc.yPc;
-      const dz = cloud.positionPc.zPc - positionPc.zPc;
-      const distance = Math.hypot(dx, dy, dz);
-      const angular = cloudReachPc(cloud) / Math.max(1, distance);
-      if (angular < NEBULA_VOLUME_MIN_ANGULAR) continue;
-      candidates.push({
-        cloud,
-        weight: residencyWeight(cloud, nebulaFor(cloud), distance, this.skyFloorRadiance),
-      });
-    }
-    candidates.sort((a, b) => b.weight - a.weight);
-    const chosen = candidates.slice(0, this.nebulaResidents);
-    // The focused cloud is the subject: resident whatever its weight.
-    const focused = this.focusCloud?.cloud;
-    if (focused && !chosen.some((c) => c.cloud.seed === focused.seed)) {
-      if (chosen.length === this.nebulaResidents) chosen.pop();
-      chosen.push({ cloud: focused, weight: Infinity });
-    }
+    this.residencyRequestedAtMs = performance.now();
+    const viewpoint = this.viewpointPc;
+    this.residencyService.request({ position: { ...positionPc }, reachPc: NEBULA_VOLUME_REACH_PC,
+      minimumAngular: NEBULA_VOLUME_MIN_ANGULAR, count: this.nebulaResidents,
+      pedestal: this.skyFloorRadiance, focused: this.focusCloud?.cloud ?? null,
+      grades: [NEBULA_VOLUME_FIRST_SIZE, NEBULA_VOLUME_SIZE, NEBULA_VOLUME_NEAR_SIZE] }, result => {
+      if (this.disposed || this.viewpointPc !== viewpoint) return;
+      const started = beginLoadingWork();
+      for (const choice of result.chosen) {
+        rememberNebula(choice.cloud, choice.nebula);
+        rememberNebulaEstimates(choice.cloud, choice.estimates);
+      }
+      this.applyNebulaResidency(result.chosen, positionPc, orientation);
+      endLoadingWork('nebula-residency-install', started);
+      recordNebulaBake({ event: 'selection', positionPc, candidates: result.candidates,
+        built: result.built, cached: result.cached, elapsedMs: result.elapsedMs,
+        chosen: result.chosen.map(c => c.cloud.seed.toString(16)) });
+    });
+  }
+
+  private applyNebulaResidency(chosen: ResidencyChoice[], positionPc: GalacticPosition, orientation: Float32Array): void {
     this.wantedNebulae = new Set(chosen.map((c) => c.cloud.seed));
+    retainNebulaBakes(this.wantedNebulae);
     this.residentClouds = new Map(chosen.map((c) => [c.cloud.seed, c.cloud]));
+    for (const seed of this.nebulaUploads.keys()) {
+      if (!this.wantedNebulae.has(seed)) this.cancelNebulaUpload(seed);
+    }
+    this.nebulaMemory.retain(new Set([...this.wantedNebulae, ...this.nebulaVolumes.keys()]));
 
     // Standing volumes are never yanked: one that lost its slot fades
     // out and is disposed when it reaches zero, and one the camera
@@ -1916,7 +2070,7 @@ export class UnifiedViewer {
     const reach = cloudReachPc(cloud);
     const grade = this.gradeFor(reach / Math.max(1, distance));
     const grades = [NEBULA_VOLUME_FIRST_SIZE, NEBULA_VOLUME_SIZE, NEBULA_VOLUME_NEAR_SIZE];
-    const shelved = shelvedNebulaVolume(cloud, reach, grades.filter((size) => size <= grade));
+    const shelved = shelvedNebulaVolume(cloud, grades.filter((size) => size <= grade));
     return shelved?.size ?? NEBULA_VOLUME_FIRST_SIZE;
   }
 
@@ -1953,11 +2107,13 @@ export class UnifiedViewer {
     if (!this.enclosingCarrier || this.enclosingCarrierFrame !== frame) {
       this.retireEnclosingCarrier();
       this.enclosingCarrier = new NebulaCarrier(this.viewpointPc, frame, this.skyFloorRadiance);
+      this.enclosingCarrier.prepare(mesh => this.pipeline.prepareSceneObject(mesh, this.scene));
       this.enclosingCarrier.setInstrument(this.skyInstrument, this.skyExposure);
       this.enclosingCarrierFrame = frame;
       this.pipeline.sky.scene.add(this.enclosingCarrier.mesh);
     }
     const carrier = this.enclosingCarrier;
+    if (!carrier.ready) return; // Keep individual complete volumes until their replacement can draw.
     carrier.assign(members.map((volume) => volume.box));
     carrier.update(
       this.camera.position,
@@ -1983,10 +2139,23 @@ export class UnifiedViewer {
 
   /** The grid a standing volume deserves at its apparent size. */
   private nebulaGrade(volume: NebulaVolume): number {
-    return this.gradeFor(
-      (volume.mesh.material as ShaderMaterial).uniforms.uHalfPc.value /
-        Math.max(1, volume.cameraDistancePc),
-    );
+    return this.gradeFor(nebulaApparentSize(volume));
+  }
+
+  private affordableNebulaGrade(cloud: MolecularCloud, desired: number): number {
+    for (const size of [NEBULA_VOLUME_NEAR_SIZE, NEBULA_VOLUME_SIZE, NEBULA_VOLUME_FIRST_SIZE]) {
+      if (size <= desired && this.nebulaMemory.canReserve(cloud.seed, size, nebulaDomains(cloud, size), this.nebulaOverlapBytes(cloud, size))
+        && (shelvedNebulaVolume(cloud, [size]) || nebulaWorkingBytes(cloud, size) <= NEBULA_WORKING_BYTES)) return size;
+    }
+    return 0;
+  }
+
+  private nebulaOverlapBytes(cloud: MolecularCloud, size: number): number {
+    const existing = this.nebulaVolumes.get(cloud.seed);
+    if (existing) return existing.bakedSize < size ? nebulaResidentBytes(existing.bakedSize, existing.hasFine ? 2 : 1) : 0;
+    // A focused high grade can be requested before the first 48³ result.
+    return size > NEBULA_VOLUME_FIRST_SIZE
+      ? nebulaResidentBytes(NEBULA_VOLUME_FIRST_SIZE, nebulaDomains(cloud, NEBULA_VOLUME_FIRST_SIZE)) : 0;
   }
 
   /** The grid an apparent size (reach over distance) deserves. */
@@ -2000,11 +2169,11 @@ export class UnifiedViewer {
     let best: { cloud: MolecularCloud; size: number; apparent: number } | null = null;
     for (const [seed, volume] of this.nebulaVolumes) {
       const cloud = this.residentClouds.get(seed);
-      const size = this.nebulaGrade(volume);
-      if (!cloud || volume.retiring || volume.bakedSize >= size) continue;
-      const apparent =
-        (volume.mesh.material as ShaderMaterial).uniforms.uHalfPc.value /
-        Math.max(1, volume.cameraDistancePc);
+      if (!cloud || volume.retiring || pendingNebulaGrade(cloud) || this.nebulaUploads.has(seed)) continue;
+      const focused = this.focusCloud?.cloud.seed === seed;
+      const size = this.affordableNebulaGrade(cloud, focused ? NEBULA_VOLUME_NEAR_SIZE : this.nebulaGrade(volume));
+      if (volume.bakedSize >= size) continue;
+      const apparent = focused ? Infinity : nebulaApparentSize(volume);
       if (!best || apparent > best.apparent) best = { cloud, size, apparent };
     }
     return best;
@@ -2012,22 +2181,24 @@ export class UnifiedViewer {
 
   /** Whether every requested bake has landed and been stood up. */
   private nebulaBakesSettled(): boolean {
-    return pendingNebulaBakes() === 0 && this.coarseBakes.size === 0 && this.fineBakes.size === 0;
+    return !this.residencyService?.pending && pendingNebulaBakes() === 0 && this.coarseBakes.size === 0 && this.fineBakes.size === 0 && this.nebulaUploads.size === 0;
   }
 
   /**
-   * Raise one standing volume toward its grade the moment nothing else
-   * is baking: one bake at a time is the metering, and asking at once
-   * rather than on the controller's tick means the finer grid lands
-   * while the first grade is still dissolving in, so the upgrade is
-   * never seen as a swap. A standing volume is re-baked only upward:
-   * approaching a cloud takes it to the near grid, leaving keeps the
-   * finer one.
+   * Fill idle bake lanes in apparent-size order. The shared pool admits
+   * actual concurrent solves against CPU and source-aware byte permits;
+   * first arrivals and portraits already in the queue go first. Reserve
+   * future resident payloads before requesting any upgrades.
    */
   private climbNebulaGrade(orientation: Float32Array): void {
-    if (!this.nebulaBakesSettled()) return;
-    const climb = this.nextGradeClimb();
-    if (climb) this.requestVolumeFor(climb.cloud, this.viewpointPc, orientation, climb.size);
+    // A portrait lane briefly leaves the bake pool while measuring its
+    // tile. That gap is not idle capacity for a long resident solve.
+    if (this.residencyService?.pending || skyPending()) return;
+    for (let attempt = 0; attempt < NEBULA_POOL_SIZE && pendingNebulaBakes() < NEBULA_POOL_SIZE; attempt++) {
+      const climb = this.nextGradeClimb();
+      if (!climb) break;
+      this.requestVolumeFor(climb.cloud, this.viewpointPc, orientation, climb.size);
+    }
   }
 
   /**
@@ -2065,23 +2236,34 @@ export class UnifiedViewer {
    * overshoot and have to fall back.
    */
   private tuneNebulaResidency(nowMs: number): boolean {
+    if (this.performanceVolumeLimit !== null || this.capturingImage) return false;
     if (nowMs - this.residencyTunedAtMs < NEBULA_TUNE_INTERVAL_MS || !this.frameMsSmoothed) {
       return false;
     }
     this.residencyTunedAtMs = nowMs;
     const before = this.nebulaResidents;
-    if (this.frameMsSmoothed > NEBULA_FRAME_BUDGET_MS) {
+    // GPU headroom alone is insufficient when submission/presentation
+    // overhead misses 60 FPS. Allow a little refresh jitter, but shrink
+    // when the measured cadence stays above the frame budget too.
+    if (this.frameMsSmoothed > NEBULA_FRAME_BUDGET_MS || this.frameIntervalMs > NEBULA_FRAME_BUDGET_MS * 1.04) {
       this.nebulaResidents = Math.max(
         NEBULA_RESIDENTS_MIN,
         Math.floor(this.nebulaResidents * NEBULA_SHRINK_FACTOR),
       );
+      if (before === NEBULA_RESIDENTS_MIN && this.nebulaBakesSettled() && this.pipeline.sky.quad.visible
+          && this.frameMsSmoothed > NEBULA_FRAME_BUDGET_MS * 0.5
+          && this.performanceCapture?.enabled.adaptiveSampling !== false) {
+        this.pipeline.sky.shiftSampling(1);
+      }
     } else if (
       this.frameMsSmoothed < NEBULA_FRAME_BUDGET_MS * NEBULA_FRAME_HEADROOM &&
       this.nebulaBakesSettled() &&
       this.nextGradeClimb() === null
     ) {
-      // Only a residency at its grade, with headroom, admits more.
-      this.nebulaResidents = Math.min(NEBULA_RESIDENTS_MAX, this.nebulaResidents + NEBULA_GROW_BY);
+      // Recover the finer volume sampling before admitting more bodies.
+      if (!this.pipeline.sky.shiftSampling(-1)) {
+        this.nebulaResidents = Math.min(NEBULA_RESIDENTS_MAX, this.nebulaResidents + NEBULA_GROW_BY);
+      }
     }
     return this.nebulaResidents !== before;
   }
@@ -2103,52 +2285,26 @@ export class UnifiedViewer {
     size = NEBULA_VOLUME_SIZE,
   ): void {
     const seed = cloud.seed;
+    if (this.nebulaUploads.has(seed)) return;
+    size = this.affordableNebulaGrade(cloud, size);
+    if (!size || !this.nebulaMemory.reserve(seed, size, nebulaDomains(cloud, size), this.nebulaOverlapBytes(cloud, size))) return;
+    if (nebulaAuditEnabled) recordNebulaBake({ event: 'resident', seed: seed.toString(16), size,
+      residentBytes: this.nebulaMemory.bytes, residentBudget: this.nebulaMemory.capacity });
     const stale = (): boolean => this.disposed || this.viewpointPc !== viewpoint;
-    const nebula = nebulaFor(cloud);
-    const lit = nebula !== null && bubbleNeedsOwnBake(nebula, cloudReachPc(cloud));
-    // Once the standing volume carries every grid it will ever get,
-    // the source bakes have nothing left to serve: a later upgrade
-    // must wait for fresh grids rather than reinstall these. The
-    // textures reference the same buffers, so this frees no memory —
-    // a standing residency's grids live on the heap for as long as the
-    // textures do.
-    const settled = (): void => {
-      const volume = this.nebulaVolumes.get(seed);
-      if (volume && (!lit || volume.hasFine)) {
-        this.coarseBakes.delete(seed);
-        this.fineBakes.delete(seed);
-      }
-    };
-    // A fresh cloud shows its coarse grid the moment it lands; one
-    // whose volume already stands — a resolution upgrade — waits for
-    // the full set, or the standing bubble would flash away while the
-    // finer bake of it was still in the oven.
-    const hadVolume = this.nebulaVolumes.has(seed);
-    const tryInstall = (): void => {
-      if (!this.coarseBakes.get(seed)) return;
-      if (hadVolume && lit && !this.fineBakes.get(seed)) return;
+    // Inner and outer fields share a photon solve. First arrivals and
+    // upgrades both install the matching pair atomically; a coarse half
+    // alone would show a dark hole where the inner grid belongs.
+    const install = (pair: { coarse: NebulaVolumeBake; fine: NebulaVolumeBake | null }): void => {
+      if (stale() || !this.wantedNebulae.has(seed)) return;
+      this.coarseBakes.set(seed, pair.coarse);
+      if (pair.fine) this.fineBakes.set(seed, pair.fine);
+      else this.fineBakes.delete(seed);
       this.installNebulaVolume(seed, viewpoint, orientation);
-      settled();
+      this.coarseBakes.delete(seed);
+      this.fineBakes.delete(seed);
     };
-    // A bake landing for a cloud residency has since let go stays on
-    // the service's shelf for the next visit; holding it here as well
-    // would keep a grid nobody stands up.
-    const landed = (): boolean => !stale() && this.wantedNebulae.has(seed);
-    const coarse = requestNebulaVolume(cloud, size, cloudReachPc(cloud), (ready) => {
-      if (!landed()) return;
-      this.coarseBakes.set(seed, ready);
-      tryInstall();
-    });
-    if (coarse) this.coarseBakes.set(seed, coarse);
-    if (lit) {
-      const fine = requestNebulaVolume(cloud, size, undefined, (ready) => {
-        if (!landed()) return;
-        this.fineBakes.set(seed, ready);
-        tryInstall();
-      });
-      if (fine) this.fineBakes.set(seed, fine);
-    }
-    if (coarse) tryInstall();
+    const cached = requestNebulaPair(cloud, size, install);
+    if (cached) install(cached);
   }
 
   private installNebulaVolume(
@@ -2167,15 +2323,56 @@ export class UnifiedViewer {
     const coarse = this.coarseBakes.get(seed);
     if (!coarse) return;
     const existing = this.nebulaVolumes.get(seed);
-    if (existing) {
-      this.pipeline.sky.scene.remove(existing.mesh);
-      existing.dispose();
-      this.releaseHeld(seed);
-    }
+    // A focused/parallel high grade may finish before its first arrival.
+    // A late lower result belongs on the shelf, never over the finer grid.
+    if (existing && existing.bakedSize >= coarse.size) return;
+    const pending = this.nebulaUploads.get(seed);
+    if (pending && pending.volume.bakedSize >= coarse.size) return;
+    // A finer result can overtake an unpublished first arrival. No draw
+    // has referenced its textures, so it can be discarded immediately.
+    if (pending) this.cancelNebulaUpload(seed, false);
     const fine = this.fineBakes.get(seed) ?? null;
+    const volumeStart = beginLoadingWork();
     const volume = new NebulaVolume(coarse, fine, viewpoint, orientation, this.skyFloorRadiance);
+    volume.prepare(mesh => this.pipeline.prepareSceneObject(mesh, this.scene));
+    endLoadingWork(`nebula-install-${coarse.size}`, volumeStart);
     const held = fine ? [coarse, fine] : [coarse];
     for (const bake of held) holdNebulaVolume(bake);
+    const box = volume.box;
+    this.nebulaUploads.set(seed, { volume, held,
+      upload: new VolumeUpload([box.volume, box.fine, box.occupancy, box.continuum]) });
+  }
+
+  private cancelNebulaUpload(seed: bigint, settle = true): void {
+    const pending = this.nebulaUploads.get(seed);
+    if (!pending) return;
+    pending.upload.dispose(); pending.volume.dispose();
+    for (const bake of pending.held) releaseNebulaVolume(bake);
+    this.nebulaUploads.delete(seed);
+    if (settle) {
+      const existing = this.nebulaVolumes.get(seed);
+      if (existing) this.nebulaMemory.settle(seed, existing.bakedSize, existing.hasFine ? 2 : 1);
+      else this.nebulaMemory.release(seed);
+    }
+  }
+
+  /** Keep the old grid live until every channel of the new pair is on
+   * the GPU. One bounded transfer total, even when several bakes arrive. */
+  private advanceNebulaUpload(): void {
+    const next = this.nebulaUploads.entries().next().value;
+    if (!next) return;
+    const [seed, pending] = next;
+    const start = beginLoadingWork();
+    const ready = this.immediateNebulaUploads || pending.upload.step(this.pipeline.renderer);
+    endLoadingWork('nebula-upload-step', start);
+    if (!ready || !pending.volume.ready) return;
+    const { volume, held } = pending;
+    const existing = this.nebulaVolumes.get(seed);
+    if (existing) {
+      this.pipeline.sky.scene.remove(existing.mesh);
+      existing.dispose(); this.releaseHeld(seed);
+    }
+    pending.upload.dispose(); this.nebulaUploads.delete(seed);
     this.heldBakes.set(seed, held);
     volume.setInstrument(this.skyInstrument, this.skyExposure);
     // A fresh volume dissolves in from nothing; a reinstall — the fine
@@ -2185,6 +2382,12 @@ export class UnifiedViewer {
     volume.opacity = volume.fade;
     this.nebulaVolumes.set(seed, volume);
     this.pipeline.sky.scene.add(volume.mesh);
+    const cloud = this.residentClouds.get(seed);
+    if (!cloud || pendingNebulaGrade(cloud) <= volume.bakedSize) {
+      this.nebulaMemory.settle(seed, volume.bakedSize, volume.hasFine ? 2 : 1);
+    }
+    if (nebulaAuditEnabled) recordNebulaBake({ event: 'uploaded', seed: seed.toString(16), size: volume.bakedSize,
+      residentBytes: this.nebulaMemory.bytes, residentBudget: this.nebulaMemory.capacity });
   }
 
   /**
@@ -2286,6 +2489,7 @@ export class UnifiedViewer {
     this.planetNodes = planets.map((planet) => {
       const mu = companion ? companionPlanetMu(companion, planet) : planetMu(system, planet);
       const object = new PlanetObject(planet.physical, planet.rings, orbitDays(mu, planet));
+      object.prepare(mesh => this.pipeline.prepareSceneObject(mesh, this.scene));
       object.group.scale.setScalar(EARTH_RADIUS_KM);
       this.heliocentric.add(object.group);
       const marker = new Mesh(
@@ -2301,13 +2505,11 @@ export class UnifiedViewer {
       };
     });
 
-    for (const points of createBeltPointsForSystem(belts, this.hostSeedHex, hostStar.luminosity)) {
+    for (const points of createBeltPointsForSystem(belts, this.hostSeedHex, hostStar.luminosity, centralMassSolar)) {
       const material = points.material as ShaderMaterial;
-      material.uniforms.uSqrtCentralMass.value = Math.sqrt(centralMassSolar);
-      // Point sizing was tuned for AU-unit view distances.
-      material.uniforms.uPointScale.value = 40 * AU_KM;
       this.beltMaterials.push(material);
-      this.auGroup.add(points);
+      this.beltPointLayers.push(points);
+      this.scene.add(points);
     }
     // The comet reservoirs belong to the primary's system.
     if (!companion) {
@@ -2357,6 +2559,13 @@ export class UnifiedViewer {
     for (const comet of this.cometObjects) comet.dispose();
     this.cometObjects = [];
     this.beltMaterials = [];
+    for (const points of this.beltPointLayers) {
+      this.scene.remove(points);
+      points.geometry.dispose();
+      (points.material as ShaderMaterial).dispose();
+    }
+    this.beltPointLayers = [];
+    this.beltLocalKeys = new Set();
     for (const child of [
       ...this.auGroup.children,
       ...this.overlay.children,
@@ -2459,6 +2668,7 @@ export class UnifiedViewer {
           1024,
         );
         this.bodyObject.group.scale.setScalar(EARTH_RADIUS_KM);
+        this.bodyObject.prepare(mesh => this.pipeline.prepareSceneObject(mesh, this.scene));
         this.scene.add(this.bodyObject.group);
       }
       this.buildMoons(planet);
@@ -2561,26 +2771,51 @@ export class UnifiedViewer {
   /** Focus-specific content for any solid terrain body — planet or moon:
    *  the streamed surface, its air and clouds, and the depth globe. */
   private applySolidBodyFocus(physical: Characterization, rings: RingSystem | null): void {
-    // Deferred grid: the ~100k-sample climate/river survey would freeze
-    // the UI for over a second — a terrain worker builds the identical
-    // field anyway and ships the products back to attach here.
-    const field = createSurfaceField(physical.seedHex, physical, { deferGrid: true });
+    const version = ++this.solidFocusVersion;
+    const input = seasonalClimateInput(physical);
+    const waitForMean = typeof input !== 'string' && supportsAnnualMean(input);
+    this.seasonalResult = { status: 'building' };
+    this.surveying = waitForMean;
+    if (typeof input === 'string') this.seasonalResult = { status: 'unavailable', reason: input };
+    else this.cancelSeasonal = seasonalClimateCache.request(input, result => {
+      if (this.solidFocusVersion !== version) return;
+      this.seasonalResult = result;
+      if (waitForMean) {
+        // A transient failure must not produce a different permanent terrain
+        // recipe. Keep the ordinary body preview until a successful retry.
+        if (result.status === 'unavailable' && result.reason === 'worker-failed') { this.surveying = false; return; }
+        const mean = result.status === 'ready' && result.cycle.annualMean?.status === 'ready'
+          ? result.cycle.annualMean.field : undefined;
+        this.installSolidBodyFocus(physical, rings, mean);
+      }
+    });
+    if (!waitForMean) this.installSolidBodyFocus(physical, rings);
+  }
+
+  /** Install one completed recipe before any climate-dependent landforms,
+   * surface survey or terrain workers begin. Time never replaces it. */
+  private installSolidBodyFocus(physical: Characterization, rings: RingSystem | null, annualMean?: AnnualMeanField): void {
+    const field = createSurfaceField(physical.seedHex, physical, { deferGrid: true, annualMean });
     this.field = field;
+    const surface = this.seasonalResult?.status === 'ready' ? this.seasonalResult.cycle.surface : null;
+    this.seasonalOverlay?.dispose();
+    this.seasonalOverlay = surface?.status === 'ready' && field.params.surfaceIce && !field.params.globalIce && !field.params.magmaCoverage
+      ? new SeasonalSurfaceOverlay(surface.field) : null;
+    for (const material of [this.terrainMaterial,this.scatterMaterial]) applySeasonalSurface(material,this.seasonalOverlay,field.params);
+    for (const material of [this.terrainMaterial, this.scatterMaterial]) material.uniforms.uSurfaceTemperatureK.value = field.params.surfaceMeanK;
     this.surveying = field.finishGrid !== undefined;
     this.oceanMaterial =
       this.field.params.magmaCoverage > 0
         ? createMagmaMaterial(physical, planetSeedOffset(physical.seedHex))
-        : createOceanMaterial(physical.appearance.oceanColor);
+        : createOceanMaterial(physical.appearance.oceanColor, physical.appearance.iceColor);
     this.chunkManager = new TerrainChunkManager(
       this.scene,
       this.terrainMaterial,
       this.oceanMaterial,
       this.field.params.fullyMolten ? null : this.scatterMaterial,
-      { type: 'init', seedHex: physical.seedHex, physical },
+      { type: 'init', seedHex: physical.seedHex, physical, annualMean },
       this.radiusKm,
-      this.field.params.biosphere
-        ? deriveTreeSpecies(this.field.params).map(createTreeGeometry)
-        : [],
+      [],
       (survey) => {
         if (this.field === field) {
           field.finishGrid?.(survey);
@@ -2589,9 +2824,7 @@ export class UnifiedViewer {
       },
       !this.field.params.fullyMolten,
     );
-    const seaLevelKm = this.field.seaLevelM / 1000;
-    const reliefKm = this.field.params.reliefM / 1000;
-    const cloudBounds = cloudShellBounds(physical, seaLevelKm, reliefKm);
+    const cloudBounds = cloudShellBounds(physical);
     if (physical.atmosphere.class !== 'none') {
       this.skyDome = createSkyDome(
         physical,
@@ -2604,15 +2837,14 @@ export class UnifiedViewer {
     this.cloudShell = createCloudShell(
       physical,
       this.radiusKm,
-      seaLevelKm,
-      reliefKm,
     );
-    if (this.cloudShell) this.scene.add(this.cloudShell);
+    this.pipeline.clouds.setShell(this.cloudShell);
     // The ground materials take this body's air; the shared ones
     // (terrain, scatter) drop the last body's ring band unless this
     // one brings its own, standing in the ground frame's XZ plane.
     const horizon = horizonAirmass(this.radiusKm, physical.atmosphere.scaleHeightKm);
     const air = {
+      gasProfile: bodyGasProfile(physical),
       ...atmosphereColumn(
         physical.atmosphere,
         physical.bulk,
@@ -2627,6 +2859,7 @@ export class UnifiedViewer {
       physical.atmosphere.class === 'none'
         ? null
         : {
+            gasProfile: air.gasProfile,
             tau,
             rayleigh: air.rayleigh,
             aerosol: air.aerosol,
@@ -2676,6 +2909,7 @@ export class UnifiedViewer {
 
   /** Focus-specific content for a small body: streamed irregular terrain. */
   private applyAsteroidFocus(asteroid: Asteroid): void {
+    for (const material of [this.terrainMaterial, this.scatterMaterial]) material.uniforms.uSurfaceTemperatureK.value = 0;
     this.radiusKm = asteroid.diameterKm / 2;
     this.minAltitudeKm = 0.02;
     this.altitudeKm = this.radiusKm * 3;
@@ -3221,8 +3455,8 @@ export class UnifiedViewer {
    * belt position instantiate deterministically. Each member is a true
    * body — a shaped, spinning rock instance when resolved, a
    * reflected-sunlight photometric glint when subpixel — and a click
-   * promotes it to the focused body. The additive point cloud stays as
-   * the far-field statistical limit of the same population.
+   * promotes it to the focused body. Catalogue and local points select
+   * the same funded ranks, with exclusive ownership of each contribution.
    */
   private updateBeltRegion(tSeconds: Seconds, focusPos: Vector3, hostPos: Vector3): void {
     const mesh = this.beltRockMesh;
@@ -3249,10 +3483,7 @@ export class UnifiedViewer {
         rAu > belt.outerAu + BELT_REGION_REACH_AU
       ) return;
       const bands = beltBandCount(belt);
-      const inner2 = belt.innerAu ** 2;
-      const outer2 = belt.outerAu ** 2;
-      const bandOf = (a: number): number =>
-        Math.floor(((a * a - inner2) / (outer2 - inner2)) * bands);
+      const bandOf = (a: number): number => Math.floor(beltRadialQuantile(belt, a) * bands);
       const b0 = Math.max(
         0,
         bandOf(Math.max(belt.innerAu, rAu - BELT_REGION_REACH_AU)),
@@ -3285,10 +3516,13 @@ export class UnifiedViewer {
       // Instantiate the covered cells, then keep the nearest members —
       // a naive cap would truncate the region's far side.
       const drawn: Array<{ asteroid: Asteroid; distanceKm: number }> = [];
+      // Bound cold materialization before constructing physical members.
+      // Larger real populations receive a coarser selection, never brighter proxies.
+      const cellLimit = Math.max(1, Math.floor(4096 / Math.max(cells.length, 1)));
       for (const cell of cells) {
         const belt = this.hostBelts[cell.belt];
-        const beltSeed = deriveSeed(seedFromHex(this.hostSeedHex), 'belt-region', cell.belt);
-        for (const asteroid of beltCellAsteroids(beltSeed, belt, cell.band, cell.sector, 6)) {
+        const beltSeed = beltPopulationSeed(seedFromHex(this.hostSeedHex), cell.belt);
+        for (const asteroid of beltCellAsteroids(beltSeed, belt, cell.band, cell.sector, 6, cellLimit)) {
           const state = elementsToState(asteroid.elements, this.systemMu, tSeconds);
           const posKm = toWorld(state.position).divideScalar(1000);
           const distanceKm = Math.hypot(
@@ -3321,6 +3555,9 @@ export class UnifiedViewer {
           spinAxis: new Vector3(planar * Math.cos(axisAzimuth), axisZ, planar * Math.sin(axisAzimuth)),
           radiusKm,
           pseudoLum,
+          axes: new Vector3(...asteroidAxes(asteroid.shape)),
+          surfaceColor: new Color(...asteroidSurfaceColor(asteroid)),
+          pointSlot: -1,
           pickable: {
             x: 0,
             y: 0,
@@ -3354,10 +3591,17 @@ export class UnifiedViewer {
       [sr, sg, sb],
     );
 
+    for (const layer of this.beltPointLayers) {
+      updateBeltCatalogue(layer, this.beltPointEpochDays, pointDays - this.beltPointEpochDays,
+        focusPos, hostPos, this.frameQuat, [sr, sg, sb], this.beltLocalKeys, this.focusAsteroid);
+    }
+
     const matrix = new Matrix4();
     const spinQuat = new Quaternion();
     const scale = new Vector3();
     let meshCount = 0;
+    const resolvedPointSlots: number[] = [];
+    const meshRadii = this.beltRockGeometry.getAttribute('aRadiusKm') as BufferAttribute;
     const picking = this.cursor !== null && !this.dragging && !this.flight.active;
     const nowMs = performance.now();
     const refreshMeshSelection =
@@ -3372,7 +3616,7 @@ export class UnifiedViewer {
     }
 
     for (const candidate of movingCandidates) {
-      if (candidate.asteroid === this.focusAsteroid) continue;
+      if (sameAsteroid(candidate.asteroid, this.focusAsteroid)) continue;
       const state = elementsToState(candidate.asteroid.elements, this.systemMu, tSeconds);
       const pos = toWorld(state.position)
         .divideScalar(1000)
@@ -3388,23 +3632,25 @@ export class UnifiedViewer {
         candidate.pickable.z = pos.z;
         this.pickables.push(candidate.pickable);
       }
-      if (meshCount < 320 && candidate.radiusKm / distanceKm > 4e-5) {
+      if (meshCount < BELT_ROCK_CAPACITY && candidate.radiusKm / distanceKm > BELT_MESH_MIN_ANGULAR_RADIUS) {
         if (refreshMeshSelection) this.beltMeshCandidates.push(candidate);
-        const { shape, spinPeriodHours } = candidate.asteroid;
+        const { spinPeriodHours } = candidate.asteroid;
         const spinAngle = ((tSeconds / (spinPeriodHours * 3600)) * 2 * Math.PI) % (2 * Math.PI);
         spinQuat.setFromAxisAngle(candidate.spinAxis, spinAngle);
-        const base = candidate.radiusKm / 0.65;
-        scale.set(base / shape.elongation, base * shape.flattening, base);
+        scale.copy(candidate.axes).multiplyScalar(candidate.radiusKm);
         matrix.compose(pos, spinQuat, scale);
         mesh.setMatrixAt(meshCount, matrix);
+        mesh.setColorAt(meshCount, candidate.surfaceColor);
+        meshRadii.setX(meshCount, candidate.radiusKm);
+        resolvedPointSlots.push(candidate.pointSlot);
         meshCount++;
       }
     }
 
-    // The notable landmarks glint too — the same population's large end.
-    for (let i = 0; i < this.asteroids.length; i++) {
+    // Primary landmarks are the catalogue's own largest ranks, not extra light.
+    for (let i = 0; this.hostIndex === 0 && i < this.asteroids.length; i++) {
       const notable = this.asteroids[i];
-      if (notable === this.focusAsteroid) continue;
+      if (sameAsteroid(notable, this.focusAsteroid)) continue;
       const state = elementsToState(notable.elements, this.systemMu, tSeconds);
       const pos = toWorld(state.position)
         .divideScalar(1000)
@@ -3420,7 +3666,12 @@ export class UnifiedViewer {
         target: { kind: 'notable', index: i },
       });
     }
-    if (meshCount > 0 || mesh.count > 0) mesh.instanceMatrix.needsUpdate = true;
+    if (meshCount > 0 || mesh.count > 0) {
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      meshRadii.needsUpdate = true;
+    }
+    setBeltRegionResolvedSlots(points, resolvedPointSlots);
     mesh.count = meshCount;
   }
 
@@ -3429,8 +3680,12 @@ export class UnifiedViewer {
     if (!this.system) return;
     const epochDays = tSeconds / DAY;
     let count = 0;
+    const localKeys = new Set<string>();
     for (const candidate of this.beltCandidates) {
-      if (candidate.asteroid === this.focusAsteroid) continue;
+      candidate.pointSlot = -1;
+      if (sameAsteroid(candidate.asteroid, this.focusAsteroid)) continue;
+      candidate.pointSlot = count;
+      localKeys.add(asteroidKey(candidate.asteroid));
       count = writeBeltRegionPoint(
         points,
         count,
@@ -3443,24 +3698,7 @@ export class UnifiedViewer {
       );
       if (count >= BELT_REGION_POINT_CAPACITY) break;
     }
-    for (const notable of this.asteroids) {
-      if (count >= BELT_REGION_POINT_CAPACITY) break;
-      if (notable === this.focusAsteroid) continue;
-      const radiusKm = notable.diameterKm / 2;
-      const starDistanceKm = (notable.elements.semiMajorAxis / AU) * AU_KM;
-      const pseudoLum =
-        this.system.star.luminosity * (radiusKm / (2 * starDistanceKm)) ** 2 * notable.albedo * 4;
-      count = writeBeltRegionPoint(
-        points,
-        count,
-        notable,
-        this.systemMu,
-        epochDays,
-        pseudoLum,
-        false,
-        false,
-      );
-    }
+    this.beltLocalKeys = localKeys;
     finishBeltRegionPoints(points, count);
     this.beltPointEpochDays = epochDays;
     this.beltPointFocusAsteroid = this.focusAsteroid;
@@ -3475,8 +3713,10 @@ export class UnifiedViewer {
   }
 
   dispose(): void {
+    this.residencyService.dispose();
     this.clearCore();
     this.disposed = true;
+    this.performanceCapture?.dispose();
     window.removeEventListener('resize', this.onResize);
     this.containerObserver?.disconnect();
     window.removeEventListener('keydown', this.onKeyChange);
@@ -3488,47 +3728,38 @@ export class UnifiedViewer {
     this.clearFocus();
     this.dropHeldSky();
     this.clearSystem();
-    this.terrainMaterial.dispose();
-    this.scatterMaterial.dispose();
+    void this.groundPreparation.then(() => {
+      this.terrainMaterial.dispose();
+      this.scatterMaterial.dispose();
+      this.pipeline.dispose();
+    });
     this.beltRockGeometry.dispose();
+    this.beltRockMaterial.dispose();
     this.lut.dispose();
-    this.pipeline.dispose();
   }
 
   private maxAltitudeKm(): number {
     return MAX_ALTITUDE_KM;
   }
 
-  /**
-   * Strongest other-star light at a world position, relative to the
-   * host star's flux there: direction toward it, color premultiplied
-   * by the flux ratio on the host's adapted level (one eye, settled on
-   * the host's light, sees both suns), and its angular radius for the
-   * penumbrae it casts. Null when nothing contributes — single-star
-   * systems pay one cheap loop.
-   */
+  /** Strongest other star in the visible band, under the same scene
+   * exposure as the host, reflected body light and thermal emission. */
   private otherSunAt(worldPos: Vector3, hostIndex: number, simTimeDays: number): SecondSun | null {
     if (!this.system || this.starNodes.length < 2) return null;
     const hostNode = this.starNodes[hostIndex];
     const hostStar =
       hostIndex === 0 ? this.system.star : this.system.companions[hostIndex - 1]?.star;
     if (!hostNode || !hostStar) return null;
-    const hostDistanceKm = Math.max(hostNode.object.group.position.distanceTo(worldPos), 1);
-    const hostFlux = hostStar.luminosity / hostDistanceKm ** 2;
-    let bestRatio = 0;
+    let bestPower = 0;
     let bestIndex = -1;
+    let color: [number, number, number] = [0, 0, 0];
     for (let i = 0; i < this.starNodes.length; i++) {
       if (i === hostIndex) continue;
       const star = i === 0 ? this.system.star : this.system.companions[i - 1]?.star;
       if (!star) continue;
-      const ratio =
-        star.luminosity /
-        Math.max(this.starNodes[i].object.group.position.distanceToSquared(worldPos), 1) /
-        Math.max(hostFlux, 1e-30);
-      if (ratio > bestRatio) {
-        bestRatio = ratio;
-        bestIndex = i;
-      }
+      const candidate = starlight(star, Math.max(this.starNodes[i].object.group.position.distanceTo(worldPos), 1), simTimeDays, this.surfaceExposure);
+      const power = .2126 * candidate[0] + .7152 * candidate[1] + .0722 * candidate[2];
+      if (power > bestPower) { bestPower = power; bestIndex = i; color = candidate; }
     }
     if (bestIndex < 0) return null;
     const dir = this.starNodes[bestIndex].object.group.position.clone().sub(worldPos);
@@ -3536,13 +3767,9 @@ export class UnifiedViewer {
     dir.normalize();
     const star =
       bestIndex === 0 ? this.system.star : this.system.companions[bestIndex - 1].star;
-    const scale =
-      bestRatio *
-      adapted(instellation(hostStar.luminosity, hostDistanceKm)) *
-      luminosityMultiplierAt(star, simTimeDays);
     return {
       dir,
-      color: [star.linearRgb[0] * scale, star.linearRgb[1] * scale, star.linearRgb[2] * scale],
+      color,
       angularRadius: (star.radius * SOLAR_RADIUS_KM) / distanceKm,
       reach: Infinity,
     };
@@ -3555,7 +3782,8 @@ export class UnifiedViewer {
     if (this.focusMoon) {
       // The parent planet hangs in the focused moon's sky, rings and
       // all, positioned each frame at its true planet-centric offset.
-      // The parent fills a moon's sky: full-resolution deck.
+      // This is a ceiling; projected size determines the actual deck.
+      // A distant moon may see its parent as only a few dozen pixels.
       this.parentObject = new PlanetObject(
         planet.physical,
         planet.rings,
@@ -3563,12 +3791,14 @@ export class UnifiedViewer {
         1024,
       );
       this.parentObject.group.scale.setScalar(EARTH_RADIUS_KM);
+      this.parentObject.prepare(mesh => this.pipeline.prepareSceneObject(mesh, this.scene));
       this.moonGroup.add(this.parentObject.group);
     }
     this.moonOrbits = new Group();
     this.moonGroup.add(this.moonOrbits);
     this.moons = planet.moons.map((moon) => {
         const object = new PlanetObject(moon.physical, null);
+        object.prepare(mesh => this.pipeline.prepareSceneObject(mesh, this.scene));
         object.group.scale.setScalar(EARTH_RADIUS_KM);
         this.moonGroup!.add(object.group);
 
@@ -3621,12 +3851,13 @@ export class UnifiedViewer {
     this.heliocentric.quaternion.identity();
     this.heliocentric.position.set(0, 0, 0);
 
-    this.galaxyVolume = new GalaxyVolume(GALACTIC_CENTRE, frame);
-    this.galaxyVolume.meanLuminosity = meanPopulationLuminosity();
+    this.galaxyVolume = new GalaxyVolume(GALACTIC_CENTRE, frame, () => { this.skyCaptured = false; });
+    this.galaxyVolume.prepare(object => this.pipeline.prepareSceneObject(object, this.scene));
+    this.galaxyVolume.setInstrument(this.skyInstrument, this.skyExposure);
     this.pipeline.sky.scene.add(this.galaxyVolume.mesh);
-    this.galaxyParticles = new GalaxyParticles(GALACTIC_CENTRE, frame, PC_KM);
-    this.pcGroup.add(this.galaxyParticles.group);
-    this.nuclearCluster = new NuclearCluster(GALACTIC_CENTRE, frame, PC_KM);
+    this.nuclearCluster = new NuclearCluster(GALACTIC_CENTRE, frame, PC_KM, () => { this.skyCaptured = false; });
+    this.nuclearCluster.prepare(group => this.pipeline.prepareSceneObject(group, this.scene));
+    this.nuclearCluster.setInstrument(this.skyInstrument, this.skyExposure);
     this.pcGroup.add(this.nuclearCluster.group);
 
     const hole = new BlackHoleObject(nucleus, this.lut, frame);
@@ -3725,36 +3956,19 @@ export class UnifiedViewer {
     this.updateGizmo();
 
     const identity = new Matrix3();
-    const pixelsPerRadian =
-      this.pipeline.renderer.domElement.clientHeight /
-      (2 * Math.tan((this.camera.fov * Math.PI) / 360));
     if (this.nuclearCluster) {
       this.nuclearCluster.intensity = 1;
       this.nuclearCluster.group.visible = true;
       const out = this.nuclearCluster.update(this.camera.position.length() / PC_KM);
       this.exposure = CORE_EXPOSURE + (this.exposureOutsideCore - CORE_EXPOSURE) * out;
     }
-    // The particle galaxy is a statistical stand-in whose grains are
-    // hundreds of parsecs wide: from inside the nucleus the camera
-    // sits within its own sprites, so it only takes over once there is
-    // room to see it as a galaxy. The cluster and the volume carry the
-    // centre until then — which is also the honest picture, since the
-    // disk beyond is a hundred magnitudes of dust away.
-    const centrePc = this.camera.position.length() / PC_KM;
-    const bodyFade = Math.min(1, Math.max(0, (centrePc - 200) / 1800));
-
     // The bent rays' background is the sky arriving at the hole, so it
     // is photographed from the hole — once, with the dome re-centred
     // there and the hole itself out of frame.
     if (this.lensedSky && this.blackHole && !this.skyCaptured) {
       this.skyCaptured = true;
       this.galaxyVolume?.update(ORIGIN, ORIGIN, identity, PC_KM, 1, 1e15);
-      this.galaxyParticles?.update(0, pixelsPerRadian);
-      if (this.nuclearCluster) {
-        this.nuclearCluster.sizeScale = this.lensedSky.pixelsPerRadian / pixelsPerRadian;
-      }
       this.captureWithSkyAt(this.lensedSky, ORIGIN, [this.blackHole.mesh]);
-      if (this.nuclearCluster) this.nuclearCluster.sizeScale = 1;
     }
 
     // Close in, every ray on screen is bent enough that the hole draws
@@ -3775,10 +3989,6 @@ export class UnifiedViewer {
       PC_KM,
       holeCoversSky ? 0 : 1,
       Math.min(this.camera.far * 0.3, 3e15),
-    );
-    this.galaxyParticles?.update(
-      holeCoversSky ? 0 : bodyFade * bodyFade * (3 - 2 * bodyFade),
-      pixelsPerRadian,
     );
     if (this.nuclearCluster) this.nuclearCluster.group.visible = !holeCoversSky;
     this.blackHole?.update(this.camera, ORIGIN, identity, 1, 1, this.simTimeDays * 86400);
@@ -3825,23 +4035,12 @@ export class UnifiedViewer {
     const parallax = this.nearestStarSeparation(position);
     if (!node.capturedAt || node.capturedAt.distanceTo(position) > 0.02 * parallax) {
       node.capturedAt = position.clone();
-      // A point sprite is sized in pixels, so drawn into a capture
-      // coarser than the screen it comes back out of it fatter than the
-      // same star beside it. Scale every sprite layer by the two
-      // resolutions' ratio for the duration of the capture, the way the
-      // nuclear cluster is scaled for the hole at the galaxy's centre.
-      const screen =
-        this.pipeline.renderer.domElement.clientHeight /
-        (2 * Math.tan((this.camera.fov * Math.PI) / 360));
-      const scale = node.holeSky.pixelsPerRadian / screen;
-      this.scaleSprites(scale);
+      // Point PSFs seat their angular scale from the capture projection.
       this.captureWithSkyAt(node.holeSky, position, [hole.mesh]);
-      this.scaleSprites(1);
     }
     hole.render(this.pipeline.renderer);
   }
 
-  /** Set every point-sprite layer's size scale at once. */
   /**
    * Take a cube capture with the sky moved to where it is being
    * photographed from.
@@ -3875,15 +4074,6 @@ export class UnifiedViewer {
     skies.forEach((group, i) => group.position.copy(were[i]));
   }
 
-  private scaleSprites(scale: number): void {
-    this.scene.traverse((object) => {
-      const material = (object as { material?: { uniforms?: Record<string, { value: unknown }> } })
-        .material;
-      const uniform = material?.uniforms?.uSizeScale;
-      if (uniform) uniform.value = scale;
-    });
-  }
-
   /** Distance to the nearest other star, which is the scale on which
    *  the sky behind a moving hole actually shifts. */
   private nearestStarSeparation(position: Vector3): number {
@@ -3896,7 +4086,13 @@ export class UnifiedViewer {
   }
 
   private clearFocus(): void {
+    this.solidFocusVersion++;
+    this.cancelSeasonal?.(); this.cancelSeasonal = null; this.seasonalResult = null;
+    this.seasonalPoint = null;
+    for(const material of [this.terrainMaterial,this.scatterMaterial]) applySeasonalSurface(material,null);
+    this.seasonalOverlay?.dispose();this.seasonalOverlay=null;
     this.focusMoon = null;
+    this.stopAuditFlight();
     this.flight.stop();
     if (document.pointerLockElement) document.exitPointerLock();
     this.chunkManager?.dispose();
@@ -3912,6 +4108,7 @@ export class UnifiedViewer {
       clearRingShadow(material);
     }
     this.surveying = false;
+    this.pipeline.clouds.setShell(null);
     for (const mesh of [
       this.atmosphereShell,
       this.cloudShell,
@@ -4007,6 +4204,9 @@ export class UnifiedViewer {
   }
 
   private clearSystem(): void {
+    this.auditCoreCrossingAt = 0;
+    this.stopAuditFlight();
+    this.residencyService.cancel();
     // Whatever sky was still building was building for here, and here
     // is being left.
     cancelSkyBuilds();
@@ -4098,6 +4298,8 @@ export class UnifiedViewer {
       setStarNebulaExtinction([]);
     }
     for (const seed of [...this.heldBakes.keys()]) this.releaseHeld(seed);
+    for (const seed of this.nebulaUploads.keys()) this.cancelNebulaUpload(seed, false);
+    this.nebulaMemory.clear();
     this.retireEnclosingCarrier();
     this.wantedNebulae.clear();
     this.coarseBakes.clear();
@@ -4105,11 +4307,6 @@ export class UnifiedViewer {
     this.residencyAt = null;
     // The next locale's volumes must not wait behind this one's bakes.
     resetNebulaBakes();
-    if (this.galaxyParticles) {
-      this.pcGroup.remove(this.galaxyParticles.group);
-      this.galaxyParticles.dispose();
-      this.galaxyParticles = null;
-    }
     if (this.nuclearCluster) {
       this.pcGroup.remove(this.nuclearCluster.group);
       this.nuclearCluster.dispose();
@@ -4131,6 +4328,7 @@ export class UnifiedViewer {
     }
     this.skyData = null;
     this.system = null;
+    this.stellarGeometry = null;
   }
 
   /** Seat an instrument on the whole sky — backdrop tiers, the 3D
@@ -4138,8 +4336,11 @@ export class UnifiedViewer {
    *  for whatever stands up next. Exposure is one dial: >1 digs
    *  deeper, <1 pulls back. */
   setSkyInstrument(instrument: DisplayInstrument, exposure = 1): void {
+    if (this.lensedSky && (instrument !== this.skyInstrument || exposure !== this.skyExposure)) this.skyCaptured = false;
     this.skyInstrument = instrument;
     this.skyExposure = exposure;
+    this.nuclearCluster?.setInstrument(instrument, exposure);
+    this.galaxyVolume?.setInstrument(instrument, exposure, this.skyFloorRadiance);
     this.backdrop?.setInstrument(instrument, exposure);
     this.skyHandover?.backdrop.setInstrument(instrument, exposure);
     for (const volume of this.nebulaVolumes.values()) {
@@ -4170,9 +4371,15 @@ export class UnifiedViewer {
   private setSkyIntensity(pointValue: number, extendedValue = pointValue): void {
     pointValue = Math.min(1, Math.max(0, pointValue));
     extendedValue = Math.min(1, Math.max(0, extendedValue));
+    for (const comet of this.cometObjects) comet.setVisibility(pointValue, extendedValue);
+    for (const material of this.beltMaterials) material.uniforms.uExposure.value = pointValue;
+    if (this.beltRockPoints) {
+      (this.beltRockPoints.material as ShaderMaterial).uniforms.uExposure.value = pointValue;
+    }
     // The backdrop fades out as the volumetric galaxy fades in — its
     // sky-sphere geometry is wrong once the camera has real parallax.
-    // The neighborhood points are true 3D and stay: they simply recede.
+    // Fade both local representations together: the exterior volume
+    // already owns the full field population, including resolved light.
     // Through a short jump the held bake carries the sky until the
     // next one stands, then hands it over.
     const nextShare = this.skyHandover?.nextShare ?? 1;
@@ -4188,19 +4395,18 @@ export class UnifiedViewer {
     // twilight than a stellar point. Its occlusion fades with its light,
     // so a rift cannot punch a dark hole through the atmosphere.
     this.pipeline.sky.intensity = extendedValue;
-    if (this.neighborPoints) {
-      (this.neighborPoints.material as ShaderMaterial).uniforms.uIntensity.value = pointValue;
-      this.neighborPoints.visible = pointValue > SKY_POINT_VISIBILITY_FLOOR;
-    }
-    if (this.farPoints) {
-      (this.farPoints.material as ShaderMaterial).uniforms.uIntensity.value = pointValue;
-      this.farPoints.visible = pointValue > SKY_POINT_VISIBILITY_FLOOR;
+    const localPointValue = pointValue * (1-this.galaxyFade);
+    for (const points of [this.neighborPoints,this.farPoints,...this.skyPreview]) {
+      if (!points) continue;
+      (points.material as ShaderMaterial).uniforms.uIntensity.value=localPointValue;
+      points.visible=localPointValue>SKY_POINT_VISIBILITY_FLOOR;
     }
     // Nothing at the centre reaches the disk in visible light; only a
     // camera lifted clear of the dust layer ever sees the cluster.
     if (this.nuclearCluster) {
       const clusterIntensity = pointValue * this.coreTransmission;
-      this.nuclearCluster.intensity = clusterIntensity;
+      this.nuclearCluster.intensity = pointValue;
+      this.nuclearCluster.transmission = this.coreTransmission;
       this.nuclearCluster.group.visible = clusterIntensity > SKY_POINT_VISIBILITY_FLOOR;
     }
   }
@@ -4211,22 +4417,10 @@ export class UnifiedViewer {
    * companion moves on its relative orbit around the primary.
    */
   private stellarPositionsKm(tSeconds: Seconds): Vector3[] {
-    const system = this.system!;
-    const positions = [new Vector3()];
-    for (let i = 0; i < this.starNodes.length - 1; i++) {
-      const companion = system.companions[i];
-      const pairMu = muOf(G * (system.star.mass + companion.star.mass) * SOLAR_MASS);
-      const { position } = elementsToState(companion.elements, pairMu, tSeconds);
-      const relative = toWorld(position).divideScalar(1000);
-      if (i === 0 && system.configuration === 'p-type') {
-        const fraction = companion.star.mass / (system.star.mass + companion.star.mass);
-        positions[0] = relative.clone().multiplyScalar(-fraction);
-        positions.push(relative.clone().multiplyScalar(1 - fraction));
-      } else {
-        positions.push(positions[0].clone().add(relative));
-      }
-    }
-    return positions;
+    return this.stellarGeometry!.sources.map(source => {
+      const p = orbitWorldPosition(source.path, tSeconds);
+      return new Vector3(p.x / 1000, p.y / 1000, p.z / 1000);
+    });
   }
 
   /** Heliocentric position of the focus body at the current time, km. */
@@ -4261,7 +4455,8 @@ export class UnifiedViewer {
     const mu = node ? node.mu : planetMu(this.system, this.focusPlanet);
     const { position } = elementsToState(this.focusPlanet.elements, mu, tSeconds);
     const planetPos = toWorld(position).divideScalar(1000);
-    const hostPos = this.stellarPositionsKm(tSeconds)[Math.max(this.hostIndex, 0)];
+    const hostPos = this.system.configuration === 'p-type' && this.hostIndex <= 0
+      ? new Vector3() : this.stellarPositionsKm(tSeconds)[Math.max(this.hostIndex, 0)];
     if (hostPos) planetPos.add(hostPos);
     const moonEntry = this.focusMoon
       ? this.moons.find((entry) => entry.moon === this.focusMoon)
@@ -4274,8 +4469,7 @@ export class UnifiedViewer {
   }
 
   private resize(): void {
-    const width = this.container.clientWidth;
-    const height = this.container.clientHeight;
+    const [width, height] = performanceViewport() ?? [this.container.clientWidth, this.container.clientHeight];
     this.hoverViewportWidth = Math.max(width, 1);
     this.hoverViewportHeight = Math.max(height, 1);
     this.camera.aspect = width / height;
@@ -4337,7 +4531,9 @@ export class UnifiedViewer {
         ? 'drag to look · hold to fly · pinch out to leave'
         : document.pointerLockElement === this.pipeline.renderer.domElement
           ? 'w a s d fly · space rise · c dive · shift boost · scroll up to leave'
-          : 'click to take the controls';
+          : this.flightPointerLockDenied
+            ? 'mouse lock unavailable · drag to look · w a s d fly · space rise · c dive'
+            : 'drag to look · click to lock the mouse · w a s d fly';
     } else if (this.field && this.altitudeKm <= this.minAltitudeKm * 1.02) {
       text = this.touchMode ? 'pinch in to fly' : 'scroll in to fly';
     }
@@ -4352,9 +4548,12 @@ export class UnifiedViewer {
     if (this.disposed) return;
     const now = performance.now();
     const dtSeconds = Math.min((now - this.lastFrameMs) / 1000, 0.1);
+    const capturedIntervalMs = now - this.lastFrameMs;
     this.smoothFrame(now - this.lastFrameMs);
     this.lastFrameMs = now;
     this.simTimeDays += dtSeconds * this.timeScaleDaysPerSecond;
+    this.pipeline.beginFrame();
+    this.advanceNebulaUpload();
 
     if (this.coreView) {
       this.frameCore(dtSeconds);
@@ -4377,6 +4576,22 @@ export class UnifiedViewer {
         this.controls.update(dtSeconds);
       }
       this.advanceMoves();
+      if (this.auditGroundFlightUntil && (now >= this.auditGroundFlightUntil || !this.flight.active)) this.stopAuditFlight();
+
+      if (this.auditCoreCrossingAt && this.sceneOrientation) {
+        const phase = Math.min(1, (now - this.auditCoreCrossingAt) / 12000);
+        const xPc = 2000 - 4000 * phase;
+        const world = (x: number, y: number, z: number): Vector3 => {
+          const p = rotateToScene(this.sceneOrientation!, x - this.viewpointPc.xPc,
+            y - this.viewpointPc.yPc, z - this.viewpointPc.zPc);
+          return new Vector3(...p).multiplyScalar(PC_KM).applyQuaternion(this.frameQuat).add(this.heliocentric.position);
+        };
+        this.camera.position.copy(world(xPc, 300, 80));
+        this.controls.target.copy(world(xPc - 2000, 300, 80));
+        this.camera.up.copy(world(xPc, 300, 81).sub(this.camera.position).normalize());
+        this.camera.lookAt(this.controls.target);
+        if (phase === 1) this.auditCoreCrossingAt = 0;
+      }
 
       let up = this.camera.position.clone().normalize();
       const terrainM = this.field ? this.field.heightAt(up) : 0;
@@ -4517,6 +4732,9 @@ export class UnifiedViewer {
         this.sectorChart.skyRadiusLimitPc = (this.camera.far / PC_KM) * 0.45;
         this.sectorChart.labelFade =
           1 - Math.min(1, Math.max(0, (distancePc - 3500) / 3500));
+        const labelsStart = beginLoadingWork();
+        const generatedLabels = this.sectorChart.updateLabels();
+        if (generatedLabels) endLoadingWork('chart-label-batch', labelsStart);
       }
 
       this.updateWorld(up);
@@ -4571,6 +4789,7 @@ export class UnifiedViewer {
             volume.dispose();
             this.nebulaVolumes.delete(seed);
             this.releaseHeld(seed);
+            this.nebulaMemory.release(seed);
             this.coarseBakes.delete(seed);
             this.fineBakes.delete(seed);
             continue;
@@ -4606,6 +4825,7 @@ export class UnifiedViewer {
         // slots; when residents outnumber them, the nearest volumes —
         // the rifts the eye actually checks stars against — take them.
         this.cameraRotation.setFromMatrix4(this.camera.matrixWorld);
+        this.galaxyVolume.updatePointExtinction(this.cameraRotation);
         this.starExtinctions.length = 0;
         for (let i = byDistance.length - 1; i >= 0 && i >= byDistance.length - MAX_STAR_NEBULAE; i--) {
           this.starExtinctions.push(byDistance[i].extinctionFor(this.cameraRotation));
@@ -4631,18 +4851,22 @@ export class UnifiedViewer {
                 camPc.zPc - this.residencyAt.zPc,
               )
             : Infinity;
-          if (moved > NEBULA_RESIDENCY_STRIDE_PC || this.tuneNebulaResidency(nowMs)) {
+          if (nowMs - this.residencyRequestedAtMs >= 150
+            && (moved > NEBULA_RESIDENCY_STRIDE_PC || this.tuneNebulaResidency(nowMs))) {
             this.residencyAt = camPc;
             this.updateNebulaResidency(camPc, this.skyPreviewFrame);
           }
           this.climbNebulaGrade(this.skyPreviewFrame);
         }
-        this.coreTransmission = Math.exp(
-          -dustOpticalDepth(
-            { xPc: kpc.x * 1000, yPc: kpc.y * 1000, zPc: kpc.z * 1000 },
-            GALACTIC_CENTRE,
-          ),
-        );
+        if (!this.coreTransmissionAt.equals(kpc)) {
+          this.coreTransmissionAt.copy(kpc);
+          this.coreTransmission = Math.exp(
+            -dustOpticalDepth(
+              { xPc: kpc.x * 1000, yPc: kpc.y * 1000, zPc: kpc.z * 1000 },
+              GALACTIC_CENTRE,
+            ),
+          );
+        }
         // Out of the dust at last: now the cluster is worth having.
         if (
           !this.nuclearCluster &&
@@ -4650,16 +4874,14 @@ export class UnifiedViewer {
           this.coreTransmission > SKY_POINT_VISIBILITY_FLOOR
         ) {
           this.nuclearCluster = new NuclearCluster(this.viewpointPc, this.clusterFrame, PC_KM);
+          this.nuclearCluster.prepare(group => this.pipeline.prepareSceneObject(group, this.scene));
+          this.nuclearCluster.setInstrument(this.skyInstrument, this.skyExposure);
           this.pcGroup.add(this.nuclearCluster.group);
         }
         this.nuclearCluster?.update(Math.hypot(kpc.x, kpc.y, kpc.z) * 1000);
       }
-      this.galaxyParticles?.update(
-        this.galaxyFade,
-        this.pipeline.renderer.domElement.clientHeight /
-          (2 * Math.tan((this.camera.fov * Math.PI) / 360)),
-      );
-      this.chunkManager?.update(this.camera.position, groundKm);
+      this.chunkManager?.update(this.camera.position, groundKm,
+        this.performanceCapture?.enabled.terrainLod === false ? 3 : 0);
       // The diagrammatic overlays appear at map heights — capped by the
       // system extent, since 25 radii of a giant star can lie beyond
       // its own planets and the map would never surface — each family
@@ -4671,8 +4893,24 @@ export class UnifiedViewer {
       if (this.moonOrbits) this.moonOrbits.visible = this.orbitsVisible;
     }
 
-    this.pipeline.render();
+    const audit = this.performanceCapture;
+    if (audit) {
+      const hidden: Object3D[] = [];
+      const hide = (object?: Object3D | null) => { if (object?.visible) { hidden.push(object); object.visible = false; } };
+      if (!audit.enabled.backdrop) { hide(this.backdrop?.group); hide(this.skyHandover?.group); }
+      if (!audit.enabled.stars) { hide(this.farPoints); hide(this.neighborPoints); hide(this.starSprites); }
+      if (!audit.enabled.groundSky) hide(this.skyDome);
+      if (!audit.enabled.limb) hide(this.atmosphereShell);
+      if (!audit.enabled.depthGlobe) hide(this.occlusionGlobe);
+      const cloudsEnabled = this.pipeline.clouds.enabled;
+      if (!audit.enabled.clouds) this.pipeline.clouds.enabled = false;
+      const intensity = this.pipeline.sky.intensity;
+      if (!audit.enabled.volumes) this.pipeline.sky.intensity = 0;
+      try { this.pipeline.render(); }
+      finally { for (const object of hidden) object.visible = true; this.pipeline.sky.intensity = intensity; this.pipeline.clouds.enabled = cloudsEnabled; }
+    } else this.pipeline.render();
     this.frameScriptMs = performance.now() - now;
+    if (audit) audit(capturedIntervalMs, this.perfStats);
     requestAnimationFrame(() => this.frame());
   }
 
@@ -4681,7 +4919,7 @@ export class UnifiedViewer {
    *  vacuum, an envelope, or orbit. */
   private airView(up: Vector3): AirView | null {
     if (!this.focusAir) return null;
-    const gasFraction = Math.exp(-this.altitudeKm / this.focusAir.scaleHeightKm);
+    const [gasFraction, densityFraction] = gasState(this.focusAir.gasProfile, this.altitudeKm / this.focusAir.scaleHeightKm);
     const aerosolFraction = Math.exp(-this.altitudeKm / this.focusAir.aerosolScaleHeightKm);
     if (Math.max(gasFraction, aerosolFraction) < 1e-4) return null;
     const { rayleigh, aerosol, aerosolExtinction, horizon, aerosolHorizon, refraction } =
@@ -4705,9 +4943,20 @@ export class UnifiedViewer {
       up,
       horizon,
       aerosolHorizon,
-      refraction: refraction * gasFraction,
+      refraction: refraction * densityFraction,
       scatteringAlbedo: tau[1] > 0 ? greenScattering / tau[1] : 1,
     };
+  }
+
+  /** Physical pixel footprint of a body's disc, including the drawing
+   * buffer scale. A parent at 67 radii is small even from its moon. */
+  private surfaceExposure = 1;
+
+  private deckView(position: Vector3, radiusKm: number) {
+    const d2 = this.camera.position.distanceToSquared(position);
+    return { diameterPixels: this.pipeline.renderer.domElement.height * this.camera.projectionMatrix.elements[5]
+      * radiusKm / Math.sqrt(Math.max(d2 - radiusKm * radiusKm, radiusKm * radiusKm * 0.01)),
+      daysPerSecond: this.timeScaleDaysPerSecond, exposure: this.surfaceExposure };
   }
 
   private updateWorld(up: Vector3): void {
@@ -4788,9 +5037,8 @@ export class UnifiedViewer {
     // lives in the frame: the ecliptic leans by the obliquity. Envelope
     // focuses tilt the body instead (inside PlanetObject).
     const tilt = solid && focusBody ? focusBody.rotation.obliquityRad : 0;
-    this.frameQuat
-      .setFromAxisAngle(yAxis, spin)
-      .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), tilt));
+    this.frameQuat.fromArray(bodyFrameQuaternion({ periodHours: solid && spinPeriodHours ? spinPeriodHours : Infinity,
+      obliquityRad: tilt }, this.simTimeDays * DAY));
     const focusPos = this.focusPositionKm();
     this.heliocentric.quaternion.copy(this.frameQuat);
     this.heliocentric.position.copy(focusPos).negate().applyQuaternion(this.frameQuat);
@@ -4873,7 +5121,9 @@ export class UnifiedViewer {
     const hostIndex = Math.max(this.hostIndex, 0);
     const hostStar = this.hostStar ?? this.system.star;
     const hostWorld = this.starNodes[hostIndex]?.object.group.position ?? new Vector3();
-    const hostPos = starPositions[hostIndex] ?? new Vector3();
+    (this.beltRockMaterial.uniforms.uHostPositionKm.value as Vector3).copy(hostWorld);
+    const hostPos = this.system.configuration === 'p-type' && hostIndex === 0
+      ? new Vector3() : starPositions[hostIndex] ?? new Vector3();
     this.auGroup.position.copy(hostPos);
     this.overlay.position.copy(hostPos);
     this.zoneOverlay.position.copy(hostPos);
@@ -4881,7 +5131,9 @@ export class UnifiedViewer {
     const sunDir =
       hostWorld.lengthSq() > 1 ? hostWorld.clone().normalize() : new Vector3(0, 0, 1);
     const angularRadius = (hostStar.radius * SOLAR_RADIUS_KM) / Math.max(this.starDistanceKm, 1);
-    const lightColor = starlight(hostStar, this.starDistanceKm, this.simTimeDays);
+    this.surfaceExposure = surfaceLightExposure(instellation(hostStar.luminosity, this.starDistanceKm));
+    const lightColor = starlight(hostStar, this.starDistanceKm, this.simTimeDays, this.surfaceExposure);
+    (this.beltRockMaterial.uniforms.uHostLightAtAu.value as Color).setRGB(...starlight(hostStar, AU_KM, this.simTimeDays, this.surfaceExposure));
     const light2 = this.otherSunAt(ORIGIN, hostIndex, this.simTimeDays);
 
     // Planets on their orbits. The focused one is rendered at the origin
@@ -4891,18 +5143,20 @@ export class UnifiedViewer {
       const node = this.planetNodes[i];
       const isFocus =
         this.focus === i || (this.focusMoon !== null && node.planet === this.focusPlanet);
-      node.object.group.visible = !isFocus;
+      const previewPending = this.focus === i && !this.field && !node.planet.physical.appearance.banding;
+      node.object.group.visible = !isFocus || previewPending;
       node.marker.visible = false;
-      if (isFocus) continue;
+      if (isFocus && !previewPending) continue;
       const state = elementsToState(node.planet.elements, node.mu, tSeconds);
       const positionKm = toWorld(state.position).divideScalar(1000).add(hostPos);
       node.object.group.position.copy(positionKm);
       const worldPos = toFocusWorld(positionKm);
       const lightDir = hostWorld.clone().sub(worldPos);
-      const nodeLight = starlight(hostStar, lightDir.length(), this.simTimeDays);
+      const nodeLight = starlight(hostStar, lightDir.length(), this.simTimeDays, this.surfaceExposure);
       lightDir.normalize();
       const node2 = this.otherSunAt(worldPos, hostIndex, this.simTimeDays);
-      node.object.update(this.simTimeDays, lightDir, nodeLight, node2, this.pipeline.renderer);
+      node.object.update(this.simTimeDays, lightDir, nodeLight, node2, this.pipeline.renderer,
+        this.deckView(worldPos, node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM));
       node.object.setAirView(air);
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
@@ -4925,13 +5179,9 @@ export class UnifiedViewer {
       });
     }
 
-    for (const material of this.beltMaterials) {
-      material.uniforms.uTimeYears.value = foldShaderTime(this.simTimeDays / 365.25);
-    }
     const cometHead = new Vector3();
     const radPerPixel =
-      (this.camera.fov * Math.PI) /
-      180 /
+      2 * Math.tan((this.camera.fov * Math.PI) / 360) /
       Math.max(this.pipeline.renderer.domElement.clientHeight, 1);
     for (let i = 0; i < this.cometObjects.length; i++) {
       const comet = this.cometObjects[i];
@@ -4952,7 +5202,7 @@ export class UnifiedViewer {
     }
     this.updateBeltRegion(tSeconds, focusPos, hostPos);
 
-    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer);
+    this.bodyObject?.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer, this.deckView(ORIGIN, this.radiusKm));
 
     // Moons on their true orbits; the focus planet eclipses them. Their
     // group carries the ground frame's diurnal sweep — equatorial
@@ -4988,7 +5238,7 @@ export class UnifiedViewer {
       : [{ position: new Vector3(0, 0, 0), radius: this.radiusKm }];
     const shineBodies: ShineBody[] = [];
     if (this.parentObject && this.focusPlanet) {
-      this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer);
+      this.parentObject.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer, this.deckView(groupShift, parentRadiusKm));
       this.parentObject.setAirView(air);
       shineBodies.push({
         positionKm: groupShift.clone(),
@@ -5012,15 +5262,16 @@ export class UnifiedViewer {
     for (let j = 0; j < this.moons.length; j++) {
       const { moon, object, marker, mu } = this.moons[j];
       const isFocusMoon = moon === this.focusMoon;
-      object.group.visible = !isFocusMoon;
-      if (isFocusMoon) {
+      object.group.visible = !isFocusMoon || !this.field;
+      if (isFocusMoon && this.field) {
         marker.visible = false;
         continue;
       }
       const state = elementsToState(moon.elements, mu, tSeconds);
       object.group.position.copy(toWorld(state.position)).divideScalar(1000);
       moonWorld.copy(object.group.position).applyAxisAngle(yAxis, spin).add(groupShift);
-      object.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer);
+      object.update(this.simTimeDays, sunDir, lightColor, light2, this.pipeline.renderer,
+        this.deckView(moonWorld, moon.physical.bulk.radiusEarth * EARTH_RADIUS_KM));
       object.setAirView(air);
       object.setOccluders(casters, angularRadius);
 
@@ -5066,6 +5317,10 @@ export class UnifiedViewer {
     }
 
     if (!focusBody) {
+      applyAirView(this.beltRockMaterial, null);
+      for (const comet of this.cometObjects) comet.setAirView(null);
+      for (const material of this.beltMaterials) applyAirView(material, null);
+      if (this.beltRockPoints) applyAirView(this.beltRockPoints.material as ShaderMaterial, null);
       this.setSkyIntensity(1);
       return;
     }
@@ -5114,6 +5369,7 @@ export class UnifiedViewer {
       const muSun = sunDir.dot(up);
       const zenith = curvedZenithSkyRadiance(
         {
+          gasProfile: this.focusAir.gasProfile,
           rayleigh: this.focusAir.rayleigh,
           aerosol: this.focusAir.aerosol,
           aerosolExtinction: this.focusAir.aerosolExtinction,
@@ -5143,6 +5399,11 @@ export class UnifiedViewer {
     this.backdrop?.setAirView(air);
     this.skyHandover?.backdrop.setAirView(air);
     this.pipeline.sky.setAirView(air);
+    this.nuclearCluster?.setAirView(air);
+    applyAirView(this.beltRockMaterial, air);
+    for (const comet of this.cometObjects) comet.setAirView(air);
+    for (const material of this.beltMaterials) applyAirView(material, air);
+    if (this.beltRockPoints) applyAirView(this.beltRockPoints.material as ShaderMaterial, air);
     for (const points of [this.starSprites, this.farPoints, this.neighborPoints]) {
       if (points) applyAirView(points.material as ShaderMaterial, air);
     }
@@ -5172,11 +5433,17 @@ export class UnifiedViewer {
       applyOccluders(material, casters, angularRadius);
     }
 
+    const seasonalPhase = this.seasonalOverlay ? ((this.simTimeDays * DAY / this.seasonalOverlay.field.cycleSeconds) % 1 + 1) % 1 : 0;
     for (const material of [this.terrainMaterial, this.scatterMaterial, this.oceanMaterial]) {
       if (!material) continue;
       material.uniforms.uLightDir.value = [sunDir.x, sunDir.y, sunDir.z];
       material.uniforms.uLightColor.value.setRGB(...lightColor);
       applySecondSun(material, surf2);
+      if (material.uniforms.uSeasonalPhase) {
+        material.uniforms.uSeasonalPhase.value = seasonalPhase;
+        material.uniforms.uSeasonalEnabled.value = this.seasonalOverlay && this.performanceCapture?.enabled.seasonalSnow !== false ? 1 : 0;
+      }
+      if (material.uniforms.uSurfaceExposure) material.uniforms.uSurfaceExposure.value = this.surfaceExposure;
       if (material.uniforms.uTimeDays) {
         material.uniforms.uTimeDays.value = foldShaderTime(this.simTimeDays);
       }

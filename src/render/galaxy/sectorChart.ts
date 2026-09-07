@@ -1,6 +1,7 @@
 import {
   BufferGeometry,
   CanvasTexture,
+  DataTexture,
   Float32BufferAttribute,
   Group,
   LinearFilter,
@@ -115,6 +116,13 @@ export class SectorChart {
   private chartValue = 0;
   private skyValue = 0;
   private labelValue = 1;
+  private skyScale = 1;
+  private readonly pendingLabels: Array<{ label: SectorLabel; chart: boolean }>;
+  private nextLabel = 0;
+  private disposed = false;
+  private preparing = false;
+  private preparationStarted = false;
+  private prepared = true;
 
   constructor(sky: SkyField) {
     this.borderMaterial = createLineMaterial([0.32, 0.38, 0.48]);
@@ -143,21 +151,60 @@ export class SectorChart {
     }
     this.skyLines = lines[2];
 
-    for (const label of sky.sectorLabels) {
-      const sprite = createLabelSprite(label);
-      this.chartLabels.push(sprite);
-      this.group.add(sprite);
-    }
-    for (const label of sky.constellationLabels) {
-      const sprite = createLabelSprite(label);
-      this.skyLabels.push({ sprite, base: new Vector3(label.x, label.y, label.z) });
-      this.group.add(sprite);
-    }
+    this.pendingLabels = [
+      ...sky.sectorLabels.map(label => ({ label, chart: true })),
+      ...sky.constellationLabels.map(label => ({ label, chart: false })),
+    ];
     this.group.visible = false;
   }
 
+  /** Warm the line and mapped-sprite shader variants without font work.
+   * Keep materials alive until parallel compilation has really finished. */
+  prepare(compile: (group: Group) => Promise<unknown>): void {
+    if (this.disposed || this.preparationStarted) return;
+    this.preparationStarted = true;
+    this.preparing = true;
+    this.prepared = false;
+    this.apply();
+    const texture = new DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+    const prototype = new Sprite(new SpriteMaterial({ map: texture, transparent: true,
+      opacity: 0, depthWrite: false, depthTest: true, sizeAttenuation: false }));
+    prototype.visible = false;
+    this.group.add(prototype);
+    const ready = () => {
+      this.preparing = false;
+      this.prepared = true;
+      if (this.disposed) this.releaseResources();
+      else this.apply();
+    };
+    try { void compile(this.group).then(ready, ready); }
+    catch { ready(); }
+  }
+
+  /** Font rasterization is unnecessary for a hidden chart. When opened,
+   * admit only a small batch per frame so toggling it cannot move the
+   * arrival hitch to the map button. Borders are ready immediately. */
+  updateLabels(budgetMs = 2): number {
+    if (this.disposed || !this.group.visible || this.nextLabel >= this.pendingLabels.length) return 0;
+    const before = this.nextLabel;
+    const start = performance.now();
+    do {
+      const { label, chart } = this.pendingLabels[this.nextLabel++];
+      const sprite = createLabelSprite(label);
+      if (chart) this.chartLabels.push(sprite);
+      else {
+        const base = new Vector3(label.x, label.y, label.z);
+        sprite.position.copy(base).multiplyScalar(this.skyScale);
+        this.skyLabels.push({ sprite, base });
+      }
+      this.group.add(sprite);
+    } while (this.nextLabel < this.pendingLabels.length && performance.now() - start < budgetMs);
+    this.apply();
+    return this.nextLabel - before;
+  }
+
   private apply(): void {
-    this.group.visible = this.chartValue > 0.01 || this.skyValue > 0.01;
+    this.group.visible = this.prepared && (this.chartValue > 0.01 || this.skyValue > 0.01);
     this.borderMaterial.uniforms.uOpacity.value = this.chartValue * 0.3;
     this.homeMaterial.uniforms.uOpacity.value = this.chartValue * 0.85;
     this.skyMaterial.uniforms.uOpacity.value = this.skyValue * 0.5;
@@ -195,6 +242,7 @@ export class SectorChart {
    *  so it always sits inside the camera's current far plane. */
   set skyRadiusLimitPc(limit: number) {
     const scale = Math.min(1, Math.max(limit, 1) / 800);
+    this.skyScale = scale;
     this.skyLines.scale.setScalar(scale);
     for (const { sprite, base } of this.skyLabels) {
       sprite.position.copy(base).multiplyScalar(scale);
@@ -202,6 +250,13 @@ export class SectorChart {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.pendingLabels.length = 0;
+    if (!this.preparing) this.releaseResources();
+  }
+
+  private releaseResources(): void {
     for (const child of this.group.children) {
       if (child instanceof LineSegments) child.geometry.dispose();
       if (child instanceof Sprite) {
@@ -212,5 +267,6 @@ export class SectorChart {
     this.borderMaterial.dispose();
     this.homeMaterial.dispose();
     this.skyMaterial.dispose();
+    this.group.clear();
   }
 }

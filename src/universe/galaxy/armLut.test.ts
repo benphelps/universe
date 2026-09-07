@@ -49,11 +49,7 @@ describe('arm profile LUT', () => {
   });
 
   it('reconstructs the profile between texels', () => {
-    // Seeded, not Math.random: the worst-case error over the caustic
-    // ridges has a tail, and an unseeded draw made this a coin flip —
-    // it measured a different sky every run and failed on the unlucky
-    // ones. The same two thousand points every time, and a bound just
-    // above what they actually measure.
+    // Reproducible off-grid samples include narrow branches and lane offsets.
     const rng = new Rng(7n);
     let worst = 0;
     let sum = 0;
@@ -67,14 +63,9 @@ describe('arm profile LUT', () => {
       worst = Math.max(worst, err);
       sum += err;
     }
-    // The caustic ridges are the sharpest thing in the profile. The
-    // grid rounds their peaks by a few percent of their height, which
-    // is under what the march's own arm-holding cadence smears; the
-    // mean is what the glow integrates, and it barely moves.
+    // Bound interpolation separately from the analytic annular conservation.
     expect(sum / samples).toBeLessThan(0.01);
-    // These points measure 0.223 at the ridges; a change that pushes
-    // past 0.3 has moved the profile or the grid, not the luck.
-    expect(worst).toBeLessThan(0.3);
+    expect(worst).toBeLessThan(0.12);
   });
 
   it('stays inside the model ceiling and dies at both radial edges', () => {
@@ -82,8 +73,8 @@ describe('arm profile LUT', () => {
     for (let i = 0; i < lut.length; i += 2) peak = Math.max(peak, lut[i]);
     expect(1 + peak).toBeLessThanOrEqual(ARM_BOOST_MAX);
     for (let col = 0; col < ARM_LUT_SIZE; col++) {
-      expect(lut[col * 2]).toBeLessThan(0.05);
-      expect(lut[((ARM_LUT_SIZE - 1) * ARM_LUT_SIZE + col) * 2]).toBeLessThan(0.05);
+      expect(lut[col * 2]).toBe(0);
+      expect(lut[((ARM_LUT_SIZE - 1) * ARM_LUT_SIZE + col) * 2]).toBe(0);
     }
   });
 });

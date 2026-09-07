@@ -1,13 +1,17 @@
+import { SMOOTH_MODEL, DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
+import { GALAXY_COMPONENT_GLSL } from './galaxyComponents';
+import { CELL_TRANSFER_GLSL } from '../../core/physics/radiativeTransfer';
 import {
   ARM_LUT_RADIUS_MAX_PC,
   ARM_LUT_RADIUS_MIN_PC,
 } from '../../universe/galaxy/armLut';
 import { CLUMP_TILE_PERIOD, CLUMP_TILE_RANGE } from '../galaxy/clumpTile';
+import { OVERVIEW_RADIUS_PC } from '../../universe/galaxy/overviewSurvey';
 import { glslFloat as f } from './format';
 
 /**
  * The galaxy as a line-of-sight integral, in GLSL: the density model's
- * components (disks, halo, dust with clumping, knee, reddening —
+ * components (disks, halo, dust with clumping and RGB extinction —
  * constants mirror density.ts and skyfield.ts), evaluated from any
  * point in any direction. The dome around the camera marches it to
  * paint the band and the spiral.
@@ -28,13 +32,25 @@ import { glslFloat as f } from './format';
  * molecular-cloud population, the same convention the belt point cloud
  * uses.
  */
-export const buildGalaxyRadianceGlsl = (): string => /* glsl */ `
+export const buildGalaxyRadianceGlsl = (overview = false, transmissionOnly = false): string => /* glsl */ `
+${CELL_TRANSFER_GLSL}
+${GALAXY_COMPONENT_GLSL}
 precision highp sampler3D;
 uniform sampler2D uArmLut;
 uniform sampler3D uClumpNoise;
+${overview ? `uniform vec3 uSelectedThin;
+uniform float uDustScale;
+vec3 overviewEmission(vec3 p, float armBoost) {
+  vec3 n = galaxyFieldDensity(p);
+  n.x *= 1.0 + armBoost;
+  vec4 counts = vec4(n,galaxyBulgeDensity(p));
+  vec3 full = vec3(dot(counts,uPopulationR),dot(counts,uPopulationG),dot(counts,uPopulationB));
+  float thin = n.x;
+  return full - (length(p.xy) < ${f(OVERVIEW_RADIUS_PC/1000)} ? thin * uSelectedThin : vec3(0.0));
+}` : ''}
 
-// The density wave, read back off the model's own bake: x = stellar
-// arm boost, y = inner-edge dust-lane weight. Azimuth wraps around
+// Shared signed contrasts: x = stellar arm redistribution,
+// y = patchy dust lanes and branches. Azimuth wraps around
 // the texture; log radius runs down it and clamps onto zero rows.
 vec2 armProfile(float radiusKpc, float azimuth) {
   if (radiusKpc < ${f(ARM_LUT_RADIUS_MIN_PC / 1000)}) return vec2(0.0);
@@ -45,14 +61,8 @@ vec2 armProfile(float radiusKpc, float azimuth) {
 
 // Off-slab light: outside the disk the thin component is negligible
 // and the arms with it — the halo loops never pay for the wave.
-float haloDensity(vec3 p) {
-  float radius = length(p.xy);
-  float absZ = abs(p.z);
-  float thin = 2.08687 * exp(-radius / 2.6) * exp(-absZ / 0.3);
-  float thick = 0.0943516 * exp(-radius / 3.6) * exp(-absZ / 0.9);
-  float sphericalR = max(length(p), 0.5);
-  float halo = 0.0008 * pow(sphericalR / 8.0, -3.5);
-  return thin + thick + halo;
+vec3 haloDensity(vec3 p) {
+  return ${overview ? 'overviewEmission' : 'galaxyEmissionDensity'}(p, 0.0);
 }
 
 // Differential rotation curves structure: rotate by an angle growing
@@ -82,37 +92,53 @@ float cloudClump(vec3 p) {
 }
 
 /**
- * One stretch of the disk crossing: emission with running dust
- * extinction, at a step the caller sizes to what the stretch holds.
- * Dust opacity is 0.045 per pc of unit density: 45 per kpc. One arm
- * profile per step feeds the thin disk and the inner-edge dust lane;
- * clump patchiness stays arm-neutral so arms shine over their own
- * dust the way face-on spirals do. The wave profile and the clump
- * noise are smooth at step scale: the wave holds for four steps and
- * the clump for two — the texture-fetch budget of the march.
+ * Integrate a continuous sequence of cells through the disk. A Cauchy
+ * change of variable concentrates cells near the ray's closest approach
+ * to the dusty disk (3 kpc radially, 180 pc vertically). These widths
+ * control quadrature, not physical density. Fractional counts and cell
+ * boundaries move continuously with the ray, avoiding rounded thin/thick
+ * allocations that turn grazing sightlines into visible sampling sheets.
+ * Each cell samples its own arms and 3D clouds and uses its actual length.
  */
-void marchDisk(vec3 cam, vec3 dir, float from, float to, int steps, inout float light, inout float tau) {
-  float span = to - from;
-  if (span <= 0.0005 || steps < 1) return;
-  float step = span / float(steps);
-  vec2 arm = vec2(0.0);
-  float clumpNoise = 0.0;
-  for (int i = 0; i < 72; i++) {
-    if (i >= steps) break;
-    float s = from + (float(i) + 0.5) * step;
+void marchDisk(vec3 cam, vec3 dir, float from, float to, inout vec3 light, inout vec3 transmission) {
+  if (to - from <= 0.0005) return;
+  vec3 metric = vec3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 0.18);
+  vec3 scaledDir = dir * metric;
+  float inverseWidth = length(scaledDir);
+  float center = -dot(cam * metric, scaledDir) / dot(scaledDir, scaledDir);
+  float angleFrom = atan((from - center) * inverseWidth);
+  float angleTo = atan((to - center) * inverseWidth);
+  // A vertical ray only needs to resolve the 120 pc dust height. Long
+  // grazing rays must also resolve the 140 pc cloud octave. Keeping the
+  // count fractional gives the last cell a continuously growing width;
+  // rounding it would shift every sample when a new cell is needed.
+  float budget = mix(384.0, 64.0, smoothstep(0.0, 0.35, abs(dir.z)));
+  float steps = max(1.0, (angleTo - angleFrom) * budget / 3.141592653589793);
+  float cellFrom = from;
+  for (int i = 0; i < 384; i++) {
+    if (float(i) >= steps) break;
+    float fraction = min(float(i + 1) / steps, 1.0);
+    float angle = mix(angleFrom, angleTo, fraction);
+    float cellTo = fraction == 1.0 ? to : clamp(center + tan(angle) / inverseWidth, cellFrom, to);
+    float step = cellTo - cellFrom;
+    float s = 0.5 * (cellFrom + cellTo);
+    cellFrom = cellTo;
     vec3 p = cam + dir * s;
     float radius = length(p.xy);
-    if ((i & 3) == 0) arm = armProfile(radius, atan(p.y, p.x));
-    if ((i & 1) == 0) clumpNoise = cloudClump(p);
-    // Smooth count-level arms only: the particle layer carries the
-    // young light and every grain of texture.
-    float thin = 2.08687 * exp(-radius / 2.6) * exp(-abs(p.z) / 0.3) * (1.0 + arm.x);
-    float thick = 0.0943516 * exp(-radius / 3.6) * exp(-abs(p.z) / 0.9);
-    float halo = 0.0008 * pow(max(length(p), 0.5) / 8.0, -3.5);
-    float dust = exp(-radius / 2.6) * exp(-abs(p.z) / 0.12) * (1.0 + 1.4 * arm.y);
-    float clump = s > 1.5 ? (0.45 + 1.6 * clumpNoise) * (1.0 + 0.5 * arm.y) : 0.45;
-    tau += dust * clump * 45.0 * step;
-    light += (thin + thick + halo) * step * exp(-tau);
+    vec2 arm = armProfile(radius, atan(p.y, p.x));
+    ${transmissionOnly ? '' : `vec3 emission = ${overview ? 'overviewEmission' : 'galaxyEmissionDensity'}(p, arm.x);`}
+    float dust = exp(-radius / ${f(SMOOTH_MODEL.dustScaleLengthPc / 1000)}) *
+      exp(-abs(p.z) / ${f(SMOOTH_MODEL.dustScaleHeightPc / 1000)}) * (1.0 + ${f(SMOOTH_MODEL.dustLaneWeight)} * arm.y);
+    // The local cloud renderer takes over nearby. Blend that handoff
+    // across a finite distance instead of cutting a camera-centered shell.
+    float cloudShare = smoothstep(1.2, 1.8, s);
+    float clump = 0.45;
+    if (cloudShare > 0.0) clump = mix(clump, (0.45 + 1.6 * cloudClump(p)) * (1.0 + 0.5 * arm.y), cloudShare);
+    float depth = dust * clump * ${f(DUST_OPACITY_PER_PC * 1000)} * step ${overview ? '* uDustScale' : ''};
+    vec3 cellDepth = depth * GALAXY_DUST_RGB;
+    vec3 cellThrough = exp(-cellDepth);
+    ${transmissionOnly ? '' : 'light += emission * step * transmission * cellEmissionWeight(cellDepth, cellThrough);'}
+    transmission *= cellThrough;
   }
 }
 
@@ -124,7 +150,8 @@ void marchDisk(vec3 cam, vec3 dir, float from, float to, int steps, inout float 
  * steps through the smooth halo — so the disk resolves whether the
  * camera sits inside it or ten kiloparsecs up.
  */
-vec3 galaxyRadiance(vec3 camKpc, vec3 dir, float meanLum) {
+vec3 galaxyIntegral(vec3 camKpc, vec3 dir, float maximumDistance, out vec3 transmission) {
+  transmission = vec3(1.0);
   vec3 cam = camKpc;
   float b = dot(cam, dir);
   float cc = dot(cam, cam) - 33.0 * 33.0;
@@ -132,7 +159,8 @@ vec3 galaxyRadiance(vec3 camKpc, vec3 dir, float meanLum) {
   if (disc <= 0.0) return vec3(0.0);
   float sq = sqrt(disc);
   float t0 = max(-b - sq, 0.0);
-  float t1 = max(-b + sq, 0.0);
+  float t1 = min(max(-b + sq, 0.0), maximumDistance);
+  if (t1 <= t0) return vec3(0.0);
 
   float zMax = 2.6;
   float slab0;
@@ -147,72 +175,42 @@ vec3 galaxyRadiance(vec3 camKpc, vec3 dir, float meanLum) {
     slab1 = clamp(max(ta, tb), t0, t1);
   }
 
-  float light = 0.0;
-  float tau = 0.0;
+  vec3 light = vec3(0.0);
 
   // Halo before the slab: emission only, no dust out there.
   float preStep = (slab0 - t0) / 16.0;
-  if (preStep > 0.001) {
+  if (${transmissionOnly ? 'false' : 'preStep > 0.001'}) {
     for (int i = 0; i < 16; i++) {
       vec3 p = cam + dir * (t0 + (float(i) + 0.5) * preStep);
       light += haloDensity(p) * preStep;
     }
   }
 
-  // The disk crossing, sampled by where the light is. The thin disk's
-  // own slab, |z| below half a kiloparsec, holds the dust and nearly
-  // all the light; the thick disk either side is smooth on a
-  // kiloparsec. Seventy-two steps are shared between them by length,
-  // the thick disk's counting a third — and neither takes more steps
-  // than sixty parsecs of thin disk or a hundred and eighty of thick
-  // call for. A ray running along the plane keeps all seventy-two in
-  // the thin disk, as it always had; a ray from above crosses the
-  // slab in forty, most of the old seventy-two having sampled
-  // near-empty thick disk.
-  float zThin = 0.5;
-  float thin0;
-  float thin1;
-  if (abs(dir.z) < 1.0e-5) {
-    thin0 = abs(cam.z) < zThin ? slab0 : slab1;
-    thin1 = abs(cam.z) < zThin ? slab1 : slab0;
-  } else {
-    float ta = (-zThin - cam.z) / dir.z;
-    float tb = (zThin - cam.z) / dir.z;
-    thin0 = clamp(min(ta, tb), slab0, slab1);
-    thin1 = clamp(max(ta, tb), slab0, slab1);
-  }
-  float lenThin = thin1 - thin0;
-  float lenBefore = thin0 - slab0;
-  float lenAfter = slab1 - thin1;
-  float lenThick = lenBefore + lenAfter;
-  float weightThick = lenThick / 3.0;
-  float shareThin = lenThin + weightThick > 0.0 ? lenThin / (lenThin + weightThick) : 1.0;
-  int stepsThin = min(int(round(72.0 * shareThin)), int(ceil(lenThin / 0.06)));
-  int stepsThick = min(72 - stepsThin, int(ceil(lenThick / 0.18)));
-  int stepsBefore = lenThick > 0.0 ? int(round(float(stepsThick) * lenBefore / lenThick)) : 0;
-  marchDisk(cam, dir, slab0, thin0, stepsBefore, light, tau);
-  marchDisk(cam, dir, thin0, thin1, stepsThin, light, tau);
-  marchDisk(cam, dir, thin1, slab1, stepsThick - stepsBefore, light, tau);
+  marchDisk(cam, dir, slab0, slab1, light, transmission);
 
   // Halo behind, seen through the disk's dust.
   float postStep = (t1 - slab1) / 16.0;
-  if (postStep > 0.001) {
-    float through = exp(-tau);
+  if (${transmissionOnly ? 'false' : 'postStep > 0.001'}) {
     for (int i = 0; i < 16; i++) {
       vec3 p = cam + dir * (slab1 + (float(i) + 0.5) * postStep);
-      light += haloDensity(p) * postStep * through;
+      light += haloDensity(p) * postStep * transmission;
     }
   }
 
-  float reddening = exp(-tau * 0.25);
-  // light is density * kpc: fold mean luminosity and the glow map's
-  // 9.2e-5 photometric scale (times 1000 pc/kpc) into one constant.
-  float raw = light * meanLum * 0.092;
-  float scale = raw / (1.0 + 0.2 * raw);
-  return vec3(
-    scale,
-    scale * 0.93 * (0.75 + 0.25 * reddening),
-    scale * 0.85 * (0.55 + 0.45 * reddening)
-  );
+  // Densities are L☉/pc³, steps are kpc, and isotropic emission
+  // spreads into 4π sr. Do not apply a display curve inside transport.
+  return light * (1000.0 / 12.566370614359172);
+}
+vec3 galaxyRadiance(vec3 camKpc, vec3 dir) {
+  vec3 through;
+  return galaxyIntegral(camKpc, dir, 1e6, through);
+}
+vec3 galaxyTransmission(vec3 observerKpc, vec3 sourceKpc) {
+  vec3 delta = sourceKpc - observerKpc;
+  float distance = length(delta);
+  if (distance < 1e-8) return vec3(1.0);
+  vec3 through;
+  galaxyIntegral(observerKpc, delta / distance, distance, through);
+  return through;
 }
 `;

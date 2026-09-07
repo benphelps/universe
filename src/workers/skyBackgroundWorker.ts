@@ -2,69 +2,60 @@ import { seedFromHex } from '../core/rng/hash';
 import { createSkyBakeGpu } from '../render/galaxy/skyBakeGpu';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import { setGalaxySeed } from '../universe/galaxy/galaxySeed';
+import type { NebulaVolumePair } from '../universe/galaxy/nebulaPair';
+import { refineNebulaPortrait, type NebulaPortrait } from '../universe/galaxy/nebulaPortrait';
 import {
-  buildSkyBackground,
-  type SkyBackground,
-  type SkyMapBaker,
+  planSkyBackground, buildNebulaPatch, nebulaTileFromAtlas,
+  NEBULA_ATLAS_COLS, NEBULA_ATLAS_ROWS, NEBULA_TILE,
+  type NebulaCandidate, type SkyBackground, type SkyMapBaker, type SkyPortraitUpdate,
 } from '../universe/galaxy/skyfield';
 
-export interface BackgroundTask {
-  seedHex: string;
-  viewpoint: GalacticPosition;
-  /** The session's galaxy, hex. */
-  galaxy: string;
-}
+export type BackgroundTask = { id: number; galaxy: string } & (
+  { kind: 'base'; seedHex: string; viewpoint: GalacticPosition } |
+  { kind: 'portrait'; candidate: NebulaCandidate; tile: number; size: number; pair: NebulaVolumePair;
+    previous?: NebulaPortrait['luminosities']; sizes: number[]; lastGrade?: boolean }
+);
+export type BackgroundResult = { id: number } & (
+  { base: { background: SkyBackground; jobs: NebulaCandidate[] } } |
+  { measured: NebulaPortrait['luminosities']; sizes: number[]; portrait?: SkyPortraitUpdate } |
+  { progress: number; stage: string; stageFraction: number }
+);
 
-export interface BackgroundResult {
-  seedHex: string;
-  background: SkyBackground;
-}
-
-/**
- * The half of a sky the star sweep has no say in — gas, dust, chart
- * borders, and the unresolved glow — built on its own thread beside
- * the sweep rather than behind it.
- *
- * Its own worker because neither of the other two places would do. The
- * coordinator is the one dispatching slabs, and a couple of seconds of
- * glow on that thread stalls the whole pool near the sun where slabs
- * are short. A pool worker would take a slab's turn. This one is busy
- * for the first seconds of a build and idle after, which is exactly
- * when the pool has the most to do.
- */
-/** The GPU baker of the background maps, tried once: null means this
- *  platform builds them on the CPU, and a baker that throws mid-build
- *  is demoted the same way. */
+/** One bounded map/photometry worker. It holds a permit only while doing
+ * work; gas solves use the same three-worker pool as resident volumes. */
 let baker: SkyMapBaker | null | undefined;
-
-self.onmessage = (event: MessageEvent<BackgroundTask>) => {
-  const { seedHex, viewpoint, galaxy } = event.data;
-  setGalaxySeed(seedFromHex(galaxy));
+function withBaker<T>(work: (baker: SkyMapBaker | null) => T): T {
   if (baker === undefined) baker = createSkyBakeGpu();
-  let background: SkyBackground;
-  try {
-    background = buildSkyBackground(viewpoint, seedFromHex(seedHex), undefined, baker);
-  } catch (error) {
+  try { return work(baker); }
+  catch (error) {
     if (!baker) throw error;
-    console.warn('sky GPU bake failed, building on the CPU:', error);
-    baker.dispose();
-    baker = null;
-    background = buildSkyBackground(viewpoint, seedFromHex(seedHex));
+    console.warn('sky GPU bake failed, retrying this map on the CPU:', error);
+    baker.dispose(); baker = null;
+    return work(null);
   }
-  const result: BackgroundResult = { seedHex, background };
-  (self as unknown as Worker).postMessage(result, [
-    background.nebulaAtlas.buffer,
-    background.darkAtlas.buffer,
-    background.groupStars.dirs.buffer,
-    background.groupStars.colors.buffer,
-    background.groupStars.brightness.buffer,
-    background.groupStars.distances.buffer,
-    background.groupStars.teffs.buffer,
-    background.groupStars.seeds.buffer,
-    background.sceneFromGalaxy.buffer,
-    background.sectorBounds.buffer,
-    background.sectorHomeBounds.buffer,
-    background.glowData.buffer,
-    background.riftData.buffer,
-  ]);
+}
+const post = (result: BackgroundResult, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(result, transfer);
+self.onmessage = (event: MessageEvent<BackgroundTask>) => {
+  const task = event.data;
+  setGalaxySeed(seedFromHex(task.galaxy));
+  if (task.kind === 'base') {
+    const base = withBaker(baker => planSkyBackground(task.viewpoint, seedFromHex(task.seedHex),
+      (progress, stage, stageFraction) => post({ id: task.id, progress, stage, stageFraction }), baker));
+    const b = base.background;
+    post({ id: task.id, base }, [b.nebulaAtlas.buffer, b.darkAtlas.buffer,
+      b.groupStars.dirs.buffer, b.groupStars.colors.buffer, b.groupStars.brightness.buffer,
+      b.groupStars.distances.buffer, b.groupStars.teffs.buffer, b.groupStars.seeds.buffer,
+      b.sceneFromGalaxy.buffer, b.sectorBounds.buffer, b.sectorHomeBounds.buffer, b.glowData.buffer, b.riftData.buffer]);
+    return;
+  }
+  const measured = refineNebulaPortrait(task.pair, task.previous, task.sizes);
+  const refinement = measured.refinement!;
+  if (!refinement.converged && !(task.lastGrade ?? task.size >= 96)) {
+    post({ id: task.id, measured: measured.luminosities, sizes: refinement.sizes });
+    return;
+  }
+  const atlas = new Float32Array(NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS * NEBULA_TILE ** 2 * 4);
+  const patch = withBaker(baker => buildNebulaPatch(task.candidate, task.tile, atlas, baker, measured));
+  const pixels = nebulaTileFromAtlas(atlas, task.tile);
+  post({ id: task.id, measured: measured.luminosities, sizes: refinement.sizes, portrait: { patch, pixels } }, [pixels.buffer]);
 };

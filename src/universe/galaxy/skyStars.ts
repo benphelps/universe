@@ -1,4 +1,4 @@
-import { temperatureToLutCoord } from '../../core/color/blackbody';
+import { stellarBandRgb, splitStellarLight } from '../../core/color/stellarLight';
 
 /** The stars of a sky as they are gathered: one viewpoint's
  *  directions, colours, brightnesses, distances, temperatures and
@@ -6,6 +6,7 @@ import { temperatureToLutCoord } from '../../core/color/blackbody';
 export interface StarAccum {
   dirs: number[];
   colors: number[];
+  /** Optical Y luminosity / distance², L☉ pc⁻², before extinction. */
   brightness: number[];
   distances: number[];
   teffs: number[];
@@ -16,23 +17,25 @@ export function makeAccum(): StarAccum {
   return { dirs: [], colors: [], brightness: [], distances: [], teffs: [], seeds: [] };
 }
 
+/** Supply combined RGB for an unresolved system; otherwise luminosity
+ * is bolometric and the temperature selects its source response. */
 export function pushTo(
   acc: StarAccum,
-  lut: Float32Array,
   dx: number,
   dy: number,
   dz: number,
   luminosity: number,
   tEff: number,
   starSeed: bigint,
+  sourceRgb: readonly number[] = stellarBandRgb(luminosity, tEff),
 ): void {
   const distanceSq = dx * dx + dy * dy + dz * dz;
   if (distanceSq < 1e-6) return;
   const distance = Math.sqrt(distanceSq);
-  const lutIndex = Math.min(95, Math.floor(temperatureToLutCoord(tEff) * 95)) * 4;
+  const light = splitStellarLight(sourceRgb);
   acc.dirs.push(dx / distance, dy / distance, dz / distance);
-  acc.colors.push(lut[lutIndex], lut[lutIndex + 1], lut[lutIndex + 2]);
-  acc.brightness.push(luminosity / distanceSq);
+  acc.colors.push(...light.color);
+  acc.brightness.push(light.luminosity / distanceSq);
   acc.distances.push(distance);
   acc.teffs.push(tEff);
   acc.seeds.push(starSeed);

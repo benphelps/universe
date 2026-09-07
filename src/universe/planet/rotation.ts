@@ -7,6 +7,16 @@ import type { PlanetRotation } from './types';
 
 const DEG = Math.PI / 180;
 
+export function isStellarSynchronous(rotation: PlanetRotation): boolean {
+  return rotation.locked && rotation.lockTarget !== 'planet';
+}
+
+export function solarDayHours(rotation: PlanetRotation, orbitalHours: number): number | null {
+  const spinSign = Math.cos(rotation.obliquityRad) < 0 ? -1 : 1;
+  const rate = spinSign / rotation.periodHours - 1 / orbitalHours;
+  return Math.abs(rate) < 1e-12 / orbitalHours ? null : 1 / Math.abs(rate);
+}
+
 /**
  * Primordial spin, then tidal despinning. Giants inhale their spin from
  * disk gas: fast, prograde, nearly upright, with rare resonance-walked

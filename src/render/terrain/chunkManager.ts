@@ -17,24 +17,21 @@ import { SCATTER_STRIDE } from '../../universe/surface/scatter';
 import type { TerrainInit, TerrainRequest, TerrainResponse } from '../../workers/protocol';
 import { createRockGeometry, createShrubGeometry } from './scatterObjects';
 import { buildChunkIndices } from './terrainMaterial';
+import { TERRAIN_SPLIT_RATIO } from './terrainMorph';
 
 /** Vertices per tile edge: the detail-resolution knob. 64 puts the
  *  walking floor at ~4 cm spacing and sharpens every LOD ring. */
 const RES = 64;
 /** Level 22 tiles are ~2.7 m across at Earth radius. */
 const MAX_LEVEL = 22;
-/** Never show tiles coarser than this within the horizon: they are pinned,
- *  so the whole-planet base layer builds once per visit. */
-const MIN_LEVEL = 3;
 /** Split when tile size exceeds this fraction of its distance. The
  *  terrain material's geomorph is calibrated against the same ratio. */
-export const SPLIT_RATIO = 0.45;
+export const SPLIT_RATIO = TERRAIN_SPLIT_RATIO;
 /** Denser tiles cost more each: the cap keeps worst-case GPU memory
  *  in the same envelope it had at the old resolution. */
 const MAX_CHUNKS = 2000;
 /** Levels this coarse are never evicted: they cover zoom-out instantly. */
 const PINNED_LEVEL = 3;
-const EVICT_AGE_FRAMES = 600;
 
 interface ChunkRecord {
   key: string;
@@ -138,8 +135,11 @@ export class TerrainChunkManager {
   get outstanding(): number {
     return this.wantedCount;
   }
+  get cachedChunks(): number { return this.chunks.size; }
 
   private wantedCount = 0;
+  /** Audit-only control for comparing the former forced level-three floor. */
+  private orbitDetailFloor = 0;
 
   /** Terrain height under the camera, km above the datum: LOD distances
    *  measure to the local ground sphere, not the datum — on a world
@@ -151,8 +151,9 @@ export class TerrainChunkManager {
   private readonly lastCameraKm = new Vector3(Infinity, 0, 0);
 
   /** cameraKm is the camera's planet-local position, used for LOD and culling. */
-  update(cameraKm: Vector3, groundKm = 0): void {
+  update(cameraKm: Vector3, groundKm = 0, orbitDetailFloor = 0): void {
     this.frame++;
+    this.orbitDetailFloor = orbitDetailFloor;
     this.groundOffsetKm = groundKm;
     if (Number.isFinite(this.lastCameraKm.x)) {
       this.motionDir.copy(cameraKm).sub(this.lastCameraKm);
@@ -285,7 +286,9 @@ export class TerrainChunkManager {
     );
     const priorityKm = distanceKm * (1 - 0.4 * ahead);
 
-    if ((sizeKm / distanceKm > SPLIT_RATIO || level < MIN_LEVEL) && level < MAX_LEVEL) {
+    // Cache pinning keeps coarse tiles ready for a retreat; it must not
+    // force them to subdivide when the entire planet is small on screen.
+    if ((sizeKm / distanceKm > SPLIT_RATIO || level < this.orbitDetailFloor) && level < MAX_LEVEL) {
       const children: ChunkRecord[] = [];
       for (let cy = 0; cy < 2; cy++) {
         for (let cx = 0; cx < 2; cx++) {
@@ -382,13 +385,13 @@ export class TerrainChunkManager {
       geometry.setAttribute('position', new BufferAttribute(response.positions, 3));
       geometry.setAttribute('normal', new BufferAttribute(response.normals, 3));
       geometry.setAttribute('color', new BufferAttribute(response.colors, 3));
-      // The pinned base has no drawn parent to morph from: beyond its
-      // swap-in distance (all of orbit) it would render one LOD coarser
-      // than the pre-geomorph planet. Zeroed deltas keep orbit exact.
-      if (record.level <= PINNED_LEVEL) {
-        for (let i = 0; i < response.morph.length; i += 2) response.morph[i] = 0;
+      // Only a root has no parent. Pinned children can now replace
+      // coarser visible tiles in orbit and need the same morph as descent.
+      if (record.level === 0) {
+        for (let i = 0; i < response.morph.length; i += 4) response.morph.fill(0, i, i + 3);
+        response.waterMorph?.fill(0);
       }
-      geometry.setAttribute('aMorph', new BufferAttribute(response.morph, 2));
+      geometry.setAttribute('aMorph', new BufferAttribute(response.morph, 4));
       geometry.setIndex(this.indexAttribute);
       geometry.computeBoundingSphere();
 
@@ -399,10 +402,16 @@ export class TerrainChunkManager {
       record.mesh = mesh;
       this.scene.add(mesh);
 
-      if (response.waterPositions && response.waterNormals && this.oceanMaterial) {
+      if (response.waterPositions && response.waterNormals && response.waterMorph && this.oceanMaterial) {
         const waterGeometry = new BufferGeometry();
         waterGeometry.setAttribute('position', new BufferAttribute(response.waterPositions, 3));
         waterGeometry.setAttribute('normal', new BufferAttribute(response.waterNormals, 3));
+        waterGeometry.setAttribute('aWaterMorph', new BufferAttribute(response.waterMorph, 3));
+        if (response.waterIce) waterGeometry.setAttribute('aWaterIce', new BufferAttribute(response.waterIce, 2, true));
+        // Borrow the terrain attributes: one distance/blend for both
+        // surfaces, without copying their position or tile-size buffers.
+        waterGeometry.setAttribute('aTerrainPosition', geometry.getAttribute('position'));
+        waterGeometry.setAttribute('aMorph', geometry.getAttribute('aMorph'));
         waterGeometry.setIndex(this.indexAttribute);
         waterGeometry.computeBoundingSphere();
         const waterMesh = new Mesh(waterGeometry, this.oceanMaterial);
@@ -469,7 +478,7 @@ export class TerrainChunkManager {
       const mesh = new InstancedMesh(geometry, this.scatterMaterial!, rows.length);
       rows.forEach((i, instance) => {
         position.set(data[i], data[i + 1], data[i + 2]);
-        up.copy(position).add(anchor).normalize();
+        up.set(data[i + 9], data[i + 10], data[i + 11]).normalize();
         align.setFromUnitVectors(yAxis, up);
         spin.setFromAxisAngle(yAxis, data[i + 4]);
         align.multiply(spin);
@@ -491,12 +500,16 @@ export class TerrainChunkManager {
 
   private evict(): void {
     if (this.chunks.size <= MAX_CHUNKS) return;
+    // The cache limit takes precedence over an age grace period: a few
+    // seconds of low flight can otherwise retain thousands of unused tiles.
+    // This frame's traversal touches needed ancestors/children as well as
+    // visible tiles. Keep those, pinned retreat coverage and running jobs.
     const evictable = [...this.chunks.values()]
-      .filter((record) => record.level > PINNED_LEVEL)
+      .filter((record) => record.level > PINNED_LEVEL && !record.requested && record.lastDrawn < this.frame)
       .sort((a, b) => a.lastDrawn - b.lastDrawn);
     let excess = this.chunks.size - MAX_CHUNKS;
     for (const record of evictable) {
-      if (excess <= 0 || record.lastDrawn >= this.frame - EVICT_AGE_FRAMES) break;
+      if (excess <= 0) break;
       this.remove(record);
       excess--;
     }

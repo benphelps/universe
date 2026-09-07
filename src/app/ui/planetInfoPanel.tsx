@@ -1,7 +1,10 @@
+import { ASTEROID_ROUNDING_DIAMETER_KM } from '../../universe/smallbody/asteroids';
 import type { ReactNode } from 'react';
 import { AU, EARTH_RADIUS } from '../../core/physics/constants';
 import type { Moon } from '../../universe/moon/types';
-import type { CloudCondensate, PlanetCloudLayer } from '../../universe/planet/types';
+import type { Characterization, CloudCondensate, PlanetAtmosphere, PlanetCloudLayer } from '../../universe/planet/types';
+import { atmosphericColumnProfile } from '../../universe/planet/thermodynamics';
+import { columnStateAt } from '../../universe/planet/hydrostaticColumn';
 import { asteroidDesignation } from '../../universe/smallbody/notable';
 import type { Asteroid } from '../../universe/smallbody/types';
 import type { Star } from '../../universe/star/types';
@@ -11,6 +14,7 @@ import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
 import { fmt, fmtDays } from './format';
 import type { PlateSpec } from './plate';
 import { CLASS_COLOR, planetRowSpec } from './systemInfoPanel';
+import { SeasonalReadout } from './seasonalReadout';
 
 const TAXONOMY_LABEL: Record<Asteroid['taxonomy'], string> = {
   S: 'S-type (silicaceous)',
@@ -36,7 +40,7 @@ const TIDAL_LABEL: Record<Moon['tidalState'], string> = {
 const ATMOSPHERE_LABEL: Record<string, string> = {
   none: 'airless',
   'hydrogen-helium': 'H₂/He envelope',
-  nitrogen: 'N₂ (CO₂ trace)',
+  nitrogen: 'N₂ dominated',
   'nitrogen-oxygen': 'N₂/O₂',
   'co2-hothouse': 'CO₂ hothouse',
   'thin-co2': 'thin CO₂',
@@ -70,9 +74,40 @@ const REGIME_LABEL: Record<string, string> = {
   dead: 'geologically dead',
   'stagnant-lid': 'stagnant lid',
   'active-tectonics': 'plate tectonics',
+  volcanic: 'volcanically active',
   magma: 'molten surface',
   gas: '—',
 };
+
+function compositionLine(atmosphere: PlanetAtmosphere): string {
+  return Object.entries(atmosphere.partialPressuresBar ?? {})
+    .filter(([, p]) => p > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([gas, p]) => `${gas} ${fmt(p / atmosphere.surfacePressureBar * 100, 3)}%`)
+    .join(' · ');
+}
+
+function columnRows(physical: Characterization): Array<[string, ReactNode]> {
+  const column = atmosphericColumnProfile(physical.atmosphere, physical.climate, physical.bulk);
+  if (!column) return [];
+  const rows: Array<[string, ReactNode]> = [
+    ['Column estimate', column.regime === 'dry-ideal-gas' ? 'dry ideal gas' : 'ideal gas · extrapolated'],
+  ];
+  const water = physical.atmosphere.waterReservoir;
+  if (water?.status === 'dilute') {
+    rows.push(['Water vapor', <span title={`Reference humidity closure at the annual datum temperature, not current weather. Retained water: ${fmt(water.totalKgM2, 3)} kg/m²; vapor plus condensate conserve this inventory. Gray infrared opacity remains approximate.`}>
+      {`${fmt(water.vaporKgM2!, 3)} kg/m² · ${fmt(water.relativeHumidity! * 100, 2)}% ref RH`}
+    </span>]);
+  } else if (water?.status === 'steam-limit' || water?.status === 'temperature-limit') {
+    rows.push(['Water partition', water.status === 'steam-limit' ? 'steam regime · unresolved' : 'temperature limit · unresolved']);
+  }
+  const clouds = physical.appearance.clouds;
+  if (clouds.condensate !== 'none') {
+    const state = columnStateAt(column, clouds.topAltitudeKm * 1000);
+    rows.push(['Cloud-top gas', `≈ ${fmt(state.pressurePa / 1e5, 3)} bar · ${fmt(state.temperatureK, 3)} K`]);
+  }
+  return rows;
+}
 
 /** The selected planet's plate, with a stepper walking the system's bodies. */
 export function planetPlateSpec(
@@ -101,14 +136,24 @@ export function planetPlateSpec(
             }`,
     ],
     ['Atmosphere', atmosphereLine(planet)],
-    ['Clouds', cloudLine(appearance.clouds)],
+    [appearance.banding ? 'Atmospheric bands' : 'Clouds', appearance.banding
+      ? `${appearance.banding.bandCount} belts/zones${appearance.banding.majorStormSize > 0 ? ' · major storm' : ''}`
+      : cloudLine(appearance.clouds)],
     ['T', temperatureLine(planet)],
     ['Albedo', fmt(climate.bondAlbedo, 2)],
   ];
+  if (climate.surfaceField) rows.push(['Annual reference', <span title="Equilibrium under annual-average forcing, not seasonal extrema">{`${fmt(climate.surfaceField.minimumK, 3)}–${fmt(climate.surfaceField.maximumK, 3)} K · datum`}</span>]);
+  if (climate.surfaceField) rows.push(['Seasonal T', <SeasonalReadout key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />]);
+  if (climate.surfaceField) rows.push(['Terrain climate', <SeasonalReadout annual key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />]);
   if (atmosphere.class !== 'hydrogen-helium') {
     rows.push(['Surface', surfaceLine(planet)]);
     rows.push(['Geology', REGIME_LABEL[interior.regime]]);
   }
+  if (atmosphere.surfacePressureBar > 0 && atmosphere.partialPressuresBar) {
+    rows.push(['Gas mixture', compositionLine(atmosphere)]);
+    rows.push(['Scale height', `${fmt(atmosphere.scaleHeightKm, 3)} km · μ ${fmt(atmosphere.meanMolecularMassAmu ?? 0, 3)} u`]);
+  }
+  rows.push(...columnRows(planet.physical));
   rows.push([
     'Magnetic',
     interior.magneticFieldRelEarth > 0.02
@@ -156,7 +201,7 @@ export function moonPlateSpec(
     ['Radius', `${fmt(radiusKm)} km · ${fmt(bulk.densityGcc)} g/cm³`],
     ['Gravity', `${fmt(bulk.gravityMs2 / 9.81, 2)} g`],
     ['Orbit', `${fmt(moon.semiMajorAxisPlanetRadii)} R_p${moon.retrograde ? ' · retrograde' : ''}`],
-    ['Rotation', rotation.locked ? 'tidally locked' : fmtDays(rotation.periodHours / 24)],
+    ['Rotation', rotation.locked ? 'locked to planet' : fmtDays(rotation.periodHours / 24)],
     [
       'Atmosphere',
       atmosphere.class === 'none'
@@ -164,10 +209,19 @@ export function moonPlateSpec(
         : `${ATMOSPHERE_LABEL[atmosphere.class]} · ${fmt(atmosphere.surfacePressureBar)} bar`,
     ],
     ['Clouds', cloudLine(appearance.clouds)],
-    ['T', `${fmt(climate.surfaceMeanK, 3)} K`],
+    ['T', `${fmt(climate.surfaceMeanK, 3)} K${climate.surfaceField ? ' annual equilibrium' : ''}`],
     ['Surface', hydrosphereLine(climate)],
     ['Geology', REGIME_LABEL[interior.regime]],
   ];
+  if (climate.surfaceField) rows.push(['Annual reference', <span title="Equilibrium under annual-average forcing, not seasonal extrema">{`${fmt(climate.surfaceField.minimumK, 3)}–${fmt(climate.surfaceField.maximumK, 3)} K · datum`}</span>]);
+  if (climate.surfaceField) rows.push(['Seasonal T', <SeasonalReadout key={moon.physical.seedHex} seedHex={moon.physical.seedHex} />]);
+  if (climate.surfaceField) rows.push(['Terrain climate', <SeasonalReadout annual key={moon.physical.seedHex} seedHex={moon.physical.seedHex} />]);
+  if (rotation.solarDayHours != null) rows.push(['Solar day', fmtDays(rotation.solarDayHours / 24)]);
+  if (atmosphere.surfacePressureBar > 0 && atmosphere.partialPressuresBar) {
+    rows.push(['Gas mixture', compositionLine(atmosphere)]);
+    rows.push(['Scale height', `${fmt(atmosphere.scaleHeightKm, 3)} km · μ ${fmt(atmosphere.meanMolecularMassAmu ?? 0, 3)} u`]);
+  }
+  rows.push(...columnRows(moon.physical));
   if (moon.tidalState !== 'dead') {
     rows.push([
       'Tidal state',
@@ -193,7 +247,7 @@ export function asteroidPlateSpec(
   const { shape } = asteroid;
   const aAu = asteroid.elements.semiMajorAxis / AU;
   const structure = [
-    asteroid.rubblePile ? 'rubble pile' : 'coherent body',
+    asteroid.diameterKm >= ASTEROID_ROUNDING_DIAMETER_KM ? 'gravity-dominated body' : asteroid.rubblePile ? 'rubble pile' : 'coherent body',
     shape.contactBinary ? 'contact binary' : '',
     asteroid.tumbling ? 'tumbling' : '',
   ]
@@ -310,7 +364,8 @@ function atmosphereLine(planet: Planet): string {
 
 function temperatureLine(planet: Planet): string {
   const { climate, rotation } = planet.physical;
-  const base = `${fmt(climate.surfaceMeanK, 3)} K (eq ${fmt(climate.equilibriumK, 3)} K)`;
+  const kind = planet.physical.appearance.banding ? 'effective' : climate.surfaceField ? 'annual equilibrium' : 'mean';
+  const base = `${fmt(climate.surfaceMeanK, 3)} K ${kind} (stellar eq ${fmt(climate.equilibriumK, 3)} K)`;
   return rotation.locked && climate.dayNightDeltaK > 20
     ? `${base} · Δday-night ${fmt(climate.dayNightDeltaK, 3)} K`
     : base;
@@ -324,9 +379,12 @@ function surfaceLine(planet: Planet): string {
 function hydrosphereLine(climate: Planet['physical']['climate']): string {
   const label = HYDROSPHERE_LABEL[climate.hydrosphere];
   if (climate.hydrosphere === 'oceans') {
-    return `${label} (${fmt(climate.oceanCoverage * 100, 2)}% cover)`;
+    return `water basins (${fmt(climate.oceanCoverage * 100, 2)}% cover)`;
   }
   if (climate.hydrosphere === 'magma') {
+    if (climate.oceanCoverage < 0.01) {
+      return `localized lava (${fmt(climate.oceanCoverage * 100, 2)}% · ${fmt(climate.magmaTemperatureK ?? 1800, 3)} K)`;
+    }
     return climate.oceanCoverage >= 1 - 1e-6
       ? 'global magma ocean'
       : `${label} (${fmt(climate.oceanCoverage * 100, 2)}% cover)`;

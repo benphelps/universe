@@ -6,19 +6,17 @@ const DISK = { xPc: 8000, yPc: 0, zPc: 0 };
 const BULGE = { xPc: 200, yPc: 0, zPc: 20 };
 
 describe('how far the neighborhood reaches', () => {
-  it('holds its star count rather than its radius', () => {
-    // Thirty parsecs is a count, not a distance. The bulge holds a
-    // hundred and fifty times the stars per cubic parsec that the disk
-    // around us does, so the same reach costs a hundred and fifty times
-    // as much — and it is spent on the main thread, before the system
-    // is handed over. Shrunk as the cube root of the density, what
-    // stays fixed is the number of stars, which is the work.
-    const crowding = stellarDensity(BULGE) / stellarDensity(DISK);
-    expect(crowding).toBeGreaterThan(100);
-    const ratio = neighborRadiusPc(BULGE) / neighborRadiusPc(DISK);
-    // Volume goes as the cube, so the counts come out within a hair of
-    // each other however crowded it is out there.
-    expect(ratio ** 3 * crowding).toBeCloseTo(1, 1);
+  it('caps the count budget in dense regions and allows fewer stars in sparse regions', () => {
+    // Spiral redistribution can put the home point below the reference.
+    // The 30 pc handoff then limits its count; it must not expand the query
+    // to force an identical count in sparse inter-arm space.
+    const countBudget = 0.1 * 4 * Math.PI / 3 * NEIGHBOR_RADIUS_PC ** 3;
+    for (const at of [DISK, BULGE, { xPc: 1800, yPc: 500, zPc: 0 }]) {
+      const estimated = stellarDensity(at) * 4 * Math.PI / 3 * neighborRadiusPc(at) ** 3;
+      expect(estimated).toBeLessThanOrEqual(countBudget * (1 + 1e-12));
+      if (stellarDensity(at) >= 0.1) expect(estimated / countBudget).toBeCloseTo(1, 12);
+      else expect(neighborRadiusPc(at)).toBe(NEIGHBOR_RADIUS_PC);
+    }
   });
 
   it('never reaches past where the backdrop takes over', () => {
@@ -28,8 +26,7 @@ describe('how far the neighborhood reaches', () => {
     for (const at of [DISK, BULGE, { xPc: 15000, yPc: 0, zPc: 900 }]) {
       expect(neighborRadiusPc(at)).toBeLessThanOrEqual(NEIGHBOR_RADIUS_PC);
     }
-    // And the disk, a shade denser than the reference the radius was
-    // chosen at, gives up a couple of percent and nothing more.
+    // The home inter-arm locale stays close to the normal reach.
     expect(neighborRadiusPc(DISK) / NEIGHBOR_RADIUS_PC).toBeGreaterThan(0.95);
   });
 });

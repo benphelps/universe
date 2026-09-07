@@ -1,7 +1,9 @@
+import { measureNebulaPortrait, nebulaPortraitPhotometry } from './nebulaPortrait';
+import { sampleContinuum, stellarContinuum } from './nebulaContinuum';
 import { describe, expect, it } from 'vitest';
 import { cloudReachPc, cloudsNear } from './clouds';
 import { DUST_OPACITY_PER_PC, HOME_POSITION } from './density';
-import { dustScatterTable, sampleScatterTable, SCATTER_OPACITY_RGB } from './dustScattering';
+import { SCATTER_OPACITY_RGB } from './dustScattering';
 import {
   BEAM_SR,
   DISPLAY_CEIL,
@@ -13,10 +15,14 @@ import {
   EYE_INSTRUMENT,
   radianceFromDisplay,
 } from './displayLaw';
-import { nebulaEmissionShare, nebulaFor, nebulaLightSolar, type Nebula } from './nebula';
+import { nebulaEmissionShare, nebulaFor, type Nebula } from './nebula';
+import { nebulaSpriteLuminosities } from './nebulaPhotometry';
 import { nebulaNarrowbandColor } from './nebulaLines';
 import {
   bakeNebulaVolume,
+  planNebulaBake,
+  finishNebulaBake,
+  attenuateNebulaContinuum,
   SCATTER_EMISSIVITY_PER_LSUN,
   type NebulaVolumeBake,
 } from './nebulaVolume';
@@ -159,7 +165,8 @@ describe('sprite photometry', () => {
           flux += atlas[at] * peakRadiance * pixelSr * pixelSr;
         }
       }
-      const budget = (escaped * nebulaLightSolar(nebula)) / (4 * Math.PI * distance * distance);
+      const physical = nebulaPortraitPhotometry(nebula, unit).luminosities;
+      const budget = (escaped * (physical.lines + physical.scattered)) / (4 * Math.PI * distance * distance);
       expect(flux / budget).toBeGreaterThan(0.995);
       expect(flux / budget).toBeLessThan(1.005);
     }
@@ -194,23 +201,17 @@ describe('sprite photometry', () => {
     }
   }, 60000);
 
-  it('agrees with the volume it stands in for', () => {
-    // The two renderings of one object spend the same budgets — the
-    // group's whole ionizing output in lines, the marched interception
-    // of its continuum in scattered light — and are compared over the
-    // same body: the cloud-scale box against the whole-cloud impostor.
-    // What separates them is what the march resolves and the impostor
-    // cannot: the front broken cell by cell against the fine cascade,
-    // the champagne gate and the erosion, the impostor's fixed U
-    // against each cell's own hardness, and the phase of the scattered
-    // light toward one viewpoint. Measured at 0.3–1.0 over the bright
-    // subjects; the pin holds the tiers within a factor of a few.
+  it('bounds the view march by the same domain’s directional emitted power', () => {
+    // Independent perspective rays through a single domain cannot send
+    // more light than its unextinguished parallel projection, allowing
+    // for this test's coarse quadrature and finite camera distance.
     for (const nebula of litNebulae().slice(0, 3)) {
       const bake = bakeNebulaVolume(nebula.cloud, nebula, 64, cloudReachPc(nebula.cloud));
       const distance = bake.halfExtentsPc[0] * 8;
-      const [r, g, b] = marchedFlux(bake, distance, dustScatterTable());
+      const [r, g, b] = marchedFlux(bake, distance);
       const marched = luminance(r, g, b);
-      const budget = nebulaLightSolar(nebula) / (4 * Math.PI * distance * distance);
+      const physical = measureNebulaPortrait({ coarse: bake, fine: null }, [-1, 0, 0]).luminosities;
+      const budget = (physical.lines + physical.scattered) / (4 * Math.PI * distance * distance);
       const ratio = marched / budget;
       expect(ratio).toBeGreaterThan(0.2);
       expect(ratio).toBeLessThan(1.5);
@@ -225,14 +226,15 @@ describe('sprite photometry', () => {
     // over an illuminant that is already blue. (The same physics
     // reddens a source buried deep enough; the direction belongs to
     // the column.)
-    const nebula = litNebulae().find((candidate) => candidate.supernovae === 0);
-    expect(nebula).toBeDefined();
-    if (!nebula) return;
-    const bake = bakeNebulaVolume(nebula.cloud, nebula, 64);
-    const table = dustScatterTable();
+    const plan = planNebulaBake(cloudsNear(HOME_POSITION, 300)[0], null, 16, 4);
+    plan.continuumSources = [stellarContinuum([0, 0, 0], 100, 40000)];
+    const fields = { dust: new Float32Array(16 ** 3).fill(0.001), hydrogen: new Float32Array(16 ** 3),
+      ionized: new Float32Array(16 ** 3), hardness: new Float32Array(16 ** 3), transmittance: new Float32Array(16 ** 3) };
+    attenuateNebulaContinuum(plan, fields);
+    const bake = finishNebulaBake(plan, fields);
     const distance = bake.halfExtentsPc[0] * 8;
-    const [greyR, , greyB] = marchedFlux(bake, distance, table, [1, 1, 1], false);
-    const [r, , b] = marchedFlux(bake, distance, table, SCATTER_OPACITY_RGB, false);
+    const [greyR, , greyB] = marchedFlux(bake, distance, [1, 1, 1], false);
+    const [r, , b] = marchedFlux(bake, distance, SCATTER_OPACITY_RGB, false);
     expect(greyB / greyR).toBeGreaterThan(2);
     expect(b / r).toBeGreaterThan((greyB / greyR) * 1.03);
   });
@@ -248,17 +250,16 @@ describe('sprite photometry', () => {
 function marchedFlux(
   bake: NebulaVolumeBake,
   distancePc: number,
-  table: Float32Array,
   opacityRgb: readonly [number, number, number] = SCATTER_OPACITY_RGB,
   withEmission = true,
 ): [number, number, number] {
   const half = bake.halfExtentsPc[0];
-  const scatterLum = bake.scatterLuminositySolar * SCATTER_EMISSIVITY_PER_LSUN;
   const [ratioR, , ratioB] = opacityRgb;
   const grid = 48;
   const span = half * 1.15;
   const cell = (2 * span) / grid;
   const flux: [number, number, number] = [0, 0, 0];
+  const continuum = new Float64Array(3);
   for (let j = 0; j < grid; j++) {
     for (let i = 0; i < grid; i++) {
       const y = -span + (i + 0.5) * cell;
@@ -287,32 +288,18 @@ function marchedFlux(
         const index = cellIndex(p, half, bake.size);
         if (index < 0) continue;
         const dust = (bake.data[index * 4] / 255) ** 2 * bake.dustRef;
-        const ionized = (bake.data[index * 4 + 1] / 255) * bake.densityRef;
+        const ionized = ((256 * bake.data[index * 4 + 1] + bake.data[index * 4 + 3]) / 65535) * bake.densityRef;
         const hardness = bake.data[index * 4 + 2] / 255;
-        const shadow = bake.data[index * 4 + 3] / 255;
-        const measure = withEmission ? ionized * ionized * bake.emissionCoefficient : 0;
-        const shine = [
-          p[0] - bake.scatterSourcePc[0],
-          p[1] - bake.scatterSourcePc[1],
-          p[2] - bake.scatterSourcePc[2],
-        ];
-        const r2 = Math.max(
-          shine[0] ** 2 + shine[1] ** 2 + shine[2] ** 2,
-          bake.scatterFloorPc2,
-        );
-        const mu = -(shine[0] * dir[0] + shine[1] * dir[1] + shine[2] * dir[2]) / Math.sqrt(r2);
-        const tau = -Math.log(Math.max(shadow, 0.0038));
-        const m = [
-          ratioR * sampleScatterTable(table, tau * ratioR, mu),
-          sampleScatterTable(table, tau, mu),
-          ratioB * sampleScatterTable(table, tau * ratioB, mu),
-        ];
-        const scatter = (scatterLum * dust) / r2;
+        const measure = withEmission ? ionized * ionized : 0;
+        if (bake.continuum && dust > 0) sampleContinuum(bake.continuum, p.map(v => v / (2 * half) + 0.5), continuum, dir);
+        else continuum.fill(0);
         for (let c = 0; c < 3; c++) {
           const emission =
-            (bake.emissionCool[c] + (bake.emissionHot[c] - bake.emissionCool[c]) * hardness) *
+            (bake.emissionCool[c] * bake.emissionCoefficient * (1 - hardness) + bake.emissionHot[c] * bake.emissionHotCoefficient * hardness) *
             measure;
-          radiance[c] += transmittance[c] * (emission + bake.reflectionColor[c] * m[c] * scatter) * ds;
+          const reflected = bake.continuum ? continuum[c] * dust * SCATTER_EMISSIVITY_PER_LSUN * opacityRgb[c] / SCATTER_OPACITY_RGB[c]
+            : 0;
+          radiance[c] += transmittance[c] * (emission + reflected) * ds;
         }
         const depth = dust * DUST_OPACITY_PER_PC * ds;
         transmittance[0] *= Math.exp(-depth * ratioR);

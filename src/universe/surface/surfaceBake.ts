@@ -1,4 +1,5 @@
 import type { SurfaceField } from './field';
+import { waterIceFraction } from './waterIce';
 
 type Rgb = [number, number, number];
 
@@ -17,7 +18,8 @@ const FACES: Array<[Rgb, Rgb, Rgb]> = [
 /**
  * The distant view of a solid world, sampled from the same field the
  * streamed terrain walks on: RGBA cube faces with sqrt-encoded ground
- * color and the flooded (sea or magma) fraction in alpha. What orbit
+ * color and the exposed liquid (water or magma) fraction in alpha. Ice
+ * reflects its own diffuse color and contributes no liquid glint. What orbit
  * shows and what the surface delivers are one world by construction.
  */
 export function bakeSurfaceCube(
@@ -29,8 +31,10 @@ export function bakeSurfaceCube(
   const seaLevelM = field.seaLevelM;
   const flooded = seaLevelM > -1e8;
   const molten = field.params.magmaCoverage > 0;
+  const iceColor = field.params.palette?.ice ?? oceanColor;
   const faces: Uint8Array[] = [];
-  const heights = new Float32Array(size * size);
+  const stride = size + 2;
+  const heights = new Float32Array(stride * stride);
   const dir = { x: 0, y: 0, z: 0 };
 
   for (let face = 0; face < 6; face++) {
@@ -47,10 +51,10 @@ export function bakeSurfaceCube(
       dir.z = z / len;
     };
 
-    for (let j = 0; j < size; j++) {
-      for (let i = 0; i < size; i++) {
+    for (let j = -1; j <= size; j++) {
+      for (let i = -1; i <= size; i++) {
         texelAt(i, j);
-        heights[j * size + i] = field.heightAt(dir, texelRad);
+        heights[(j + 1) * stride + i + 1] = field.heightAt(dir, texelRad);
       }
     }
 
@@ -59,13 +63,14 @@ export function bakeSurfaceCube(
     for (let j = 0; j < size; j++) {
       for (let i = 0; i < size; i++) {
         const index = j * size + i;
-        const h = heights[index];
-        // Slope from grid neighbors (clamped at face edges: the seam
-        // costs only a texel of rock-exposure shading).
-        const hx0 = heights[j * size + Math.max(i - 1, 0)];
-        const hx1 = heights[j * size + Math.min(i + 1, size - 1)];
-        const hy0 = heights[Math.max(j - 1, 0) * size + i];
-        const hy1 = heights[Math.min(j + 1, size - 1) * size + i];
+        const at = (j + 1) * stride + i + 1;
+        const h = heights[at];
+        // Sample through the face edge: clamping erased half the
+        // gradient and printed cube borders into steep terrain colors.
+        const hx0 = heights[at - 1];
+        const hx1 = heights[at + 1];
+        const hy0 = heights[at - stride];
+        const hy1 = heights[at + stride];
         const grad = Math.hypot(hx1 - hx0, hy1 - hy0) / (2 * texelM);
         const slopeCos = 1 / Math.sqrt(1 + grad * grad);
 
@@ -86,11 +91,13 @@ export function bakeSurfaceCube(
                 ? 1
                 : t * t * (3 - 2 * t);
           if (alpha > 0 && !molten) {
+            const ice = waterIceFraction(field.params, dir, seaLevelM);
             color = [
-              color[0] + (oceanColor[0] - color[0]) * alpha,
-              color[1] + (oceanColor[1] - color[1]) * alpha,
-              color[2] + (oceanColor[2] - color[2]) * alpha,
+              color[0] + (oceanColor[0] + (iceColor[0] - oceanColor[0]) * ice - color[0]) * alpha,
+              color[1] + (oceanColor[1] + (iceColor[1] - oceanColor[1]) * ice - color[1]) * alpha,
+              color[2] + (oceanColor[2] + (iceColor[2] - oceanColor[2]) * ice - color[2]) * alpha,
             ];
+            alpha *= 1 - ice;
           }
         }
         pixels[index * 4] = Math.sqrt(Math.min(1, Math.max(0, color[0]))) * 255;

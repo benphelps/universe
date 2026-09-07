@@ -11,7 +11,7 @@ import {
 } from '../universe/galaxy/regions';
 import { cloudReachPc, cloudsNear } from '../universe/galaxy/clouds';
 import { cloudGateway } from '../universe/galaxy/gateway';
-import { cloudMassSolar, cloudMeanHydrogenDensity } from '../universe/galaxy/gas';
+import { cloudGasSummary } from '../universe/galaxy/gas';
 import { ismMetallicity } from '../universe/galaxy/population';
 import type { IonizingSource, NebulaKind } from '../universe/galaxy/nebula';
 import {
@@ -117,6 +117,8 @@ export interface CloudSummary {
   sources: IonizingSource[];
   hottestTeff: number;
   stromgrenRadiusPc: number;
+  bubbleRadiusPc: number;
+  frontReachPc: number;
   ageMyr: number;
   metallicity: number;
 }
@@ -138,12 +140,13 @@ function cloudSummary(focused: FocusedCloud | null): CloudSummary | null {
     kind: nebula?.kind ?? 'dark',
     radiusPc: cloud.radiusPc,
     spanPc: 2 * cloudReachPc(cloud),
-    massSolar: cloudMassSolar(cloud, metallicity, 12),
-    meanDensity: cloudMeanHydrogenDensity(cloud, metallicity),
+    ...cloudGasSummary(cloud, metallicity),
     sourceDensity: nebula?.sourceHydrogenDensity ?? 0,
     sources: nebula?.sources ?? [],
     hottestTeff: nebula?.maxTeff ?? 0,
     stromgrenRadiusPc: nebula?.stromgrenRadiusPc ?? 0,
+    bubbleRadiusPc: nebula?.bubbleRadiusPc ?? 0,
+    frontReachPc: nebula?.frontReachPc ?? 0,
     ageMyr: (nebula?.ageGyr ?? 0) * 1000,
     metallicity,
   };
@@ -870,4 +873,8 @@ export function generationStatus(): GenerationStatus | null {
 
 export function perfStats(): PerfStats | null {
   return viewer ? viewer.perfStats : null;
+}
+
+export function seasonalConditions() {
+  return viewer?.seasonalConditions ?? null;
 }

@@ -1,3 +1,4 @@
+import { isStellarSynchronous } from './rotation';
 import type { Rng } from '../../core/rng/rng';
 import type {
   PlanetAtmosphere,
@@ -8,21 +9,22 @@ import type {
 } from './types';
 import {
   condensationLayer,
+  waterCondensationLayer,
   silicateMeltFraction,
   type AtmosphericLayer,
   type CondensationBand,
 } from './thermodynamics';
+import { withWaterVapor } from './atmosphere';
 
 const DAY_SECONDS = 86_400;
 
-/** Thermodynamic stability intervals for the condensed materials. These are
- * material properties, not sky-color rules: a cloud can only be generated if
- * the planet's shared radiative-convective profile actually crosses one. */
+/** Approximate temperature windows, pending partial-pressure phase curves.
+ * A candidate deck must cross the shared prescribed dry profile. These
+ * windows are not a pressure-dependent condensation or chemistry solve. */
 const SULFURIC_ACID_BAND: CondensationBand = { coldK: 230, warmK: 430 };
 const SILICATE_BAND: CondensationBand = { coldK: 1200, warmK: 2100 };
 const METHANE_BAND: CondensationBand = { coldK: 70, warmK: 105 };
 const CARBON_DIOXIDE_BAND: CondensationBand = { coldK: 130, warmK: 195 };
-const WATER_BAND: CondensationBand = { coldK: 235, warmK: 290 };
 
 export const NO_CLOUDS: PlanetCloudLayer = {
   condensate: 'none',
@@ -60,7 +62,7 @@ function thermalLayer(
 function layerGeometry(layer: AtmosphericLayer): Pick<PlanetCloudLayer, 'topAltitudeKm' | 'thicknessKm'> {
   return {
     topAltitudeKm: layer.topAltitudeKm,
-    thicknessKm: Math.max(0.5, layer.topAltitudeKm - layer.baseAltitudeKm),
+    thicknessKm: layer.topAltitudeKm - layer.baseAltitudeKm,
   };
 }
 
@@ -84,8 +86,8 @@ export function computeCloudLayer(
   const radiusKm = bulk.radiusEarth * 6371;
 
   if (atmosphere.class === 'co2-hothouse') {
-    // A CO2 greenhouse supplies sulfur chemistry, but it does not guarantee
-    // acid droplets. Hotter profiles never enter the acid phase window; if
+    // The original Venus-like preset carries a sulfur aerosol reservoir;
+    // adding CO2 alone does not supply sulfur or guarantee acid droplets. Hotter profiles never enter the acid phase window; if
     // their surface is molten, lofted rock vapor instead condenses where its
     // own stability interval is crossed.
     const melt = silicateMeltFraction(climate.surfaceMeanK);
@@ -102,26 +104,28 @@ export function computeCloudLayer(
         featureScaleKm: radiusKm * rng.range(0.22, 0.46),
         driftRadPerDay: drift(rng.range(45, 110), radiusKm),
         relief: rng.range(0.35, 0.7),
-        stellarBias: rotation.locked ? -0.65 : 0,
+        stellarBias: isStellarSynchronous(rotation) ? -0.65 : 0,
         // Iron-poor silicate grains are approximately neutral scatterers in
         // visible light; the star and overlying gas supply the observed hue.
         color: [0.72, 0.72, 0.7],
       };
     }
 
-    const acid = thermalLayer(atmosphere, climate, bulk, SULFURIC_ACID_BAND);
-    if (!acid) return { ...NO_CLOUDS };
-    return {
-      condensate: 'sulfuric-acid',
-      coverage: Math.min(1, 0.72 + 0.28 * acid.thermalFraction),
-      opticalDepth: rng.range(30, 55) * Math.max(0.2, acid.thermalFraction),
-      ...layerGeometry(acid),
-      featureScaleKm: radiusKm * rng.range(0.38, 0.58),
-      driftRadPerDay: drift(rng.range(55, 95), radiusKm),
-      relief: rng.range(0.25, 0.4),
-      stellarBias: 0,
-      color: [0.88, 0.82, 0.65],
-    };
+    if ((atmosphere.aerosolClass ?? atmosphere.class) === 'co2-hothouse') {
+      const acid = thermalLayer(atmosphere, climate, bulk, SULFURIC_ACID_BAND);
+      if (!acid) return { ...NO_CLOUDS };
+      return {
+        condensate: 'sulfuric-acid',
+        coverage: Math.min(1, 0.72 + 0.28 * acid.thermalFraction),
+        opticalDepth: rng.range(30, 55) * Math.max(0.2, acid.thermalFraction),
+        ...layerGeometry(acid),
+        featureScaleKm: radiusKm * rng.range(0.38, 0.58),
+        driftRadPerDay: drift(rng.range(55, 95), radiusKm),
+        relief: rng.range(0.25, 0.4),
+        stellarBias: 0,
+        color: [0.88, 0.82, 0.65],
+      };
+    }
   }
 
   if (atmosphere.class === 'nitrogen-methane') {
@@ -154,24 +158,34 @@ export function computeCloudLayer(
       driftRadPerDay: drift(rng.range(30, 90), radiusKm),
       relief: rng.range(0.35, 0.65),
       // Tidally locked vapor condenses after it crosses onto the cold side.
-      stellarBias: rotation.locked ? -0.85 : 0,
+      stellarBias: isStellarSynchronous(rotation) ? -0.85 : 0,
       color: [0.72, 0.72, 0.7],
     };
   }
 
+  // Legacy physical fixtures may supply water but skip finalization.
+  if (!atmosphere.waterReservoir) atmosphere = withWaterVapor(atmosphere, climate.waterMassFraction, climate.surfaceMeanK, bulk);
+  const waterLayer = () => waterCondensationLayer(atmosphere, climate, bulk);
+  // For 10-µm droplets, Qext≈2 gives 3Q/(4ρr)≈150 m²/kg. Cloud mass
+  // is a subset of retained condensate, additionally limited by the
+  // available vapor supply. Coverage/drop size remain statistical inputs.
+  const waterOptics = (coverage: number, requested: number) => {
+    const water = atmosphere.waterReservoir;
+    return Math.min(requested, 150 * Math.min(water?.vaporKgM2 ?? 0, water?.condensedKgM2 ?? 0) / Math.max(coverage, 0.01));
+  };
+
   if (atmosphere.class === 'thin-co2') {
     const cold = climate.surfaceMeanK < 225;
-    const layer = thermalLayer(
-      atmosphere,
-      climate,
-      bulk,
-      cold ? CARBON_DIOXIDE_BAND : WATER_BAND,
-    );
+    const layer = cold ? thermalLayer(atmosphere, climate, bulk, CARBON_DIOXIDE_BAND) : waterLayer();
     if (!layer) return { ...NO_CLOUDS };
+    const coverage = cold ? rng.range(0.05, 0.18) : rng.range(0.015, 0.07);
+    const opticalDepth = cold ? rng.range(2, 6) : waterOptics(coverage, rng.range(1, 4));
+    if (opticalDepth < 0.01) return { ...NO_CLOUDS };
     return {
       condensate: cold ? 'carbon-dioxide' : 'water',
-      coverage: cold ? rng.range(0.05, 0.18) : rng.range(0.015, 0.07),
-      opticalDepth: cold ? rng.range(2, 6) : rng.range(1, 4),
+      coverage,
+      opticalDepth,
+      condensateColumnKgM2: cold ? undefined : coverage * opticalDepth / 150,
       ...layerGeometry(layer),
       featureScaleKm: radiusKm * rng.range(0.15, 0.32),
       driftRadPerDay: drift(rng.range(12, 35), radiusKm),
@@ -183,7 +197,7 @@ export function computeCloudLayer(
 
   const wet = climate.hydrosphere === 'oceans';
   const frozen = climate.hydrosphere === 'ice-sheet';
-  const layer = thermalLayer(atmosphere, climate, bulk, WATER_BAND);
+  const layer = waterLayer();
   if (!layer) return { ...NO_CLOUDS };
   const coverage = wet
     ? rng.range(0.42, 0.68)
@@ -196,17 +210,20 @@ export function computeCloudLayer(
       ? 0.22
       : 0.4;
   const featureScaleKm = synopticScale(radiusKm, rotation.periodHours);
-  const windMs = rng.range(10, 28) * (rotation.locked ? 1.8 : 1);
+  const windMs = rng.range(10, 28) * (isStellarSynchronous(rotation) ? 1.8 : 1);
+  const opticalDepth = waterOptics(coverage, wet ? rng.range(8, 24) : rng.range(2, 9));
+  if (opticalDepth < 0.01) return { ...NO_CLOUDS };
   return {
     condensate: 'water',
     coverage,
-    opticalDepth: wet ? rng.range(8, 24) : rng.range(2, 9),
+    opticalDepth,
+    condensateColumnKgM2: coverage * opticalDepth / 150,
     ...layerGeometry(layer),
     featureScaleKm,
     driftRadPerDay: drift(windMs, radiusKm),
     relief: 0.25 + 0.7 * convection,
     // Ocean-bearing locked worlds build a persistent dayside convective cap.
-    stellarBias: rotation.locked && wet ? 0.65 : 0,
+    stellarBias: isStellarSynchronous(rotation) && wet ? 0.65 : 0,
     color: [0.92, 0.93, 0.95],
   };
 }

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Universe rendering checks</title>
+<style>body{font:16px/1.6 system-ui;max-width:780px;margin:3rem auto;padding:0 1rem}li{margin:.65rem 0}code{background:#eee;padding:.1rem .3rem}</style>
+<h1>Universe rendering checks</h1>
+<p>Run one page at a time in a foreground WebGL2 browser. Each check exercises production rendering code; results appear on the page. These are correctness diagnostics, not app frame-rate benchmarks.</p>
+<ul>
+<li><a href="cloud-depth.html">Cloud depth</a> — 24 terrain/deck and normal/reversed-depth cases.</li>
+<li><a href="cloud-limb.html">Cloud limb</a> — 12 views covering the original non-finite horizon regression.</li>
+<li><a href="surface-light.html">Surface light</a> — emitted/reflected light, atmospheric transport, seasonal height and program preparation.</li>
+<li><a href="volume-upload.html">Volume uploads</a> — actual texel readback, partial slabs, formats and disposal.</li>
+<li><a href="galaxy-density.html">Galaxy density</a> — 512 CPU/GPU arm-field comparisons; accepts a <code>galaxy</code> seed query.</li>
+<li><a href="shader-readiness.html?benchmark&amp;benchmarkGL">Shader readiness</a> — compare first draws before/after preparing nine nebula carriers.</li>
+<li><a href="seasonal-surface.html">Seasonal surface</a> — controlled visual reference with winter/summer and orbit/ground controls; deliberately generous terrain budget.</li>
+</ul>
+<p>Save raw output to ignored <code>.artifacts/</code>. Maintained instructions and expected results are in <code>docs/VALIDATION.md</code>.</p>
+</html>

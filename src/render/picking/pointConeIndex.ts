@@ -1,3 +1,12 @@
+/** Plain buffers can be transferred from a worker and adopted without
+ * rebuilding the tree. Bounds retain the original Float64 precision. */
+export interface PointConeIndexData {
+  indices: Uint32Array;
+  bounds: Float64Array;
+  branches: Int32Array;
+  nodeCount: number;
+}
+
 /**
  * A static k-d tree for points queried through a narrow view cone.
  *
@@ -9,17 +18,41 @@
  */
 export class PointConeIndex {
   private readonly indices: Uint32Array;
-  private readonly nodes: ConeNode[] = [];
+  private readonly bounds: Float64Array;
+  private readonly branches: Int32Array;
+  private nodeCount = 0;
   private readonly queryStack: number[] = [];
 
   constructor(
     private readonly positions: ArrayLike<number>,
     readonly count: number = Math.floor(positions.length / 3),
     private readonly leafSize = 32,
+    prepared?: PointConeIndexData,
   ) {
+    if (prepared) {
+      this.indices = prepared.indices;
+      this.bounds = prepared.bounds;
+      this.branches = prepared.branches;
+      this.nodeCount = prepared.nodeCount;
+      return;
+    }
+    const leaves = 2 ** Math.ceil(Math.log2(Math.max(1, count / leafSize)));
+    const capacity = count > 0 ? 2 * leaves - 1 : 0;
+    this.bounds = new Float64Array(capacity * 4);
+    this.branches = new Int32Array(capacity * 4);
     this.indices = new Uint32Array(count);
     for (let i = 0; i < count; i++) this.indices[i] = i;
     if (count > 0) this.build(0, count);
+  }
+
+  /** Adopt transferred buffers; the receiving frame does no tree work. */
+  static fromData(positions: ArrayLike<number>, data: PointConeIndexData): PointConeIndex {
+    return new PointConeIndex(positions, data.indices.length, 32, data);
+  }
+
+  /** The live buffers, suitable for transfer after the builder retires. */
+  toData(): PointConeIndexData {
+    return { indices: this.indices, bounds: this.bounds, branches: this.branches, nodeCount: this.nodeCount };
   }
 
   /**
@@ -36,28 +69,29 @@ export class PointConeIndex {
     tanHalfAngle: number,
     out: number[],
   ): void {
-    if (this.nodes.length === 0) return;
+    if (this.nodeCount === 0) return;
     const tanSq = tanHalfAngle * tanHalfAngle;
     const stack = this.queryStack;
     stack.length = 1;
     stack[0] = 0;
 
     while (stack.length > 0) {
-      const node = this.nodes[stack.pop()!];
-      const cx = node.centerX - originX;
-      const cy = node.centerY - originY;
-      const cz = node.centerZ - originZ;
+      const at = stack.pop()! * 4;
+      const cx = this.bounds[at] - originX;
+      const cy = this.bounds[at + 1] - originY;
+      const cz = this.bounds[at + 2] - originZ;
+      const radius = this.bounds[at + 3];
       const axial = cx * directionX + cy * directionY + cz * directionZ;
-      if (axial + node.radius <= 0) continue;
+      if (axial + radius <= 0) continue;
       const radialSq = Math.max(0, cx * cx + cy * cy + cz * cz - axial * axial);
-      const coneRadius = Math.max(0, axial + node.radius) * tanHalfAngle + node.radius;
+      const coneRadius = Math.max(0, axial + radius) * tanHalfAngle + radius;
       if (radialSq > coneRadius * coneRadius) continue;
 
-      if (node.left >= 0) {
-        stack.push(node.left, node.right);
+      if (this.branches[at + 2] >= 0) {
+        stack.push(this.branches[at + 2], this.branches[at + 3]);
         continue;
       }
-      for (let slot = node.start; slot < node.end; slot++) {
+      for (let slot = this.branches[at]; slot < this.branches[at + 1]; slot++) {
         const point = this.indices[slot];
         const offset = point * 3;
         const x = this.positions[offset] - originX;
@@ -95,18 +129,16 @@ export class PointConeIndex {
     const centerY = (minY + maxY) * 0.5;
     const centerZ = (minZ + maxZ) * 0.5;
     const radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) * 0.5;
-    const nodeIndex = this.nodes.length;
-    const node: ConeNode = {
-      start,
-      end,
-      centerX,
-      centerY,
-      centerZ,
-      radius,
-      left: -1,
-      right: -1,
-    };
-    this.nodes.push(node);
+    const nodeIndex = this.nodeCount++;
+    const at = nodeIndex * 4;
+    this.bounds[at] = centerX;
+    this.bounds[at + 1] = centerY;
+    this.bounds[at + 2] = centerZ;
+    this.bounds[at + 3] = radius;
+    this.branches[at] = start;
+    this.branches[at + 1] = end;
+    this.branches[at + 2] = -1;
+    this.branches[at + 3] = -1;
 
     if (end - start <= this.leafSize) return nodeIndex;
     const spanX = maxX - minX;
@@ -115,8 +147,8 @@ export class PointConeIndex {
     const axis = spanX >= spanY && spanX >= spanZ ? 0 : spanY >= spanZ ? 1 : 2;
     const middle = (start + end) >>> 1;
     this.select(start, end, middle, axis);
-    node.left = this.build(start, middle);
-    node.right = this.build(middle, end);
+    this.branches[at + 2] = this.build(start, middle);
+    this.branches[at + 3] = this.build(middle, end);
     return nodeIndex;
   }
 
@@ -148,15 +180,4 @@ export class PointConeIndex {
   private coordinate(point: number, axis: number): number {
     return this.positions[point * 3 + axis];
   }
-}
-
-interface ConeNode {
-  start: number;
-  end: number;
-  centerX: number;
-  centerY: number;
-  centerZ: number;
-  radius: number;
-  left: number;
-  right: number;
 }

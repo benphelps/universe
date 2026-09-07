@@ -5,9 +5,8 @@ import { armProfile } from './density';
  * it tens of millions of times a frame.
  *
  * armProfile is a pure function of disk position, fixed per galaxy —
- * but each evaluation solves the orbit family twice, and the volume
- * march was spending most of its frame re-solving it per step per
- * pixel. Baked once from the model itself, the march reads a texture
+ * but a volume march must not re-evaluate every finite arm at every
+ * step of every pixel. Baked once from the model itself, the march reads a texture
  * and the model stays the only implementation — the shader mirror this
  * replaces had already drifted, carrying the prime galaxy's modulation
  * constants into every derived galaxy.
@@ -36,8 +35,7 @@ export function armLutAzimuthRad(col: number): number {
 
 /**
  * The bake: interleaved (boost, lane) pairs, azimuth-major within each
- * radius row — the layout of an RG texture. A few hundred milliseconds
- * of orbit-family inversions, which is why it runs in a worker.
+ * radius row — the layout of an RG texture. Built once in a worker; the renderer keeps one texture lookup per sample.
  */
 export function bakeArmLut(): Float32Array {
   const out = new Float32Array(ARM_LUT_SIZE * ARM_LUT_SIZE * 2);

@@ -1,65 +1,40 @@
-/** Close-range integration through a shallow spherical cloud layer.
- * The caller supplies the shared large-scale deck sample; this adds a
- * vertical profile and billowing cells without changing the orbit view. */
+/** First visible interval in a spherical cloud layer, clipped to solid depth.
+ * A ray below the layer starts at its inner exit; an orbit ray stops at its
+ * first inner entry. The opaque body hides the opposite side of the shell. */
 export const CLOUD_VOLUME_GLSL = /* glsl */ `
 uniform float uCloudInnerRadius;
 uniform float uCloudOuterRadius;
 
-float raySphereNear(vec3 origin, vec3 dir, float radius) {
+vec2 cloudSphereInterval(vec3 origin, vec3 dir, float radius) {
   float b = dot(origin, dir);
-  float discriminant = b * b - (dot(origin, origin) - radius * radius);
-  return discriminant < 0.0 ? -1.0 : -b - sqrt(discriminant);
+  float r = length(origin);
+  // Factoring the radial difference avoids subtracting squared planetary
+  // radii when the observer is just metres from a cloud boundary.
+  float c = (r - radius) * (r + radius);
+  float discriminant = b * b - c;
+  if (discriminant < 0.0) return vec2(1e30, -1e30);
+  float q = -b - (b >= 0.0 ? sqrt(discriminant) : -sqrt(discriminant));
+  if (abs(q) < 1e-8) return vec2(-b);
+  return vec2(min(q, c / q), max(q, c / q));
 }
 
-float raySphereFar(vec3 origin, vec3 dir, float radius) {
-  float b = dot(origin, dir);
-  float discriminant = b * b - (dot(origin, origin) - radius * radius);
-  return discriminant < 0.0 ? -1.0 : -b + sqrt(discriminant);
-}
-
-// Recover the analytic cloud boundary hit from the view ray. A rasterized
-// sphere is made of flat chords: using its interpolated fragment position
-// directly lets the centre of each polygon sag below a shallow cloud layer,
-// exposing the mesh as a regular field of circular holes.
-vec3 cloudOuterPoint(vec3 rasterPoint) {
-  vec3 rayDir = normalize(rasterPoint - cameraPosition);
-  float cameraRadius = length(cameraPosition);
-  float hit = cameraRadius > uCloudOuterRadius
-    ? raySphereNear(cameraPosition, rayDir, uCloudOuterRadius)
-    : raySphereFar(cameraPosition, rayDir, uCloudOuterRadius);
-  return hit >= 0.0 ? cameraPosition + rayDir * hit : rasterPoint;
-}
-
-vec3 cloudVolume(vec3 outerPoint, vec3 deck, vec3 seedOffset, float timeDays) {
-  vec3 rayDir = normalize(outerPoint - cameraPosition);
-  float cameraRadius = length(cameraPosition);
-  float outerNear = raySphereNear(cameraPosition, rayDir, uCloudOuterRadius);
-  float outerFar = raySphereFar(cameraPosition, rayDir, uCloudOuterRadius);
-  float innerNear = raySphereNear(cameraPosition, rayDir, uCloudInnerRadius);
-  float innerFar = raySphereFar(cameraPosition, rayDir, uCloudInnerRadius);
-  float startDistance;
-  float endDistance;
-
-  if (cameraRadius > uCloudOuterRadius) {
-    // From orbit, integrate the near cloud segment. If the ray only
-    // grazes the shell, its far outer hit closes the segment instead.
-    startDistance = max(outerNear, 0.0);
-    endDistance = innerNear > startDistance ? innerNear : outerFar;
-  } else if (cameraRadius >= uCloudInnerRadius) {
-    // Inside the layer, march only until the first boundary in view.
-    startDistance = 0.0;
-    endDistance = innerNear > 0.0 ? innerNear : outerFar;
-  } else {
-    // Below the deck, begin where the sightline exits its empty interior.
-    startDistance = max(innerFar, 0.0);
-    endDistance = outerFar;
+vec2 cloudRaySegment(vec3 origin, vec3 dir, float maxDistance) {
+  vec2 outer = cloudSphereInterval(origin, dir, uCloudOuterRadius);
+  vec2 inner = cloudSphereInterval(origin, dir, uCloudInnerRadius);
+  float start = max(0.0, outer.x);
+  float end = min(maxDistance, outer.y);
+  if (inner.x < inner.y) {
+    if (inner.x > start) end = min(end, inner.x);
+    else if (inner.y > start) start = inner.y;
   }
+  return vec2(start, max(start, end));
+}
 
-  vec3 startPoint = cameraPosition + rayDir * startDistance;
-  vec3 endPoint = cameraPosition + rayDir * max(endDistance, startDistance);
-  float thickness = max(uCloudOuterRadius - uCloudInnerRadius, 0.1);
-  float path = min(distance(startPoint, endPoint), 12.0 * thickness);
-  endPoint = startPoint + rayDir * path;
+vec3 cloudVolume(vec3 rayDir, vec2 segment, vec3 deck, vec3 seedOffset, float timeDays) {
+  vec3 startPoint = cameraPosition + rayDir * segment.x;
+  float thickness = max(uCloudOuterRadius - uCloudInnerRadius, 0.001);
+  float path = min(segment.y - segment.x, 12.0 * thickness);
+  vec3 endPoint = startPoint + rayDir * path;
   float integrated = 0.0;
   float heightSum = 0.0;
   const int STEPS = 8;

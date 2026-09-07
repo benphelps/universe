@@ -3,32 +3,43 @@ import type { Characterization } from '../../universe/planet/types';
 import { exposedMagmaTemperatureK } from '../../universe/planet/thermodynamics';
 import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
-import { blackbodySurfaceEmission } from '../lighting/thermalEmission';
+import { thermalUniforms, ownThermalTexture, THERMAL_EMISSION_GLSL } from '../lighting/thermalMaterial';
 import { MAGMA_PATTERN_GLSL } from '../glsl/magmaPattern';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
+import { TERRAIN_MORPH_GLSL, TERRAIN_SPLIT_RATIO } from './terrainMorph';
 
 const VERTEX = /* glsl */ `
+attribute vec4 aMorph;
+attribute vec3 aTerrainPosition;
+attribute vec3 aWaterMorph;
+attribute vec2 aWaterIce;
+${TERRAIN_MORPH_GLSL}
 varying vec3 vNormal;
 varying vec3 vViewPos;
 varying vec3 vWorldPos;
+varying float vWaterIce;
 
 void main() {
   vNormal = normal;
+  vWaterIce = mix(aWaterIce.y, aWaterIce.x, terrainMorphWeight(aTerrainPosition, aMorph.w));
   // Shadow rays only; clip runs through modelViewMatrix — see terrainMaterial.
-  vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vec3 displaced = morphTerrainPosition(position, aWaterMorph, aTerrainPosition, aMorph.w);
+  vWorldPos = (modelMatrix * vec4(displaced, 1.0)).xyz;
+  vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
   vViewPos = mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
 }
 `;
 
 const FRAGMENT = /* glsl */ `
+varying float vWaterIce;
 varying vec3 vNormal;
 varying vec3 vViewPos;
 varying vec3 vWorldPos;
 
 uniform vec3 uColor;
+uniform vec3 uIceColor;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 ${SECOND_SUN_GLSL}
@@ -65,7 +76,8 @@ void main() {
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
     sheen += sunSheen(normal, viewDir, uLight2Dir, uLight2Color, shadow2);
   }
-  vec3 color = uColor * light + sheen;
+  float ice = clamp(vWaterIce, 0.0, 1.0);
+  vec3 color = mix(uColor, uIceColor, ice) * light + (1.0 - ice) * sheen;
 
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,
@@ -96,34 +108,24 @@ void main() {
  * the shared-grid geometry and the altitude-scaled near plane make the
  * true depth test reliable on their own.
  */
-export function createOceanMaterial(oceanColor: [number, number, number]): ShaderMaterial {
-  return new ShaderMaterial({
+export function createOceanMaterial(oceanColor: [number, number, number], iceColor: [number, number, number], splitRatio = TERRAIN_SPLIT_RATIO): ShaderMaterial {
+  const material = new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
       ...createShadowUniforms(),
       ...surfaceLightUniforms(),
+      uSplitRatio: { value: splitRatio },
       uColor: { value: new Color(...oceanColor) },
+      uIceColor: { value: new Color(...iceColor) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
     },
   });
+  Object.assign(material.defaultAttributeValues, { aWaterIce: [0, 0] });
+  return material;
 }
-
-const MAGMA_VERTEX = /* glsl */ `
-varying vec3 vNormal;
-varying vec3 vViewPos;
-varying vec3 vWorldPos;
-
-void main() {
-  vNormal = normal;
-  vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  vViewPos = mvPosition.xyz;
-  gl_Position = projectionMatrix * mvPosition;
-}
-`;
 
 const MAGMA_FRAGMENT = /* glsl */ `
 varying vec3 vNormal;
@@ -138,8 +140,7 @@ uniform vec3 uSeedOffset;
 uniform float uTimeDays;
 uniform float uMagmaTemperatureK;
 uniform float uDayNightDeltaK;
-uniform vec3 uThermalColor;
-uniform float uThermalStrength;
+${THERMAL_EMISSION_GLSL}
 
 ${SIMPLEX_NOISE_GLSL}
 ${MAGMA_PATTERN_GLSL}
@@ -193,10 +194,9 @@ void main() {
   }
   // Kirchhoff's law couples absorption and emission. Open silicate melt is
   // nearly black in reflection and therefore strongly emissive; a chilled
-  // skin reflects a little more. T^4 supplies the local bolometric contrast.
+  // skin reflects a little more. The local spectrum supplies visible contrast.
   float emissivity = mix(0.84, 0.94, magma.y);
-  float thermalRatio = pow(magma.x / max(uMagmaTemperatureK, 1.0), 4.0);
-  vec3 thermal = uThermalColor * uThermalStrength * thermalRatio * emissivity;
+  vec3 thermal = surfaceThermal(magma.x) * emissivity;
   vec3 reflected = uColor * light * (1.0 - emissivity) + sheen;
   vec3 color = thermal + reflected;
 
@@ -223,18 +223,19 @@ void main() {
 export function createMagmaMaterial(
   physical: Characterization,
   seedOffset: [number, number, number],
+  splitRatio = TERRAIN_SPLIT_RATIO,
 ): ShaderMaterial {
-  const magmaTemperatureK = exposedMagmaTemperatureK(
+  const magmaTemperatureK = physical.climate.magmaTemperatureK ?? exposedMagmaTemperatureK(
     physical.climate.surfaceMeanK,
     physical.climate.oceanCoverage,
   );
-  const emission = blackbodySurfaceEmission(magmaTemperatureK);
-  return new ShaderMaterial({
-    vertexShader: MAGMA_VERTEX,
+  return ownThermalTexture(new ShaderMaterial({
+    vertexShader: VERTEX,
     fragmentShader: MAGMA_FRAGMENT,
     uniforms: {
       ...createShadowUniforms(),
       ...surfaceLightUniforms(),
+      uSplitRatio: { value: splitRatio },
       uColor: { value: new Color(...physical.appearance.oceanColor) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
@@ -242,9 +243,9 @@ export function createMagmaMaterial(
       uSeedOffset: { value: seedOffset },
       uTimeDays: { value: 0 },
       uMagmaTemperatureK: { value: magmaTemperatureK },
-      uDayNightDeltaK: { value: physical.climate.dayNightDeltaK },
-      uThermalColor: { value: new Color(...emission.color) },
-      uThermalStrength: { value: emission.strength },
+      // The solved hotspot already includes the illumination contrast.
+      uDayNightDeltaK: { value: physical.climate.magmaTemperatureK === undefined ? physical.climate.dayNightDeltaK : 0 },
+      ...thermalUniforms(),
     },
-  });
+  }));
 }

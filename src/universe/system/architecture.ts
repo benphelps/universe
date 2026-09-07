@@ -1,7 +1,7 @@
 import { logNormal } from '../../core/rng/distributions';
 import type { Rng } from '../../core/rng/rng';
-import { isolationMassEarth, type DiskModel } from './disk';
-import type { PlanetClass } from './types';
+import { diskMassBudget, isolationMassEarth, type DiskModel } from './disk';
+import type { FormationInventory, PlanetClass } from './types';
 
 const EARTH_PER_SOLAR = 3.003e-6;
 const MAX_PLANETS = 15;
@@ -38,7 +38,14 @@ export function layoutPlanets(
   disk: DiskModel,
   innerLimitAu: number,
   outerLimitAu: number,
-): PlanetSlot[] {
+): { slots: PlanetSlot[]; inventory: FormationInventory } {
+  const budget = diskMassBudget(disk);
+  let remainingSolids = budget.solidEarth;
+  let remainingGas = budget.gasEarth;
+  // Leave a reservoir for satellites and debris rather than consuming
+  // every solid grain in the initial planet cores.
+  const reservedSolids = budget.solidEarth * 0.1;
+  let formedMass = 0;
   const consolidation = logNormal(rng, Math.log(6), 0.4);
   const coreThresholdEarth = rng.range(10, 25);
   const migrationEfficiency = rng.float() ** 2;
@@ -55,6 +62,7 @@ export function layoutPlanets(
   const outermost = Math.min(outerLimitAu, disk.outerAu);
 
   while (aAu < outermost && slots.length < MAX_PLANETS) {
+    if (remainingSolids - reservedSolids < 0.05) break;
     // Inside the frost line, embryos merge up (consolidation); beyond it,
     // pebble-fed cores grow directly from the ice-rich feeding zone.
     const growthFactor = aAu < disk.frostLineAu ? consolidation : 2;
@@ -69,14 +77,21 @@ export function layoutPlanets(
       massEarth = Math.max(massEarth, logNormal(rng, Math.log(5), 0.5) * (0.4 + migrationEfficiency));
     }
 
+    massEarth = Math.min(massEarth, Math.max(0, remainingSolids - reservedSolids));
+    const coreMass = massEarth;
+    let accretedGas = 0;
     let isGiant = false;
     if (massEarth >= coreThresholdEarth && aAu > disk.frostLineAu * 0.8) {
       const gasMultiplier = 10 ** rng.range(0.7, 2.2);
-      massEarth = Math.min(MAX_PLANET_MASS_EARTH, massEarth * gasMultiplier);
-      isGiant = true;
+      accretedGas = Math.min(remainingGas, Math.max(0, Math.min(MAX_PLANET_MASS_EARTH, massEarth * gasMultiplier) - coreMass));
+      massEarth += accretedGas;
+      isGiant = accretedGas > coreMass;
     }
 
     if (massEarth >= 0.05) {
+      remainingSolids -= coreMass;
+      remainingGas -= accretedGas;
+      formedMass += massEarth;
       slots.push({
         aAu,
         massEarth,
@@ -95,7 +110,12 @@ export function layoutPlanets(
   applyHotJupiter(rng, slots, feH, starMassSolar);
   applyGiantScattering(rng, slots);
   applyResonantChain(rng, slots);
-  return slots;
+  const planetMass = slots.reduce((sum, slot) => sum + slot.massEarth, 0);
+  return { slots, inventory: {
+    diskMassEarth: budget.totalEarth, initialSolidsEarth: budget.solidEarth, initialGasEarth: budget.gasEarth,
+    remainingSolidsEarth: remainingSolids, remainingGasEarth: remainingGas,
+    planetMassEarth: planetMass, satelliteMassEarth: 0, beltMassEarth: 0, lostMassEarth: formedMass - planetMass,
+  } };
 }
 
 function classify(massEarth: number, aAu: number, frostAu: number, rng: Rng): PlanetClass {

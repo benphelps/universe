@@ -9,7 +9,12 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.tools.json",
+    "generate:stellar-response": "node scripts/generate-stellar-response.mjs",
+    "generate:massive": "node scripts/generate-massive-tracks.mjs",
+    "generate:population": "node scripts/generate-population-moments.mjs",
+    "validate:build": "node tools/validation/build.mjs",
+    "bench:generation": "node tools/benchmarks/run-generation.mjs"
   },
   "dependencies": {
     "@types/three": "^0.185.4",

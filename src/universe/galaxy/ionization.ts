@@ -55,8 +55,10 @@ export function stromgrenRadiusPc(photonRate: number, hydrogenDensity: number): 
   return radiusCm / CM_PER_PC;
 }
 
-/** Sound speed of 10⁴ K ionized gas, the piston of the expansion:
- *  ~10 km/s, in the pc/Myr this file thinks in. */
+/** Effective speed of the kinematic expansion prescription (~10 km/s).
+ * This is not a composition-derived 10⁴ K sound speed: pure ionized H
+ * would give 12.85 km/s. See the batch-6 scientific limits before
+ * interpreting these prescribed radii as hydrodynamic predictions. */
 const IONIZED_SOUND_SPEED_PC_PER_MYR = 10.2;
 
 /**
@@ -217,7 +219,7 @@ export const WIND_CAVITY_RESIDUAL = 0.02;
 /** The cavity's gas piled into its wall, by mass: what turns a filled
  *  disc into the ring an evolved region actually is — the emission
  *  goes as n², so the compressed wall is where the light concentrates
- *  while the total stays pinned to the ionizing budget by the finish. */
+ *  where the final-gas transport must spend photons to sustain ionization. */
 export const WIND_WALL_BOOST =
   1 + (1 - WIND_CAVITY_RESIDUAL) / ((1 + WIND_WALL_WIDTH) ** 3 - 1);
 

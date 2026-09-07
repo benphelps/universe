@@ -1,3 +1,8 @@
+import { GLOBAL_STAR_DUST_GLSL } from '../glsl/globalStarDust';
+import { starGlobalDustUniforms, installStarDustCamera } from './globalDustState';
+import type { GalacticPosition } from '../../universe/galaxy/density';
+import { installPointRaster, pointRasterVertex, pointRasterFragment } from './pointSpread';
+import { SCATTER_OPACITY_RGB } from '../../universe/galaxy/dustScattering';
 import {
   AdditiveBlending,
   BackSide,
@@ -18,6 +23,7 @@ import {
   ShaderMaterial,
   SphereGeometry,
   Vector2,
+  Vector3,
   Vector4,
 } from 'three';
 import { rotateToScene } from '../../universe/galaxy/orientation';
@@ -40,12 +46,15 @@ import {
   RIFT_WIDTH,
   type DarkCloudPatch,
   type NebulaPatch,
+  type SkyPortraitUpdate,
+  applySkyPortrait,
 } from '../../universe/galaxy/skyfield';
 import { AIR_VIEW_GLSL, airViewUniforms, applyAirView, type AirView } from '../lighting/airView';
 import {
   SKY_EXTENDED_VISIBILITY_FLOOR,
   SKY_POINT_VISIBILITY_FLOOR,
 } from '../fx/skyLayer';
+import { DirectionalPatches } from './directionalPatches';
 
 const MAX_NEBULAE = NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS;
 const MAX_DARK = DARK_ATLAS_COLS * DARK_ATLAS_ROWS;
@@ -143,19 +152,26 @@ uniform float uLogPivot;
 uniform float uCutoff;
 uniform float uPointColorKnee;
 
+${GLOBAL_STAR_DUST_GLSL}
+uniform mat3 uStarCameraToGalaxy;
+attribute float starDistance;
 ${AIR_VIEW_GLSL}
 
 varying vec3 vColor;
-varying float vAlpha;
+${pointRasterVertex()}
 
 void main() {
   // The sky's shared photometric law (universe/galaxy/displayLaw):
-  // size and energy follow log irradiance, compressed so only the
-  // very nearest stars blaze. Points take the law whole — PSF
-  // photometry stands a star's flux above any background — with their
-  // own floor and ceiling as uniforms, so the instrument can change.
-  float logE = log2(max(brightness, 1e-12)) - uLogPivot;
-  float size = clamp(1.5 + 0.45 * logE, 1.0, 6.5);
+  // energy follows log irradiance, with an instrument-specific faint
+  // release and detection threshold. A normalized angular PSF carries
+  // that response without adding energy through its raster area.
+  vec3 skyDir = normalize(mat3(modelMatrix) * position);
+  vec3 galDir = normalize(uStarCameraToGalaxy * mat3(modelViewMatrix) * position);
+  float tau = starGlobalOpticalDepth(uStarDustObserverPc,galDir*starDistance);
+  vec3 transmitted = starColor * brightness * exp(-tau*vec3(${SCATTER_OPACITY_RGB.join(',')})) * airTransmittance(skyDir);
+  float irradiance=dot(transmitted,vec3(.2126,.7152,.0722));
+  vec3 sourceColor=irradiance>0.0?transmitted/irradiance:vec3(0.0);
+  float logE = log2(max(irradiance, 1e-30)) - uLogPivot;
   float raw = uGain * exp2(uGamma * logE);
   // The same release from the floor the 3D star tiers take: a decade
   // below the floor's own brightness a point fades, two below it is
@@ -163,23 +179,21 @@ void main() {
   float held = uFloor > 0.0
     ? smoothstep(-6.64, -3.32, log2(max(raw, 1e-12) / uFloor) / uGamma)
     : 1.0;
-  float energy = clamp(raw, uFloor, uCeil) * held;
+  float energy = max(raw, uFloor) * held;
   // An instrument with a real limit: points below it vanish outright
   // (half a magnitude of softness so the sky never pops), and colour
   // drains from the faint ones the way it does at the eyepiece.
-  if (uCutoff > 0.0) energy *= smoothstep(uCutoff * 0.6, uCutoff * 1.6, brightness);
+  if (uCutoff > 0.0) energy *= smoothstep(uCutoff * 0.6, uCutoff * 1.6, irradiance);
   float sat = uPointColorKnee > 0.0 ? clamp(energy / uPointColorKnee, 0.0, 1.0) : 1.0;
   vec3 hue = mix(
-    vec3(dot(starColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
-    starColor, sat);
+    vec3(dot(sourceColor, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.86, 1.02, 1.07),
+    sourceColor, sat);
   // The backdrop rides the eye, so a point's world direction is its
   // position turned by the group.
-  vec3 skyDir = normalize(mat3(modelMatrix) * position);
-  vColor = hue * energy * uIntensity * skyVisibility(skyDir) * airTransmittance(skyDir);
-  vAlpha = clamp(energy * 4.0, 0.0, 1.0);
+  vColor = hue * energy * uIntensity * skyVisibility(skyDir) * uPointScale * uPointScale;
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = size;
   gl_Position = projectionMatrix * mvPosition;
+  seatPointRaster(gl_Position);
   // This sphere supplies direction only. Put unresolved starlight at the
   // reversed-Z far floor so every real body occludes it by depth, even if
   // a later material or render-queue change reorders the draw calls.
@@ -190,12 +204,10 @@ void main() {
 
 const POINTS_FRAGMENT = /* glsl */ `
 varying vec3 vColor;
-varying float vAlpha;
+${pointRasterFragment()}
 
 void main() {
-  vec2 c = gl_PointCoord * 2.0 - 1.0;
-  float falloff = 1.0 - smoothstep(0.25, 1.0, length(c));
-  gl_FragColor = vec4(vColor * falloff * vAlpha, 1.0);
+  gl_FragColor = vec4(vColor * pointPixelWeight(), 1.0);
 }
 `;
 
@@ -294,17 +306,14 @@ void main() {
     vec2 tuv = (tileOrigin + vec2(u, v)) / vec2(${DARK_ATLAS_COLS}.0, ${DARK_ATLAS_ROWS}.0);
     transmission *= texture2D(uDarkAtlas, tuv).r;
   }
-  // The map holds the column's physics — radiance and reddening — so
-  // the cloud shadowing dims the light itself, exactly, before the
-  // instrument ever sees it; a rift can carve the column below the
-  // sky's own pedestal and show honestly black. Hue is the warm
-  // population reddened by the dust along the way.
-  vec4 column = textureBicubic(uGlow, uv, uGlowSize);
-  float radiance = (column.r * transmission - uPedestalRadiance) * uContinuumShare;
-  vec3 hue = vec3(
-    1.0,
-    0.93 * (0.75 + 0.25 * column.g),
-    0.85 * (0.55 + 0.45 * column.g));
+  // RGB already carries population spectra and diffuse-dust transport.
+  // Discrete cloud maps store V-like transmission; use the same RGB
+  // opacity ratios as the volume tiers before instrument compression.
+  vec3 column = textureBicubic(uGlow, uv, uGlowSize).rgb *
+    pow(vec3(max(transmission, 0.0)), vec3(${SCATTER_OPACITY_RGB.join(', ')}));
+  float power = dot(column, vec3(0.2126, 0.7152, 0.0722));
+  float radiance = (power - uPedestalRadiance) * uContinuumShare;
+  vec3 hue = power > 0.0 ? column / power : vec3(0.0);
   gl_FragColor = vec4(scotopic(hue * displayRadiance(radiance), radiance) * uIntensity
     * skyVisibility(vAirDir) * airTransmittance(vAirDir), 1.0);
 }
@@ -341,6 +350,8 @@ export interface BackdropSource {
   starDirs: Float32Array;
   starColors: Float32Array;
   starBrightness: Float32Array;
+  starDistances?: Float32Array;
+  viewpointPc?: GalacticPosition;
 }
 
 
@@ -355,7 +366,11 @@ export class StarfieldBackdrop {
   /** The per-sprite table's texels; the fade column is rewritten as
    *  volumes come and go. */
   private spriteTable: Float32Array = new Float32Array();
+  private atlasTexture: DataTexture | null = null;
+  private readonly portraitSource: Pick<BackdropSource, 'nebulae' | 'nebulaAtlas'>;
+  private readonly ownedTextures: DataTexture[] = [];
   private spriteTexture: DataTexture | null = null;
+  private spritesDirty = false;
   private volumeFades: ReadonlyMap<bigint, number> = new Map();
   private readonly pedestalRadiance: number;
   private pointsMaterial!: ShaderMaterial;
@@ -367,6 +382,7 @@ export class StarfieldBackdrop {
 
   /** skipStars omits the first N sky entries (a 3D view of the near field). */
   constructor(sky: BackdropSource, radius: number, skipStars = 0) {
+    this.portraitSource = { nebulae: sky.nebulae, nebulaAtlas: sky.nebulaAtlas };
     this.pedestalRadiance = sky.skyFloorRadiance;
     const orientation = sky.sceneFromGalaxy;
     const count = sky.starCount - skipStars;
@@ -395,6 +411,8 @@ export class StarfieldBackdrop {
       new BufferAttribute(sky.starBrightness.subarray(skipStars), 1),
     );
 
+    geometry.setAttribute('starDistance',new BufferAttribute(sky.starDistances?.subarray(skipStars) ?? new Float32Array(count),1));
+
     // The whole backdrop draws in the opaque queue (transparent: false)
     // at negative renderOrder and is also pinned to the far-depth floor.
     // Render order makes the sky cheap; depth makes occlusion invariant.
@@ -405,11 +423,17 @@ export class StarfieldBackdrop {
         uIntensity: { value: 1 },
         ...airViewUniforms(),
         ...pointUniforms(),
+        ...starGlobalDustUniforms,
+        // A held sky keeps its bake observer while its directions rotate
+        // into the new scene. Its column must not jump to the next system.
+        uStarDustObserverPc:{value:new Vector3(sky.viewpointPc?.xPc ?? 0,sky.viewpointPc?.yPc ?? 0,sky.viewpointPc?.zPc ?? 0)},
       },
       blending: AdditiveBlending,
       transparent: false,
       depthWrite: false,
     });
+    installPointRaster(pointsMaterial);
+    installStarDustCamera(pointsMaterial);
     this.materials.push(pointsMaterial);
     this.pointsMaterial = pointsMaterial;
     const points = new Points(geometry, pointsMaterial);
@@ -449,6 +473,7 @@ export class StarfieldBackdrop {
       RedFormat,
       FloatType,
     );
+    this.ownedTextures.push(texture, riftTexture, darkTexture);
     darkTexture.minFilter = LinearFilter;
     darkTexture.magFilter = LinearFilter;
     darkTexture.wrapS = ClampToEdgeWrapping;
@@ -505,6 +530,24 @@ export class StarfieldBackdrop {
     dome.frustumCulled = false;
     dome.renderOrder = -3;
     this.group.add(dome);
+    const darkSelection = new DirectionalPatches(darkA.slice(0, sky.darkClouds.length));
+    let previousDark = sky.darkClouds.map((_, i) => i);
+    dome.onBeforeRender = (_renderer, _scene, camera) => {
+      const visible = darkSelection.select(camera, dome, radius * 1.01);
+      if (visible.length === previousDark.length && visible.every((id, i) => id === previousDark[i])) return;
+      previousDark = [...visible];
+      glowMaterial.uniforms.uDarkCount.value = visible.length;
+      glowMaterial.uniforms.uDarkA.value = visible.map(i => darkA[i]);
+      glowMaterial.uniforms.uDarkB.value = visible.map(i => darkB[i]);
+      glowMaterial.uniforms.uDarkC.value = visible.map(i => darkC[i]);
+      // GLSL uniform arrays retain their declared capacity, including
+      // when no patch overlaps the view.
+      for (const key of ['uDarkA', 'uDarkB', 'uDarkC']) {
+        const array = glowMaterial.uniforms[key].value as Vector4[];
+        while (array.length < MAX_DARK) array.push(darkA[0]);
+      }
+      glowMaterial.uniformsNeedUpdate = true;
+    };
 
     if (sky.nebulae.length > 0) {
       const patches = sky.nebulae.slice(0, MAX_NEBULAE);
@@ -547,6 +590,8 @@ export class StarfieldBackdrop {
         RGBAFormat,
         FloatType,
       );
+      this.ownedTextures.push(spriteTexture, atlas);
+      this.atlasTexture = atlas;
       atlas.minFilter = LinearFilter;
       atlas.magFilter = LinearFilter;
       atlas.wrapS = ClampToEdgeWrapping;
@@ -578,7 +623,42 @@ export class StarfieldBackdrop {
       nebulaDome.frustumCulled = false;
       nebulaDome.renderOrder = -3;
       this.group.add(nebulaDome);
+      const directions = patches.map((_, i) => new Vector4().fromArray(table, i * SPRITE_COLUMNS * 4));
+      const selection = new DirectionalPatches(directions);
+      // Keep the canonical rows for fades; compact only the draw table.
+      const drawTable = new Float32Array(table);
+      this.spriteTexture!.image.data = drawTable;
+      let previous = patches.map((_, i) => i);
+      nebulaDome.onBeforeRender = (_renderer, _scene, camera) => {
+        const visible = selection.select(camera, nebulaDome, radius * 1.02);
+        if (!this.spritesDirty && visible.length === previous.length && visible.every((id, i) => id === previous[i])) return;
+        previous = [...visible];
+        this.spritesDirty = false;
+        const stride = SPRITE_COLUMNS * 4;
+        visible.forEach((id, i) => drawTable.set(table.subarray(id * stride, (id + 1) * stride), i * stride));
+        nebulaMaterial.uniforms.uNebulaCount.value = visible.length;
+        this.spriteTexture!.needsUpdate = true;
+        nebulaMaterial.uniformsNeedUpdate = true;
+      };
     }
+  }
+
+  /** Upload only the completed tile and its small photometry row. */
+  updatePortrait(update: SkyPortraitUpdate): void {
+    if (!this.atlasTexture || !applySkyPortrait(this.portraitSource, update)) return;
+    const { patch } = update;
+    const row = patch.tile * SPRITE_COLUMNS * 4;
+    this.spriteTable[row + SPRITE_RIGHT * 4 + 3] = patch.peakRadiance;
+    this.spriteTable.set([...patch.emissionHue, 0], row + SPRITE_HUE_LINE * 4);
+    this.spriteTable.set([...patch.emissionHueNarrow, 0], row + SPRITE_HUE_NARROW * 4);
+    this.spriteTable.set([...patch.reflectionHue, 0], row + SPRITE_HUE_SCATTER * 4);
+    const width = NEBULA_ATLAS_COLS * NEBULA_TILE;
+    for (let y = 0; y < NEBULA_TILE; y++) {
+      const start = ((Math.floor(patch.tile / NEBULA_ATLAS_COLS) * NEBULA_TILE + y) * width + patch.tile % NEBULA_ATLAS_COLS * NEBULA_TILE) * 4;
+      this.atlasTexture.addUpdateRange(start, NEBULA_TILE * 4);
+    }
+    this.atlasTexture.needsUpdate = true;
+    this.spritesDirty = true;
   }
 
   /** How far each cloud's volume is standing, 0..1: the sprite carries
@@ -599,7 +679,7 @@ export class StarfieldBackdrop {
         changed = true;
       }
     }
-    if (changed && this.spriteTexture) this.spriteTexture.needsUpdate = true;
+    if (changed) this.spritesDirty = true;
   }
 
   /** Seat an instrument on every tier of the backdrop — points, glow,
@@ -649,11 +729,18 @@ export class StarfieldBackdrop {
   }
 
   dispose(): void {
+    // Materials do not own/dispose their texture uniforms in Three.
+    // Release only maps created here, never a borrowed air/light input.
+    for (const texture of this.ownedTextures) texture.dispose();
+    this.ownedTextures.length = 0;
+    this.atlasTexture = null;
+    this.spriteTexture = null;
     this.group.traverse((obj) => {
       if (obj instanceof Points || obj instanceof Mesh) {
         obj.geometry.dispose();
         if (!Array.isArray(obj.material)) obj.material.dispose();
       }
     });
+    this.group.clear();
   }
 }

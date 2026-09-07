@@ -13,6 +13,7 @@ const AU_KM = AU / 1000;
 
 const sunlike = {
   luminosity: 1,
+  tEff: 5772,
   linearRgb: [1, 0.95, 0.9],
   variability: null,
   activity: { flareRatePerDay: 0 },
@@ -32,7 +33,7 @@ describe('instellation', () => {
 
 describe('starlight', () => {
   it('displays sunlight at one AU as the star hue itself', () => {
-    expect(starlight(sunlike, AU_KM, 0)).toEqual([1, 0.95, 0.9]);
+    expect(Math.max(...starlight(sunlike, AU_KM, 0))).toBeCloseTo(1, 12);
   });
 
   it('dims a far world on the adapted scale, not the linear one', () => {
@@ -43,10 +44,17 @@ describe('starlight', () => {
   });
 
   it('a Y dwarf lights its close world dim, not bright', () => {
-    const dwarf = { ...sunlike, luminosity: 2.26e-7, linearRgb: [1, 0.2, 0.02] } as unknown as Star;
+    const dwarf = { ...sunlike, luminosity: 2.26e-7, tEff: 400, linearRgb: [1, 0.2, 0.02] } as unknown as Star;
     const [r] = starlight(dwarf, 0.164 * AU_KM, 0);
-    expect(r).toBeLessThan(0.12);
-    expect(r).toBeGreaterThan(0.05);
+    expect(r).toBeLessThan(1e-15);
+    expect(r).toBeGreaterThan(0);
+  });
+
+  it('uses inverse-square power and source additivity at a fixed scene exposure', () => {
+    const one = starlight(sunlike, AU_KM, 0, 3);
+    const far = starlight(sunlike, AU_KM * 2, 0, 3);
+    const pair = starlight({ ...sunlike, luminosity: 2 }, AU_KM, 0, 3);
+    one.forEach((v, c) => { expect(far[c]).toBeCloseTo(v / 4, 12); expect(pair[c]).toBeCloseTo(v * 2, 12); });
   });
 
   it('shows a pulsation at full contrast on top of the adapted level', () => {

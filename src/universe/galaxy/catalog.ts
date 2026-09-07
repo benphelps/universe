@@ -1,7 +1,9 @@
+import { FIELD_OBJECTS_PER_SYSTEM } from './fieldMultiplicity';
 import { deriveSeed, mix64 } from '../../core/rng/hash';
 import { poisson } from '../../core/rng/distributions';
 import { Rng } from '../../core/rng/rng';
-import { evolve, luminousLifetimeGyr } from '../star/evolution';
+import { evolve, evolutionAgeBreaksGyr, luminousLifetimeGyr } from '../star/evolution';
+import { MASSIVE_TRACK_MASSES, MASSIVE_TRACK_MIN, massivePeakLuminosity } from '../star/massiveTracks';
 import {
   AGE_BIT_SPAN,
   ENTROPY_BITS,
@@ -108,7 +110,11 @@ function makeRows(): CatalogRow[] {
       salt: 0n,
     });
     if (cap < AGE_BIT_SPAN) {
-      // The stratum's post-luminous remainder: near-field-only fine cells.
+      // Old primaries can have luminous coeval companions. Give this
+      // remainder a bounded survey; expanding it to the young massive
+      // row's 2.5-kpc reach makes ordinary sky generation prohibitively slow.
+      // Retain fine identity cells: coarse cells greatly overdraw a dense
+      // nucleus even when the requested neighbourhood is tiny.
       rows.push({
         massLo: bounds[i],
         massHi: bounds[i + 1],
@@ -117,7 +123,7 @@ function makeRows(): CatalogRow[] {
         ageBitsLo: cap,
         ageBitsHi: AGE_BIT_SPAN,
         cellPc: 10,
-        skyRadiusPc: 0,
+        skyRadiusPc: 90,
         salt: 0n,
       });
     }
@@ -268,7 +274,7 @@ export function sweepCellStars(
   const corner = { xPc: ix * cellPc, yPc: iy * cellPc, zPc: iz * cellPc };
   const ceiling = stellarDensityCeiling(corner, cellPc);
   const rng = new Rng(cellSeed(row, ix, iy, iz));
-  const count = poisson(rng, ceiling * cellPc ** 3 * share);
+  const count = poisson(rng, ceiling * cellPc ** 3 * share / FIELD_OBJECTS_PER_SYSTEM);
   for (let i = 0; i < count; i++) {
     const x = (ix + rng.float()) * cellPc;
     const y = (iy + rng.float()) * cellPc;
@@ -351,16 +357,16 @@ const CEILING_LOG_SPAN = Math.log(120 / 0.013);
 const luminosityCeilingTable = (() => {
   const table = new Float64Array(CEILING_BINS + 1);
   const peakFor = (mass: number): number => {
+    // These tracks end well before the oldest population age. Their
+    // log-linear luminosity needs only a maximum over retained knots.
+    if (mass >= MASSIVE_TRACK_MIN) return massivePeakLuminosity(mass);
     let peak = 0;
-    const lifetime = luminousLifetimeGyr(mass);
-    const msEnd = lifetime / 1.15;
-    const ages = [0.05, Math.min(MAX_POPULATION_AGE_GYR, msEnd * 0.999)];
-    if (lifetime < MAX_POPULATION_AGE_GYR) {
-      for (const u of [0.05, 0.299, 0.45, 0.699, 0.75, 0.849, 0.9, 0.999]) {
-        ages.push(msEnd * (1 + 0.15 * u));
-      }
+    const ages = [0.05, MAX_POPULATION_AGE_GYR];
+    // Use the actual clock, including peaks just before a phase ends.
+    // A universal 15%-of-MS budget misses the short fuel-limited AGB.
+    for (const age of evolutionAgeBreaksGyr(mass)) {
+      ages.push(Math.min(MAX_POPULATION_AGE_GYR, age), Math.min(MAX_POPULATION_AGE_GYR, age * (1 - 1e-10)));
     }
-    ages.push(MAX_POPULATION_AGE_GYR);
     for (const age of ages) peak = Math.max(peak, evolve(mass, age).luminosity);
     return peak;
   };
@@ -368,7 +374,11 @@ const luminosityCeilingTable = (() => {
     const massLo = Math.exp(CEILING_LOG_LO + (CEILING_LOG_SPAN * b) / CEILING_BINS);
     const massHi = Math.exp(CEILING_LOG_LO + (CEILING_LOG_SPAN * (b + 1)) / CEILING_BINS);
     let peak = 0;
-    for (const m of [massLo, massLo * 1.02, Math.sqrt(massLo * massHi), massHi]) {
+    // Peaks need not be monotonic with initial mass. Between reference
+    // masses log L is linear at every phase; including any interior
+    // reference mass therefore bounds the entire massive-star interval.
+    const anchors = MASSIVE_TRACK_MASSES.filter(m => m > massLo && m < massHi);
+    for (const m of [massLo, massLo * 1.02, Math.sqrt(massLo * massHi), massHi, ...anchors]) {
       peak = Math.max(peak, peakFor(Math.min(m, 120)));
     }
     table[b] = peak * 1.25;
@@ -382,4 +392,19 @@ export function luminosityCeiling(massInitial: number): number {
     Math.max(0, Math.floor(((Math.log(massInitial) - CEILING_LOG_LO) / CEILING_LOG_SPAN) * CEILING_BINS)),
   );
   return luminosityCeilingTable[bin];
+}
+
+// At most two companions, each initially no more massive than the primary.
+// The prefix envelope also covers non-monotonic peaks between mass bins.
+const systemCeilingTable = (() => {
+  let peak = 0;
+  return luminosityCeilingTable.map(value => {
+    peak = Math.max(peak, value);
+    return 3 * peak;
+  });
+})();
+export function systemLuminosityCeiling(massInitial: number): number {
+  const bin = Math.min(CEILING_BINS, Math.max(0,
+    Math.floor((Math.log(massInitial) - CEILING_LOG_LO) / CEILING_LOG_SPAN * CEILING_BINS)));
+  return systemCeilingTable[bin];
 }

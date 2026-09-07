@@ -1,96 +1,43 @@
 # Architecture
 
-## Stack
+Universe generates a seeded procedural model on demand and presents it through one viewer. Scientific calculations are plain data; the renderer owns display approximations, GPU resources and level of detail.
 
-| Concern | Choice | Rationale |
-| --- | --- | --- |
-| Language | TypeScript (strict) | Type safety across a large procedural data model |
-| Build | Vite | Fast dev server, worker bundling, zero-config TS |
-| Rendering | Three.js on WebGL2 | Mature scene graph, custom shader support; `WebGPURenderer` is a drop-in upgrade path for compute-heavy terrain/atmosphere work |
-| Parallelism | Web Workers (+ OffscreenCanvas where useful) | Generation must never block the frame loop |
-| Testing | Vitest | Unit + property tests for physics invariants |
+## Code ownership
 
-## Layering
+| Layer | Responsibility |
+| --- | --- |
+| `src/core/` | RNG, hashing, units, math, noise, constants and color |
+| `src/universe/` | Stars, systems, galaxies, nebulae, worlds, climate and terrain fields |
+| `src/workers/` | Terrain, sky, nebula, landmark and locale generation |
+| `src/render/` | Three.js objects, shaders, GPU bakes, resource uploads and terrain streaming |
+| `src/app/` | Viewer, camera, scheduling, state, navigation and React UI |
 
-Three strict layers. Dependencies point downward only.
+[`layering.test.ts`](../src/layering.test.ts) prevents the model and core from importing Three.js or accessing the DOM. Model tests run in Node; the same calculations can run in workers. The app coordinates model and renderer lifetimes rather than making UI state part of physical generation.
 
-```
-app/        UI shell, camera, time controls, navigation
-render/     Three.js scenes, materials, shaders, LOD streaming
-universe/   Pure procedural model: plain-data bodies from seeds
-core/       RNG, hashing, math, units, noise, constants
-```
+## Determinism and units
 
-- `universe/` has **zero rendering dependencies** — no Three.js imports, no DOM. Every generator is a pure function `(seed, context) → model`. This makes the whole simulation testable headless and runnable in workers.
-- `render/` consumes models and owns all GPU concerns. It never generates properties itself; anything visible must exist in the model first.
-- `core/` is shared leaf code: deterministic RNG, unit types, Kepler solvers, noise primitives, physical constants, blackbody/color math.
+Seeded random streams and hashed child identities isolate sibling generation. Repeating an address with the same model version reproduces its system and terrain. Changes to physical distributions or generators can intentionally change older seeds; an address is not a versioned save file.
 
-## Module layout (wide, not tall)
+Use the unit named by each model field: galaxy positions are parsecs, planetary dimensions commonly kilometers, orbital distances commonly AU, and simulation time is in days. Convert at render boundaries. Camera frames and scale transitions avoid putting an entire galaxy and centimeter terrain into a single absolute GPU coordinate system. URL state identifies a location and selected body; it does not encode the exact camera pose, simulation phase, exposure or all UI settings.
 
-```
-src/
-  core/
-    rng/          seeded PRNG, hash-based seed derivation, distributions
-    math/         vectors, kepler solver, rotations, interpolation
-    noise/        simplex/ridged/fbm/domain-warp primitives
-    units/        SI + astronomical unit types and conversions
-    physics/      constants, blackbody, gravity, tides, scattering
-    color/        Planck spectrum → CIE XYZ → sRGB pipeline
-  universe/
-    galaxy/       sector grid, density model, star sampling
-    star/         mass sampling, evolution, classification, remnants
-    system/       disk model, orbit architecture, stability, zones
-    planet/       bulk properties, interior, atmosphere, climate
-    moon/         satellite systems, tidal state
-    rings/        ring system generation
-    smallbody/    asteroids, comets, belts
-    surface/      terrain fields, craters, hydrology, biomes
-  render/
-    scale/        floating origin, camera-relative transforms, depth strategy
-    starfield/    background stars, milky way band
-    star/         photosphere, corona, flare materials
-    planet/       terrain meshing (quadtree cube-sphere), surface materials
-    atmosphere/   scattering shaders (sky + limb)
-    rings/        ring geometry + shadowing
-    smallbody/    instanced asteroid fields, comet tails
-    fx/           HDR pipeline, bloom, tone mapping, lens effects
-  app/
-    ui/           overlays, body inspector, system map
-    camera/       controllers per context (system, orbit, surface)
-    time/         simulation clock, time-scaling controls
-  workers/        generation worker entry points + message protocol
-```
+## Generation and scheduling
 
-File-size discipline: one concept per file. A generator that grows past ~200 lines gets split by sub-concern (e.g. `planet/atmosphere/composition.ts`, `planet/atmosphere/climate.ts`), not extended.
+A galaxy seed selects structure and population parameters. Spatial sampling resolves stars and clouds around the observer; selecting a system generates its bodies. Surface workers resolve a deterministic field into terrain chunks. Nebula workers solve bounded gas/radiation fields, then produce representations for near volumes and distant portraits.
 
-## Data flow
+Workers have explicit queues, cancellation and completion ownership. Cancelling a request does not make its memory immediately available: leases remain charged until the worker acknowledges release. Cached results, active bakes, replacement uploads and fading representations each retain ownership until disposal. Camera motion ranks work without synchronously solving every visible object.
 
-```
-seed ──► universe model (lazy, pure, plain data) ──► render adapters ──► GPU
-                     ▲                                     │
-                     └──────── workers generate ◄──────────┘  (LOD demand)
-```
+Expensive population integrals, optical response samples and annual-insolation quadrature are generated offline. Their checked-in tables are runtime inputs, with generators retained for review and reproduction. Dynamic seasonal appearance samples a cached response rather than rerunning a climate integration each frame.
 
-1. **Models are plain serializable objects.** `Star`, `Planet`, `TerrainChunk` etc. are interfaces with numbers/arrays only — safe to move across worker boundaries via structured clone (heavy fields as transferable typed arrays).
-2. **Lazy expansion.** A `StarSystem` is generated only when approached; a planet's `SurfaceField` only when its terrain is needed; a `TerrainChunk` heightmap only when the quadtree subdivides to it. Each expansion is pure and repeatable, so nothing needs caching to disk — caches are memory-only and evictable.
-3. **Workers own heavy generation.** Heightmap synthesis, crater fields, and asteroid belt instancing run off-thread; the main thread only assembles geometry/materials from returned buffers.
+## Rendering
 
-## Determinism
+[`RenderPipeline`](../src/render/fx/pipeline.ts) uses WebGL2 through Three.js, an HDR half-float target, reversed depth where supported, and ACES filmic display mapping. Physical reflected and emitted contributions are combined in linear light before the detector/display response. Tone mapping, exposure, limited dynamic range and display-oriented representations remain separate from a scientific instrument calibration.
 
-Single 64-bit universe seed at the root. Every entity derives its seed by hashing the parent seed with a stable path key (`hash(parentSeed, "planet", index)`). Rules:
+Galaxy density, light and dust share model fields and cached lookup textures across scales. Near resolved stars and diffuse light use population accounting to avoid inventing a second luminosity reservoir. Statistical distant dust and resident cloud extinction cover different spatial contributions. Nebula portraits and local volumes derive from the same gas/source solution, with bounded sampling and refinement.
 
-- Generators may consume randomness **only** from their own derived stream — never from a shared or global RNG, so generation order can never affect results.
-- Any-time access: positions at time `t` come from closed-form Kepler propagation, never accumulated integration, so `t` can jump arbitrarily and stay exact.
-- Property tests pin this down: same seed twice → deep-equal models; sibling generation order shuffled → identical results.
+Planet rendering combines a distant globe, streamed cube-sphere terrain, surface scatter, water, atmosphere and clouds. Terrain uses distance/horizon rejection, bounded caches, parent-child morphing and a shared surface datum. Clouds read scene depth so foreground terrain occludes the volume. Ground and orbit materials share atmosphere, thermal-emission and seasonal-cover parameters.
 
-## Scale handling
+Potentially expensive shader variants are prepared before their first visible draw. Small state changes such as the arrival of surface data use uniforms when a new program is unnecessary. Preparation must tolerate cancellation and disposal; it is not permission to retain stale objects indefinitely.
 
-The universe spans ~10⁻¹ m (surface detail) to ~10²¹ m (galactic distances). Strategy:
+## Boundaries
 
-- **Doubles on CPU**: all model positions in SI doubles (JS numbers), hierarchical frames (galaxy → system barycenter → body → surface) so magnitudes stay small within each frame.
-- **Camera-relative rendering**: the render layer rebases all positions relative to the camera each frame before casting to float32 (floating origin).
-- **Split scene scales**: near scene (real scale) + far scene (distant bodies rendered as scaled-down proxies / sprites at correct angular size and brightness), composited back-to-front; logarithmic depth buffer within each.
-
-## Validation strategy
-
-The Solar System is the fixture. Generators are validated by feeding them Sun/Jupiter/Earth-like inputs and asserting outputs land within observed ranges (Sun's color and luminosity, Earth's equilibrium temperature, Jupiter's radius, Moon's lock state, Kirkwood gap positions). Statistical generators get distribution tests (e.g. sampled IMF matches Kroupa slopes within tolerance).
+The model uses empirical distributions, reduced physical models and procedural geometry. It is not an N-body galaxy, radiation-hydrodynamic nebula simulation, full stellar-evolution solver or coupled weather model. See the [model references](README.md) for assumptions and the [performance reference](PERFORMANCE.md) for resource ceilings. WebGPU is a future evaluation, not an interchangeable current backend.

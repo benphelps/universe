@@ -1,8 +1,8 @@
+import { GALAXY_COMPONENT_GLSL } from '../glsl/galaxyComponents';
 import { describe, expect, it } from 'vitest';
-import { SMOOTH_MODEL, ARM_YOUNG_LIGHT } from '../../universe/galaxy/density';
+import { SMOOTH_MODEL } from '../../universe/galaxy/density';
 import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
-import { SHELL_WIDTH, WIND_REACH, WIND_STALL } from '../../universe/galaxy/ionization';
-import { DUST_KAPPA, NEBULA_TILE, RIFT_NEAR_PC } from '../../universe/galaxy/skyfield';
+import { DUST_KAPPA, NEBULA_TILE, NEBULA_TILE_MAX_STEPS, RIFT_NEAR_PC } from '../../universe/galaxy/skyfield';
 import { SKY_BAKE_FRAGMENTS } from './skyBakeGpu';
 
 function pinned(value: number): string {
@@ -27,22 +27,21 @@ describe('the sky bake shaders', () => {
     // lengths, the dust opacity, the cloud-shadow radius and the arm
     // light weight all have to appear as the model states them.
     const glow = SKY_BAKE_FRAGMENTS.glow;
+    expect(glow).toContain(GALAXY_COMPONENT_GLSL);
     for (const value of [
-      SMOOTH_MODEL.thinScaleLengthPc,
-      SMOOTH_MODEL.thickScaleHeightPc,
+      SMOOTH_MODEL.thinScaleLengthPc / 1000,
+      SMOOTH_MODEL.thickScaleHeightPc / 1000,
       SMOOTH_MODEL.dustScaleHeightPc,
       DUST_KAPPA,
       RIFT_NEAR_PC,
-      ARM_YOUNG_LIGHT,
     ]) {
       expect(glow).toContain(pinned(value));
     }
-    // The nebula tile marches the region's own constants and the
-    // sprite's own tile size.
+    // Nebula geometry comes from the solved volume texture, with a
+    // shared opacity and a bounded march at each grid's cell scale.
     const nebula = SKY_BAKE_FRAGMENTS.nebula;
-    for (const value of [DUST_OPACITY_PER_PC, 1 + SHELL_WIDTH, WIND_STALL, WIND_REACH]) {
-      expect(nebula).toContain(pinned(value));
-    }
-    expect(nebula).toContain(`/ ${NEBULA_TILE}`);
+    expect(nebula).toContain(pinned(DUST_OPACITY_PER_PC));
+    expect(nebula).toContain(`/${pinned(NEBULA_TILE)}`);
+    expect(nebula).toContain(`step < ${NEBULA_TILE_MAX_STEPS}`);
   });
 });

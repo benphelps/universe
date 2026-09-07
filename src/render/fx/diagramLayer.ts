@@ -10,7 +10,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
  * steps up before they are taken.
  */
 const DITHERED_COPY = {
-  uniforms: { tDiffuse: { value: null }, opacity: { value: 1 } },
+  uniforms: { tDiffuse: { value: null } },
   vertexShader: /* glsl */ `
 varying vec2 vUv;
 void main() {
@@ -22,11 +22,14 @@ void main() {
 #include <common>
 #include <dithering_pars_fragment>
 uniform sampler2D tDiffuse;
-uniform float opacity;
 varying vec2 vUv;
 void main() {
   vec4 texel = texture2D(tDiffuse, vUv);
-  gl_FragColor = vec4(dithering(texel.rgb), texel.a) * opacity;
+  // Intermediate alpha describes sky compositing, not holes in the
+  // finished scene. Three creates an alpha-capable context even with
+  // renderer alpha:false; carrying this channel to the browser lets
+  // the page's off-black background show through opaque dark clouds.
+  gl_FragColor = vec4(dithering(texel.rgb), 1.0);
 }`,
 };
 

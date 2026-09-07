@@ -1,20 +1,23 @@
+import type { PlanetForcing, StellarForcing } from './illumination';
 import type { OrbitalElements } from '../../core/math/orbit';
+import { orbitalPeriod } from '../../core/math/orbit';
 import { AU } from '../../core/physics/constants';
 import { seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import type { Star } from '../star/types';
 import type { PlanetClass, SystemZones } from '../system/types';
 import { computeAppearance } from './appearance';
-import { computeAtmosphere, withOxygen } from './atmosphere';
+import { computeAtmosphere, finalizeAtmosphere } from './atmosphere';
 import { computeBulk } from './bulk';
 import { computeClimate } from './climate';
 import { computeInterior, sampleIronCoreFraction } from './interior';
-import { computeRotation } from './rotation';
+import { computeRotation, solarDayHours } from './rotation';
 import type { Characterization } from './types';
 import type { Mu } from '../../core/physics/units';
 
 export interface CharacterizeContext {
   star: Star;
+  stellarForcing?: StellarForcing;
   centralLuminosity: number;
   /** Gravitational parameter for this planet's orbit, m³/s². */
   mu: Mu;
@@ -51,6 +54,8 @@ export function characterizePlanet(
     elements.semiMajorAxis,
   );
   const ironCoreFraction = sampleIronCoreFraction(rng.fork('core'), planetClass, star.feH);
+  rotation.lockTarget = rotation.locked ? 'star' : undefined;
+  rotation.solarDayHours = solarDayHours(rotation, orbitalPeriod(context.mu, elements.semiMajorAxis) / 3600);
   const bulk = computeBulk(
     rng.fork('bulk'),
     massEarth,
@@ -80,6 +85,8 @@ export function characterizePlanet(
     zones.habitableInnerAu,
     aAu,
   );
+  const forcing: PlanetForcing = { ...(context.stellarForcing ?? { sources: [{ luminositySolar: centralLuminosity, path: [] }], origin: [] }),
+    orbit: { elements, mu: context.mu } };
   const climate = computeClimate(
     rng.fork('climate'),
     planetClass,
@@ -91,26 +98,19 @@ export function characterizePlanet(
     centralLuminosity,
     aAu,
     star.ageGyr,
+    forcing,
   );
   // Geological heat and stellar heating enter independently, but either can
   // leave the observable surface molten. Reconcile that final thermodynamic
   // state before appearance and terrain are derived from it.
-  if (climate.hydrosphere === 'magma' && interior.regime !== 'gas') {
+  if (climate.hydrosphere === 'magma' && (climate.surfaceBackgroundK ?? 0) >= 1300 && interior.regime !== 'gas') {
     interior = { ...interior, regime: 'magma' };
   }
-  if (climate.biosphere) atmosphere = withOxygen(atmosphere);
-  if (climate.co2Bar > 0.005) {
-    // The thermostat's CO₂ is real mass: fold it into the column the
-    // rest of the pipeline (and the panel) sees.
-    atmosphere = {
-      ...atmosphere,
-      surfacePressureBar: atmosphere.surfacePressureBar + climate.co2Bar,
-      opticalDepth: atmosphere.opticalDepth + 5.8 * climate.co2Bar ** 0.7,
-    };
-  }
+  atmosphere = finalizeAtmosphere(atmosphere, climate, bulk);
 
   return {
     seedHex: seedToHex(seed),
+    forcing,
     bulk,
     interior,
     rotation,

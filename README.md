@@ -2,24 +2,22 @@
 
 **[Open the survey →](https://benphelps.github.io/universe/)**
 
-An explorable galaxy in a browser tab. Ride out until the spiral arms resolve, pick any star out of the sky and travel to it, fall into its system, and descend to the ground of one of its worlds — one continuous move, no loading screens, no seams between scales. Everything you can see is somewhere you can go.
+An explorable galaxy in a browser tab. Ride out until the spiral arms resolve, pick any star out of the sky and travel to it, fall into its system, and descend to the ground of one of its worlds — with continuous navigation and streamed detail between scales.
 
-It is fully deterministic, and it is built on real astrophysics rather than visuals that merely look astronomical. Nothing is stored or authored: every place is computed on arrival and computed the same way every time, so an address is all it takes to send someone to exactly what you are looking at.
+The model combines astrophysical distributions, reduced physical calculations and procedural geometry. Locations are generated from seeds, so the same address and model version reproduce the same system. Shared model fields connect the large-scale galaxy to its stars, nebulae and worlds.
 
 ## What you can do
 
 - **Cross the galaxy.** Pull back far enough and the whole disk is there — arms, bulge, dust lanes, the bright core — and it is the same galaxy you were just standing in, seen from outside.
-- **Read the sky.** Every glint is a real star: hover it for its spectral type and distance, click it to go there. The Milky Way's dark rifts are specific molecular clouds, and the nebulae are those same clouds lit from inside by the stars forming in them. Constellations are cut around the landmarks your particular sky shows, so every home system letters its own.
+- **Read the sky.** Resolved survey stars have spectral types, distances and destinations. Statistical populations supply distant unresolved light. Dark rifts and illuminated nebulae follow the shared cloud and dust model. Constellations are cut around the landmarks your particular sky shows, so every home system letters its own.
 - **Stand at the galactic centre.** A supermassive black hole with its shadow, its photon ring, its glowing accretion flow, and the star field behind it bent into Einstein rings.
 - **Explore a system.** Planets on live orbits under a real photosphere, moons casting eclipse shadows, ringed giants, comets that grow tails as they come in, and asteroid belts you can pick a single rock out of and land on.
 - **Descend to a world.** Interiors, atmospheres and climate decide what is waiting: oceans, ice caps, deserts, dune fields, river valleys, crater plains. Terrain resolves continuously from orbit to eye height, and the sky overhead scatters its own star's light through its own air — hazy worlds look hazy, twilight grades the way twilight does, moons rise and set.
 - **Fly the surface.** A first-person camera over the landscape, clamped just above the ground and the water, fast enough to cross a mountain range and slow enough to skim a valley floor.
 
-## What's true about it
+## Model scope
 
-- **Deterministic.** The same address always leads to the same place — the same star, the same world, the same rock on its surface. There is no stored universe and nothing is generated ahead of time; it is all computed live, and all reproducible.
-- **Real science, not pretty visuals.** Initial mass functions and evolution tracks decide which stars exist; blackbody spectra decide their color; disk chemistry and orbital stability decide which planets form and where; atmospheric retention and climate balance decide whether a world holds air, water or ice. Where the science is statistical the model samples real distributions; where it is mechanistic it uses the real formulas.
-- **Emergent, not painted.** Every visible feature traces back to something in the model. A dark lane across the band is a particular cloud. A nebula's color is the ionization physics of its hottest member. Nothing is noise or a palette standing in for a thing that isn't there.
+Generation is deterministic within a model version; scientific improvements can intentionally change older seeds. Initial mass functions, stellar evolution, material budgets, orbital constraints, atmospheric columns and climate response constrain the generated worlds. Geometry, chemistry, weather and dynamics still use bounded approximations. The [model references](docs/README.md) document the sources and limits.
 
 ## Quick start
 
@@ -38,7 +36,9 @@ The viewer opens at `http://localhost:5173`. First visit asks which galaxy to ch
 | `npm run preview` | Serve the built bundle |
 | `npm test` | Full Vitest suite |
 | `npm run test:watch` | Vitest in watch mode |
-| `npm run typecheck` | `tsc --noEmit` |
+| `npm run typecheck` | Type-check application and retained diagnostic tools |
+| `npm run validate:build` | Build browser diagnostics into ignored `.artifacts/validation/` |
+| `npm run bench:generation -- .artifacts/generation stars` | Generation timing, checksum and CPU profile |
 
 ### Controls
 
@@ -48,7 +48,7 @@ On a planet's surface: `W`/`A`/`S`/`D` flies where you look, `Space`/`C` for alt
 
 ### Addresses
 
-Where you are is written into the URL continuously, so whatever is in the bar is a link that lands someone else exactly there.
+The URL records your location and selected body. Share it to revisit that destination with the same model version; exact camera pose, simulation time and viewing settings are not all encoded.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -73,7 +73,7 @@ src/
   workers/   terrain, sky, nebula, landmark and locale generation
 ```
 
-Dependencies point downward only, and the model is fully decoupled from what draws it: `core/` and `universe/` carry no Three.js imports and touch no DOM, which is what keeps the whole simulation testable headless and runnable in workers. [`src/layering.test.ts`](src/layering.test.ts) fails the build if that ever stops being true.
+Dependencies point downward only, and the model is fully decoupled from what draws it: `core/` and `universe/` carry no Three.js imports and touch no DOM, which is what keeps the whole simulation testable headless and runnable in workers. [`src/layering.test.ts`](src/layering.test.ts) enforces that boundary in the test suite.
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) covers the rest: determinism, data flow, and how one renderer spans twenty-two orders of magnitude.
 
@@ -99,32 +99,18 @@ Vitest, node environment, `src/**/*.test.ts`. Four kinds of test carry the proje
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml): a push to `main` runs the suite, builds with `--base=/universe/`, and publishes to GitHub Pages.
 
-## Status
+## Status and documentation
 
-Milestones M0–M6 are complete: foundations, stars, systems, worlds, moons and small bodies, surfaces, and the galaxy. M7 (depth and polish) is largely landed — the single unified renderer, black-hole lensing, the real far starfield, the whole-galaxy view, belt materialization, constellations and the galactic gazetteer — with named open items: volumetric clouds and multiple-scattering atmospheres, a galaxy population beyond this one spiral, exotic showcases, zodiacal light, performance hardening, and a WebGPU evaluation.
-
-M8 (human scale) is the current direction: detail down to ~5 cm, structural ridge and valley networks, rivers that come from a real drainage graph, spatial climate fields, and vegetation per biome.
-
-[docs/ROADMAP.md](docs/ROADMAP.md) is the living record — every milestone, every open item, and a log of what landed and why.
-
-## Documentation
+The galaxy-to-surface audit has reached an integration checkpoint, including varied galaxy structure, conserved nebula budgets, bounded generation/streaming, atmosphere transport, shared optical light and seasonal cover. Remaining priorities are loading stability, viewing instruments and targeted scientific calibration.
 
 | Document | Scope |
 | --- | --- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Stack, layering, determinism, data flow, scale handling, validation |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones, open items, and the change log |
-| [00-foundations](docs/plan/00-foundations.md) | Seeding, RNG, units, math, time model |
-| [01-galaxy](docs/plan/01-galaxy.md) | Galactic structure, star distribution, sectors |
-| [02-star](docs/plan/02-star.md) | Stellar generation: mass, evolution, color, multiplicity, visuals |
-| [03-system](docs/plan/03-system.md) | Planetary architecture: disks, orbits, stability, zones |
-| [04-planet](docs/plan/04-planet.md) | Planet types, interiors, atmospheres, climate, appearance |
-| [05-moons-rings](docs/plan/05-moons-rings.md) | Moon systems, tidal physics, ring systems |
-| [06-small-bodies](docs/plan/06-small-bodies.md) | Asteroids, comets, belts, size distributions |
-| [07-surface](docs/plan/07-surface.md) | Terrain synthesis: tectonics, craters, erosion, hydrology, biomes |
-| [08-rendering](docs/plan/08-rendering.md) | Rendering pipeline: shaders, atmospheres, scale, starfields |
-| [09-human-scale](docs/plan/09-human-scale.md) | Orbit to footstep: detail cascade, drainage, weather, vegetation |
-| [10-gas-giants](docs/plan/10-gas-giants.md) | Living atmospheres: jets, storms, aurorae, night-side heat |
-| [11-nebulae](docs/plan/11-nebulae.md) | One density field, three tiers: clouds you can fly into |
+| [Documentation index](docs/README.md) | Current model references and documentation policy |
+| [Architecture](docs/ARCHITECTURE.md) | Layering, generation, rendering and resource ownership |
+| [Validation](docs/VALIDATION.md) | Tests, diagnostic pages and reproducible regressions |
+| [Performance](docs/PERFORMANCE.md) | Budgets, measurement guidance and known limits |
+| [Roadmap](docs/ROADMAP.md) | Next priorities and deferred fidelity |
+| [Audit archive](docs/ARCHIVE.md) | Restore the original investigations and individual fix history |
 
 ## Stack
 

@@ -1,5 +1,6 @@
-import { Color, type ShaderMaterial } from 'three';
+import { Color, Vector2, type ShaderMaterial } from 'three';
 import { ADAPTATION_EXPONENT } from './starlight';
+import { GAS_PROFILE_GLSL, ISOTHERMAL_GAS, gasState, type GasProfile } from './gasProfile';
 
 /**
  * Sunlight through an atmosphere, for every lit surface: the direct
@@ -20,6 +21,7 @@ uniform float uAerosolHorizonAirmass;
 uniform float uPlanetRadius;            // world units
 uniform float uScaleHeight;             // world units
 uniform float uAerosolScaleHeight;      // world units
+${GAS_PROFILE_GLSL}
 
 const float DISPLAY_ADAPTATION_EXPONENT = ${ADAPTATION_EXPONENT.toFixed(8)};
 
@@ -52,11 +54,12 @@ float airmass(float mu) {
 // six degrees under on Earth from exactly this.
 float twilight(float mu) {
   if (mu >= 0.0) return 1.0;
-  float radiusOverHeight = 2.0 * uHorizonAirmass * uHorizonAirmass / 3.14159265;
   // Two unit vectors can dot to a hair past −1: the root must never
   // see a negative, or the anti-solar pixel turns to NaN and blooms.
   float secant = 1.0 / max(sqrt(max(1.0 - mu * mu, 0.0)), 1e-4);
-  return exp(-radiusOverHeight * (secant - 1.0));
+  float shadowAltitude = uPlanetRadius * (secant - 1.0);
+  float haze = exp(-shadowAltitude / max(uAerosolScaleHeight, 1e-4));
+  return mix(gasColumnAt(shadowAltitude), haze, uAerosolFraction.g);
 }
 
 // Direct-beam transmittance along the slant path.
@@ -76,7 +79,7 @@ vec3 beamTransmittance(vec3 tau, float mu) {
 }
 
 vec3 opticalSlantAt(float altitude, float mu) {
-  float gas = exp(-max(altitude, 0.0) / max(uScaleHeight, 1e-4));
+  float gas = gasColumnAt(altitude);
   float haze = exp(-max(altitude, 0.0) / max(uAerosolScaleHeight, 1e-4));
   return uRayleighDepth * gas * airmassFor(mu, uHorizonAirmass)
     + uAerosolExtinction * haze * airmassFor(mu, uAerosolHorizonAirmass);
@@ -87,13 +90,13 @@ vec3 beamTransmittanceAt(float altitude, float mu) {
 }
 
 vec3 opticalDepthAt(float altitude) {
-  float gas = exp(-max(altitude, 0.0) / max(uScaleHeight, 1e-4));
+  float gas = gasColumnAt(altitude);
   float haze = exp(-max(altitude, 0.0) / max(uAerosolScaleHeight, 1e-4));
   return uRayleighDepth * gas + uAerosolExtinction * haze;
 }
 
 vec3 tangentColumnAt(float altitude) {
-  float gas = exp(-max(altitude, 0.0) / max(uScaleHeight, 1e-4));
+  float gas = gasColumnAt(altitude);
   float haze = exp(-max(altitude, 0.0) / max(uAerosolScaleHeight, 1e-4));
   return 2.0 * (uRayleighDepth * gas * uHorizonAirmass
     + uAerosolExtinction * haze * uAerosolHorizonAirmass);
@@ -228,10 +231,21 @@ vec3 airSegmentComponent(vec3 depth, float h, float horizon, float eyeAlt, float
   return tauLow * min(dist / h * mean, horizon);
 }
 
+// Exact plane-parallel integral of the prescribed hydrostatic profile.
+// Near-horizontal cancellation uses the local density; spherical long
+// paths retain the existing approximate horizon-column ceiling.
+vec3 gasSegmentColumn(vec3 depth, float eyeAlt, float pointAlt, float dist) {
+  float low = max(min(eyeAlt, pointAlt), 0.0);
+  float high = max(max(eyeAlt, pointAlt), 0.0);
+  float above = gasColumnAt(low);
+  float meanDensity = high - low > 1e-3 * uScaleHeight
+    ? (above - gasColumnAt(high)) / (high - low)
+    : gasDensityAt(0.5 * (low + high)) / max(uScaleHeight, 1e-4);
+  return depth * min(dist * meanDensity, above * uHorizonAirmass);
+}
+
 vec3 airSegmentColumn(float eyeAlt, float pointAlt, float dist) {
-  return airSegmentComponent(
-    uRayleighDepth, uScaleHeight, uHorizonAirmass, eyeAlt, pointAlt, dist
-  ) + airSegmentComponent(
+  return gasSegmentColumn(uRayleighDepth, eyeAlt, pointAlt, dist) + airSegmentComponent(
     uAerosolExtinction,
     uAerosolScaleHeight,
     uAerosolHorizonAirmass,
@@ -255,8 +269,8 @@ vec3 airSegmentScatter(vec3 column, float midAlt, float muSun, float cosTheta) {
 // vacuum: pure Lambert. The beam is gated at the body's own horizon
 // over about a solar diameter, since a slope cannot face a sun the
 // ground has hidden.
-vec3 surfaceLight(
-  vec3 tau,
+vec3 surfaceLightFromSlant(
+  vec3 slant,
   vec3 lightDir,
   vec3 lightColor,
   vec3 normal,
@@ -265,7 +279,6 @@ vec3 surfaceLight(
   float skyShadow
 ) {
   float mu = dot(up, lightDir);
-  vec3 slant = opticalSlant(tau, mu);
   vec3 direct = exp(-slant);
   vec3 total = exp(-slant * (1.0 - uScatteringAlbedo))
     / (1.0 + backscatter() * slant);
@@ -273,6 +286,13 @@ vec3 surfaceLight(
   float hemi = 0.5 + 0.5 * dot(normal, up);
   vec3 sky = max(total - direct, vec3(0.0)) * hemi * twilight(mu);
   return lightColor * (direct * lambert * directShadow + sky * skyShadow);
+}
+
+vec3 surfaceLight(vec3 tau, vec3 lightDir, vec3 lightColor, vec3 normal, vec3 up, float directShadow, float skyShadow) {
+  return surfaceLightFromSlant(opticalSlant(tau, dot(up, lightDir)), lightDir, lightColor, normal, up, directShadow, skyShadow);
+}
+vec3 surfaceLightAt(float altitude, vec3 lightDir, vec3 lightColor, vec3 normal, vec3 up, float directShadow, float skyShadow) {
+  return surfaceLightFromSlant(opticalSlantAt(altitude, dot(up, lightDir)), lightDir, lightColor, normal, up, directShadow, skyShadow);
 }
 `;
 
@@ -305,14 +325,15 @@ export function slantColumn(
   mu: number,
   radiusKm: number,
   scaleHeightKm: number,
+  profile?: GasProfile,
 ): number {
   const h = Math.max(scaleHeightKm, 0.1);
   const horizon = horizonAirmass(radiusKm, h);
-  const above = Math.exp(-altitudeKm / h);
+  const above = gasState(profile, altitudeKm / h)[0];
   if (mu >= 0) return above * airmass(mu, horizon);
   const tangentKm = (radiusKm + altitudeKm) * Math.sqrt(Math.max(1 - mu * mu, 0)) - radiusKm;
   if (tangentKm < 0) return Infinity;
-  return 2 * Math.exp(-tangentKm / h) * airmass(0, horizon) - above * airmass(-mu, horizon);
+  return Math.max(0, 2 * gasState(profile, tangentKm / h)[0] * airmass(0, horizon) - above * airmass(-mu, horizon));
 }
 
 /** Direct-beam transmittance per channel along that path. */
@@ -348,6 +369,7 @@ export function diffuseTransmittance(
  *  horizon's air mass, and the body's radius and scale height in the
  *  material's world units. */
 export interface SurfaceAir {
+  gasProfile?: GasProfile;
   rayleigh: readonly [number, number, number];
   /** Aerosol scattering depth. */
   aerosol: readonly [number, number, number];
@@ -393,7 +415,9 @@ function scatteringAlbedo(air: SurfaceAir): [number, number, number] {
 }
 
 export function surfaceLightUniforms(air: SurfaceAir = VACUUM): Record<string, { value: unknown }> {
+  const profile = air.gasProfile ?? ISOTHERMAL_GAS;
   return {
+    uGasProfile: { value: new Vector2(profile.lapseRatio, profile.capRatio) },
     uOpticalDepth: { value: new Color(...totalDepth(air)) },
     uRayleighDepth: { value: new Color(...air.rayleigh) },
     uAerosolScatterDepth: { value: new Color(...air.aerosol) },
@@ -413,6 +437,8 @@ export function surfaceLightUniforms(air: SurfaceAir = VACUUM): Record<string, {
 export function applySurfaceLight(material: ShaderMaterial, air: SurfaceAir): void {
   const uniforms = material.uniforms;
   if (!uniforms.uOpticalDepth) return;
+  const profile = air.gasProfile ?? ISOTHERMAL_GAS;
+  (uniforms.uGasProfile.value as Vector2).set(profile.lapseRatio, profile.capRatio);
   (uniforms.uOpticalDepth.value as Color).setRGB(...totalDepth(air));
   (uniforms.uRayleighDepth.value as Color).setRGB(...air.rayleigh);
   (uniforms.uAerosolScatterDepth.value as Color).setRGB(...air.aerosol);
@@ -500,9 +526,17 @@ export function airSegmentColumn(
   eyeAlt: number,
   pointAlt: number,
   dist: number,
+  profile?: GasProfile,
 ): number {
   const h = Math.max(scaleHeight, 1e-4);
   const low = Math.max(Math.min(eyeAlt, pointAlt), 0);
+  if (profile) {
+    const high = Math.max(Math.max(eyeAlt, pointAlt), 0), above = gasState(profile, low / h)[0];
+    const meanDensity = high - low > 1e-3 * h
+      ? (above - gasState(profile, high / h)[0]) / (high - low)
+      : gasState(profile, (low + high) * 0.5 / h)[1] / h;
+    return tau * Math.min(dist * meanDensity, above * horizon);
+  }
   const rise = Math.abs(Math.max(eyeAlt, 0) - Math.max(pointAlt, 0)) / h;
   const mean = rise > 1e-3 ? (1 - Math.exp(-rise)) / rise : 1 - 0.5 * rise;
   return tau * Math.exp(-low / h) * Math.min((dist / h) * mean, horizon);
@@ -604,7 +638,7 @@ export function curvedZenithSkyRadiance(
   function integrate(start: number, end: number): void {
     const ds = end - start;
     const sampleAltitude = altitude + (start + end) * 0.5;
-    const gasDensity = Math.exp(-sampleAltitude / gasHeight);
+    const gasDensity = gasState(air.gasProfile, sampleAltitude / gasHeight)[1];
     const aerosolDensity = Math.exp(-sampleAltitude / aerosolHeight);
     const radiusAtSample = air.radius + sampleAltitude;
     const horizonDip = Math.acos(Math.min(1, air.radius / radiusAtSample));
@@ -617,7 +651,7 @@ export function curvedZenithSkyRadiance(
       Math.max(1 - (air.radius * air.radius) / (radiusAtSample * radiusAtSample), 0),
     );
     const sourceMu = Math.max(muSun, tangentMu);
-    const gasSunColumn = slantColumn(sampleAltitude, sourceMu, air.radius, gasHeight);
+    const gasSunColumn = slantColumn(sampleAltitude, sourceMu, air.radius, gasHeight, air.gasProfile);
     const aerosolSunColumn = slantColumn(
       sampleAltitude,
       sourceMu,

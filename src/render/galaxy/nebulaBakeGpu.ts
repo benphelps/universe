@@ -6,52 +6,39 @@ import {
   type MolecularCloud,
 } from '../../universe/galaxy/clouds';
 import { carveFunctionGlsl, SEEDED_NOISE } from './cloudFieldGlsl';
-import {
-  DUST_DEPLETION,
-  SHELL_SKIN_SHARE,
-  SHELL_WIDTH,
-  VENT_RESIDUAL,
-  WIND_CAVITY_RESIDUAL,
-  WIND_REACH,
-  WIND_STALL,
-  WIND_WALL_BOOST,
-  WIND_WALL_WIDTH,
-} from '../../universe/galaxy/ionization';
 import type { Nebula } from '../../universe/galaxy/nebula';
 import {
-  EROSION_REACH,
-  EROSION_STALL,
-  FRONT_SOFTNESS,
-  LOG_U_MAX,
-  LOG_U_MIN,
-  SCATTER_MAX_STEPS,
-  SCATTER_STEP_FACTOR,
   finishNebulaBake,
-  nebulaMarchScales,
+  evolveNebulaGas,
+  NEBULA_SHADOW_STEPS,
+  NEBULA_SHADOW_CELL_STEP,
+  nebulaFieldScales,
   planNebulaBake,
+  solveNebulaIonization,
   type NebulaBakeFields,
+  type NebulaBakePlan,
   type NebulaVolumeBake,
 } from '../../universe/galaxy/nebulaVolume';
 import { glslFloat as f } from '../glsl/format';
+import { NebulaBakeStorage, nebulaStorageLayout } from './nebulaBakeStorage';
+import { NebulaGasAccumulator } from '../../universe/galaxy/nebulaGasInventory';
+import { CONTINUUM_FRAGMENT } from './nebulaContinuumGlsl';
+import { CONTINUUM_SIZE, continuumSources, encodeContinuum } from '../../universe/galaxy/nebulaContinuum';
+import { DUST_OPACITY_PER_PC } from '../../universe/galaxy/density';
+import { NebulaAtlasReadback } from './nebulaReadback';
 
-/**
- * The nebula bake rendered instead of computed: the same field, the
- * same walk, on whatever GPU the worker's OffscreenCanvas reaches.
- * Independent cells, a smooth field, texture-shaped sampling — the
- * work was fragment-shaped all along, and seconds of CPU become
- * milliseconds here.
- *
- * The CPU march stays the physics authority; this is a renderer of it.
- * Every constant is read from the model's own exports and every scale
- * arrives through nebulaMarchScales, folded into order-unity ratios in
- * doubles first, because the raw factors overflow the 32-bit floats a
- * shader runs on. The field texture holds the dimensionless carve and
- * leaves the per-cloud scale to a uniform for the same reason. Output
- * comes home a strip of tiles at a time as float grids and goes
- * through the shared finish, so the quantization and the emission
- * books are the CPU path's own.
- */
+/** GPU natal-field sampling, followed by the shared CPU material
+ * remap, photon transport and final-dust attenuation. The GPU path
+ * evaluates the same initial field; it does not impose a separate
+ * expansion, shell boost or untracked density loss. */
 export interface NebulaGpuBaker {
+  /** Retained working-texture payload; excludes displayed volumes and driver overhead. */
+  readonly storageBytes: number;
+  readonly readbackBytes: number;
+  /** Sample natal gas/dust; motion and transport follow in shared code. */
+  sample(plan: NebulaBakePlan): NebulaBakeFields;
+  /** Trace continuum through the final dust, reusing the working textures. */
+  attenuate(plan: NebulaBakePlan, fields: NebulaBakeFields): void;
   bake(
     cloud: MolecularCloud,
     nebula: Nebula | null,
@@ -98,161 +85,56 @@ precision highp sampler3D;
 uniform sampler3D uField;
 uniform int uSize;
 uniform int uCols;
-uniform float uBoxPc;
-uniform float uCellPc;
-uniform vec3 uIonizePc;
-uniform float uGrowth;
-uniform float uDilution;
-uniform float uShellBoost;
-uniform float uStepPc;
-uniform float uReachLimitPc;
-uniform float uBudgetOn;
-uniform float uRecombFrac;
-uniform float uTauScale;
 uniform float uGasScale;
 uniform float uDustScale;
-uniform float uFluxScale;
-uniform vec3 uScatterSourcePc;
-uniform float uScatterOn;
-uniform float uWindCavityPc;
-uniform float uWindPivotCarve;
-uniform float uVentConfineCarve;
-uniform float uErosionPivotCarve;
-uniform float uBubblePc;
-uniform float uEvapNorm;
 out vec4 outCell;
-
-float fieldAt(vec3 posPc) {
-  return textureLod(uField, (posPc + uBoxPc) / (2.0 * uBoxPc), 0.0).r;
-}
-
 void main() {
-  ivec2 fc = ivec2(gl_FragCoord.xy);
-  ivec2 tile = fc / uSize;
+  ivec2 pixel = ivec2(gl_FragCoord.xy);
+  ivec2 tile = pixel / uSize;
   int layer = tile.y * uCols + tile.x;
   if (layer >= uSize) { outCell = vec4(0.0); return; }
-  ivec3 cell = ivec3(fc - tile * uSize, layer);
-  vec3 x = vec3(cell) * uCellPc + 0.5 * uCellPc - uBoxPc;
+  float carve = texelFetch(uField, ivec3(pixel % uSize, layer), 0).r;
+  float n = carve * uGasScale;
+  outCell = vec4(carve * uDustScale, n, n, 1.0);
+}
+`;
 
-  vec3 d = x - uIonizePc;
-  float dist = max(length(d), 1e-4);
-  bool reachable = uBudgetOn > 0.5 && dist < uReachLimitPc;
-  vec3 dir = d / dist;
-
-  float recombined = 0.0;
+const SHADOW_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler3D;
+uniform sampler3D uField;
+uniform int uSize;
+uniform int uCols;
+uniform float uBoxPc;
+uniform float uCellPc;
+uniform float uDustRef;
+uniform vec3 uSourcePc;
+out vec4 outCell;
+void main() {
+  ivec2 pixel = ivec2(gl_FragCoord.xy), tile = pixel / uSize;
+  int layer = tile.y * uCols + tile.x;
+  if (layer >= uSize) { outCell = vec4(0.0); return; }
+  vec3 p = (vec3(pixel % uSize, layer) + 0.5) * uCellPc - uBoxPc;
+  vec3 delta = p - uSourcePc;
+  float entry = 0.0;
+  for (int axis = 0; axis < 3; axis++) {
+    if (abs(uSourcePc[axis]) > uBoxPc) {
+      entry = max(entry, ((uSourcePc[axis] < 0.0 ? -uBoxPc : uBoxPc) - uSourcePc[axis]) / delta[axis]);
+    }
+  }
+  float path = length(delta) * (1.0 - entry);
+  int steps = min(${NEBULA_SHADOW_STEPS}, max(1, int(ceil(path / (${f(NEBULA_SHADOW_CELL_STEP)} * uCellPc)))));
   float tau = 0.0;
-  float frontR = -1.0;
-  // The face: the front after the flux has eaten into whatever
-  // stopped it short of the mean front, mirroring the CPU march.
-  float face = -1.0;
-  float column = 0.0;
-  float ventR = 0.0;
-  if (reachable) {
-    int steps = max(1, int(ceil(dist / uStepPc)));
-    float ds = dist / float(steps);
-    for (int s = 0; s < 512; s++) {
-      if (s >= steps) break;
-      float r = (float(s) + 0.5) * ds;
-      if (face < 0.0) {
-        float rn = r / uGrowth;
-        float carve = fieldAt(uIonizePc + dir * rn);
-        if (frontR < 0.0) {
-          recombined += carve * carve * uRecombFrac * rn * rn * (ds / uGrowth);
-          if (recombined >= 1.0) {
-            frontR = r;
-            column = r < uBubblePc
-              ? uEvapNorm / (r * sqrt(max(uCellPc, ${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * r)))
-              : 0.0;
-            if (column <= 0.0) face = r;
-          }
-        } else {
-          column -= carve * (ds / uGrowth);
-          if (column <= 0.0 || r >= uBubblePc) face = r;
-        }
-        tau += carve * uDilution * uTauScale * ds * ${f(1 / DUST_DEPLETION)};
-        if (face < 0.0 && uVentConfineCarve > 0.0 &&
-            fieldAt(uIonizePc + dir * r) >= uVentConfineCarve) ventR = r;
-      } else {
-        float swept = r <= face * ${f(1 + SHELL_WIDTH)} ? uShellBoost : 1.0;
-        tau += fieldAt(uIonizePc + dir * r) * swept * uTauScale * ds;
-      }
-    }
-  } else if (uScatterOn > 0.5) {
-    vec3 sd = x - uScatterSourcePc;
-    float shine = max(length(sd), 1e-4);
-    int coarse = clamp(
-      int(ceil(shine / ${f(SCATTER_STEP_FACTOR)} / uStepPc)), 1, ${SCATTER_MAX_STEPS});
-    float coarseDs = shine / float(coarse);
-    for (int s = 0; s < ${SCATTER_MAX_STEPS}; s++) {
-      if (s >= coarse) break;
-      float r = (float(s) + 0.5) * coarseDs / shine;
-      tau += fieldAt(uScatterSourcePc + sd * r) * uTauScale * coarseDs;
-    }
+  for (int step = 0; step < ${NEBULA_SHADOW_STEPS}; step++) {
+    if (step >= steps) break;
+    float t = entry + (1.0 - entry) * (float(step) + 0.5) / float(steps);
+    vec3 pos = uSourcePc + delta * t;
+    tau += texture(uField, (pos + uBoxPc) / (2.0 * uBoxPc)).r * uDustRef
+      * ${f(DUST_OPACITY_PER_PC)} * path / float(steps);
+    if (tau > 20.0) break;
   }
-
-  float spent = reachable ? recombined : 2.0;
-  // A cell reached while the face was still being eaten toward it
-  // stands inside the evaporated span: interior gas.
-  bool evaporated = frontR >= 0.0 && face < 0.0;
-  // The eroded face and its ionized skin, mirroring the CPU march:
-  // the face modulated by the uncontracted ambient at its own radius,
-  // the rim glowing along the eroded shape, the skin never thinner
-  // than a cell.
-  float frontLoc = face;
-  if (face >= 0.0 && uErosionPivotCarve > 0.0) {
-    float ambient = fieldAt(uIonizePc + dir * face);
-    frontLoc = face * clamp(
-      pow(uErosionPivotCarve / max(1e-9, ambient), ${f(1 / 3)}),
-      ${f(EROSION_STALL)}, ${f(EROSION_REACH)});
-  }
-  float skin = face >= 0.0
-    ? (dist <= frontLoc
-        ? 1.0
-        : exp(-(dist - frontLoc) /
-            max(uCellPc, ${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * frontLoc)))
-    : (evaporated ? 1.0 : 0.0);
-  float ionized = max(skin, clamp((1.0 - spent) * ${f(1 / FRONT_SOFTNESS)}, 0.0, 1.0));
-  float transmittance = exp(-tau);
-  bool inBubble = reachable && (frontR < 0.0 || evaporated);
-  bool inShell =
-    face >= 0.0 && dist > frontLoc && dist <= frontLoc * ${f(1 + SHELL_WIDTH)};
-  float carveHere = inBubble
-    ? fieldAt(uIonizePc + dir * (dist / uGrowth)) * uDilution
-    : texelFetch(uField, cell, 0).r * (inShell ? uShellBoost : 1.0);
-  // The wind's re-plumbing and the champagne gate, mirroring the CPU
-  // march: an optically empty cavity, a swept wall carrying the
-  // ploughed-out mass, and streaming loss wherever the natal field at
-  // this cell is too thin to confine the hot interior, the residue
-  // thinning as the inverse square past the ray's opening.
-  if (inBubble) {
-    float residual = ${f(VENT_RESIDUAL)} * (dist > ventR ? (ventR * ventR) / (dist * dist) : 1.0);
-    float confinement = uVentConfineCarve > 0.0
-      ? max(residual, min(texelFetch(uField, cell, 0).r / uVentConfineCarve, 1.0))
-      : 1.0;
-    float cavity = uWindCavityPc;
-    if (cavity > 0.0 && uWindPivotCarve > 0.0) {
-      float ploughed = fieldAt(uIonizePc + dir * (cavity / uGrowth));
-      cavity *= clamp(
-        pow(uWindPivotCarve / max(1e-9, ploughed), 0.25), ${f(WIND_STALL)}, ${f(WIND_REACH)});
-    }
-    carveHere *= confinement * (dist < cavity
-      ? ${f(WIND_CAVITY_RESIDUAL)}
-      : (dist <= cavity * ${f(1 + WIND_WALL_WIDTH)} ? ${f(WIND_WALL_BOOST)} : 1.0));
-  }
-  float n = carveHere * uGasScale;
-  float uParam = uBudgetOn > 0.5 && n > 0.0
-    ? uFluxScale * transmittance / (dist * dist * n)
-    : 0.0;
-  float hardness = uParam > 0.0
-    ? clamp(
-        (log(uParam) * ${f(1 / Math.LN10)} - ${f(LOG_U_MIN)}) * ${f(1 / (LOG_U_MAX - LOG_U_MIN))},
-        0.0, 1.0)
-    : 0.0;
-  outCell = vec4(
-    carveHere * uDustScale / (1.0 + ${f(DUST_DEPLETION - 1)} * ionized),
-    n * ionized,
-    hardness,
-    transmittance);
+  outCell = vec4(0.0, 0.0, 0.0, exp(-tau));
 }
 `;
 
@@ -296,26 +178,34 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
   if (!gl || !gl.getExtension('EXT_color_buffer_float')) return null;
   let fieldProgram: WebGLProgram;
   let marchProgram: WebGLProgram;
+  let shadowProgram: WebGLProgram;
+  let continuumProgram: WebGLProgram;
   try {
     fieldProgram = link(gl, FIELD_FRAGMENT);
     marchProgram = link(gl, MARCH_FRAGMENT);
+    shadowProgram = link(gl, SHADOW_FRAGMENT);
+    continuumProgram = link(gl, CONTINUUM_FRAGMENT);
   } catch (error) {
     console.warn('nebula GPU bake unavailable:', error);
     return null;
   }
-  const at = (program: WebGLProgram, name: string): WebGLUniformLocation | null =>
-    gl.getUniformLocation(program, name);
+  // Programs are linked once for this baker's life. Repeating location
+  // queries on every grid synchronizes with the driver unnecessarily.
+  const locations = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
+  const at = (program: WebGLProgram, name: string): WebGLUniformLocation | null => {
+    let names = locations.get(program);
+    if (!names) { names = new Map(); locations.set(program, names); }
+    if (!names.has(name)) names.set(name, gl.getUniformLocation(program, name));
+    return names.get(name)!;
+  };
   const framebuffer = gl.createFramebuffer();
+  const readback = new NebulaAtlasReadback(gl);
   let permTexture: WebGLTexture | null = null;
-  // Storage is immutable once allocated, so a grid's field and atlas
-  // textures are made once per size and kept for the baker's life: a
-  // residency of the same-sized bakes reuses them instead of
-  // allocating and freeing tens of megabytes of GPU memory each.
-  const storage = new Map<number, { field: WebGLTexture; atlas: WebGLTexture; cols: number; rows: number }>();
-  const texturesFor = (size: number): { field: WebGLTexture; atlas: WebGLTexture; cols: number; rows: number } => {
-    const kept = storage.get(size);
-    if (kept) return kept;
+  // Reuse within 80 MiB per worker. A 160³ working set fits; stale
+  // intermediate grades cannot accumulate beside it indefinitely.
+  const storage = new NebulaBakeStorage(80 << 20, (size: number) => {
     const field = gl.createTexture();
+    if (!field) throw new Error('nebula field allocation failed');
     gl.bindTexture(gl.TEXTURE_3D, field);
     gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R16F, size, size, size);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -324,26 +214,24 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
     gl.bindTexture(gl.TEXTURE_3D, null);
-    const cols = Math.ceil(Math.sqrt(size));
-    const rows = Math.ceil(size / cols);
+    const { cols, rows } = nebulaStorageLayout(size);
     const atlas = gl.createTexture();
+    if (!atlas) { gl.deleteTexture(field); throw new Error('nebula atlas allocation failed'); }
     gl.bindTexture(gl.TEXTURE_2D, atlas);
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, cols * size, rows * size);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    const made = { field, atlas, cols, rows };
-    storage.set(size, made);
-    return made;
-  };
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) {
+      gl.deleteTexture(field); gl.deleteTexture(atlas);
+      throw new Error(`nebula storage allocation GL error ${error}`);
+    }
+    return { field, atlas, cols, rows };
+  }, ({ field, atlas }) => { gl.deleteTexture(field); gl.deleteTexture(atlas); });
 
-  const bake = (
-    cloud: MolecularCloud,
-    nebula: Nebula | null,
-    size: number,
-    boxRequestPc?: number,
-  ): NebulaVolumeBake => {
+  const sample = (plan: NebulaBakePlan): NebulaBakeFields => {
     if (gl.isContextLost()) throw new Error('context lost');
-    const plan = planNebulaBake(cloud, nebula, size, boxRequestPc);
-    const scales = nebulaMarchScales(plan);
+    const { cloud, size } = plan;
+    const scales = nebulaFieldScales(plan);
 
     // The galaxy's one shape permutation, uploaded on first use — the
     // seed is locked for the session, so it never changes under us.
@@ -361,7 +249,11 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
 
     // The natal field, layer by layer. Half floats hold the carve
     // comfortably — it is dimensionless and order unity.
-    const { field: fieldTexture, atlas: atlasTexture, cols, rows } = texturesFor(size);
+    // Deleted textures can remain alive while attached to an FBO.
+    // Detach before reserving/evicting, not after the new allocation.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+    const { field: fieldTexture, atlas: atlasTexture, cols, rows } = storage.acquire(size);
 
     gl.useProgram(fieldProgram);
     gl.activeTexture(gl.TEXTURE0);
@@ -385,46 +277,15 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    // The march, every cell at once, layers tiled onto one atlas.
+    // Read the natal field in physical units, tiled onto one atlas.
     gl.useProgram(marchProgram);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_3D, fieldTexture);
     gl.uniform1i(at(marchProgram, 'uField'), 0);
     gl.uniform1i(at(marchProgram, 'uSize'), size);
     gl.uniform1i(at(marchProgram, 'uCols'), cols);
-    gl.uniform1f(at(marchProgram, 'uBoxPc'), plan.boxPc);
-    gl.uniform1f(at(marchProgram, 'uCellPc'), plan.cellPc);
-    gl.uniform3fv(at(marchProgram, 'uIonizePc'), plan.ionizePc);
-    gl.uniform1f(at(marchProgram, 'uGrowth'), plan.growth);
-    gl.uniform1f(at(marchProgram, 'uDilution'), plan.dilution);
-    gl.uniform1f(at(marchProgram, 'uShellBoost'), plan.shellBoost);
-    gl.uniform1f(at(marchProgram, 'uStepPc'), plan.stepPc);
-    gl.uniform1f(at(marchProgram, 'uReachLimitPc'), plan.reachLimitPc);
-    gl.uniform1f(at(marchProgram, 'uBudgetOn'), plan.budget > 0 ? 1 : 0);
-    gl.uniform1f(at(marchProgram, 'uRecombFrac'), scales.recombFrac);
-    gl.uniform1f(at(marchProgram, 'uTauScale'), scales.tauScale);
     gl.uniform1f(at(marchProgram, 'uGasScale'), scales.gasScale);
     gl.uniform1f(at(marchProgram, 'uDustScale'), scales.dustScale);
-    gl.uniform1f(at(marchProgram, 'uFluxScale'), scales.fluxScale);
-    gl.uniform3fv(at(marchProgram, 'uScatterSourcePc'), plan.scatterSourcePc);
-    gl.uniform1f(at(marchProgram, 'uScatterOn'), plan.scatterLuminositySolar > 0 ? 1 : 0);
-    gl.uniform1f(at(marchProgram, 'uWindCavityPc'), plan.windCavityPc);
-    gl.uniform1f(
-      at(marchProgram, 'uWindPivotCarve'),
-      plan.windPivotDensity > 0 ? plan.windPivotDensity / scales.gasScale : 0,
-    );
-    gl.uniform1f(
-      at(marchProgram, 'uVentConfineCarve'),
-      plan.ventConfineDensity > 0 ? plan.ventConfineDensity / scales.gasScale : 0,
-    );
-    gl.uniform1f(
-      at(marchProgram, 'uErosionPivotCarve'),
-      plan.erosionPivotDensity > 0 ? plan.erosionPivotDensity / scales.gasScale : 0,
-    );
-    gl.uniform1f(at(marchProgram, 'uBubblePc'), plan.bubblePc);
-    // The evaporated column in carve units: the norm's cm⁻³·pc per
-    // unit carve, with 1 / (r √ℓ) left to the shader.
-    gl.uniform1f(at(marchProgram, 'uEvapNorm'), plan.evaporationNorm / scales.gasScale);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlasTexture, 0);
     // One draw for the whole atlas. Slicing it per layer with a flush
     // between — yield points for the frame renderer sharing this GPU —
@@ -433,22 +294,20 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
     gl.viewport(0, 0, cols * size, rows * size);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // Home one row of tiles at a time, de-tiled straight into the same
-    // grids the CPU march hands over: the readback buffer is a strip a
-    // tile high rather than the whole atlas — a near-grade grid's atlas
-    // is seventy megabytes of floats, and the fields it fills are as
-    // large again.
+    // Batch readbacks within a fixed scratch budget, then de-tile into
+    // the same fields as the CPU march. Small grids need one driver
+    // round trip; near grids still avoid a seventy-megabyte CPU atlas.
     const cells = size ** 3;
+    const inventory = new NebulaGasAccumulator(plan.cellPc, plan.inventoryExclusion);
     const fields: NebulaBakeFields = {
       dust: new Float32Array(cells),
+      hydrogen: new Float32Array(cells),
       ionized: new Float32Array(cells),
       hardness: new Float32Array(cells),
       transmittance: new Float32Array(cells),
     };
     const atlasWidth = cols * size;
-    const strip = new Float32Array(atlasWidth * size * 4);
-    for (let tileRow = 0; tileRow < rows; tileRow++) {
-      gl.readPixels(0, tileRow * size, atlasWidth, size, gl.RGBA, gl.FLOAT, strip);
+    readback.readRows(size, cols, rows, (tileRow, strip) => {
       for (let column = 0; column < cols; column++) {
         const k = tileRow * cols + column;
         if (k >= size) break;
@@ -458,28 +317,135 @@ export function createNebulaGpuBaker(): NebulaGpuBaker | null {
           const out = (k * size + j) * size;
           for (let i = 0; i < size; i++) {
             fields.dust[out + i] = strip[row + i * 4];
-            fields.ionized[out + i] = strip[row + i * 4 + 1];
-            fields.hardness[out + i] = strip[row + i * 4 + 2];
+            fields.hydrogen[out + i] = strip[row + i * 4 + 1];
+            inventory.add(i, j, k, strip[row + i * 4 + 2], fields.hydrogen[out + i]);
             fields.transmittance[out + i] = strip[row + i * 4 + 3];
           }
         }
       }
-    }
+    });
     gl.bindTexture(gl.TEXTURE_3D, null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     const error = gl.getError();
     if (error !== gl.NO_ERROR) throw new Error(`GL error ${error}`);
-    return finishNebulaBake(plan, fields);
+    fields.gasInventory = inventory.finish();
+    return fields;
+  };
+
+  const attenuate = (plan: NebulaBakePlan, fields: NebulaBakeFields): void => {
+    if (gl.isContextLost()) throw new Error('context lost');
+    let dustRef = 0;
+    for (const dust of fields.dust) dustRef = Math.max(dustRef, dust);
+    if (plan.scatterLuminositySolar <= 0) { fields.transmittance.fill(1); return; }
+    const { size } = plan;
+    // Normalize into the existing output array before uploading. No
+    // additional 3D CPU array or GPU texture is retained for shadows.
+    for (let i = 0; i < fields.dust.length; i++) fields.transmittance[i] = fields.dust[i] / (dustRef || 1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+    const { field, atlas, cols, rows } = storage.acquire(size);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_3D, field);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, size, size, size, gl.RED, gl.FLOAT, fields.transmittance);
+    if (!plan.continuumSources?.length) {
+    gl.useProgram(shadowProgram);
+    gl.uniform1i(at(shadowProgram, 'uField'), 0);
+    gl.uniform1i(at(shadowProgram, 'uSize'), size);
+    gl.uniform1i(at(shadowProgram, 'uCols'), cols);
+    gl.uniform1f(at(shadowProgram, 'uBoxPc'), plan.boxPc);
+    gl.uniform1f(at(shadowProgram, 'uCellPc'), plan.cellPc);
+    gl.uniform1f(at(shadowProgram, 'uDustRef'), dustRef);
+    gl.uniform3fv(at(shadowProgram, 'uSourcePc'), plan.scatterSourcePc);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlas, 0);
+    gl.viewport(0, 0, cols * size, rows * size);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const width = cols * size;
+    readback.readRows(size, cols, rows, (tileRow, strip) => {
+      for (let column = 0; column < cols; column++) {
+        const k = tileRow * cols + column;
+        if (k >= size) break;
+        for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+          fields.transmittance[(k * size + j) * size + i] = strip[(j * width + column * size + i) * 4 + 3];
+        }
+      }
+    });
+    }
+    if (plan.continuumSources?.length) {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlas, 0);
+      const grid = { ...plan, sources: plan.continuumSources }, sources = continuumSources(grid);
+      const lightSize = Math.min(CONTINUUM_SIZE, size), lightCols = Math.ceil(Math.sqrt(2 * lightSize));
+      const lightRows = Math.ceil(2 * lightSize / lightCols), lightWidth = lightCols * lightSize;
+      const sourceData = new Float32Array(Math.max(1, sources.length) * 8);
+      sources.forEach((source, i) => sourceData.set([
+        ...source.positionPc.map((p, axis) => p - plan.originPc[axis]), source.luminositySolar,
+        ...source.color, 0,
+      ], i * 8));
+      const sourceTexture = gl.createTexture();
+      if (!sourceTexture) throw new Error('continuum source allocation failed');
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, 2, Math.max(1, sources.length));
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 2, Math.max(1, sources.length), gl.RGBA, gl.FLOAT, sourceData);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      // The paired continuum slabs fit the already reserved RGBA32F
+      // atlas for production grades (48,96,160). Tiny test grades use
+      // a short-lived target and account for it in their audit.
+      let lightAtlas: WebGLTexture | null = null;
+      if (lightWidth > cols * size || lightRows * lightSize > rows * size) {
+        lightAtlas = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, lightAtlas);
+        gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, lightWidth, lightRows * lightSize);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightAtlas, 0);
+      }
+      try {
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
+        gl.useProgram(continuumProgram);
+        gl.uniform1i(at(continuumProgram, 'uField'), 0); gl.uniform1i(at(continuumProgram, 'uSources'), 1);
+        gl.uniform1i(at(continuumProgram, 'uSourceCount'), sources.length);
+        gl.uniform1i(at(continuumProgram, 'uSize'), lightSize); gl.uniform1i(at(continuumProgram, 'uCols'), lightCols);
+        gl.uniform1f(at(continuumProgram, 'uBoxPc'), plan.boxPc); gl.uniform1f(at(continuumProgram, 'uCellPc'), plan.cellPc);
+        gl.uniform1f(at(continuumProgram, 'uDustRef'), dustRef);
+        gl.viewport(0, 0, lightWidth, lightRows * lightSize); gl.drawArrays(gl.TRIANGLES, 0, 3);
+        const raw = new Float32Array(lightSize ** 3 * 8);
+        readback.readRows(lightSize, lightCols, lightRows, (row, pixels) => {
+          for (let col = 0; col < lightCols; col++) {
+            const layer = row * lightCols + col;
+            if (layer >= 2 * lightSize) break;
+            for (let j = 0; j < lightSize; j++) {
+              const from = (j * lightWidth + col * lightSize) * 4;
+              raw.set(pixels.subarray(from, from + lightSize * 4), (layer * lightSize + j) * lightSize * 4);
+            }
+          }
+        });
+        fields.continuum = encodeContinuum(grid, sources, raw);
+        fields.transmittance.fill(1);
+      } finally {
+        gl.bindTexture(gl.TEXTURE_2D, null); gl.deleteTexture(sourceTexture);
+        if (lightAtlas) { gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, atlas, 0); gl.deleteTexture(lightAtlas); }
+        gl.activeTexture(gl.TEXTURE0);
+      }
+    }
+    gl.bindTexture(gl.TEXTURE_3D, null); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) throw new Error(`nebula shadow GL error ${error}`);
   };
 
   return {
-    bake,
+    sample,
+    attenuate,
+    bake(cloud, nebula, size, boxRequestPc) {
+      const plan = planNebulaBake(cloud, nebula, size, boxRequestPc);
+      const fields = evolveNebulaGas(plan, sample(plan));
+      attenuate(plan, fields);
+      return finishNebulaBake(plan, solveNebulaIonization(plan, fields));
+    },
+    get storageBytes() { return storage.bytes; },
+    get readbackBytes() { return readback.bytes; },
     dispose: () => {
-      for (const { field, atlas } of storage.values()) {
-        gl.deleteTexture(field);
-        gl.deleteTexture(atlas);
-      }
-      storage.clear();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+      storage.dispose();
+      readback.dispose();
+      gl.deleteFramebuffer(framebuffer);
       gl.getExtension('WEBGL_lose_context')?.loseContext();
     },
   };

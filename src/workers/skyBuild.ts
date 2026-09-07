@@ -1,3 +1,4 @@
+import { prepareSkyDrawing, skyDrawingTransfers } from '../render/starfield/skyDrawing';
 import { CATALOG_ROWS } from '../universe/galaxy/catalog';
 import type { GalacticPosition } from '../universe/galaxy/density';
 import {
@@ -12,7 +13,7 @@ import type { SkySurveyCache } from '../universe/galaxy/skySurveyCache';
 import { assembleSkyField, catalogRowWeights, rowStageName } from '../universe/galaxy/skyfield';
 import type { GenerationPermits } from './generationPermits';
 import type { SkyBackgroundBuilder } from './skyBackground';
-import { progressReporter, sendBackgroundPreview, sendPreview, type Post } from './skyBuildMessages';
+import { skyBuildProgress, sendBackgroundPreview, sendPreview, type Post } from './skyBuildMessages';
 import type { SkySweepPool } from './skySweepPool';
 
 /** One requested sky, and the means to give it up. */
@@ -61,9 +62,6 @@ export interface SkyBuildDeps {
   nextTaskId: () => number;
 }
 
-/** The share of the progress bar the star survey owns. */
-const SURVEY_SHARE = 0.84;
-
 /**
  * Build one sky: what the cache already serves goes to the screen at
  * once, the cells it does not are jobbed across the pool and drawn
@@ -75,7 +73,7 @@ const SURVEY_SHARE = 0.84;
 export async function runSkyBuild(build: SkyBuild, deps: SkyBuildDeps): Promise<void> {
   if (build.cancelled) return;
   const { seedHex, viewpoint, seed, galaxy } = build;
-  const report = progressReporter(seedHex, deps.post);
+  const progress = skyBuildProgress(seedHex, deps.post);
   const frame = surveyFrameAt(viewpoint);
   const plan = planSkyBuild(viewpoint, deps.cache, deps.pool.size * 3);
   const weights = catalogRowWeights();
@@ -89,7 +87,7 @@ export async function runSkyBuild(build: SkyBuild, deps: SkyBuildDeps): Promise<
   if (served.length > 0) sendPreview(seedHex, projectSurveys(served, CATALOG_ROWS, viewpoint), deps.post);
   const stageOf = (jobIndex: number): string =>
     plan.jobs.length === 0 ? '' : rowStageName(CATALOG_ROWS[plan.jobs[jobIndex].rowIndex]);
-  report((SURVEY_SHARE * doneWeight) / totalWeight, stageOf(0), 0);
+  progress.survey(plan.jobs.length === 0 ? 1 : doneWeight / totalWeight, stageOf(0), 0);
 
   const jobDone = new Array<boolean>(plan.jobs.length).fill(false);
   let finished = 0;
@@ -121,8 +119,8 @@ export async function runSkyBuild(build: SkyBuild, deps: SkyBuildDeps): Promise<
         // the earliest job still outstanding.
         let behind = 0;
         while (behind < plan.jobs.length && jobDone[behind]) behind++;
-        report(
-          (SURVEY_SHARE * doneWeight) / totalWeight,
+        progress.survey(
+          finished === plan.jobs.length ? 1 : doneWeight / totalWeight,
           stageOf(Math.min(behind, plan.jobs.length - 1)),
           finished / plan.jobs.length,
         );
@@ -135,10 +133,13 @@ export async function runSkyBuild(build: SkyBuild, deps: SkyBuildDeps): Promise<
   // Ship the background the moment it exists — the sky has something
   // in it long before the stars are finished arriving.
   const backgroundReady = deps.background
-    .start(seedHex, viewpoint, galaxy, () => build.cancelled)
+    .start(seedHex, viewpoint, galaxy, () => build.cancelled, progress.background,
+      built => { if (!build.cancelled) sendBackgroundPreview(seedHex, built, deps.post); },
+      portrait => { if (!build.cancelled) deps.post({ seedHex, portrait }, [portrait.pixels.buffer]); },
+    )
     .then((built) => {
       if (!built || build.cancelled) return undefined;
-      sendBackgroundPreview(seedHex, built, deps.post);
+      progress.background(1, 'sky background ready', 1);
       return built;
     });
 
@@ -158,8 +159,10 @@ export async function runSkyBuild(build: SkyBuild, deps: SkyBuildDeps): Promise<
     return;
   }
   try {
-    const sky = assembleSkyField(viewpoint, seed, [slab], report, background ?? undefined);
-    deps.post({ seedHex, sky }, [
+    const sky = assembleSkyField(viewpoint, seed, [slab], progress.assembly, background ?? undefined);
+    const drawing = prepareSkyDrawing(sky);
+    deps.post({ seedHex, sky, drawing }, [
+      ...skyDrawingTransfers(drawing),
       sky.starDirs.buffer,
       sky.starColors.buffer,
       sky.starBrightness.buffer,

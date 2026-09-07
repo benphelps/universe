@@ -1,4 +1,4 @@
-import { blackbodyChromaticity, blackbodyLinearRgb } from '../../core/color/blackbody';
+import { blackbodyColor } from '../../core/color/blackbody';
 import { deriveSeed, seedToHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
 import type { GalacticPosition } from '../galaxy/density';
@@ -49,6 +49,7 @@ export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
 
   const phys = evolve(massInitial, ageGyr);
   const dark = phys.stage === 'black-hole';
+  const color = dark ? null : blackbodyColor(phys.tEff);
 
   const star: Star = {
     ...phys,
@@ -59,8 +60,8 @@ export function generateStar(seed: bigint, options: StarGenOptions = {}): Star {
     feH,
     population,
     spectralType: spectralType(phys),
-    chromaticity: dark ? { x: 0.3127, y: 0.329 } : blackbodyChromaticity(phys.tEff),
-    linearRgb: dark ? [0, 0, 0] : blackbodyLinearRgb(phys.tEff),
+    chromaticity: color?.chromaticity ?? { x: 0.3127, y: 0.329 },
+    linearRgb: color?.linearRgb ?? [0, 0, 0],
     activity: computeActivity(rng.fork('activity'), phys, ageGyr),
     variability: classifyVariability(rng.fork('variability'), phys, feH),
     companions: [],

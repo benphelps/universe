@@ -1,3 +1,4 @@
+import { spiralStructure } from './spiralStructure';
 import { deriveSeed, mix64, seedToHex } from '../../core/rng/hash';
 import { poisson } from '../../core/rng/distributions';
 import { Rng } from '../../core/rng/rng';
@@ -64,7 +65,7 @@ export function galaxyName(seed: bigint): string {
 
 let armNames: string[] | null = null;
 function armNamesOf(): string[] {
-  return (armNames ??= [0, 1].map((arm) =>
+  return (armNames ??= spiralStructure().arms.map(({ index: arm }) =>
     generatedName(deriveSeed(galaxySeed(), 'arm-name', arm)),
   ));
 }
@@ -321,7 +322,7 @@ export function galacticAddress(positionPc: GalacticPosition): GalacticAddress {
           ? 'the outer rim'
           : zone === 'arm'
             ? `the ${armName} Arm`
-            : `the gap between the ${armNamesOf()[0]} and ${armNamesOf()[1]} Arms`;
+            : `inter-arm space near the ${armName} Arm`;
 
   const sector = sectorName(positionPc);
   return {

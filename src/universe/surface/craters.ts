@@ -66,7 +66,11 @@ export function createCraterField(
       const py = (cy + unit(2 + i * 5)) * spec.cellSize;
       const pz = (cz + unit(3 + i * 5)) * spec.cellSize;
       const length = Math.hypot(px, py, pz);
-      if (length < 0.55 || length > 1.45) continue;
+      // Projection must move the center less than half a cell. Together
+      // with the rim's support (< half a cell), this guarantees every
+      // contributing crater belongs to the queried 27-cell neighborhood.
+      // A wider shell made bowls disappear abruptly at lattice boundaries.
+      if (Math.abs(length - 1) > spec.cellSize * 0.5) continue;
       // Populations skew degraded: later impacts garden earlier bowls
       // toward flat, and only saturated (old, high-amplitude) surfaces
       // have accumulated that history. Summing every crater at fresh
@@ -164,6 +168,7 @@ function craterProfile(x: number, angularRadius: number, radiusM: number): numbe
   const depth = Math.min(0.2 * diameterM, 3500 + 0.015 * diameterM);
   const rimHeight = 0.3 * depth;
   const bowl = x < 1 ? depth * (x * x - 1) : 0;
-  const rim = rimHeight * Math.exp(-((x - 1) * (x - 1)) / 0.06);
+  const taper = Math.max(0, Math.min(1, (1.6 - x) / 0.25));
+  const rim = rimHeight * Math.exp(-((x - 1) * (x - 1)) / 0.06) * taper * taper * (3 - 2 * taper);
   return bowl + rim;
 }

@@ -1,6 +1,7 @@
 import type { Characterization } from '../universe/planet/types';
 import type { GridSurvey } from '../universe/surface/field';
 import type { Asteroid } from '../universe/smallbody/types';
+import type { AnnualMeanField } from '../universe/planet/annualMean';
 
 /** Field selection for a terrain worker: a planet or a small body.
  *  Planet workers either build and report the one shared grid survey,
@@ -10,6 +11,7 @@ export type TerrainInit =
       type: 'init';
       seedHex: string;
       physical: Characterization;
+      annualMean?: AnnualMeanField;
       survey?: 'report' | 'defer';
     }
   | { type: 'init-asteroid'; asteroid: Asteroid };
@@ -37,6 +39,10 @@ export interface ChunkResponse {
   /** Sea-surface tile on the same grid, present when the tile touches water. */
   waterPositions: Float32Array | null;
   waterNormals: Float32Array | null;
+  /** Fluid offset from its own parent triangles; uses the terrain's blend. */
+  waterMorph: Float32Array | null;
+  /** Normalized fine / parent-triangle permanent water-ice fractions. */
+  waterIce: Uint8Array | null;
   /** Packed surface-scatter instances (see SCATTER_STRIDE), tile-size gated. */
   scatter: Float32Array | null;
 }

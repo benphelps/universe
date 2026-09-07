@@ -1,51 +1,37 @@
 import {
-  CM_PER_PC,
-  CM_PER_S_LIGHT,
   ERG_PER_SOLAR_LUMINOSITY,
 } from '../../core/physics/constants';
 import type { LinearRgb } from '../../core/color/srgb';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import {
   cloudCarveDustScale,
-  cloudFineDustDensity,
+  cloudDustFactor,
+  cloudFineDensity,
   cloudHalfExtentsPc,
   type MolecularCloud,
 } from './clouds';
 import { DUST_ALBEDO, DUST_OPACITY_PER_PC } from './density';
 import { hydrogenDensity } from './gas';
-import {
-  DUST_DEPLETION,
-  hydrogenBetaLuminosity,
-  IONIZATION_REACH,
-  RECOMBINATION_SCALE,
-  SHELL_SKIN_SHARE,
-  SHELL_WIDTH,
-  sweptShellBoost,
-  VENT_CONFINEMENT,
-  ventResidual,
-  boundaryLayerPc,
-  photoevaporatedColumn,
-  photoevaporationNorm,
-  WIND_CAVITY_RESIDUAL,
-  WIND_REACH,
-  WIND_STALL,
-  WIND_WALL_BOOST,
-  WIND_WALL_WIDTH,
-} from './ionization';
+import { hydrogenBetaLuminosity, RECOMBINATION_SCALE } from './ionization';
 import { MEMBER_SPREAD, nebulaGrowth, nebulaIlluminant, type Nebula } from './nebula';
 import { ismMetallicity } from './population';
 import { nebulaEmissionColor, nebulaLineSum, nebulaNarrowbandColor } from './nebulaLines';
+import { nebulaPhotonAccounting, type NebulaPhotonAccounting } from './nebulaAccounting';
+import type { PhotonLedger } from './photonTransport';
+import { NEBULA_FAINT_SOURCE_FRACTION, groupPhotonSources, transportMultiplePhotons, type PhotonSource } from './multiplePhotonTransport';
+import { NebulaGasAccumulator, remappedGasInventory, type GasInventoryExclusion, type NebulaGasInventory } from './nebulaGasInventory';
+import { remapGas, type GasGrid } from './gasRemap';
+import { bakeContinuum, stellarContinuum, type ContinuumSource, type NebulaContinuum } from './nebulaContinuum';
+import { feedbackMaterialMap, nebulaFeedbackProfile, type FeedbackProfile } from './nebulaFeedback';
 
 /**
  * A nebula baked into a volume the renderer can march.
  *
- * The expensive, physical half of the picture is done here, once: the
- * cloud's own density field sampled onto a grid, and the natal group's
- * ionizing budget spent through that field ray by ray. What
- * the front leaves behind is the structure — gas in the shadow of a
- * dense clump stays neutral, which is the beginning of the trunks and
- * cavities a real H II region carves. The shader then only integrates
- * along the view ray.
+ * A conservative material remap moves natal gas into an expanded
+ * interior and finite-width shells. The photon solve then spends Q
+ * against that gas. Mass closure does not validate the prescribed
+ * expansion dynamics: momentum, energy and stellar mass exchange are
+ * not evolved here. The shader integrates the baked emissivity.
  *
  * The box is the ionized region and its walls, not the cloud. A giant
  * molecular cloud is a hundred parsecs across and the bubble its
@@ -55,26 +41,25 @@ import { nebulaEmissionColor, nebulaLineSum, nebulaNarrowbandColor } from './neb
  * cloud beyond the box is already drawn, as the dark rift it is.
  *
  * The work divides into a plan, a march, and a finish, because the
- * march has two implementations: the CPU walk below, and a GPU render
- * of the same field and the same walk. The CPU field is the physics
- * authority; the GPU is a faster evaluator of it, and both hand the
- * same four grids to the same finish.
+ * natal field has CPU and GPU evaluators. Both use the same material
+ * remap, final-dust attenuation, equilibrium solve and encoding.
  */
 export interface NebulaVolumeBake {
   seed: bigint;
   /** Cells per axis. */
   size: number;
-  /** Box centre in galactic pc: the ionizing star for the bubble-scale
-   *  bake, the cloud's own middle for the cloud-scale one. */
+  /** Box centre in galactic pc; nested bakes snap to coarse cell faces. */
   centrePc: [number, number, number];
   /** Half-extents of the box the grid covers, pc. */
   halfExtentsPc: [number, number, number];
   /**
-   * RGBA per cell: dust density, ionized hydrogen density, ionization
-   * hardness, and transmittance from the lighting source — the four
-   * things the march needs and none of the cost of finding them.
+   * RGBA per cell: sqrt dust, ionized-density high byte, hardness,
+   * ionized-density low byte. Resolved continuum has its own field.
+   * The two density bytes preserve faint emission without extra memory.
    */
   data: Uint8Array;
+  /** Resolved optical source field; separate from ionizing photons. */
+  continuum?: NebulaContinuum;
   /** Which blocks of the grid hold anything at all, OCCUPANCY_SIZE per
    *  axis, 255 or 0: a march skips an empty block in one step instead
    *  of sampling its way across it. A block counts as occupied if any
@@ -89,16 +74,25 @@ export interface NebulaVolumeBake {
   dustRef: number;
   /**
    * Emission coefficient: L☉ per parsec³ per steradian per cm⁻⁶ of
-   * emission measure. The nebula radiates what its star's ionizing
-   * budget says it radiates, spread over the gas by n² — so brightness
-   * is the physics rather than a dial, and a nebula with ten times the
-   * ionizing output is ten times as bright.
+   * emission measure. Uses the case-B recombination coefficient and
+   * line mixture; it never renormalizes the gas to the full source Q.
    */
   emissionCoefficient: number;
+  /** Hot endpoint; interpolate emissivity, not a volume-mean strength. */
+  emissionHotCoefficient: number;
+  /** Physical demand and encoding error, independent of display normalization. */
+  photonAccounting: NebulaPhotonAccounting;
+  /** Shared source budget for this coarse bake and its matching fine bake. */
+  compositePhotonLedger?: PhotonLedger;
+  /** Same-region natal/prescribed inventory. A paired coarse bake omits
+   * its covered cells; the composite adds its fine partner once.
+   * Transport inventories include measured boundary exchange; mass
+   * closure alone does not validate the prescribed dynamics. */
+  gasInventory?: NebulaGasInventory;
+  compositeGasInventory?: NebulaGasInventory;
   /** Hydrogen density that G = 255 stands for, cm⁻³. */
   densityRef: number;
-  /** Where the box sits in the cloud's own frame, pc — the source is
-   *  at the box's centre, so this is also where the light comes from. */
+  /** Where the box sits in the cloud's own frame, pc. */
   originPc: [number, number, number];
   /** Emission colour at full hardness and at none, linear RGB. */
   emissionHot: LinearRgb;
@@ -125,14 +119,9 @@ export interface NebulaVolumeBake {
 /** Scattered emissivity per L☉ per unit dust at unit distance,
  *  L☉ pc⁻³ sr⁻¹: the flux L/(4πr²) times the dust's opacity per
  *  parsec, times albedo over the 4π sr it rescatters into. The
- *  direction it goes is the scattering table's business (the phase
- *  and every higher order); this is the scale the table multiplies. */
+ *  angular dependence comes from the resolved continuum's normalized
+ *  HG moment closure. This is first-order scattering only. */
 export const SCATTER_EMISSIVITY_PER_LSUN = (DUST_OPACITY_PER_PC * DUST_ALBEDO) / (16 * Math.PI ** 2);
-
-/** Where log₁₀ of the ionization parameter runs from and to: the range
- *  over which [O III] takes over from the hydrogen lines. */
-export const LOG_U_MIN = -3.5;
-export const LOG_U_MAX = -1.5;
 
 /** Trilinear read of a scalar grid, clamped at the edges. */
 function sample(grid: Float32Array, size: number, x: number, y: number, z: number): number {
@@ -145,11 +134,11 @@ function sample(grid: Float32Array, size: number, x: number, y: number, z: numbe
   const fx = cx - i;
   const fy = cy - j;
   const fz = cz - k;
-  const at = (a: number, b: number, c: number): number => grid[(c * size + b) * size + a];
-  const x00 = at(i, j, k) + (at(i + 1, j, k) - at(i, j, k)) * fx;
-  const x10 = at(i, j + 1, k) + (at(i + 1, j + 1, k) - at(i, j + 1, k)) * fx;
-  const x01 = at(i, j, k + 1) + (at(i + 1, j, k + 1) - at(i, j, k + 1)) * fx;
-  const x11 = at(i, j + 1, k + 1) + (at(i + 1, j + 1, k + 1) - at(i, j + 1, k + 1)) * fx;
+  const a = (k * size + j) * size + i, b = a + size, c = a + size * size, d = c + size;
+  const x00 = grid[a] + (grid[a + 1] - grid[a]) * fx;
+  const x10 = grid[b] + (grid[b + 1] - grid[b]) * fx;
+  const x01 = grid[c] + (grid[c + 1] - grid[c]) * fx;
+  const x11 = grid[d] + (grid[d + 1] - grid[d]) * fx;
   const y0 = x00 + (x10 - x00) * fy;
   const y1 = x01 + (x11 - x01) * fy;
   return y0 + (y1 - y0) * fz;
@@ -184,7 +173,7 @@ export function bakeOccupancy(data: Uint8Array, size: number): Uint8Array {
       const bjHigh = j < size - 1 ? blockOf(j + 1) : bj;
       for (let i = 0; i < size; i++) {
         const at = ((k * size + j) * size + i) * 4;
-        if (data[at] === 0 && data[at + 1] === 0) continue;
+        if (data[at] === 0 && data[at + 1] === 0 && data[at + 3] === 0) continue;
         const bi = blockOf(i);
         const biLow = i > 0 ? blockOf(i - 1) : bi;
         const biHigh = i < size - 1 ? blockOf(i + 1) : bi;
@@ -248,28 +237,6 @@ const BOX_STROMGREN_RADII = 4;
 /** Even an unlit cocoon gets a body worth looking at. */
 const BOX_MIN_PC = 5;
 
-/**
- * Photoevaporative erosion at the front. The budget march fixes where
- * the mean front got to; what the front is *eating* there is the
- * uncontracted cloud at that very radius, and it does not eat evenly —
- * thin gas evaporates fast and lets the front bulge through, a dense
- * filament resists and stalls it, which is scalloped rims and trunks
- * at clump scale and, at cloud scale, a front that finally follows
- * the cloud's own shape instead of the natal core's smoothness. The
- * local front is the mean scaled by (pivot / ambient)^⅓, bounded:
- * quasi-static like every other mechanism here.
- */
-export const EROSION_STALL = 0.75;
-export const EROSION_REACH = 1.3;
-/** How much budget-overshoot it takes to read fully neutral: the
- *  front's softness, in spent-budget fraction. */
-export const FRONT_SOFTNESS = 0.15;
-/** The unreachable-cell scatter column: how much coarser than the
- *  march's own step it may walk, and the most steps it ever takes. */
-export const SCATTER_STEP_FACTOR = 4;
-export const SCATTER_MAX_STEPS = 24;
-
-
 /** Whether the bubble deserves a bake of its own, or the cloud-scale
  *  grid already resolves it: the two-scale split exists for compact
  *  regions, and an evolved bubble tens of parsecs across is not one. */
@@ -279,10 +246,15 @@ export function bubbleNeedsOwnBake(nebula: Nebula, reachPc: number): boolean {
 
 /**
  * Everything both marches need, worked out once from the nebula: the
- * box, the source, the Spitzer growth, and the scales that turn the
- * dimensionless field into gas, dust and spent photons.
+ * box, source positions, expansion profile and interior dilution.
  */
 export interface NebulaBakePlan {
+  /** Individual sources in the cloud frame, before grid grouping. */
+  continuumSources?: ContinuumSource[];
+  radiationSources?: { positionPc: [number, number, number]; photonRate: number }[];
+  feedbackProfile?: FeedbackProfile;
+  /** Covered coarse cells are omitted from the disjoint mass inventory. */
+  inventoryExclusion?: GasInventoryExclusion;
   cloud: MolecularCloud;
   metallicity: number;
   size: number;
@@ -292,56 +264,37 @@ export interface NebulaBakePlan {
   originPc: [number, number, number];
   /** Where the ionizing budget radiates from, box frame, pc. */
   ionizePc: [number, number, number];
-  /** Photons s⁻¹ sr⁻¹ radiated from the source point: the whole
-   *  group's output, since its Strömgren and Spitzer radii and the
-   *  sprite's flux closure are all drawn on that total and the tiers
-   *  must spend the same budget. */
-  budget: number;
   /** The group's output, photons s⁻¹ — what closes the emission
    *  books in the finish. */
   photonRate: number;
-  /** The mean front, pc: the region's radius at its age. A ray a
-   *  clump stops short of it photoevaporates toward it. */
+  /** Mean prescribed expansion radius, pc; the equilibrium ionization
+   * front is solved separately on the remapped gas. */
   bubblePc: number;
-  /** photoevaporationNorm at this region's budget and age; zero
-   *  disarms the evaporation. */
-  evaporationNorm: number;
   /** The dominant source's temperature, K — the line grid's first
    *  axis, alongside the plan's metallicity and the cells' own U. */
   sourceTeff: number;
-  growth: number;
+  /** Uniform-reference interior density fraction; mass reaches its
+   * shell by material remapping rather than a separate density boost. */
   dilution: number;
-  shellBoost: number;
-  /** The wind-blown cavity's mean radius about the source, pc — zero
-   *  when no wind. Along each ray it is eroded against the interior
-   *  the wind actually ploughed there. */
   windCavityPc: number;
-  /** The interior's density before dilution, cm⁻³: the pivot the
-   *  cavity's erosion measures the natal field against (the dilution
-   *  is the same on both sides and cancels). Zero disarms it. */
-  windPivotDensity: number;
-  /** Natal density, cm⁻³, above which the interior is fully confined
-   *  — the champagne gate, scaled to the diluted interior. */
-  ventConfineDensity: number;
-  /** The erosion modulation's pivot, cm⁻³ — the same interior scale,
-   *  carried separately so either mechanism can be disarmed alone. */
-  erosionPivotDensity: number;
-  stepPc: number;
-  /** Beyond this distance from the source a cell is neutral without
-   *  the march having to say so. */
-  reachLimitPc: number;
   scatterSourcePc: [number, number, number];
   scatterLuminositySolar: number;
   /** The illuminant's temperature, K, floored — the reflection hue. */
   reflectionTeff: number;
 }
 
-/** The four grids a march produces, still in physical units. */
+/** Prescribed gas/dust and solved emission fields, in physical units. */
 export interface NebulaBakeFields {
   dust: Float32Array;
+  /** Total prescribed gas, before the final equilibrium solve. */
+  hydrogen: Float32Array;
+  /** RMS density in the cell's ionized fraction, for emission measure. */
   ionized: Float32Array;
   hardness: Float32Array;
   transmittance: Float32Array;
+  continuum?: NebulaContinuum;
+  photonLedger?: PhotonLedger;
+  gasInventory?: NebulaGasInventory;
 }
 
 /**
@@ -370,12 +323,10 @@ export function planNebulaBake(
   const ionizePc: [number, number, number] = source
     ? [source.dxPc - originPc[0], source.dyPc - originPc[1], source.dzPc - originPc[2]]
     : [0, 0, 0];
-  // Spitzer growth: the front at the group's age is the natal front
-  // scaled by this factor, its interior diluted by growth^{-3/2} —
-  // which conserves the recombination budget exactly (n²V invariant),
-  // so the natal march read in contracted coordinates IS the evolved
-  // region.
-  const { growth, dilution } = nebula ? nebulaGrowth(nebula) : { growth: 1, dilution: 1 };
+  // Uniform-reference ionized density from the prescribed expansion
+  // radius. The material map supplies the shell's mass and the final
+  // photon solve decides which gas can actually remain ionized.
+  const { dilution } = nebula ? nebulaGrowth(nebula) : { dilution: 1 };
   // What lights the dust. The whole group's light is assigned to one
   // star; the members huddle at the same clumps, and one origin is
   // what a single shadow ray serves.
@@ -388,40 +339,34 @@ export function planNebulaBake(
       ]
     : [0, 0, 0];
   const reach = Math.max(...cloudHalfExtentsPc(cloud));
+  const radiationSources = nebula?.sources.map(s => ({
+    positionPc: [s.dxPc, s.dyPc, s.dzPc] as [number, number, number], photonRate: s.photonRate,
+  })) ?? [];
+  const continuumSources = nebula?.members.map(s => stellarContinuum([s.dxPc, s.dyPc, s.dzPc], s.luminosity, s.tEff)) ?? [];
+  const sourceExtent = [...radiationSources, ...continuumSources].reduce((extent, s) => Math.max(extent,
+    ...s.positionPc.map((p, axis) => Math.abs(p - originPc[axis]))), 0);
   const boxPc = Math.min(
     reach,
-    boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * (nebula?.bubbleRadiusPc ?? 0)),
+    boxRequestPc ?? Math.max(BOX_MIN_PC, BOX_STROMGREN_RADII * (nebula?.bubbleRadiusPc ?? 0), sourceExtent * 1.05),
   );
   const cellPc = (2 * boxPc) / size;
-  // The whole group's photons leave from its dominant member's place:
-  // the members huddle at the same clumps, and one origin is what a
-  // single shadow ray serves.
-  const photonRate = source ? (nebula?.photonRate ?? 0) : 0;
-  const budget = photonRate / (4 * Math.PI);
+  const photonRate = radiationSources.reduce((sum, s) => sum + s.photonRate, 0);
   return {
     cloud,
+    radiationSources,
+    continuumSources,
+    feedbackProfile: nebula && photonRate > 0 ? nebulaFeedbackProfile(nebula) : undefined,
     metallicity,
     size,
     boxPc,
     cellPc,
     originPc,
     ionizePc,
-    budget,
     photonRate,
     bubblePc: nebula?.bubbleRadiusPc ?? 0,
-    evaporationNorm: nebula ? photoevaporationNorm(nebula.photonRate, nebula.ageGyr * 1000) : 0,
     sourceTeff: source?.tEff ?? 40000,
-    growth,
     dilution,
-    shellBoost: sweptShellBoost(dilution),
     windCavityPc: nebula?.windCavityPc ?? 0,
-    windPivotDensity: nebula?.sourceHydrogenDensity ?? 0,
-    ventConfineDensity:
-      VENT_CONFINEMENT * (nebula?.sourceHydrogenDensity ?? 0) * dilution,
-    erosionPivotDensity:
-      VENT_CONFINEMENT * (nebula?.sourceHydrogenDensity ?? 0) * dilution,
-    stepPc: cellPc * 0.9,
-    reachLimitPc: IONIZATION_REACH * Math.max(nebula?.bubbleRadiusPc ?? 0, 0.05),
     scatterSourcePc,
     scatterLuminositySolar: scatterStar ? (nebula?.totalLuminosity ?? 0) : 0,
     reflectionTeff: Math.max(3000, scatterStar?.tEff ?? 4000),
@@ -429,316 +374,122 @@ export function planNebulaBake(
 }
 
 /**
- * The march, on the CPU: the cloud's field sampled onto the grid, then
- * the ionizing budget spent outward from the brightest member. One
- * source and one ray per cell: the front is where the photons run out
- * along that ray, so a clump shadows everything behind it.
+ * Sample the natal gas before motion. CPU and GPU samplers return
+ * these same physical fields; neither independently changes density.
  */
-export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
-  const {
-    cloud,
-    size,
-    boxPc,
-    cellPc,
-    ionizePc,
-    budget,
-    growth,
-    dilution,
-    shellBoost,
-    stepPc,
-    reachLimitPc,
-    scatterSourcePc,
-    scatterLuminositySolar,
-  } = plan;
-  // Box coordinates are offsets from the source; the cloud's field is
-  // read at the matching place in the cloud's own frame.
-  const at = (i: number): number => -boxPc + (i + 0.5) * cellPc;
-  const inCloud = (offset: number, axis: number): number => offset + plan.originPc[axis];
-
-  // The field itself, once. Everything after this reads the grid.
-  const cells = size * size * size;
-  const dust = new Float32Array(cells);
-  const gas = new Float32Array(cells);
-  for (let k = 0; k < size; k++) {
-    const z = inCloud(at(k), 2);
-    for (let j = 0; j < size; j++) {
-      const y = inCloud(at(j), 1);
-      for (let i = 0; i < size; i++) {
-        const value = cloudFineDustDensity(cloud, inCloud(at(i), 0), y, z);
-        const index = (k * size + j) * size + i;
-        dust[index] = value;
-        gas[index] = hydrogenDensity(value, plan.metallicity);
-      }
-    }
-  }
-
+export function sampleNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
+  const { cloud, size, boxPc, cellPc } = plan;
+  const cells = size ** 3;
   const fields: NebulaBakeFields = {
-    dust: new Float32Array(cells),
-    ionized: new Float32Array(cells),
-    hardness: new Float32Array(cells),
-    transmittance: new Float32Array(cells),
+    dust: new Float32Array(cells), hydrogen: new Float32Array(cells),
+    ionized: new Float32Array(cells), hardness: new Float32Array(cells), transmittance: new Float32Array(cells),
   };
-  for (let k = 0; k < size; k++) {
-    const z = at(k);
-    for (let j = 0; j < size; j++) {
-      const y = at(j);
-      for (let i = 0; i < size; i++) {
-        const x = at(i);
-        const index = (k * size + j) * size + i;
-        const dx = x - ionizePc[0];
-        const dy = y - ionizePc[1];
-        const dz = z - ionizePc[2];
-        const distancePc = Math.hypot(dx, dy, dz) || 1e-4;
-        // Past the front's furthest possible reach the gas is neutral
-        // whatever the march would say, and saying so costs nothing.
-        const reachable = budget > 0 && distancePc < reachLimitPc;
-        const steps = reachable ? Math.max(1, Math.ceil(distancePc / stepPc)) : 0;
-        const ds = distancePc / steps;
-        const ux = dx / distancePc;
-        const uy = dy / distancePc;
-        const uz = dz / distancePc;
-
-        let recombined = 0;
-        let tau = 0;
-        let frontR = -1;
-        // The face: the front after the flux has eaten into whatever
-        // stopped it, or the front itself where nothing did.
-        let face = -1;
-        let column = 0;
-        let ventR = 0;
-        if (reachable) {
-          // One walk in the evolved region's own space. While the
-          // budget lasts, the gas here is the natal field read at
-          // contracted radius r/growth and diluted — the Spitzer
-          // interior — so the budget integral in those coordinates is
-          // exactly the natal one. Where it runs out the front stands;
-          // short of the mean front a clump stopped it, and the flux
-          // photoevaporates the face by the column the age allows —
-          // the swept shell just past the face, the untouched cloud
-          // beyond.
-          for (let s = 0; s < steps; s++) {
-            const r = (s + 0.5) * ds;
-            if (face < 0) {
-              const rn = r / growth;
-              const px = (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5;
-              const py = (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5;
-              const pz = (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5;
-              const n = sample(gas, size, px, py, pz);
-              if (frontR < 0) {
-                // Recombinations in this shell of the ray's own solid
-                // angle, in natal coordinates: dr' = dr / growth.
-                recombined += n * n * RECOMBINATION_SCALE * rn * rn * (ds / growth);
-                if (recombined >= budget) {
-                  frontR = r;
-                  column =
-                    r < plan.bubblePc
-                      ? photoevaporatedColumn(plan.evaporationNorm, r, boundaryLayerPc(r, cellPc))
-                      : 0;
-                  if (column <= 0) face = r;
-                }
-              } else {
-                // The clump the face eats is neutral natal gas: its
-                // density and its length are the cloud's own.
-                column -= n * (ds / growth);
-                if (column <= 0 || r >= plan.bubblePc) face = r;
-              }
-              // The beam crosses the ionized interior's thinned dust —
-              // the same depletion the stored dust carries there.
-              tau +=
-                (sample(dust, size, px, py, pz) * dilution * DUST_OPACITY_PER_PC * ds) /
-                DUST_DEPLETION;
-              // The opening: the last place the uncontracted cloud
-              // still held the interior in.
-              if (
-                face < 0 &&
-                plan.ventConfineDensity > 0 &&
-                sample(
-                  gas,
-                  size,
-                  (ionizePc[0] + ux * r + boxPc) / cellPc - 0.5,
-                  (ionizePc[1] + uy * r + boxPc) / cellPc - 0.5,
-                  (ionizePc[2] + uz * r + boxPc) / cellPc - 0.5,
-                ) >= plan.ventConfineDensity
-              ) {
-                ventR = r;
-              }
-            } else {
-              const swept = r <= face * (1 + SHELL_WIDTH) ? shellBoost : 1;
-              const px = (ionizePc[0] + ux * r + boxPc) / cellPc - 0.5;
-              const py = (ionizePc[1] + uy * r + boxPc) / cellPc - 0.5;
-              const pz = (ionizePc[2] + uz * r + boxPc) / cellPc - 0.5;
-              tau += sample(dust, size, px, py, pz) * swept * DUST_OPACITY_PER_PC * ds;
-            }
-          }
-        } else if (scatterLuminositySolar > 0) {
-          // Beyond it only the dust column is wanted — what the star's
-          // light is dimmed and reddened by — and it is smooth enough
-          // at this range to take in far coarser steps. The ray runs
-          // from the star that actually shines on the dust, which in
-          // the cloud-scale bake is not the box centre.
-          const sx = x - scatterSourcePc[0];
-          const sy = y - scatterSourcePc[1];
-          const sz = z - scatterSourcePc[2];
-          const shinePc = Math.hypot(sx, sy, sz) || 1e-4;
-          const coarse = Math.min(
-            SCATTER_MAX_STEPS,
-            Math.max(1, Math.ceil(shinePc / (SCATTER_STEP_FACTOR * stepPc))),
-          );
-          const coarseDs = shinePc / coarse;
-          for (let s = 0; s < coarse; s++) {
-            const r = (s + 0.5) * coarseDs / shinePc;
-            tau +=
-              sample(
-                dust,
-                size,
-                (scatterSourcePc[0] + sx * r + boxPc) / cellPc - 0.5,
-                (scatterSourcePc[1] + sy * r + boxPc) / cellPc - 0.5,
-                (scatterSourcePc[2] + sz * r + boxPc) / cellPc - 0.5,
-              ) *
-              DUST_OPACITY_PER_PC *
-              coarseDs;
-          }
-        }
-
-        // The front: sharp, but not sharper than a cell can carry, and
-        // eroded against what it is actually eating — the uncontracted
-        // cloud at the mean front's own radius. Thin ambient lets the
-        // local front bulge past the mean, a dense filament stalls it;
-        // just past it the swept shell's inner skin is ionized, where
-        // the recombinations concentrate, so the rim glows along the
-        // eroded shape. The skin is never baked thinner than a cell,
-        // or a sub-cell shell aliases into stripes.
-        const spent = budget > 0 && reachable ? recombined / budget : Infinity;
-        // A cell the walk reached while the face was still being eaten
-        // toward it stands inside the evaporated span: interior gas.
-        const evaporated = frontR >= 0 && face < 0;
-        let frontLoc = face;
-        if (face >= 0 && plan.erosionPivotDensity > 0) {
-          const ambient = sample(
-            gas,
-            size,
-            (ionizePc[0] + ux * face + boxPc) / cellPc - 0.5,
-            (ionizePc[1] + uy * face + boxPc) / cellPc - 0.5,
-            (ionizePc[2] + uz * face + boxPc) / cellPc - 0.5,
-          );
-          frontLoc =
-            face *
-            Math.min(
-              EROSION_REACH,
-              Math.max(
-                EROSION_STALL,
-                (plan.erosionPivotDensity / Math.max(1e-6, ambient)) ** (1 / 3),
-              ),
-            );
-        }
-        const skin =
-          face >= 0
-            ? distancePc <= frontLoc
-              ? 1
-              : Math.exp(
-                  -(distancePc - frontLoc) /
-                    Math.max(cellPc, SHELL_SKIN_SHARE * SHELL_WIDTH * frontLoc),
-                )
-            : evaporated
-              ? 1
-              : 0;
-        const ionized = Math.max(skin, Math.max(0, Math.min(1, (1 - spent) / FRONT_SOFTNESS)));
-        const transmittance = Math.exp(-tau);
-        // The gas standing at this cell now: the diluted interior read
-        // from its natal position, the swept shell just past the
-        // eroded face, or the cloud as it was.
-        const inBubble = reachable && (frontR < 0 || evaporated);
-        const inShell =
-          face >= 0 && distancePc > frontLoc && distancePc <= frontLoc * (1 + SHELL_WIDTH);
-        const rn = distancePc / growth;
-        // The star's wind has re-plumbed the interior: the cavity holds
-        // an optically empty residue, its swept wall the mass the wind
-        // ploughed out of it — a ring in n², a hole inside it. And the
-        // champagne gate: where the bubble has outrun the cloud's own
-        // body, nothing confines the hot gas and it streams away — the
-        // natal field at this very cell decides, so the region opens
-        // along the cloud's carved boundary, arcs and horseshoes — and
-        // the residue thins past the opening the flow left through.
-        const confinement =
-          inBubble && plan.ventConfineDensity > 0
-            ? Math.max(
-                ventResidual(ventR, distancePc),
-                Math.min(1, gas[index] / plan.ventConfineDensity),
-              )
-            : 1;
-        // The cavity along this ray: the mean radius the momentum
-        // budget reached, eroded to the −¼ against what the interior
-        // holds in this direction — read at the cavity's own natal
-        // position, since the interior is the natal field grown out.
-        let cavityPc = plan.windCavityPc;
-        if (inBubble && cavityPc > 0 && plan.windPivotDensity > 0) {
-          const rc = cavityPc / growth;
-          const ploughed = sample(
-            gas,
-            size,
-            (ionizePc[0] + ux * rc + boxPc) / cellPc - 0.5,
-            (ionizePc[1] + uy * rc + boxPc) / cellPc - 0.5,
-            (ionizePc[2] + uz * rc + boxPc) / cellPc - 0.5,
-          );
-          cavityPc *= Math.min(
-            WIND_REACH,
-            Math.max(WIND_STALL, (plan.windPivotDensity / Math.max(1e-6, ploughed)) ** 0.25),
-          );
-        }
-        const wind =
-          (!inBubble
-            ? 1
-            : distancePc < cavityPc
-              ? WIND_CAVITY_RESIDUAL
-              : distancePc <= cavityPc * (1 + WIND_WALL_WIDTH)
-                ? WIND_WALL_BOOST
-                : 1) * confinement;
-        const n =
-          (inBubble
-            ? sample(
-                gas,
-                size,
-                (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5,
-                (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5,
-                (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5,
-              ) * dilution
-            : gas[index] * (inShell ? shellBoost : 1)) * wind;
-        // Ionization parameter: ionizing flux over gas density, the
-        // ratio that decides how far oxygen is taken.
-        const flux = budget > 0 ? (budget * transmittance) / (distancePc * distancePc) : 0;
-        const u = n > 0 ? flux / (n * CM_PER_S_LIGHT * CM_PER_PC * CM_PER_PC) : 0;
-        const hardness =
-          u > 0 ? (Math.log10(u) - LOG_U_MIN) / (LOG_U_MAX - LOG_U_MIN) : 0;
-
-        // Ionized gas holds less dust than the cloud it was carved out
-        // of — grains are eroded in the radiation field and swept with
-        // the flow — but it is not swept clean: observations and models
-        // put H II regions a few times thinner in dust, not twenty, and
-        // the dust that remains is what makes them visible in the
-        // infrared at all.
-        const cellDust =
-          (inBubble
-            ? sample(
-                dust,
-                size,
-                (ionizePc[0] + ux * rn + boxPc) / cellPc - 0.5,
-                (ionizePc[1] + uy * rn + boxPc) / cellPc - 0.5,
-                (ionizePc[2] + uz * rn + boxPc) / cellPc - 0.5,
-              ) * dilution
-            : dust[index] * (inShell ? shellBoost : 1)) * wind;
-        fields.dust[index] = cellDust / (1 + (DUST_DEPLETION - 1) * ionized);
-        fields.ionized[index] = n * ionized;
-        fields.hardness[index] = Math.min(1, Math.max(0, hardness));
-        fields.transmittance[index] = transmittance;
-      }
-    }
+  const dustFactor = cloudDustFactor(cloud), gasPerDust = hydrogenDensity(1, plan.metallicity);
+  const inventory = new NebulaGasAccumulator(cellPc, plan.inventoryExclusion);
+  for (let k = 0; k < size; k++) for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+    const at = (k * size + j) * size + i;
+    const value = dustFactor * cloudFineDensity(cloud,
+      plan.originPc[0] - boxPc + (i + 0.5) * cellPc,
+      plan.originPc[1] - boxPc + (j + 0.5) * cellPc,
+      plan.originPc[2] - boxPc + (k + 0.5) * cellPc);
+    fields.dust[at] = value; fields.hydrogen[at] = value * gasPerDust;
+    inventory.add(i, j, k, fields.hydrogen[at], fields.hydrogen[at]);
   }
+  fields.gasInventory = inventory.finish();
+  return fields;
+}
+
+export function nebulaGasGrid(plan: NebulaBakePlan, fields: NebulaBakeFields): GasGrid {
+  return { size: plan.size, cellPc: plan.cellPc, originPc: plan.originPc,
+    hydrogen: fields.hydrogen, exclusion: plan.inventoryExclusion };
+}
+
+/** Move natal material; no independent shell boost or vent-density sink.
+ * Dust is fully entrained at fixed abundance in this approximation.
+ * Grain destruction/drift and injected stellar material are not modeled. */
+export function evolveNebulaGas(plan: NebulaBakePlan, fields: NebulaBakeFields, options: Parameters<typeof remapGas>[2] = {}): NebulaBakeFields {
+  const source = plan.ionizePc.map((v, axis) => v + plan.originPc[axis]) as [number, number, number];
+  const map = feedbackMaterialMap(source, plan.photonRate > 0 ? plan.bubblePc : 0, plan.dilution, plan.windCavityPc, plan.feedbackProfile);
+  const ledger = remapGas(nebulaGasGrid(plan, fields), map, options);
+  fields.gasInventory = remappedGasInventory(ledger);
+  const gasPerDust = hydrogenDensity(1, plan.metallicity);
+  for (let i = 0; i < fields.dust.length; i++) fields.dust[i] = fields.hydrogen[i] / gasPerDust;
+  return fields;
+}
+
+export const NEBULA_SHADOW_STEPS = 64;
+export const NEBULA_SHADOW_CELL_STEP = 2;
+
+/** Continuum shadows cross the final entrained dust. A ray outside this
+ * domain sees no invented clamped boundary column. External illumination
+ * still needs coupled multi-source transfer when its source is outside. */
+export function attenuateNebulaContinuum(plan: NebulaBakePlan, fields: NebulaBakeFields): void {
+  const { size, cellPc, boxPc, scatterSourcePc: source } = plan;
+  if (plan.continuumSources?.length) {
+    fields.continuum = bakeContinuum({ ...plan, sources: plan.continuumSources },
+      (x, y, z) => sample(fields.dust, size, (x + boxPc) / cellPc - 0.5, (y + boxPc) / cellPc - 0.5, (z + boxPc) / cellPc - 0.5));
+    // No duplicate full-resolution single-source shadow field is needed.
+    fields.transmittance.fill(1); return;
+  }
+  if (plan.scatterLuminositySolar <= 0) { fields.transmittance.fill(1); return; }
+  for (let k = 0; k < size; k++) for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+    const at = (k * size + j) * size + i;
+    const x = -boxPc + (i + 0.5) * cellPc - source[0];
+    const y = -boxPc + (j + 0.5) * cellPc - source[1];
+    const z = -boxPc + (k + 0.5) * cellPc - source[2];
+    const distance = Math.hypot(x, y, z);
+    // The target is inside the cube. Clip an exterior source's segment
+    // exactly at entry rather than dropping whole quadrature samples.
+    let entry = 0;
+    for (let axis = 0; axis < 3; axis++) {
+      if (Math.abs(source[axis]) <= boxPc) continue;
+      const delta = axis === 0 ? x : axis === 1 ? y : z;
+      entry = Math.max(entry, ((source[axis] < 0 ? -boxPc : boxPc) - source[axis]) / delta);
+    }
+    const path = distance * (1 - entry);
+    const steps = Math.min(NEBULA_SHADOW_STEPS, Math.max(1, Math.ceil(path / (NEBULA_SHADOW_CELL_STEP * cellPc))));
+    let tau = 0;
+    for (let step = 0; step < steps; step++) {
+      const t = entry + (1 - entry) * (step + 0.5) / steps;
+      const px = source[0] + x * t, py = source[1] + y * t, pz = source[2] + z * t;
+      tau += sample(fields.dust, size, (px + boxPc) / cellPc - 0.5,
+        (py + boxPc) / cellPc - 0.5, (pz + boxPc) / cellPc - 0.5) * DUST_OPACITY_PER_PC * path / steps;
+      if (tau > 20) break;
+    }
+    fields.transmittance[at] = Math.exp(-tau);
+  }
+}
+
+export function marchNebulaCpu(plan: NebulaBakePlan): NebulaBakeFields {
+  const fields = evolveNebulaGas(plan, sampleNebulaCpu(plan));
+  attenuateNebulaContinuum(plan, fields);
+  return solveNebulaIonization(plan, fields);
+}
+
+/** Spend photons on the conservatively remapped gas and entrained dust.
+ * Both field backends use this same equilibrium solve. */
+export function nebulaPhotonSources(plan: NebulaBakePlan): PhotonSource[] {
+  // Point deposition uses the centre of the cell containing the
+  // group's luminosity centroid. Its sub-cell displacement is at most
+  // half a cell per axis; all resolved separations and Q survive.
+  return groupPhotonSources(plan.radiationSources?.map(source => ({
+    photonRate: source.photonRate,
+    sourceCell: source.positionPc.map((p, axis) => (p - plan.originPc[axis] + plan.boxPc) / plan.cellPc) as [number, number, number],
+  })) ?? [{ photonRate: plan.photonRate, sourceCell: plan.ionizePc.map(p => (p + plan.boxPc) / plan.cellPc) as [number, number, number] }]).map(source => ({ ...source, sourceCell: source.sourceCell.map(p => Math.floor(p) + 0.5) as [number, number, number] }));
+}
+
+export function solveNebulaIonization(plan: NebulaBakePlan, fields: NebulaBakeFields): NebulaBakeFields {
+  fields.photonLedger = transportMultiplePhotons({
+    size: plan.size, cellPc: plan.cellPc, photonRate: plan.photonRate,
+    sourceCell: plan.ionizePc.map(v => (v + plan.boxPc) / plan.cellPc) as [number, number, number],
+    hydrogen: fields.hydrogen, dust: fields.dust, ionized: fields.ionized, hardness: fields.hardness,
+  }, nebulaPhotonSources(plan), { faintSourceFraction: NEBULA_FAINT_SOURCE_FRACTION });
   return fields;
 }
 
 /**
- * Quantize a march's grids and close the emission books — the same
- * finish whichever processor marched.
+ * Quantize a march's grids and measure the physical/display discrepancy
+ * with the same finish whichever processor marched.
  */
 export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields): NebulaVolumeBake {
   const { cloud, size, boxPc, cellPc, originPc } = plan;
@@ -752,41 +503,38 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
   // levels deep.
   let dustRef = 1e-6;
   let densityRef = 1e-6;
+  let rawEmissionMeasure = 0;
   for (let index = 0; index < cells; index++) {
     if (fields.dust[index] > dustRef) dustRef = fields.dust[index];
     if (fields.ionized[index] > densityRef) densityRef = fields.ionized[index];
+    rawEmissionMeasure += fields.ionized[index] ** 2 * cellVolumePc3;
   }
-  // The books close on the quantized grid, not the float fields: the
-  // byte crush zeroes the dilute interior and rounds the rest, and
-  // what it keeps is what the renderer integrates — measured against
-  // the floats it can be half the light. The budget belongs to the
-  // grid as drawn.
+  // Track encoding separately. Neither rounding nor a brightness
+  // multiplier can repair the final gas field's recombination demand.
   const data = new Uint8Array(cells * 4);
   let emissionMeasure = 0;
-  let hardnessWeighted = 0;
+
   for (let index = 0; index < cells; index++) {
     const out = index * 4;
     data[out] = Math.round(255 * Math.sqrt(Math.min(1, fields.dust[index] / dustRef)));
-    data[out + 1] = Math.round(255 * Math.min(1, fields.ionized[index] / densityRef));
+    // Round emission down locally: encoding cannot spend extra photons.
+    const densityCode = Math.floor(65535 * Math.min(1, fields.ionized[index] / densityRef));
+    data[out + 1] = densityCode >> 8;
     data[out + 2] = Math.round(255 * fields.hardness[index]);
-    data[out + 3] = Math.round(255 * fields.transmittance[index]);
-    const ionized = (data[out + 1] / 255) * densityRef;
+    data[out + 3] = densityCode & 255;
+    const ionized = densityCode / 65535 * densityRef;
     // What the gas here contributes to the nebula's total light.
     const measure = ionized * ionized * cellVolumePc3;
     emissionMeasure += measure;
-    hardnessWeighted += measure * fields.hardness[index];
+
   }
 
-  // The budget closes here: the star's ionizing output fixes the Hβ
-  // luminosity, the line mixture carries the rest of the optical
-  // spectrum with it, and the gas divides that light by n².
-  const meanHardness = emissionMeasure > 0 ? hardnessWeighted / emissionMeasure : 0;
-  const lineLuminositySolar =
-    (hydrogenBetaLuminosity(plan.photonRate) *
-      nebulaLineSum(meanHardness, plan.sourceTeff, plan.metallicity)) /
-    ERG_PER_SOLAR_LUMINOSITY;
-  const emissionCoefficient =
-    emissionMeasure > 0 ? lineLuminositySolar / (4 * Math.PI * emissionMeasure) : 0;
+  // Physical case-B emissivity per emission measure, including only
+  // recombinations that the final gas's photon ledger can support.
+  const hBetaCoefficient = emissionMeasure > 0
+    ? hydrogenBetaLuminosity(RECOMBINATION_SCALE) / ERG_PER_SOLAR_LUMINOSITY / (4 * Math.PI) : 0;
+  const emissionCoefficient = hBetaCoefficient * nebulaLineSum(0, plan.sourceTeff, plan.metallicity);
+  const emissionHotCoefficient = hBetaCoefficient * nebulaLineSum(1, plan.sourceTeff, plan.metallicity);
 
   return {
     seed: cloud.seed,
@@ -798,9 +546,13 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
     ],
     halfExtentsPc: [boxPc, boxPc, boxPc],
     data,
+    continuum: fields.continuum,
     occupancy: bakeOccupancy(data, size),
     dustRef,
     emissionCoefficient,
+    emissionHotCoefficient,
+    photonAccounting: nebulaPhotonAccounting(plan.photonRate, rawEmissionMeasure, emissionMeasure, fields.photonLedger),
+    gasInventory: fields.gasInventory,
     densityRef,
     originPc,
     // The line grid sampled at this nebula's own star and gas, the
@@ -820,33 +572,10 @@ export function finishNebulaBake(plan: NebulaBakePlan, fields: NebulaBakeFields)
   };
 }
 
-/**
- * The march's scales for an evaluator that carries the dimensionless
- * carve and works in single precision: dust and gas per unit of stored
- * carve, optical depth per carve·pc, recombined budget *fraction* per
- * carve²·pc of contracted path, and the ionization-parameter flux
- * factor. The raw factors overflow a 32-bit float — RECOMBINATION_SCALE
- * alone is 10⁴³ — so they are folded here, in doubles, into ratios of
- * order unity.
- */
-export interface NebulaMarchScales {
-  dustScale: number;
-  gasScale: number;
-  tauScale: number;
-  recombFrac: number;
-  fluxScale: number;
-}
-
-export function nebulaMarchScales(plan: NebulaBakePlan): NebulaMarchScales {
+/** Convert the dimensionless GPU natal field to physical gas and dust. */
+export function nebulaFieldScales(plan: NebulaBakePlan): { dustScale: number; gasScale: number } {
   const dustScale = cloudCarveDustScale(plan.cloud);
-  const gasScale = hydrogenDensity(dustScale, plan.metallicity);
-  return {
-    dustScale,
-    gasScale,
-    tauScale: dustScale * DUST_OPACITY_PER_PC,
-    recombFrac: plan.budget > 0 ? (gasScale * gasScale * RECOMBINATION_SCALE) / plan.budget : 0,
-    fluxScale: plan.budget / (CM_PER_S_LIGHT * CM_PER_PC * CM_PER_PC),
-  };
+  return { dustScale, gasScale: hydrogenDensity(dustScale, plan.metallicity) };
 }
 
 /** Bake a nebula's volume on the CPU — the reference path. */

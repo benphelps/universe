@@ -6,10 +6,11 @@ import type { Asteroid } from '../../universe/smallbody/types';
 import {
   createBeltRegionPoints,
   finishBeltRegionPoints,
+  setBeltRegionResolvedSlots,
   updateBeltRegionPointFrame,
   writeBeltRegionPoint,
 } from './beltRegionPoints';
-import { Quaternion, ShaderMaterial, Vector3 } from 'three';
+import { BufferAttribute, Quaternion, ShaderMaterial, Vector3 } from 'three';
 
 const ASTEROID: Asteroid = {
   elements: {
@@ -31,6 +32,28 @@ const ASTEROID: Asteroid = {
 };
 
 describe('belt region GPU points', () => {
+  it('hands off only admitted meshes and resets admission when slots are rewritten', () => {
+    const points = createBeltRegionPoints(3.08e13, 8e7);
+    const material = points.material as ShaderMaterial;
+    try {
+      finishBeltRegionPoints(points, 3);
+      const mask = points.geometry.getAttribute('aMeshReady') as BufferAttribute;
+      expect([mask.getX(0), mask.getX(1), mask.getX(2)]).toEqual([0, 0, 0]);
+      setBeltRegionResolvedSlots(points, [1]);
+      expect([mask.getX(0), mask.getX(1), mask.getX(2)]).toEqual([0, 1, 0]);
+      const version = mask.version;
+      setBeltRegionResolvedSlots(points, [1]);
+      expect(mask.version).toBe(version);
+      // A population rewrite can reuse the same slot for a new body.
+      finishBeltRegionPoints(points, 3);
+      expect(mask.getX(1)).toBe(0);
+      setBeltRegionResolvedSlots(points, [1]);
+      expect(mask.getX(1)).toBe(1);
+      setBeltRegionResolvedSlots(points, []);
+      expect(mask.getX(1)).toBe(0);
+    } finally { points.geometry.dispose(); material.dispose(); }
+  });
+
   it('stores rebased Kepler elements and updates only shared frame state', () => {
     const points = createBeltRegionPoints(3.08e13, 8e7);
     const mu = muOf(G * SOLAR_MASS);

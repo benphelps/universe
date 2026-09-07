@@ -1,0 +1,15 @@
+{
+  "archiveId": "2026-09-07-model-audit-4f56606",
+  "sourceCommit": "4f5660675c7277d7afb8f8404caa2e590fb915f6",
+  "sourceBranch": "codex/model-audit-fixes",
+  "artifacts": {
+    "model-audit-history.bundle": {
+      "bytes": 33435548,
+      "sha256": "f12916f1a03eb7e6348e695ba590f648f5f2d5be0c8672ce51dfa399c1cc8a09"
+    },
+    "documentation-and-evidence.tar.gz": {
+      "bytes": 30692275,
+      "sha256": "3cf5b6714a13e8728eb48722858fffb22248b10d95aa4d8b00f71dc2e2f0edb0"
+    }
+  }
+}

@@ -3,7 +3,6 @@ import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import {
   aerosolSurfaceExposure,
   atmosphereColumn,
-  columnAbove,
 } from '../../universe/planet/atmosphere';
 import type { Characterization } from '../../universe/planet/types';
 import { exposedMagmaTemperatureK } from '../../universe/planet/thermodynamics';
@@ -18,7 +17,8 @@ import {
 import { createShadowUniforms, SHADOW_GLSL } from './shadows';
 import { AIR_REFRACT_GLSL, AIR_VIEW_GLSL, airViewUniforms } from '../lighting/airView';
 import { CLOUD_PATTERN_GLSL, cloudPatternUniforms, planetSeedOffset } from './cloudPattern';
-import { blackbodySurfaceEmission } from '../lighting/thermalEmission';
+import { thermalUniforms, ownThermalTexture, THERMAL_EMISSION_GLSL } from '../lighting/thermalMaterial';
+import { bodyGasProfile } from '../lighting/gasProfile';
 
 const VERTEX = /* glsl */ `
 varying vec3 vObjPos;
@@ -54,14 +54,12 @@ uniform float uLavaGlow;
 uniform float uMagmaCoverage;
 uniform float uMagmaTemperatureK;
 uniform float uDayNightDeltaK;
-uniform vec3 uThermalColor;
-uniform float uThermalStrength;
+${THERMAL_EMISSION_GLSL}
 uniform float uRadiusKm;
 uniform float uTimeDays;
-uniform vec3 uCloudAirDepth;
-#ifdef HAS_SURFACE
+uniform float uCloudAltitude;
 uniform samplerCube uSurfaceCube;
-#endif
+uniform bool uHasSurface;
 
 ${SIMPLEX_NOISE_GLSL}
 ${CLOUD_PATTERN_GLSL}
@@ -78,17 +76,16 @@ void main() {
   // desert, and ice cap. Until the bake lands, a flat mineral blend.
   vec3 surface;
   float liquid;
-#ifdef HAS_SURFACE
-  vec4 baked = textureCube(uSurfaceCube, p);
-  surface = baked.rgb * baked.rgb;
-  liquid = baked.a;
-#else
-  float tint = fbm(p * 2.3 + uSeedOffset) * 0.5 + 0.5;
-  surface = mix(uLandA, uLandB, tint);
-  // A world above the liquidus is already known to be a continuous fluid
-  // shell; do not flash rigid terrain while its surface bake is pending.
-  liquid = step(0.999, uMagmaCoverage);
-#endif
+  if (uHasSurface) {
+    vec4 baked = textureCube(uSurfaceCube, p);
+    surface = baked.rgb * baked.rgb;
+    liquid = baked.a;
+  } else {
+    float tint = fbm(p * 2.3 + uSeedOffset) * 0.5 + 0.5;
+    surface = mix(uLandA, uLandB, tint);
+    // A world above the liquidus is already a continuous fluid shell.
+    liquid = step(0.999, uMagmaCoverage);
+  }
 
   vec3 normal = normalize(vWorldNormal);
   vec3 cloud = cloudDeckSample(p, dot(normal, uLightDir), uSeedOffset, uTimeDays);
@@ -119,7 +116,7 @@ void main() {
   float ndotl = dot(normal, uLightDir);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
   vec3 groundLight = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow));
-  vec3 cloudLight = surfaceLight(uCloudAirDepth, uLightDir, uLightColor, cloudNormal, normal, shadow, diffuseShadow(shadow));
+  vec3 cloudLight = surfaceLightAt(uCloudAltitude, uLightDir, uLightColor, cloudNormal, normal, shadow, diffuseShadow(shadow));
   bool lit2 = secondSunLit();
   float ndotl2 = 0.0;
   float shadow2 = 1.0;
@@ -127,7 +124,7 @@ void main() {
     ndotl2 = dot(normal, uLight2Dir);
     shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
     groundLight += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
-    cloudLight += surfaceLight(uCloudAirDepth, uLight2Dir, uLight2Color, cloudNormal, normal, shadow2, diffuseShadow(shadow2));
+    cloudLight += surfaceLightAt(uCloudAltitude, uLight2Dir, uLight2Color, cloudNormal, normal, shadow2, diffuseShadow(shadow2));
   }
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
@@ -143,20 +140,19 @@ void main() {
       * pow(max(dot(normal, halfDir2), 0.0), 90.0) * sheen * max(ndotl2, 0.0) * shadow2;
   }
 
-  vec3 solidGround = surface * groundLight + specular;
+  vec3 solidGround = surface * groundLight + (vec3(1.0) - surface) * surfaceThermal(uSurfaceTemperatureK) + specular;
   float magmaEmissivity = mix(0.84, 0.94, magma.y);
-  float thermalRatio = pow(magma.x / max(uMagmaTemperatureK, 1.0), 4.0);
   vec3 moltenGround =
-    uThermalColor * uThermalStrength * thermalRatio * magmaEmissivity * uLavaGlow
+    surfaceThermal(magma.x) * magmaEmissivity
     + surface * groundLight * (1.0 - magmaEmissivity)
     + specular;
-  vec3 groundColor = mix(solidGround, moltenGround, liquid);
+  vec3 groundColor = mix(solidGround, moltenGround, uLavaGlow > 0.0 ? liquid : 0.0);
   // Optical opacity determines whether the ground shows through; height
   // independently gives thick towers bright tops and darker shoulders.
   vec3 cloudSurface = uCloudColor * mix(0.65, 1.12, cloud.z);
   vec3 cloudColor = cloudSurface * cloudLight;
   vec3 color = mix(groundColor, cloudColor, cloudMask);
-  vec3 tau = mix(uOpticalDepth, uCloudAirDepth, cloudMask);
+  vec3 tau = mix(uOpticalDepth, opticalDepthAt(uCloudAltitude), cloudMask);
 
   // The way out: the disc seen from space keeps its light through the
   // column above and gains the sunlight that column scatters toward
@@ -182,19 +178,16 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
     bulk,
     aerosolSurfaceExposure(atmosphere, physical.climate.iceCapLatitudeRad),
   );
-  // The distant sphere sees the same physically placed top as the focus
-  // shell (terrain clearance is the only focus-only adjustment).
+  // The distant sphere and focused cloud pass use the same modeled top.
   const deckKm = appearance.clouds.topAltitudeKm;
-  const above = columnAbove(column, atmosphere, deckKm);
   const magmaCoverage = physical.climate.hydrosphere === 'magma'
     ? physical.climate.oceanCoverage
     : 0;
-  const magmaTemperatureK = exposedMagmaTemperatureK(
+  const magmaTemperatureK = physical.climate.magmaTemperatureK ?? exposedMagmaTemperatureK(
     physical.climate.surfaceMeanK,
     magmaCoverage,
   );
-  const thermalEmission = blackbodySurfaceEmission(magmaTemperatureK);
-  return new ShaderMaterial({
+  return ownThermalTexture(new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
@@ -202,18 +195,13 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       ...airViewUniforms(),
       ...cloudPatternUniforms(physical),
       ...surfaceLightUniforms({
+        gasProfile: bodyGasProfile(physical),
         ...column,
         horizon: horizonAirmass(radiusKm, atmosphere.scaleHeightKm),
         radius: radiusKm,
         scaleHeight: atmosphere.scaleHeightKm,
       }),
-      uCloudAirDepth: {
-        value: new Color(
-          above.rayleigh[0] + above.aerosolExtinction[0],
-          above.rayleigh[1] + above.aerosolExtinction[1],
-          above.rayleigh[2] + above.aerosolExtinction[2],
-        ),
-      },
+      uCloudAltitude: { value: deckKm },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
@@ -224,12 +212,15 @@ export function createSolidPlanetMaterial(physical: Characterization): ShaderMat
       uLavaGlow: { value: appearance.lavaGlow },
       uMagmaCoverage: { value: magmaCoverage },
       uMagmaTemperatureK: { value: magmaTemperatureK },
-      uDayNightDeltaK: { value: physical.climate.dayNightDeltaK },
-      uThermalColor: { value: new Color(...thermalEmission.color) },
-      uThermalStrength: { value: thermalEmission.strength },
+      uDayNightDeltaK: { value: physical.climate.magmaTemperatureK === undefined ? physical.climate.dayNightDeltaK : 0 },
+      // Cold neighbours never sample thermal light; avoid allocating or
+      // uploading an unused texture for every planet and moon.
+      ...thermalUniforms(physical.climate.surfaceMeanK >= 400 || magmaCoverage > 0),
+      uSurfaceTemperatureK: { value: physical.climate.hydrosphere === 'magma' ? physical.climate.surfaceBackgroundK ?? physical.climate.surfaceMeanK : physical.climate.surfaceMeanK },
       uRadiusKm: { value: radiusKm },
       uSurfaceCube: { value: null },
+      uHasSurface: { value: false },
       uTimeDays: { value: 0 },
     },
-  });
+  }));
 }

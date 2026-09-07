@@ -2,6 +2,15 @@ import { planckRadiance } from './planck';
 import { gamutMap, normalizeToPeak, xyzToLinearSrgb, type LinearRgb } from './srgb';
 import { spectrumToXyz, xyzToChromaticity, type Chromaticity } from './xyz';
 
+/** Both representations from one integration of the same spectrum. */
+export function blackbodyColor(temperature: number): { chromaticity: Chromaticity; linearRgb: LinearRgb } {
+  const xyz = spectrumToXyz((nm) => planckRadiance(nm * 1e-9, temperature));
+  return {
+    chromaticity: xyzToChromaticity(xyz),
+    linearRgb: normalizeToPeak(gamutMap(xyzToLinearSrgb(xyz))),
+  };
+}
+
 /** Chromaticity of a blackbody at temperature T (the Planckian locus). */
 export function blackbodyChromaticity(temperature: number): Chromaticity {
   const xyz = spectrumToXyz((nm) => planckRadiance(nm * 1e-9, temperature));

@@ -1,7 +1,9 @@
 import { DUST_ALBEDO, HG_G } from './density';
 
 /**
- * Multiple scattering in dust, as a table.
+ * Legacy homogeneous multiple-scattering reference table. Production
+ * nebula rendering now uses nebulaContinuum's resolved first-order
+ * field; this table remains for reference tests, not clumpy transfer.
  *
  * A voxel lit by a star does not only scatter the beam that reaches it
  * directly: light scattered elsewhere in the cloud arrives from every

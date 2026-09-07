@@ -47,15 +47,17 @@ export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
       figures: [[fmt(cloud.radiusPc, 3), 'pc']],
     },
     rows: [
-      ['Mass', `${fmt(cloud.massSolar, 3)} M☉`],
-      ['Mean density', `${fmt(cloud.meanDensity, 3)} H/cm³`],
+      ['Natal gas mass', `≈ ${fmt(cloud.massSolar, 3)} M☉`],
+      ['Natal mean density', `≈ ${fmt(cloud.meanDensity, 3)} H/cm³`],
       ['Metallicity', `${cloud.metallicity >= 0 ? '+' : '−'}${Math.abs(cloud.metallicity).toFixed(2)} dex`],
       ...(cloud.sources.length > 0
         ? ([
             ['Ionizing stars', `${cloud.sources.length}`],
             ['Hottest', `${fmt(cloud.hottestTeff, 3)} K`],
             ['Gas at those stars', `${fmt(cloud.sourceDensity, 3)} H/cm³`],
-            ['Ionized radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
+            ['Initial Strömgren radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
+            ['Expanded bubble radius', `${fmt(cloud.bubbleRadiusPc, 3)} pc`],
+            ['Expansion reach estimate', `${fmt(cloud.frontReachPc, 3)} pc`],
             ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
           ] as Array<[string, string]>)
         : ([['Star formation', 'none lit']] as Array<[string, string]>)),

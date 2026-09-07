@@ -67,7 +67,10 @@ vec3 cloudDeckSample(
   // Condensate thins across a broad, noisy fringe instead of ending at
   // an alpha-cutout contour. fwidth also keeps that fringe stable once
   // it becomes smaller than a pixel in the distant view.
-  float edgeWidth = max(0.085, 1.5 * fwidth(signedEdge));
+  float edgeWidth = 0.085;
+  #ifndef CLOUD_PATTERN_NO_DERIVATIVES
+    edgeWidth = max(edgeWidth, 1.5 * fwidth(signedEdge));
+  #endif
   float cover = smoothstep(-edgeWidth, edgeWidth, signedEdge);
   float fringeBreakup = mix(0.45 + 0.55 * fine, 1.0,
     smoothstep(-0.02, edgeWidth, signedEdge));

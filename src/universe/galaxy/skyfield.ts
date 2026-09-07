@@ -1,9 +1,15 @@
-import { blackbodyLinearRgb, buildTemperatureLut } from '../../core/color/blackbody';
+import { LOCAL_CLOUD_RADIUS_PC } from './globalDust';
+import { stellarBandRgb } from '../../core/color/stellarLight';
+import { rgbLuminance } from '../../core/color/optical';
+import { cellEmissionWeight } from '../../core/physics/radiativeTransfer';
+import { integrateGalaxyGlowRay } from './glowRay';
+import { type NebulaPortrait, nebulaPortraitPhotometry, nebulaPortrait, nebulaRayInterval, sampleNebulaPortrait } from './nebulaPortrait';
+import type { NebulaVolumeBake } from './nebulaVolume';
+import { nebulaSpriteLuminosities } from './nebulaPhotometry';
+import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import { deriveSeed } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
-import { powerLaw } from '../../core/rng/distributions';
 import { KROUPA_SEGMENTS } from '../star/imf';
-import { evolve } from '../star/evolution';
 import { CATALOG_ROWS } from './catalog';
 import {
   cloudDustFactor,
@@ -11,27 +17,20 @@ import {
   cloudReachPc,
   cloudsNear,
   ENVELOPE_REACH,
-  expectedCloudField,
   type MolecularCloud,
 } from './clouds';
 import {
-  ARM_YOUNG_LIGHT,
   DUST_OPACITY_PER_PC,
   dustDensity,
   HOME_POSITION,
-  sightlineDensities,
   stellarDensity,
   type GalacticPosition,
 } from './density';
 import {
-  MEMBER_SPREAD,
   nebulaEmissionShare,
   nebulaFor,
-  nebulaGasAt,
   nebulaIlluminant,
   nebulaLightSolar,
-  nebulaLineLuminositySolar,
-  nebulaScatteredSolar,
   type Nebula,
 } from './nebula';
 import { NEBULA_MEAN_U, nebulaEmissionColor, nebulaNarrowbandColor } from './nebulaLines';
@@ -86,8 +85,8 @@ export interface NebulaPatch {
 /** Nebula sprite atlas layout: NEBULA_TILE² RGBA tiles in a grid.
  *  Sized for the sprite's worst honest case — a nebula large in frame
  *  whose volume has not stood up yet — where a coarse tile stretches
- *  into visible blocks. The whole atlas costs ~1.2 s of background
- *  bake at this size, against a star sweep that runs far longer. */
+ *  into visible blocks. Physical grid refinement dominates generation;
+ *  finished tiles stream independently into these fixed slots. */
 export const NEBULA_TILE = 128;
 export const NEBULA_ATLAS_COLS = 8;
 export const NEBULA_ATLAS_ROWS = 6;
@@ -112,6 +111,8 @@ export interface DarkTileJob {
 /** One lit cloud's sprite tile: the object, the tangent basis the
  *  tile is marched in and the half-extent it spans. */
 export interface NebulaTileJob {
+  /** Already solved by the shared pool, when this is a streamed tile. */
+  portrait?: NebulaPortrait;
   cloud: MolecularCloud;
   nebula: Nebula;
   view: [number, number, number];
@@ -134,7 +135,7 @@ export interface SkyMapBaker {
   glow(viewpoint: GalacticPosition): Float32Array;
   rift(viewpoint: GalacticPosition, clouds: MolecularCloud[]): Float32Array;
   darkTiles(jobs: DarkTileJob[]): Float32Array;
-  nebulaTiles(jobs: NebulaTileJob[]): Float32Array;
+  nebulaTiles(jobs: NebulaTileJob[], onProgress?: (completed: number, total: number) => void): Float32Array;
   dispose(): void;
 }
 
@@ -159,6 +160,7 @@ export interface DarkCloudPatch {
 }
 
 export interface SkyField {
+  viewpointPc?: GalacticPosition;
   starCount: number;
   /** The first nearStarCount entries are the resolved 30 pc neighborhood
    *  (a 3D view of the same region should skip them to avoid doubling). */
@@ -181,9 +183,8 @@ export interface SkyField {
   nebulaAtlas: Float32Array;
   glowWidth: number;
   glowHeight: number;
-  /** Lat-long map of the unresolved background: column radiance in R
-   *  (L☉ pc⁻² sr⁻¹), dust reddening in G — physics, displayed by the
-   *  glow shader under the standing instrument. */
+  /** Lat-long optical-power RGB radiance (L☉ pc⁻² sr⁻¹), alpha 1.
+   *  Population spectra and path-dependent extinction precede display. */
   glowData: Float32Array;
   /** The darkest column's radiance — the sky's own measured pedestal,
    *  which every extended tier's display subtracts. */
@@ -300,6 +301,7 @@ export function catalogRowWeights(): number[] {
  * rather than after it, and shown as soon as it lands.
  */
 export interface SkyBackground {
+  viewpointPc?: GalacticPosition;
   nebulae: NebulaPatch[];
   nebulaAtlas: Float32Array;
   darkClouds: DarkCloudPatch[];
@@ -363,27 +365,48 @@ export function buildSkyBackground(
   seed = 0n,
   onProgress?: SkyProgress,
   baker: SkyMapBaker | null = null,
+  onBase?: (background: SkyBackground) => void,
+  onPortrait?: (update: SkyPortraitUpdate) => void,
 ): SkyBackground {
-  const lut = buildTemperatureLut(96);
+  const { background, jobs } = planSkyBackground(viewpoint, seed,
+    (fraction, stage, step) => onProgress?.(0.1 * fraction, stage, step), baker);
+  onBase?.(background);
+  onProgress?.(0.1, `nebulae 0/${jobs.length}`, 0);
+  for (let tile = 0; tile < jobs.length; tile++) {
+    const patch = buildNebulaPatch(jobs[tile], tile, background.nebulaAtlas, baker);
+    background.nebulae[tile] = patch;
+    onPortrait?.({ patch, pixels: nebulaTileFromAtlas(background.nebulaAtlas, tile) });
+    onProgress?.(0.1 + 0.9 * (tile + 1) / jobs.length, `nebulae ${tile + 1}/${jobs.length}`, (tile + 1) / jobs.length);
+  }
+  return background;
+}
+
+export interface SkyPortraitUpdate { patch: NebulaPatch; pixels: Float32Array }
+
+/** Cheap, complete diffuse sky and deterministic empty portrait slots. */
+export function planSkyBackground(
+  viewpoint: GalacticPosition, seed = 0n, onProgress?: SkyProgress, baker: SkyMapBaker | null = null,
+): { background: SkyBackground; jobs: NebulaCandidate[] } {
   const groupStars = makeAccum();
   const push: PushStar = (dx, dy, dz, luminosity, tEff) =>
-    pushTo(groupStars, lut, dx, dy, dz, luminosity, tEff, 0n);
+    pushTo(groupStars, dx, dy, dz, luminosity, tEff, 0n);
 
-  const localDensity = stellarDensity(viewpoint);
-  onProgress?.(0, 'nebulae', -1);
-  const { nebulae, nebulaAtlas } = buildGroups(viewpoint, localDensity, push, baker);
-  onProgress?.(0.1, 'dark clouds', -1);
+  const jobs = planGroups(viewpoint, push);
+  const nebulae = jobs.map((candidate, tile) => nebulaPlaceholder(candidate, tile));
+  const nebulaAtlas = new Float32Array(NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4);
+  onProgress?.(0, 'dark clouds', -1);
   const { darkClouds, darkAtlas, spriteSeeds } = buildDarkClouds(viewpoint, DUST_KAPPA, baker);
-  onProgress?.(0.25, 'charting', -1);
+  onProgress?.(0.3, 'charting', -1);
   const bounds = buildSectorBounds(viewpoint, sceneFromGalaxy(seed));
   const glow = buildGlow(
     viewpoint,
     spriteSeeds,
-    (fraction) => onProgress?.(0.3 + 0.7 * fraction, 'milky way glow', fraction),
+    (fraction) => onProgress?.(0.4 + 0.6 * fraction, 'milky way glow', fraction),
     baker,
   );
 
-  return {
+  return { jobs, background: {
+    viewpointPc: viewpoint,
     nebulae,
     nebulaAtlas,
     darkClouds,
@@ -392,7 +415,7 @@ export function buildSkyBackground(
     sceneFromGalaxy: sceneFromGalaxy(seed),
     ...bounds,
     ...glow,
-  };
+  } };
 }
 
 /**
@@ -445,6 +468,7 @@ export function assembleSkyField(
   );
 
   return {
+    viewpointPc: viewpoint,
     starCount,
     nearStarCount,
     starDirs,
@@ -472,33 +496,8 @@ export function assembleSkyField(
 
 type PushStar = (dx: number, dy: number, dz: number, luminosity: number, tEff: number) => void;
 
-/** Coeval members around a center, pushing the ones that resolve from
- *  here. The natal groups come from the nebula model instead; this is
- *  what is left for clusters that have long since left their gas. */
-function groupMembers(
-  rng: Rng,
-  push: PushStar,
-  dx: number,
-  dy: number,
-  dz: number,
-  spreadPc: number,
-  tries: number,
-  minMass: number,
-  ageGyr: number,
-): void {
-  for (let i = 0; i < tries; i++) {
-    const mx = dx + rng.normal(0, spreadPc);
-    const my = dy + rng.normal(0, spreadPc);
-    const mz = dz + rng.normal(0, spreadPc * 0.7);
-    const physical = evolve(powerLaw(rng, 2.3, minMass, 60), ageGyr);
-    const distanceSq = mx * mx + my * my + mz * mz;
-    if (physical.luminosity / distanceSq < MIN_FAR_IRRADIANCE) continue;
-    push(mx, my, mz, physical.luminosity, physical.tEff);
-  }
-}
-
 /** The natal group as sky: each member where it stands in its cloud,
- *  pushed if it resolves from here. */
+ * pushed if it resolves from here. */
 function pushNebulaMembers(
   nebula: Nebula,
   push: PushStar,
@@ -511,7 +510,7 @@ function pushNebulaMembers(
     const my = dy + member.dyPc;
     const mz = dz + member.dzPc;
     const distanceSq = mx * mx + my * my + mz * mz;
-    if (member.luminosity / distanceSq < MIN_FAR_IRRADIANCE) continue;
+    if (rgbLuminance(stellarBandRgb(member.luminosity,member.tEff)) / distanceSq < MIN_FAR_IRRADIANCE) continue;
     push(mx, my, mz, member.luminosity, member.tEff);
   }
 }
@@ -525,7 +524,7 @@ function pushNebulaMembers(
  * lines carry a ten-thousandth of their continuum; an O group's lines
  * rival its continuum and the pink takes over.
  */
-function nebulaHues(nebula: Nebula): {
+function nebulaHues(nebula: Nebula, view?: readonly number[]): {
   emission: [number, number, number];
   reflection: [number, number, number];
   share: number;
@@ -537,19 +536,9 @@ function nebulaHues(nebula: Nebula): {
   // march only the volume runs. Both hues at unit luminance, so the
   // tile's radiance channel carries all of the brightness.
   const [er, eg, eb] = nebulaEmissionColor(NEBULA_MEAN_U, nebula.maxTeff, nebula.metallicity);
-  const illuminant = nebulaIlluminant(nebula);
-  const [br, bg, bb] = blackbodyLinearRgb(Math.max(3000, illuminant?.tEff ?? 4000));
-  const [sr, sg, sb] = [
-    br * SCATTER_TINT_RGB[0],
-    bg * SCATTER_TINT_RGB[1],
-    bb * SCATTER_TINT_RGB[2],
-  ];
-  const scatterLum = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
-  return {
-    emission: [er, eg, eb],
-    reflection: [sr / scatterLum, sg / scatterLum, sb / scatterLum],
-    share: nebulaEmissionShare(nebula),
-  };
+  const measured = nebulaPortraitPhotometry(nebula, view), lum = measured.luminosities;
+  return { emission: [er, eg, eb], reflection: measured.reflectionHue,
+    share: lum.lines / (lum.lines + lum.scattered || 1) };
 }
 
 /** The blended colour of the whole object, for tints and listings. */
@@ -577,67 +566,44 @@ export function nebulaTileFrame(
   return { right, up: cross(view, right), extentPc: cloudReachPc(cloud) };
 }
 
-/** Steps a tile's sightline takes through the body. */
-const NEBULA_TILE_STEPS = 16;
+/** Match each nested cell scale along the ray; never skip a small fine
+ * bubble by stepping at the outer cloud's scale. */
+export const NEBULA_TILE_MAX_STEPS = 128;
 
-/**
- * Ray-march one lit cloud's tile: the cloud's field as the region has
- * re-plumbed it — the diluted interior, the swept shell and its
- * ionized skin, the natal cloud beyond — lit from the illuminant with
- * the flux floor the volume shines with, self-extinguished along the
- * view path at the dust's real opacity. Two mechanisms march side by
- * side, lines going as the ionized density squared and scattered
- * continuum as dust times flux, and each pixel keeps each integral
- * with and without the view path's extinction: (line, scatter,
- * lineFree, scatterFree) per pixel, the border empty so the atlas
- * samples to zero at tile edges. Filaments, the bright rim, dark
- * foreground lanes and soft edges all come from the field itself.
- */
+/** Integrate the same solved gas, ionization and source-column shadows
+ * as the near volume. RGBA = extincted line/scatter, free line/scatter. */
 export function marchNebulaTile(job: NebulaTileJob): Float32Array {
-  const { cloud, nebula, view, right, up, extentPc } = job;
-  const dt = (2 * extentPc) / NEBULA_TILE_STEPS;
-  const source = nebulaIlluminant(nebula);
-  const sx = source?.dxPc ?? 0;
-  const sy = source?.dyPc ?? 0;
-  const sz = source?.dzPc ?? 0;
-  const floorSq = (MEMBER_SPREAD * cloud.radiusPc) ** 2;
+  const { nebula, view, right, up, extentPc } = job;
+  const pair = job.portrait ?? nebulaPortrait(nebula);
+  nebulaPortraitPhotometry(nebula, view, pair);
   const marched = new Float32Array(NEBULA_TILE * NEBULA_TILE * 4);
-  for (let j = 1; j < NEBULA_TILE - 1; j++) {
-    for (let i = 1; i < NEBULA_TILE - 1; i++) {
-      const u = ((i + 0.5) / NEBULA_TILE) * 2 - 1;
-      const v = ((j + 0.5) / NEBULA_TILE) * 2 - 1;
-      const ox = (right[0] * u + up[0] * v) * extentPc;
-      const oy = (right[1] * u + up[1] * v) * extentPc;
-      const oz = (right[2] * u + up[2] * v) * extentPc;
-
-      let tau = 0;
-      let line = 0;
-      let scatter = 0;
-      let lineFree = 0;
-      let scatterFree = 0;
-      for (let s = 0; s < NEBULA_TILE_STEPS; s++) {
-        const t = -extentPc + (s + 0.5) * dt;
-        const px = ox + view[0] * t;
-        const py = oy + view[1] * t;
-        const pz = oz + view[2] * t;
-        const { dust, ionized } = nebulaGasAt(nebula, px, py, pz);
-        if (dust <= 0 && ionized <= 0) continue;
-        const shineSq = (px - sx) ** 2 + (py - sy) ** 2 + (pz - sz) ** 2;
-        const scattering = (dust * dt) / Math.max(shineSq, floorSq);
-        const emitting = ionized * ionized * dt;
-        const transmitted = Math.exp(-tau);
-        scatter += scattering * transmitted;
-        line += emitting * transmitted;
-        scatterFree += scattering;
-        lineFree += emitting;
-        tau += dust * DUST_OPACITY_PER_PC * dt;
+  const value = new Float64Array(4);
+  for (let j = 1; j < NEBULA_TILE - 1; j++) for (let i = 1; i < NEBULA_TILE - 1; i++) {
+    const u = ((i + 0.5) / NEBULA_TILE) * 2 - 1, v = ((j + 0.5) / NEBULA_TILE) * 2 - 1;
+    const origin = right.map((r, axis) => (r * u + up[axis] * v) * extentPc);
+    const [near, far] = nebulaRayInterval(pair.coarse, origin, view);
+    if (far <= near) continue;
+    let tau = 0, line = 0, scatter = 0, lineFree = 0, scatterFree = 0;
+    const integrate = (bake: NebulaVolumeBake, start: number, end: number) => {
+      if (end <= start) return;
+      // A near-integer chord needs the same count after GPU float
+      // rounding; changing 50 to 51 otherwise shifts every sample.
+      const count = Math.min(NEBULA_TILE_MAX_STEPS, Math.max(1, Math.ceil((end - start) / (2 * bake.halfExtentsPc[0] / bake.size) * (1 - 2e-6))));
+      const dt = (end - start) / count;
+      for (let step = 0; step < count; step++) {
+        const t = start + (step + 0.5) * dt;
+        sampleNebulaPortrait(bake, origin[0] + view[0] * t, origin[1] + view[1] * t, origin[2] + view[2] * t, value, view);
+        const depth = value[0] * DUST_OPACITY_PER_PC * dt;
+        const transmitted = Math.exp(-tau) * cellEmissionWeight(depth);
+        line += value[1] * dt * transmitted; scatter += value[2] * dt * transmitted;
+        lineFree += value[1] * dt; scatterFree += value[2] * dt; tau += depth;
       }
-      const at = (j * NEBULA_TILE + i) * 4;
-      marched[at] = line;
-      marched[at + 1] = scatter;
-      marched[at + 2] = lineFree;
-      marched[at + 3] = scatterFree;
-    }
+    };
+    const inner = pair.fine ? nebulaRayInterval(pair.fine, origin, view) : [0, 0];
+    if (pair.fine && inner[1] > inner[0]) {
+      integrate(pair.coarse, near, inner[0]); integrate(pair.fine, inner[0], inner[1]); integrate(pair.coarse, inner[1], far);
+    } else integrate(pair.coarse, near, far);
+    marched.set([line, scatter, lineFree, scatterFree], (j * NEBULA_TILE + i) * 4);
   }
   return marched;
 }
@@ -657,8 +623,8 @@ export function nebulaTileFromAtlas(field: Float32Array, tile: number): Float32A
 }
 
 /**
- * Close a marched tile on its budgets and write it into the atlas.
- * Each mechanism closes on its own: its whole light crosses this tile,
+ * Close a marched tile on transport-derived luminosities and write it into the atlas.
+ * Each mechanism closes on its own: its emitted light crosses this tile,
  * so the radiance at a pixel follows from flux closure — luminosity
  * over 4πd² spread by the tile's own integral — and the distance
  * cancels, as it must: surface brightness carries none. Spread by the
@@ -700,8 +666,7 @@ export function renderNebulaTile(
     scatterFree += marched[at + 3];
   }
   const closure = NEBULA_TILE ** 2 / (16 * Math.PI * extentPc ** 2);
-  const lineLum = nebulaLineLuminositySolar(nebula);
-  const scatterLum = nebulaScatteredSolar(nebula);
+  const { lines: lineLum, scattered: scatterLum } = nebulaPortraitPhotometry(nebula, view).luminosities;
   const lineScale = lineFree > 0 ? (lineLum * closure) / lineFree : 0;
   const scatterScale = scatterFree > 0 ? (scatterLum * closure) / scatterFree : 0;
   const escaped =
@@ -742,7 +707,7 @@ function normalize(a: [number, number, number]): [number, number, number] {
   return [a[0] / length, a[1] / length, a[2] / length];
 }
 
-interface NebulaCandidate {
+export interface NebulaCandidate {
   cloud: MolecularCloud;
   nebula: Nebula;
   view: [number, number, number];
@@ -761,12 +726,10 @@ interface NebulaCandidate {
  * nothing luminous formed. Older clusters have dispersed from their
  * gas and ride as bare coeval knots.
  */
-function buildGroups(
+function planGroups(
   viewpoint: GalacticPosition,
-  localDensity: number,
   push: PushStar,
-  baker: SkyMapBaker | null,
-): { nebulae: NebulaPatch[]; nebulaAtlas: Float32Array } {
+): NebulaCandidate[] {
   const candidates: NebulaCandidate[] = [];
 
   for (const cloud of cloudsNear(viewpoint, 750)) {
@@ -797,30 +760,37 @@ function buildGroups(
   // where a baker stands, tile by tile on the CPU otherwise.
   candidates.sort((a, b) => b.fluxSolar - a.fluxSolar);
   const kept = candidates.slice(0, NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS);
-  const nebulaAtlas = new Float32Array(
-    NEBULA_ATLAS_COLS * NEBULA_TILE * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4,
-  );
-  const marchedField =
-    baker && kept.length
-      ? baker.nebulaTiles(
-          kept.map(({ cloud, nebula, view }) => ({
-            cloud,
-            nebula,
-            view,
-            ...nebulaTileFrame(cloud, view),
-          })),
-        )
-      : null;
-  const nebulae: NebulaPatch[] = kept.map((candidate, tile) => {
+
+  // The old observer-centred dispersed clusters duplicated the field
+  // population and changed location on travel. Associations must be a
+  // spatial redistribution of catalogue members before returning here.
+
+  return kept;
+}
+
+/** Fixed geometry with zero light until its measured portrait arrives. */
+function nebulaPlaceholder(candidate: NebulaCandidate, tile: number): NebulaPatch {
+  const { right, up } = nebulaTileFrame(candidate.cloud, candidate.view);
+  return { seed: candidate.cloud.seed, distancePc: candidate.distancePc, dir: candidate.view,
+    angularRadius: Math.min(0.35, cloudReachPc(candidate.cloud) / ENVELOPE_REACH / candidate.distancePc),
+    color: [0, 0, 0], brightness: 0, peakRadiance: 0, emissionHue: [0, 0, 0],
+    emissionHueNarrow: [0, 0, 0], reflectionHue: [0, 0, 0], right, up, tile };
+}
+
+export function buildNebulaPatch(candidate: NebulaCandidate, tile: number, atlas: Float32Array, baker: SkyMapBaker | null = null, portrait?: NebulaPortrait): NebulaPatch {
+  const { cloud, nebula, view } = candidate;
+  const job = { cloud, nebula, view, portrait, ...nebulaTileFrame(cloud, view) };
+  if (portrait) nebulaPortraitPhotometry(nebula, view, portrait);
+  const marchedField = baker?.nebulaTiles([job]);
     const { right, up, peakRadiance } = renderNebulaTile(
-      nebulaAtlas,
+      atlas,
       tile,
       candidate.cloud,
       candidate.view,
       candidate.nebula,
-      marchedField ? nebulaTileFromAtlas(marchedField, tile) : undefined,
+      marchedField ? nebulaTileFromAtlas(marchedField, 0) : marchNebulaTile(job),
     );
-    const { emission, reflection } = nebulaHues(candidate.nebula);
+    const { emission, reflection } = nebulaHues(candidate.nebula, candidate.view);
     return {
       seed: candidate.cloud.seed,
       distancePc: candidate.distancePc,
@@ -843,41 +813,20 @@ function buildGroups(
       up,
       tile,
     };
-  });
+}
 
-  // Dispersed open clusters: ~1.8e-7 per pc³ in the young disk.
-  const rng = new Rng(deriveSeed(galaxyRoot(0x534b59n), 'groups'));
-  for (let i = 0; i < 130; i++) {
-    const azimuth = rng.range(0, 2 * Math.PI);
-    const planar = 600 * Math.sqrt(rng.float());
-    const centerZ = rng.normal(0, 60);
-    const dx = planar * Math.cos(azimuth);
-    const dy = planar * Math.sin(azimuth);
-    const dz = centerZ - viewpoint.zPc;
-    const there = {
-      xPc: viewpoint.xPc + dx,
-      yPc: viewpoint.yPc + dy,
-      zPc: centerZ,
-    };
-    const keep = rng.float() < Math.min(1, stellarDensity(there) / Math.max(localDensity, 1e-4));
-    const ageGyr = 10 ** rng.range(-1.3, 0.4);
-    const richness = Math.floor(10 ** rng.range(1.7, 3));
-    const coreRadiusPc = rng.range(1.5, 5);
-    if (!keep) continue;
-    groupMembers(
-      rng,
-      push,
-      dx,
-      dy,
-      dz,
-      coreRadiusPc,
-      Math.min(300, Math.ceil(richness * imfFractionAbove(1.0))),
-      1.0,
-      ageGyr,
-    );
+/** Apply an independently completed tile without replacing the sky. */
+export function applySkyPortrait(background: Pick<SkyBackground, 'nebulae' | 'nebulaAtlas'>, update: SkyPortraitUpdate): boolean {
+  const { patch, pixels } = update;
+  const previous = background.nebulae[patch.tile];
+  if (!previous || previous.seed !== patch.seed || pixels.length !== NEBULA_TILE * NEBULA_TILE * 4) return false;
+  const width = NEBULA_ATLAS_COLS * NEBULA_TILE;
+  for (let row = 0; row < NEBULA_TILE; row++) {
+    const target = ((Math.floor(patch.tile / NEBULA_ATLAS_COLS) * NEBULA_TILE + row) * width + patch.tile % NEBULA_ATLAS_COLS * NEBULA_TILE) * 4;
+    background.nebulaAtlas.set(pixels.subarray(row * NEBULA_TILE * 4, (row + 1) * NEBULA_TILE * 4), target);
   }
-
-  return { nebulae, nebulaAtlas };
+  background.nebulae[patch.tile] = patch;
+  return true;
 }
 
 /** Chart border tracing: a local patch around home, matching the reach
@@ -1347,48 +1296,11 @@ function buildConstellations(
   return { constellationBounds: new Float32Array(segments), constellationLabels, bayerNames };
 }
 
-/**
- * Mean stellar luminosity per star of the reference field population,
- * derived from the IMF and the home population mix rather than assumed:
- * stratified quadrature over a log-mass grid crossed with a stratified
- * sweep of the population's age CDF. The bright tail — rare massive
- * stars and giants — carries most of the light, so sparse age sampling
- * is lethal here: a 12-draw local estimate once swung the galaxy's
- * brightness 50× between locales. One fixed, well-sampled constant —
- * how bright the galaxy is cannot depend on who is looking at it.
- */
-let meanLumMemo = 0;
-
-export function meanPopulationLuminosity(): number {
-  if (meanLumMemo > 0) return meanLumMemo;
-  const ages: number[] = [];
-  const strata = 96;
-  for (let i = 0; i < strata; i++) {
-    ages.push(populationFromUnit((i + 0.5) / strata, HOME_POSITION).ageGyr);
-  }
-
-  const bins = 48;
-  let weightSum = 0;
-  let lumSum = 0;
-  for (let b = 0; b < bins; b++) {
-    const m0 = 0.08 * (120 / 0.08) ** (b / bins);
-    const m1 = 0.08 * (120 / 0.08) ** ((b + 1) / bins);
-    const weight = imfFractionAbove(m0) - imfFractionAbove(m1);
-    const mass = Math.sqrt(m0 * m1);
-    let lum = 0;
-    for (const age of ages) lum += evolve(mass, age).luminosity;
-    lumSum += (weight * lum) / ages.length;
-    weightSum += weight;
-  }
-  meanLumMemo = lumSum / Math.max(weightSum, 1e-9);
-  return meanLumMemo;
-}
-
 /** Clouds inside this radius shadow the sky individually. */
-export const RIFT_NEAR_PC = 1500;
+export const RIFT_NEAR_PC = LOCAL_CLOUD_RADIUS_PC;
 
 /** In-plane visual opacity, shared by every dust consumer. */
-export const DUST_KAPPA = 0.045;
+export const DUST_KAPPA = DUST_OPACITY_PER_PC;
 
 /**
  * The prominent nearby dark clouds, done exactly like the nebulae: each
@@ -1597,7 +1509,9 @@ function buildGlow(
     const data = baker.glow(viewpoint);
     let floor = Infinity;
     for (let index = 0; index < width * height; index++) {
-      if (data[index * 4] < floor) floor = data[index * 4];
+      const at = index * 4;
+      const y = data[at] * 0.2126 + data[at + 1] * 0.7152 + data[at + 2] * 0.0722;
+      if (y < floor) floor = y;
     }
     return {
       glowWidth: width,
@@ -1608,13 +1522,7 @@ function buildGlow(
     };
   }
   const data = new Float32Array(width * height * 4);
-  const radiance = new Float32Array(width * height);
-  const reddenings = new Float32Array(width * height);
-  const startPc = 80;
-  const endPc = 25000;
-  const meanLuminosity = meanPopulationLuminosity();
-  const dustKappa = DUST_KAPPA;
-
+  let floor = Infinity;
   for (let row = 0; row < height; row++) {
     if ((row & 15) === 0) onProgress?.(row / height);
     const latitude = ((row + 0.5) / height - 0.5) * Math.PI;
@@ -1624,66 +1532,20 @@ function buildGlow(
       const dirY = Math.cos(latitude) * Math.sin(longitude);
       const dirZ = Math.sin(latitude);
 
-      let light = 0;
-      let opticalDepth = 0;
-      for (let s = startPc; s < endPc; s += Math.max(90, s * 0.11)) {
-        const stepPc = Math.max(90, s * 0.11);
-        const position = {
-          xPc: viewpoint.xPc + dirX * s,
-          yPc: viewpoint.yPc + dirY * s,
-          zPc: viewpoint.zPc + dirZ * s,
-        };
-        // Diffuse dust here; nearby clouds are carried by the sharp
-        // per-cloud transmission map instead, so this base map stays
-        // smooth at its texel scale. Distant clouds are sub-texel and
-        // sub-step: they enter at their expected field — sampling
-        // individual clouds out there is shot noise, not structure.
-        const sample = sightlineDensities(position);
-        const clump =
-          s > RIFT_NEAR_PC ? 0.45 + 1.6 * expectedCloudField(sample.dust, sample.armBoost) : 0.45;
-        opticalDepth += sample.dust * clump * dustKappa * stepPc;
-        // The arm overdensity shines young: its light is weighted by
-        // ARM_YOUNG_LIGHT beyond its star count.
-        const armExtra = sample.armBoost - 1;
-        const thinLit = (sample.thin / sample.armBoost) * (1 + ARM_YOUNG_LIGHT * armExtra);
-        light +=
-          (thinLit + sample.thick + sample.halo) *
-          meanLuminosity *
-          stepPc *
-          Math.exp(-opticalDepth);
-      }
-
-      // Dust reddens as well as dims; warm population base color.
-      reddenings[row * width + column] = Math.exp(-opticalDepth * 0.25);
-      // The column is luminosity density integrated down the ray,
-      // L☉/pc²; over the 4π it shines into, that is its radiance.
-      radiance[row * width + column] = light / (4 * Math.PI);
+      const rgb = integrateGalaxyGlowRay(viewpoint, [dirX, dirY, dirZ], RIFT_NEAR_PC);
+      const at = (row * width + column) * 4;
+      data[at] = rgb[0]; data[at + 1] = rgb[1]; data[at + 2] = rgb[2]; data[at + 3] = 1;
+      floor = Math.min(floor, rgbLuminance(rgb));
     }
   }
 
-  // The map carries the physics — column radiance and reddening — and
-  // the display law is the shader's, where the instrument can change.
-  // What is measured here is the sky's own floor: the darkest column,
-  // about a solar luminosity per pc² per steradian toward the poles
-  // (the integrated starlight of the whole ray), which every deep
-  // exposure subtracts before showing structure as contrast above it.
-  // Self-calibrated at every viewpoint, no dial; the nebula tiers
-  // subtract the same floor.
-  let floor = Infinity;
-  for (let index = 0; index < width * height; index++) {
-    if (radiance[index] < floor) floor = radiance[index];
-  }
-  for (let index = 0; index < width * height; index++) {
-    data[index * 4] = radiance[index];
-    data[index * 4 + 1] = reddenings[index];
-    data[index * 4 + 2] = 0;
-    data[index * 4 + 3] = 1;
-  }
+  // The pedestal is measured in the same optical-power luminance units
+  // as nebula continuum. Instrument changes still require no re-bake.
   return {
     glowWidth: width,
     glowHeight: height,
     glowData: data,
     skyFloorRadiance: floor,
-    riftData: buildCloudTransmission(viewpoint, dustKappa, spriteSeeds, null),
+    riftData: buildCloudTransmission(viewpoint, DUST_KAPPA, spriteSeeds, null),
   };
 }

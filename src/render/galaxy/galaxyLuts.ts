@@ -13,6 +13,7 @@ import {
 } from 'three';
 import { seedToHex } from '../../core/rng/hash';
 import { ARM_LUT_SIZE } from '../../universe/galaxy/armLut';
+import type { GalaxyParticleSet } from '../../universe/galaxy/particles';
 import { galaxySeed } from '../../universe/galaxy/galaxySeed';
 import type { GalaxyLutResult } from '../../workers/galaxyLutWorker';
 import { CLUMP_TILE_SIZE } from './clumpTile';
@@ -23,6 +24,8 @@ export interface GalaxyLuts {
   armLut: DataTexture;
   /** The tiling clump-noise field, repeat-wrapped on every axis. */
   clumpTile: Data3DTexture;
+  particles: GalaxyParticleSet | null;
+  ready: Promise<void>;
 }
 
 let memo: GalaxyLuts | null = null;
@@ -66,24 +69,42 @@ export function galaxyLutTextures(): GalaxyLuts {
   clumpTile.wrapR = RepeatWrapping;
   clumpTile.needsUpdate = true;
 
-  memo = { armLut, clumpTile };
+  let complete!: () => void;
+  const ready = new Promise<void>(resolve => { complete = resolve; });
+  memo = { armLut, clumpTile, particles: null, ready };
 
   // Outside a browser (tests) there is no worker to bake; the zeroed
   // tables are already the documented not-yet-baked state.
-  if (typeof Worker === 'undefined') return memo;
+  if (typeof Worker === 'undefined') { complete(); return memo; }
 
-  const worker = new Worker(new URL('../../workers/galaxyLutWorker.ts', import.meta.url), {
-    type: 'module',
-  });
-  worker.onmessage = (event: MessageEvent<GalaxyLutResult>) => {
-    const half = armLut.image.data as Uint16Array;
-    const baked = event.data.armLut;
-    for (let i = 0; i < baked.length; i++) half[i] = DataUtils.toHalfFloat(baked[i]);
-    (clumpTile.image.data as Uint8Array).set(event.data.clumpTile);
-    armLut.needsUpdate = true;
-    clumpTile.needsUpdate = true;
-    worker.terminate();
+  const shared = memo;
+  let worker: Worker | null = null;
+  const finish = () => {
+    if (worker) {
+      worker.onmessage = worker.onerror = worker.onmessageerror = null;
+      worker.terminate();
+    }
+    complete();
   };
-  worker.postMessage({ galaxy: seedToHex(galaxySeed()) });
+  const failed = () => {
+    console.warn('Galaxy lookup worker failed; retaining the smooth diffuse galaxy.');
+    finish();
+  };
+  try {
+    worker = new Worker(new URL('../../workers/galaxyLutWorker.ts', import.meta.url), { type: 'module' });
+    worker.onerror = failed;
+    worker.onmessageerror = failed;
+    worker.onmessage = (event: MessageEvent<GalaxyLutResult>) => {
+      const half = armLut.image.data as Uint16Array;
+      const baked = event.data.armLut;
+      for (let i = 0; i < baked.length; i++) half[i] = DataUtils.toHalfFloat(baked[i]);
+      (clumpTile.image.data as Uint8Array).set(event.data.clumpTile);
+      shared.particles = event.data.particles;
+      armLut.needsUpdate = true;
+      clumpTile.needsUpdate = true;
+      finish();
+    };
+    worker.postMessage({ galaxy: seedToHex(galaxySeed()) });
+  } catch { failed(); }
   return memo;
 }

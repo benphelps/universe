@@ -1,7 +1,40 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { DepthTexture, Mesh, ShaderMaterial, WebGLRenderTarget, type WebGLRenderer } from 'three';
 import { BLOOM_INPUT_MAX, BLOOM_LEVELS, CompactBloomPass } from './compactBloom';
 
 describe('compact bloom', () => {
+  it('uses only scene depth for occlusion and releases its intermediate targets', () => {
+    const pass = new CompactBloomPass(0.18);
+    const scene = new WebGLRenderTarget(100, 100, { depthTexture: new DepthTexture(100, 100) });
+    const targets = new Set<WebGLRenderTarget>();
+    const depthSamples: unknown[] = [];
+    const renderer = {
+      autoClear: true, getClearColor: () => {}, getClearAlpha: () => 1, setClearColor: () => {}, clear: () => {},
+      setRenderTarget: (target: WebGLRenderTarget) => { if (target !== scene) targets.add(target); },
+      render: (quad: Mesh) => {
+        const material = quad.material as ShaderMaterial;
+        expect(material.depthTest).toBe(false);
+        expect(material.depthWrite).toBe(false);
+        if (material.uniforms.depthTexture) depthSamples.push(material.uniforms.depthTexture.value);
+      },
+    } as unknown as WebGLRenderer;
+    const released = vi.fn(), sceneReleased = vi.fn();
+    scene.addEventListener('dispose', sceneReleased);
+    try {
+      pass.render(renderer, scene, scene);
+      expect(targets.size).toBe(1 + 2 * BLOOM_LEVELS.length);
+      for (const target of targets) {
+        expect(target.depthBuffer).toBe(false);
+        target.addEventListener('dispose', released);
+      }
+      expect(depthSamples).toHaveLength(2 * BLOOM_LEVELS.length);
+      expect(depthSamples.every(depth => depth === scene.depthTexture)).toBe(true);
+    } finally { pass.dispose(); }
+    expect(released).toHaveBeenCalledTimes(targets.size);
+    expect(sceneReleased).not.toHaveBeenCalled();
+    scene.dispose();
+  });
+
   it('reads the scene through a finite window', () => {
     const pass = new CompactBloomPass(0.18);
     expect(pass.brightShader).toContain(BLOOM_INPUT_MAX.toFixed(2));

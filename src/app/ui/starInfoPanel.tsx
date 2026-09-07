@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from 'react';
 import { seedFromHex } from '../../core/rng/hash';
-import { NEIGHBOR_RADIUS_PC, type Neighbor } from '../../universe/galaxy/neighborhood';
+import { neighborRadiusPc, type Neighbor } from '../../universe/galaxy/neighborhood';
 import { generateStar } from '../../universe/star/generate';
 import { shortDesignation } from '../../universe/star/naming';
 import type { Star } from '../../universe/star/types';
@@ -194,7 +194,7 @@ export function NearbyLevel({ snap }: { snap: AppSnapshot }): ReactNode {
     [neighbors],
   );
 
-  if (neighbors.length === 0) return <div className="empty">nothing within {NEIGHBOR_RADIUS_PC} pc</div>;
+  if (neighbors.length === 0) return <div className="empty">nothing within {fmt(neighborRadiusPc(snap.system.localePc), 3)} pc</div>;
   return (
     <>
       {shown.map((neighbor, i) => (

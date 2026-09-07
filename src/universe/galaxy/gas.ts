@@ -1,7 +1,9 @@
 import { CM_PER_PC, PROTON_MASS, SOLAR_MASS } from '../../core/physics/constants';
 import {
   cloudDustDensity,
+  cloudDustFactor,
   cloudHalfExtentsPc,
+  cloudLocalDensity,
   cloudStretch,
   cloudStretchAxis,
   cloudVolumePc3,
@@ -66,6 +68,9 @@ export function cloudHydrogenDensity(
  */
 export function cloudMassSolar(cloud: MolecularCloud, feH = 0, samples = 24): number {
   const half = cloudHalfExtentsPc(cloud);
+  // The galactic dust factor and metallicity are constant across this
+  // cloud. Do not solve the galaxy's inverse spiral for every voxel.
+  const hydrogenPerLocalUnit = hydrogenDensity(cloudDustFactor(cloud), feH);
   const cellPc3 = ((2 * half[0]) / samples) * ((2 * half[1]) / samples) * ((2 * half[2]) / samples);
   let sum = 0;
   for (let i = 0; i < samples; i++) {
@@ -74,11 +79,20 @@ export function cloudMassSolar(cloud: MolecularCloud, feH = 0, samples = 24): nu
       const y = -half[1] + ((j + 0.5) / samples) * 2 * half[1];
       for (let k = 0; k < samples; k++) {
         const z = -half[2] + ((k + 0.5) / samples) * 2 * half[2];
-        sum += cloudHydrogenDensity(cloud, x, y, z, feH);
+        sum += cloudLocalDensity(cloud, x, y, z);
       }
     }
   }
-  return sum * cellPc3 * SOLAR_MASSES_PER_UNIT;
+  return sum * hydrogenPerLocalUnit * cellPc3 * SOLAR_MASSES_PER_UNIT;
+}
+
+/** Inspector estimates from one shared integral, so mass and mean
+ *  density describe exactly the same gas inventory and nominal volume. */
+export function cloudGasSummary(cloud: MolecularCloud, feH = 0, samples = 48): {
+  massSolar: number; meanDensity: number;
+} {
+  const massSolar = cloudMassSolar(cloud, feH, samples);
+  return { massSolar, meanDensity: massSolar / (cloudVolumePc3(cloud) * SOLAR_MASSES_PER_UNIT) };
 }
 
 /** Mean hydrogen density over the body observations would call the

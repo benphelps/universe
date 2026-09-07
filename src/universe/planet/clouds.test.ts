@@ -23,6 +23,7 @@ const ROTATION: PlanetRotation = {
   spinOrbitResonance: null,
 };
 const CLIMATE: PlanetClimate = {
+  waterMassFraction: 4e-4,
   equilibriumK: 255,
   surfaceMeanK: 288,
   bondAlbedo: 0.3,
@@ -66,7 +67,10 @@ describe('solid-world cloud layers', () => {
   it('puts a hothouse acid deck high and optically thick', () => {
     const venus = computeCloudLayer(
       new Rng(2n),
-      atmosphere('co2-hothouse', 5),
+      // The old 5-km scale-height-only fixture implied a molecular mass
+      // near 124 u at 730 K. Supply the actual CO2 mass to hydrostatics;
+      // this remains the existing constant-cp approximate thermal profile.
+      { ...atmosphere('co2-hothouse'), surfacePressureBar: 90, meanMolecularMassAmu: 44 },
       { ...CLIMATE, surfaceMeanK: 730, hydrosphere: 'none' },
       BULK,
       { ...ROTATION, periodHours: 5800 },

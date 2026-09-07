@@ -3,13 +3,15 @@ import { cloudFineDustDensity, cloudReachPc, cloudsNear } from './clouds';
 import { HOME_POSITION } from './density';
 import { hydrogenDensity } from './gas';
 import { hydrogenBetaLuminosity, spitzerRadiusPc } from './ionization';
-import { nebulaFor, type Nebula } from './nebula';
+import { nebulaFor, nebulaIlluminant, type Nebula } from './nebula';
 import { nebulaEmissionColor, nebulaLines } from './nebulaLines';
 import {
   bakeNebulaVolume,
   bakeOccupancy,
   combinedOccupancy,
   marchNebulaCpu,
+  evolveNebulaGas,
+  sampleNebulaCpu,
   OCCUPANCY_SIZE,
   planNebulaBake,
   type NebulaVolumeBake,
@@ -30,7 +32,26 @@ function brightestNebula(): Nebula {
   return lit[0];
 }
 
+let brightBake: NebulaVolumeBake | undefined;
+const brightVolume = () => brightBake ??= bakeNebulaVolume(brightestNebula().cloud, brightestNebula(), 48);
+
 describe('nebular colour', () => {
+  it('separates a cool continuum source from the ionizing star and its shadow path', () => {
+    const original = brightestNebula();
+    const hot = original.sources[0];
+    const cool = { ...hot, tEff: 8600, luminosity: original.totalLuminosity * 10, dxPc: hot.dxPc + 5 };
+    const group = { ...original, members: [...original.members, cool], totalLuminosity: original.totalLuminosity + cool.luminosity };
+    expect(nebulaIlluminant(group)).toBe(cool);
+    const a = planNebulaBake(group.cloud, group, 24);
+    const b = { ...a, continuumSources: a.continuumSources!.map(s => ({ ...s, positionPc: [s.positionPc[0] - 10, s.positionPc[1], s.positionPc[2]] as [number, number, number] })) };
+    expect(a.reflectionTeff).toBe(8600);
+    expect(a.sourceTeff).toBe(hot.tEff);
+    const first = marchNebulaCpu(a);
+    const second = marchNebulaCpu(b);
+    expect(first.ionized).toEqual(second.ionized);
+    expect(first.hardness).toEqual(second.hardness);
+    expect(first.continuum!.data).not.toEqual(second.continuum!.data);
+  });
   it('is the line mixture, not a ramp', () => {
     // Hydrogen alone is magenta — Hα in the red and the Balmer series
     // in the blue, with nothing between them. That is why a true-colour
@@ -114,7 +135,7 @@ describe('the region at its age', () => {
 
   it('dilutes its interior by the Spitzer factor', () => {
     // The expansion's invariant, pinned directly: the interior gas is
-    // the natal core read at contracted radius, diluted n ∝ R^{-3/2}
+    // the natal core remapped with interior density n ∝ R^{-3/2}
     // — which is what conserves the recombination budget through the
     // growth. The old total-emission-measure proxy could not survive
     // the shell's ionized skin, whose measure scales with the front's
@@ -138,14 +159,9 @@ describe('the region at its age', () => {
     const size = 48;
     const plan = planNebulaBake(grown.cloud, grown, size);
     plan.windCavityPc = 0;
-    plan.ventConfineDensity = 0;
-    const fields = marchNebulaCpu(plan);
+    const fields = evolveNebulaGas(plan, sampleNebulaCpu(plan));
     const growth = Math.max(1, grown.bubbleRadiusPc / grown.stromgrenRadiusPc);
-    const halfPc = Math.min(
-      Math.max(...grown.halfExtentsPc),
-      4 * grown.bubbleRadiusPc,
-    );
-    const cellPc = (2 * halfPc) / size;
+    const halfPc = plan.boxPc, cellPc = plan.cellPc;
     let sum = 0;
     let cells = 0;
     for (let k = 0; k < size; k++) {
@@ -157,7 +173,7 @@ describe('the region at its age', () => {
           const z = -halfPc + (k + 0.5) * cellPc;
           const r = Math.hypot(x, y, z);
           if (r < 0.15 * grown.bubbleRadiusPc || r > 0.6 * grown.bubbleRadiusPc) continue;
-          const value = fields.ionized[(k * size + j) * size + i];
+          const value = fields.hydrogen[(k * size + j) * size + i];
           if (value > 0) {
             sum += value;
             cells++;
@@ -173,7 +189,7 @@ describe('the region at its age', () => {
   });
 
   it('is hollowed by its star wind into a ring, not a filled disc', () => {
-    // Real evolved regions are limb-brightened shells — the wind
+    // This prescribed wind-bubble fixture has a limb-brightened shell: the wind
     // evacuates the interior and piles it into a photoionized wall,
     // which is where the n² emission concentrates. Along every ray
     // that has a cavity at all (a front stalled inside the cavity
@@ -181,7 +197,7 @@ describe('the region at its age', () => {
     // wall it rises to.
     const nebula = brightestNebula();
     expect(nebula.windCavityPc).toBeGreaterThan(0);
-    const cavities = cavityEdges(bakeNebulaVolume(nebula.cloud, nebula, 48), nebula);
+    const cavities = cavityEdges(brightVolume(), nebula);
     expect(cavities.length).toBeGreaterThanOrEqual(8);
     for (const { insideByte, peakByte } of cavities) {
       expect(peakByte).toBeGreaterThan(5 * insideByte);
@@ -195,7 +211,7 @@ describe('the region at its age', () => {
     // cloud's own turbulence corrugates it. The bake's cavity edge
     // must vary with direction, and in the sense the density says.
     const nebula = brightestNebula();
-    const cavities = cavityEdges(bakeNebulaVolume(nebula.cloud, nebula, 48), nebula);
+    const cavities = cavityEdges(brightVolume(), nebula);
     const edges = cavities.map((c) => c.edgePc);
     expect(Math.max(...edges) / Math.min(...edges)).toBeGreaterThan(1.3);
     // Rank the rays by the interior density the wind ploughed at the
@@ -220,88 +236,17 @@ describe('the region at its age', () => {
     expect(mean(ranked.slice(0, third))).toBeGreaterThan(mean(ranked.slice(-third)));
   });
 
-  it('vents where the bubble outruns its own cloud', () => {
-    // Champagne: hot gas is held together by the cloud around it, so a
-    // bubble section standing where the natal field has run out must
-    // stream away and go dim, while sections the cloud still confines
-    // keep their brightness. The gate is the cloud's own carved
-    // boundary — which is what opens a face-blister into a horseshoe.
-    // Pinned as an A/B against the disarmed gate on the same nebula:
-    // dense front cells barely exist to compare against, because a
-    // dense direction stops its own ray before the front — the march
-    // itself sees to that. What the gate must do is dim the thin-gas
-    // sectors it gates, and leave everything else exactly alone.
-    // The wind structures are identical in both variants and cancel in
-    // the comparison, so no radial band is needed: every in-bubble
-    // cell is fair, classified by the natal field alone. Bubble-scale
-    // boxes, where cells resolve the interior; accumulated across
-    // candidates, since any one region's live thin pockets can be
-    // shadowed away. Raw march grids: the shell skin owns the byte
-    // reference and would quantize away exactly the cells compared.
-    const candidates = cloudsNear(HOME_POSITION, 1500)
-      .map((cloud) => nebulaFor(cloud))
-      .filter((n): n is Nebula => n !== null && n.photonRate > 0 && n.windCavityPc > 0)
-      .sort((a, b) => b.photonRate - a.photonRate)
-      .slice(0, 8);
-    const size = 32;
-    let thinOn = 0;
-    let thinOff = 0;
-    let denseOn = 0;
-    let denseOff = 0;
-    for (const nebula of candidates) {
-      if (thinOff > 0 && denseOff > 0) break;
-      const vented = marchNebulaCpu(planNebulaBake(nebula.cloud, nebula, size));
-      // The gate disarmed on the plan itself — erosion keeps its
-      // pivot, so fronted cells stay identical on both sides and only
-      // the champagne gate differs.
-      const heldPlan = planNebulaBake(nebula.cloud, nebula, size);
-      heldPlan.ventConfineDensity = 0;
-      const held = marchNebulaCpu(heldPlan);
-      const source = nebula.sources[0];
-      const halfPc = Math.min(
-        Math.max(...nebula.halfExtentsPc),
-        Math.max(5, 4 * nebula.bubbleRadiusPc),
-      );
-      const cellPc = (2 * halfPc) / size;
-      const growth = Math.max(1, nebula.bubbleRadiusPc / nebula.stromgrenRadiusPc);
-      const confine = nebula.sourceHydrogenDensity * growth ** -1.5;
-      for (let k = 0; k < size; k++) {
-        for (let j = 0; j < size; j++) {
-          for (let i = 0; i < size; i++) {
-            // The bubble box is centred on the source; the cloud frame
-            // needs the source's own offset back.
-            const x = -halfPc + (i + 0.5) * cellPc;
-            const y = -halfPc + (j + 0.5) * cellPc;
-            const z = -halfPc + (k + 0.5) * cellPc;
-            if (Math.hypot(x, y, z) > 0.97 * nebula.bubbleRadiusPc) continue;
-            const local = hydrogenDensity(
-              cloudFineDustDensity(
-                nebula.cloud,
-                x + source.dxPc,
-                y + source.dyPc,
-                z + source.dzPc,
-              ),
-            );
-            const cell = (k * size + j) * size + i;
-            const gOn = vented.ionized[cell];
-            const gOff = held.ionized[cell];
-            if (local < 0.2 * confine) {
-              thinOn += gOn;
-              thinOff += gOff;
-            } else if (local >= confine) {
-              denseOn += gOn;
-              denseOff += gOff;
-            }
-          }
-        }
-      }
-    }
-    // The gated sectors carried real emission and lost most of it.
-    expect(thinOff).toBeGreaterThan(0);
-    expect(thinOn).toBeLessThan(0.35 * thinOff);
-    // Fully confined cells pass through the gate untouched — exactly,
-    // since these are the raw march grids.
-    expect(Math.abs(denseOn - denseOff)).toBeLessThanOrEqual(1e-6 * Math.max(1, denseOff));
+  it('accounts for gas displaced beyond a small source-centred domain', () => {
+    const nebula = brightestNebula();
+    const plan = planNebulaBake(nebula.cloud, nebula, 32);
+    plan.boxPc = 0.4 * nebula.bubbleRadiusPc;
+    plan.cellPc = 2 * plan.boxPc / plan.size;
+    const fields = evolveNebulaGas(plan, sampleNebulaCpu(plan));
+    const inventory = fields.gasInventory!;
+    expect(inventory.transport!.outgoingMassSolar).toBeGreaterThan(0);
+    expect(inventory.boundaryExchangeMassSolar).toBeLessThan(0);
+    expect(Math.abs(inventory.transport!.relativeResidual)).toBeLessThan(1e-6);
+    expect((inventory.prescribedMassSolar - inventory.boundaryExchangeMassSolar!) / inventory.natalMassSolar).toBeCloseTo(1, 6);
   });
 
   it('still carries the bubble at its own scale when one is warranted', () => {
@@ -358,6 +303,18 @@ describe('the volume bake', () => {
   const nebula = brightestNebula();
   const size = 32;
   const bake = bakeNebulaVolume(nebula.cloud, nebula, size);
+
+  it('emits only the photons absorbed by final gas, with no display correction', () => {
+    const accounting = bake.photonAccounting;
+    const ledger = accounting.transport!;
+    expect(ledger).toBeDefined();
+    expect(Math.abs(ledger.relativeResidual)).toBeLessThan(1e-10);
+    expect(accounting.recombinationsPerSecond / ledger.hydrogenAbsorptionsPerSecond).toBeCloseTo(1, 6);
+    expect(accounting.demandToSupply!).toBeLessThanOrEqual(1.000001);
+    expect(accounting.encodedRecombinationsPerSecond).toBeLessThanOrEqual(accounting.recombinationsPerSecond);
+    expect(accounting.displayNormalization).toBe(1);
+    expect(ledger.dustAbsorptionsPerSecond).toBeGreaterThan(0);
+  });
 
   it('spreads that budget over the gas by n²', () => {
     // The coefficient closes the books: total line light divided by the
@@ -445,16 +402,11 @@ describe('the volume bake', () => {
     expect(cloudScale.scatterLuminositySolar).toBe(nebula.totalLuminosity);
   });
 
-  it('dims the source light through the gas it crosses', () => {
-    // Transmittance is the star's own light reaching each cell, which
-    // is what the dust has to scatter. It can only fall with depth.
-    const half = bake.halfExtentsPc[0];
-    const centre = Math.floor(size / 2);
-    const at = (i: number): number =>
-      bake.data[((centre * size + centre) * size + i) * 4 + 3];
-    expect(at(centre)).toBeGreaterThanOrEqual(at(0));
-    expect(at(centre)).toBeGreaterThanOrEqual(at(size - 1));
-    expect(half).toBeGreaterThan(0);
+  it('carries only optical stellar power in a bounded resolved lighting field', () => {
+    expect(bake.continuum!.luminositySolar).toBeGreaterThan(0);
+    expect(bake.continuum!.luminositySolar).toBeLessThan(nebula.totalLuminosity);
+    expect(bake.continuum!.data.byteLength).toBeLessThanOrEqual(24 ** 3 * 16);
+    expect(bake.continuum!.irradianceRef).toBeGreaterThan(0);
   });
 });
 

@@ -1,3 +1,4 @@
+import { stellarForcing, type StellarForcing } from '../planet/illumination';
 import { mu as muOf, type Mu } from '../../core/physics/units';
 import { AU, G, SOLAR_MASS, EARTH_MASS } from '../../core/physics/constants';
 import { rayleigh } from '../../core/rng/distributions';
@@ -18,7 +19,7 @@ import { generateDisk } from './disk';
 import { assignElements } from './elements';
 import { pTypeCriticalAu, sTypeCriticalAu } from './holmanWiegert';
 import { filterStable, type StablePlanet } from './stability';
-import type { Planet, StarSystem, StellarCompanion, SystemConfiguration } from './types';
+import type { FormationInventory, Planet, StarSystem, StellarCompanion, SystemConfiguration } from './types';
 import { computeZones } from './zones';
 
 const SOLAR_RADIUS_AU = 0.00465;
@@ -39,7 +40,8 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
 
   const companions = companionOrbits(rng.fork('companions'), star);
   const config = resolveConfiguration(star, companions);
-  const primary = generatePlanetary(seed, rng, star, config);
+  const primary = generatePlanetary(seed, rng, star, { ...config,
+    stellarForcing: stellarForcing(star, companions, config.configuration) });
 
   // Each companion hosts its own circumstellar system, truncated by
   // the primary's tide — an Alpha-Centauri arrangement. A close pair's
@@ -58,6 +60,7 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
       new Rng(deriveSeed(companionSeed, 'system')),
       companion.star,
       {
+        stellarForcing: stellarForcing(star, companions, config.configuration, i + 1),
         centralMassSolar: companion.star.mass,
         centralLuminosity: companion.star.luminosity,
         innerLimitAu: 0.02,
@@ -67,6 +70,7 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
     companion.planets = sub.planets;
     companion.belts = sub.belts;
     companion.zones = sub.zones;
+    companion.formation = sub.formation;
   }
 
   const reservoirs = generateReservoirs(rng.fork('reservoirs'), primary.stable);
@@ -79,13 +83,15 @@ export function generateSystem(seed: bigint, localePc?: GalacticPosition): StarS
     centralMassSolar: config.centralMassSolar,
     planets: primary.planets,
     belts: primary.belts,
-    comets: generateComets(rng.fork('comets'), star.designation, reservoirs),
+    comets: generateComets(rng.fork('comets'), star.designation, reservoirs, 3, star.luminosity),
     reservoirs,
     zones: primary.zones,
+    formation: primary.formation,
   };
 }
 
 interface HostLimits {
+  stellarForcing: StellarForcing;
   centralMassSolar: number;
   centralLuminosity: number;
   innerLimitAu: number;
@@ -103,14 +109,14 @@ function generatePlanetary(
   rng: Rng,
   star: Star,
   limits: HostLimits,
-): { planets: Planet[]; stable: StablePlanet[]; belts: StarSystem['belts']; zones: StarSystem['zones'] } {
+): { planets: Planet[]; stable: StablePlanet[]; belts: StarSystem['belts']; zones: StarSystem['zones']; formation: FormationInventory | null } {
   const { centralMassSolar, centralLuminosity, innerLimitAu, outerLimitAu } = limits;
   const zones = computeZones(centralLuminosity, star.tEff, star.ageGyr, centralMassSolar);
   if (outerLimitAu <= innerLimitAu * 1.2) {
-    return { planets: [], stable: [], belts: [], zones };
+    return { planets: [], stable: [], belts: [], zones, formation: null };
   }
   const disk = generateDisk(rng.fork('disk'), star);
-  const slots = layoutPlanets(
+  const { slots, inventory: formation } = layoutPlanets(
     rng.fork('architecture'),
     centralMassSolar,
     star.feH,
@@ -121,6 +127,18 @@ function generatePlanetary(
   const elements = assignElements(rng.fork('elements'), slots);
   let stable = filterStable(slots, elements, centralMassSolar);
   stable = applyStellarEndState(star, stable);
+  const survivingMass = stable.reduce((sum, p) => sum + p.slot.massEarth, 0);
+  formation.lostMassEarth += formation.planetMassEarth - survivingMass;
+  formation.planetMassEarth = survivingMass;
+  // A relationship belongs to the original pair, not the next body
+  // left after instability or stellar evolution removes its neighbor.
+  for (let i = 0; i < stable.length; i++) {
+    const body = stable[i];
+    const originalIndex = slots.indexOf(body.slot);
+    if (i === 0 || stable[i - 1].slot !== slots[originalIndex - 1]) {
+      body.slot.resonanceWithInner = null;
+    }
+  }
 
   const planets: Planet[] = stable.map(({ slot, elements: el }, i) => {
     const planet: Planet = {
@@ -140,6 +158,7 @@ function generatePlanetary(
         {
           star,
           centralLuminosity,
+          stellarForcing: limits.stellarForcing,
           mu: muOf(G * (centralMassSolar * SOLAR_MASS + slot.massEarth * EARTH_MASS)),
           zones,
         },
@@ -150,8 +169,20 @@ function generatePlanetary(
     planet.moons = generateMoons(deriveSeed(seedBase, 'moons', i), planet, {
       star,
       centralLuminosity,
+      centralMassSolar,
       zones,
     });
+    // Fund satellites from remaining solids. Keep an inner prefix so
+    // truncation cannot leave a resonance pointing to a removed moon.
+    const fundedMoons = [];
+    for (const moon of planet.moons) {
+      const mass = moon.physical.bulk.massEarth;
+      if (mass > formation.remainingSolidsEarth) break;
+      formation.remainingSolidsEarth -= mass;
+      formation.satelliteMassEarth += mass;
+      fundedMoons.push(moon);
+    }
+    planet.moons = fundedMoons;
     planet.rings = generateRings(
       rng.fork('rings', i),
       planet,
@@ -162,7 +193,11 @@ function generatePlanetary(
     return planet;
   });
 
-  return { planets, stable, belts: generateBelts(rng.fork('belts'), stable), zones };
+  const belts = generateBelts(rng.fork('belts'), stable, {
+    disk, formation, ageGyr: star.ageGyr, centralMassSolar, innerLimitAu, outerLimitAu,
+    orbitalExpansion: star.stage === 'white-dwarf' ? star.massInitial / star.mass : 1,
+  });
+  return { planets, stable, belts, zones, formation };
 }
 
 /** Gravitational parameter for planet propagation around the system center. */
@@ -299,4 +334,3 @@ function applyStellarEndState(star: Star, planets: StablePlanet[]): StablePlanet
       return p;
     });
 }
-

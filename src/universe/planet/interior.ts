@@ -57,7 +57,7 @@ function geologicalRegime(
   if (planetClass === 'gas-giant' || planetClass === 'ice-giant' || planetClass === 'mini-neptune') {
     return 'gas';
   }
-  if (heatFluxWm2 > 2) return 'magma';
+  if (heatFluxWm2 > 2) return 'volcanic';
   if (heatFluxWm2 < 0.02 || bulk.massEarth < 0.3) return 'dead';
   return rng.bool(0.55) ? 'active-tectonics' : 'stagnant-lid';
 }

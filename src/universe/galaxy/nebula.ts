@@ -81,7 +81,8 @@ export interface Nebula {
   cloud: MolecularCloud;
   ageGyr: number;
   members: NebulaMember[];
-  /** The ionizing members, brightest first — the bake's light sources. */
+  /** Every ionizing member, brightest first. Weak members retain their
+   * positions and photon budgets even when absent from visual ranking. */
   sources: IonizingSource[];
   maxTeff: number;
   /** L☉, over every member whether or not it can be seen. */
@@ -143,7 +144,7 @@ export const FRONT_DIRECTIONS = 64;
 const FRONT_STEPS = 64;
 
 /** A Fibonacci sphere of unit vectors, xyz per direction. */
-const FRONT_AXES: Float32Array = (() => {
+export const FRONT_AXES: Float32Array = (() => {
   const axes = new Float32Array(FRONT_DIRECTIONS * 3);
   for (let i = 0; i < FRONT_DIRECTIONS; i++) {
     const z = 1 - (2 * i + 1) / FRONT_DIRECTIONS;
@@ -369,22 +370,19 @@ export function nebulaGasAt(
   };
 }
 
-/** The star whose light the dust scatters: the ionizing star when one
- *  stands, else the brightest of the natal group — every renderer's
- *  single illuminant, so the sprite and the volume agree on it. */
+/** Dominant continuum source, independent of the ionizing source.
+ *  This remains a single-source approximation, but a cool supergiant
+ *  must not lend its luminosity to a much fainter hot star's spectrum. */
 export function nebulaIlluminant(nebula: Nebula): NebulaMember | undefined {
-  return (
-    nebula.sources[0] ??
-    nebula.members.reduce(
+  return nebula.members.reduce(
       (best, member) => (member.luminosity > (best?.luminosity ?? 0) ? member : best),
       undefined as NebulaMember | undefined,
-    )
   );
 }
 
-/** The group's total optical line output, L☉: its ionizing budget
- *  answered in recombinations, carrying every line the grid holds at
- *  this group's own star and gas. */
+/** Ionization-bounded line estimate, L☉, used for candidate ranking.
+ * Actual sprites and volumes measure final-gas absorption; photons
+ * lost to dust or crossing the domain do not emit these lines. */
 export function nebulaLineLuminositySolar(nebula: Nebula): number {
   return (
     (hydrogenBetaLuminosity(nebula.photonRate) *
@@ -398,11 +396,9 @@ export function nebulaScatteredSolar(nebula: Nebula): number {
   return nebula.scatteredShare * nebula.totalLuminosity;
 }
 
-/** Everything a lit cloud sends out, L☉: its lines plus the share of
- *  the group's continuum the dust catches and rescatters. The budget
- *  every rendering of the object spends — the sprite's flux closure
- *  and the volume's emission and scatter books draw on the same two
- *  terms. */
+/** Cheap candidate luminosity estimate. Physical sprite luminosities
+ * are measured only for selected candidates in nebulaPhotometry.ts,
+ * avoiding a volume bake for every cloud considered by sky selection. */
 export function nebulaLightSolar(nebula: Nebula): number {
   return nebulaLineLuminositySolar(nebula) + nebulaScatteredSolar(nebula);
 }
@@ -504,6 +500,13 @@ export function nebulaFor(cloud: MolecularCloud): Nebula | null {
   return nebula;
 }
 
+/** Reuse an exact seeded object returned by the residency worker in this galaxy. */
+export function rememberNebula(cloud: MolecularCloud, nebula: Nebula | null): void {
+  if (nebula && nebula.cloud.seed !== cloud.seed) throw new Error('nebula does not match its cloud');
+  cache.set(cloud.seed, nebula);
+  if (cache.size > 4096) cache.delete(cache.keys().next().value!);
+}
+
 /** Every nebula within reach of a point — the camera's, not a system's. */
 export function nebulaeNear(positionPc: GalacticPosition, radiusPc: number): Nebula[] {
   const found: Nebula[] = [];
@@ -514,7 +517,7 @@ export function nebulaeNear(positionPc: GalacticPosition, radiusPc: number): Neb
   return found;
 }
 
-function buildNebula(cloud: MolecularCloud): Nebula | null {
+export function buildNebula(cloud: MolecularCloud): Nebula | null {
   const rng = new Rng(deriveSeed(cloud.seed, 'formation'));
   // Bigger clouds are likelier to be forming stars right now.
   if (rng.float() > 0.1 + cloud.radiusPc / 170) return null;
@@ -634,7 +637,7 @@ function buildNebula(cloud: MolecularCloud): Nebula | null {
     cloud,
     ageGyr,
     members,
-    sources: lighting,
+    sources,
     maxTeff,
     totalLuminosity,
     photonRate,

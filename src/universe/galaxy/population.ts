@@ -1,9 +1,11 @@
+import { componentAgeForUnit, componentUnitForAge, thinAgeForUnit, type StellarComponent } from './populationAge';
+export { thinAgeForUnit } from './populationAge';
 import type { Rng } from '../../core/rng/rng';
 import { componentDensities, type GalacticPosition } from './density';
 
 export interface PopulationDraw {
   ageGyr: number;
-  component: 'thin-disk' | 'thick-disk' | 'halo';
+  component: StellarComponent;
 }
 
 /** Disk radial metallicity gradient, dex per pc, anchored at the sun. */
@@ -21,7 +23,7 @@ const GRADIENT_DEX_PER_PC = -0.06 / 1000;
  */
 export function populationFromUnit(u: number, position: GalacticPosition): PopulationDraw {
   const densities = componentDensities(position);
-  const total = densities.thin + densities.thick + densities.halo;
+  const total = densities.thin + densities.thick + densities.halo + densities.bulge;
   const thinBand = densities.thin / total;
   const thickBand = densities.thick / total;
 
@@ -29,20 +31,19 @@ export function populationFromUnit(u: number, position: GalacticPosition): Popul
     return { ageGyr: thinAgeForUnit(u / thinBand), component: 'thin-disk' };
   }
   if (u < thinBand + thickBand) {
-    return { ageGyr: 8 + 4 * ((u - thinBand) / thickBand), component: 'thick-disk' };
+    return { ageGyr: componentAgeForUnit('thick-disk', (u - thinBand) / thickBand), component: 'thick-disk' };
   }
-  const v = (u - thinBand - thickBand) / Math.max(1 - thinBand - thickBand, 1e-12);
-  return { ageGyr: 10 + 3.2 * Math.min(v, 1), component: 'halo' };
-}
-
-/** Thin-disk age CDF inverse: near-constant SFR, mild recent bias. */
-export function thinAgeForUnit(v: number): number {
-  return 0.03 + 9.97 * v ** 1.2;
+  const haloBand = densities.halo / total;
+  if (u < thinBand + thickBand + haloBand) {
+    return { ageGyr: componentAgeForUnit('halo', (u - thinBand - thickBand) / haloBand), component: 'halo' };
+  }
+  const v = (u - thinBand - thickBand - haloBand) / Math.max(densities.bulge / total, 1e-12);
+  return { ageGyr: componentAgeForUnit('bulge', v), component: 'bulge' };
 }
 
 /** Inverse of thinAgeForUnit: the thin-disk unit below an age. */
 export function thinUnitForAge(ageGyr: number): number {
-  return Math.min(1, Math.max(0, (ageGyr - 0.03) / 9.97)) ** (1 / 1.2);
+  return componentUnitForAge('thin-disk', ageGyr);
 }
 
 /**
@@ -67,6 +68,8 @@ export function metallicityFor(
       ? rng.normal(diskFeH - 0.01 * draw.ageGyr, 0.15)
       : draw.component === 'thick-disk'
         ? rng.normal(-0.55 + 0.3 * diskFeH, 0.25)
-        : rng.normal(-1.5, 0.45);
+        : draw.component === 'bulge'
+          ? rng.normal(-0.1, 0.35)
+          : rng.normal(-1.5, 0.45);
   return Math.min(0.6, Math.max(-2.5, feH));
 }

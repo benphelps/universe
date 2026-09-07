@@ -13,14 +13,19 @@ export interface AsteroidShape {
 }
 
 export interface Asteroid {
+  /** Stable address in a funded belt's largest-first inventory. */
+  population?: { seedHex: string; rank: number };
+  /** Inventory's effective density, including unresolved porosity. */
+  bulkDensityKgM3?: number;
   elements: OrbitalElements;
   diameterKm: number;
   taxonomy: AsteroidTaxonomy;
+  /** Optical geometric albedo, also used by the reflected-light glint. */
   albedo: number;
   spinPeriodHours: number;
   /** Non-principal-axis tumbling (slow rotators). */
   tumbling: boolean;
-  /** Gravitationally bound rubble vs coherent monolith. */
+  /** Loose rubble aggregate. False does not assert a differentiated interior. */
   rubblePile: boolean;
   shape: AsteroidShape;
 }

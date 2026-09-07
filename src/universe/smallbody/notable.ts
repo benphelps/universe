@@ -1,6 +1,6 @@
-import { deriveSeed, seedFromHex } from '../../core/rng/hash';
+import { seedFromHex } from '../../core/rng/hash';
 import type { StarSystem } from '../system/types';
-import { instantiateBeltCell } from './asteroids';
+import { beltCatalogue, beltPopulationSeed, NOTABLE_DIAMETER_KM } from './beltRegion';
 import type { Asteroid } from './types';
 
 /**
@@ -13,11 +13,8 @@ import type { Asteroid } from './types';
 export function notableAsteroids(system: StarSystem): Asteroid[] {
   const out: Asteroid[] = [];
   system.belts.forEach((belt, i) => {
-    const beltSeed = deriveSeed(seedFromHex(system.seedHex), 'notable', i);
-    const sample = instantiateBeltCell(beltSeed, belt, 0, 24, 90);
-    sample.sort((a, b) => b.diameterKm - a.diameterKm);
-    const large = sample.filter((asteroid) => asteroid.diameterKm >= 150).slice(0, 8);
-    out.push(...(large.length > 0 ? large : sample.slice(0, 1)));
+    const beltSeed = beltPopulationSeed(seedFromHex(system.seedHex), i);
+    out.push(...beltCatalogue(beltSeed,belt,8,NOTABLE_DIAMETER_KM));
   });
   return out;
 }

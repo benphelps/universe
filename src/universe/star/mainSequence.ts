@@ -1,39 +1,35 @@
 import { SOLAR_TEFF } from '../../core/physics/constants';
+import { MASSIVE_TRACK_MIN, massiveMsLifetimeGyr, massiveStarState, massiveZamsLuminosity } from './massiveTracks';
 
 /**
  * Empirical main-sequence mass–luminosity relation (piecewise), L☉ from M☉.
- * Represents mid-main-sequence luminosity; evolution.ts modulates across
- * the main-sequence lifetime.
+ * Below 8 M☉ this is the legacy scale modulated by evolution.ts. Above
+ * that boundary it is the actual mid-MS luminosity of the reference grid.
  */
 export function msLuminosity(mass: number): number {
+  if (mass >= MASSIVE_TRACK_MIN) return massiveStarState(mass, 0.5 * massiveMsLifetimeGyr(mass)).luminosity;
   if (mass < 0.43) return 0.23 * mass ** 2.3;
   if (mass < 2) return mass ** 4;
-  if (mass < 55) return 1.4 * mass ** 3.5;
-  // Eddington-flattened: linear continuation from the 55 M☉ point.
-  return 1.4 * 55 ** 3.5 * (mass / 55);
+  return 1.4 * mass ** 3.5;
 }
 
-/** Empirical main-sequence mass–radius relation, R☉ from M☉. */
+/** Initial luminosity for formation/irradiation, without a fixed conversion
+ * from mid-MS luminosity that fails for massive evolving stars. */
+export function zamsLuminosity(mass: number): number {
+  return mass >= MASSIVE_TRACK_MIN ? massiveZamsLuminosity(mass) : 0.75 * msLuminosity(mass);
+}
+
+/** Empirical low-mass radius / reference-grid mid-MS radius, in R☉. */
 export function msRadius(mass: number): number {
+  if (mass >= MASSIVE_TRACK_MIN) return massiveStarState(mass, 0.5 * massiveMsLifetimeGyr(mass)).radius;
   return mass < 1 ? mass ** 0.8 : mass ** 0.57;
 }
 
-/**
- * Main-sequence lifetime in Gyr.
- *
- * The nuclear timescale 10 M/L assumes a fixed fuel fraction, which is
- * right for sunlike stars and increasingly wrong above ~10 M☉: a
- * massive star burns a growing convective core while its luminosity is
- * Eddington-pinned toward L ∝ M, so fuel and burn rate both scale with
- * mass and the lifetime asymptotes instead of collapsing — every track
- * grid puts the most massive stars near 3–4 Myr, not the tenths the
- * bare formula gives. The additive floor is that asymptote, and the
- * crossover falls out at ~25 M☉ on its own: 60 M☉ lands at 3.5 Myr,
- * 20 M☉ at 7.2, 9 M☉ at 33, and below 5 M☉ the term vanishes into
- * the classical estimate.
- */
+/** Main-sequence lifetime in Gyr. Massive stars use the same track as
+ * their luminosity and temperature; no independent lifetime floor is added
+ * to an unrelated high-mass luminosity power law. */
 export function msLifetimeGyr(mass: number): number {
-  return (10 * mass) / msLuminosity(mass) + 0.0032;
+  return mass >= MASSIVE_TRACK_MIN ? massiveMsLifetimeGyr(mass) : (10 * mass) / msLuminosity(mass) + 0.0032;
 }
 
 /** Effective temperature from L and R (solar units) via Stefan–Boltzmann. */

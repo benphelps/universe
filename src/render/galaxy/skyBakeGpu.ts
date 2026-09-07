@@ -1,3 +1,12 @@
+import { FIELD_SELECTION_GLSL } from '../glsl/fieldSelection';
+import { fieldSelectionData,fieldSelectionScales,fieldSelectionRows,SELECTION_WIDTH,SELECTION_HEIGHT } from '../../universe/galaxy/fieldSelection';
+import { neighborRadiusPc } from '../../universe/galaxy/neighborhood';
+import { CONTINUUM_SAMPLE_GLSL } from './nebulaContinuumGlsl';
+import { packContinuumPair } from '../../universe/galaxy/nebulaContinuum';
+import { createNebulaGpuBaker } from './nebulaBakeGpu';
+import { bakeNebulaPair } from '../../universe/galaxy/nebulaPair';
+import { GALAXY_COMPONENT_GLSL, galaxyComponentUniforms } from '../glsl/galaxyComponents';
+import { CELL_TRANSFER_GLSL } from '../../core/physics/radiativeTransfer';
 import {
   ARM_LUT_RADIUS_MAX_PC,
   ARM_LUT_RADIUS_MIN_PC,
@@ -15,35 +24,13 @@ import {
   type MolecularCloud,
 } from '../../universe/galaxy/clouds';
 import {
-  ARM_YOUNG_LIGHT,
   DUST_OPACITY_PER_PC,
   SMOOTH_MODEL,
   type GalacticPosition,
 } from '../../universe/galaxy/density';
 import { galaxySeed } from '../../universe/galaxy/galaxySeed';
-import { dustToGas, HYDROGEN_PER_DUST } from '../../universe/galaxy/gas';
-import {
-  DUST_DEPLETION,
-  SHELL_SKIN_SHARE,
-  SHELL_WIDTH,
-  sweptShellBoost,
-  VENT_CONFINEMENT,
-  VENT_RESIDUAL,
-  WIND_CAVITY_RESIDUAL,
-  WIND_REACH,
-  WIND_STALL,
-  WIND_WALL_BOOST,
-  WIND_WALL_WIDTH,
-} from '../../universe/galaxy/ionization';
-import {
-  FRONT_DIRECTIONS,
-  FRONT_LOOKUP,
-  FRONT_LOOKUP_COLS,
-  FRONT_LOOKUP_ROWS,
-  MEMBER_SPREAD,
-  nebulaGrowth,
-  nebulaIlluminant,
-} from '../../universe/galaxy/nebula';
+import { nebulaPortrait, nebulaPortraitPhotometry } from '../../universe/galaxy/nebulaPortrait';
+import { SCATTER_EMISSIVITY_PER_LSUN } from '../../universe/galaxy/nebulaVolume';
 import {
   DARK_ATLAS_COLS,
   DARK_ATLAS_ROWS,
@@ -51,10 +38,10 @@ import {
   DUST_KAPPA,
   GLOW_HEIGHT,
   GLOW_WIDTH,
-  meanPopulationLuminosity,
   NEBULA_ATLAS_COLS,
   NEBULA_ATLAS_ROWS,
   NEBULA_TILE,
+  NEBULA_TILE_MAX_STEPS,
   RIFT_HEIGHT,
   RIFT_NEAR_PC,
   RIFT_WIDTH,
@@ -118,44 +105,46 @@ const GLOW_FRAGMENT = `#version 300 es
 precision highp float;
 precision highp int;
 uniform vec3 uViewPc;
-uniform float uMeanLum;
 uniform float uCloudFieldPerDust;
 out vec4 outGlow;
 ${ARM_LUT_GLSL}
+${CELL_TRANSFER_GLSL}
+${GALAXY_COMPONENT_GLSL}
+${FIELD_SELECTION_GLSL}
 void main() {
   vec2 texel = gl_FragCoord.xy;
   float latitude = (texel.y / ${f(GLOW_HEIGHT)} - 0.5) * 3.141592653589793;
   float longitude = (texel.x / ${f(GLOW_WIDTH)}) * 6.283185307179586;
   vec3 dir = vec3(cos(latitude) * cos(longitude), cos(latitude) * sin(longitude), sin(latitude));
-  float light = 0.0;
-  float opticalDepth = 0.0;
-  float s = 80.0;
-  for (int i = 0; i < 96; i++) {
+  vec3 light = vec3(0.0);
+  vec3 transmission = vec3(1.0);
+  float s = 0.0;
+  for (int i = 0; i < 112; i++) {
     if (s >= 25000.0) break;
-    float stepPc = max(90.0, s * 0.11);
-    vec3 p = uViewPc + dir * s;
+    float stepPc = min(25000.0 - s, (s < 180.0 ? 5.0 : max(30.0, s * 0.11)));
+    float midpoint = s + 0.5 * stepPc;
+    vec3 p = uViewPc + dir * midpoint;
     float radius = length(p.xy);
     float absZ = abs(p.z);
     vec2 arm = armProfile(radius, atan(p.y, p.x));
-    float thinSmooth = ${f(SMOOTH_MODEL.thinNorm)} * exp(-radius / ${f(SMOOTH_MODEL.thinScaleLengthPc)}) *
-      exp(-absZ / ${f(SMOOTH_MODEL.thinScaleHeightPc)});
-    float thick = ${f(SMOOTH_MODEL.thickNorm)} * exp(-radius / ${f(SMOOTH_MODEL.thickScaleLengthPc)}) *
-      exp(-absZ / ${f(SMOOTH_MODEL.thickScaleHeightPc)});
-    float halo = ${f(SMOOTH_MODEL.haloNorm)} *
-      pow(max(length(vec2(radius, absZ)), ${f(SMOOTH_MODEL.haloFloorPc)}) / ${f(SMOOTH_MODEL.haloReferencePc)},
-        ${f(SMOOTH_MODEL.haloIndex)});
     float dust = exp(-radius / ${f(SMOOTH_MODEL.dustScaleLengthPc)}) *
       exp(-absZ / ${f(SMOOTH_MODEL.dustScaleHeightPc)}) * (1.0 + ${f(SMOOTH_MODEL.dustLaneWeight)} * arm.y);
     float armBoost = 1.0 + arm.x;
-    float clump = s > ${f(RIFT_NEAR_PC)}
+    float clump = midpoint > ${f(RIFT_NEAR_PC)}
       ? 0.45 + 1.6 * uCloudFieldPerDust * dust * (0.4 + 0.6 * armBoost)
       : 0.45;
-    opticalDepth += dust * clump * ${f(DUST_KAPPA)} * stepPc;
-    light += (thinSmooth * (1.0 + ${f(ARM_YOUNG_LIGHT)} * arm.x) + thick + halo) * uMeanLum * stepPc *
-      exp(-opticalDepth);
+    float depth = dust * clump * ${f(DUST_KAPPA)} * stepPc;
+    vec3 cellDepth = depth * GALAXY_DUST_RGB;
+    vec3 cellThrough = exp(-cellDepth);
+    vec3 counts = galaxyFieldDensity(p / 1000.0);
+    counts.x *= armBoost;
+    vec3 emission = unresolvedFieldEmission(vec4(counts,galaxyBulgeDensity(p/1000.0)),midpoint);
+    light += emission * stepPc *
+      transmission * cellEmissionWeight(cellDepth, cellThrough);
+    transmission *= cellThrough;
     s += stepPc;
   }
-  outGlow = vec4(light / 12.566370614359172, exp(-opticalDepth * 0.25), 0.0, 1.0);
+  outGlow = vec4(light / 12.566370614359172, 1.0);
 }
 `;
 
@@ -244,156 +233,82 @@ void main() {
 }
 `;
 
-/** Per-nebula rows: the tile's frame, the illuminant and the
- *  region's re-plumbing scalars, laid out by the CPU. */
-const NEBULA_TEXELS = 8;
-/** The marched front and, beside it, the vent: FRONT_DIRECTIONS radii
- *  each, packed four to a texel. */
-const FRONT_TEXELS = FRONT_DIRECTIONS / 4;
-/** Sightline steps through the body, marchNebulaTile's own. */
-const NEBULA_TILE_STEPS = 16;
-
-/**
- * marchNebulaTile, one fragment per texel of the nebula atlas: the
- * cloud as nebulaGasAt re-plumbs it — the diluted interior read in
- * contracted coordinates, the wind cavity eroded toward each point,
- * the champagne gate, the swept shell and its ionized skin, the natal
- * cloud beyond — with the front read off the model's own marched rays
- * through the same latitude–longitude lookup. Each pixel keeps both
- * mechanisms' integrals with and without the view path's extinction.
- */
+/** Distant images sample the same encoded solved volumes as the near
+ * renderer. Fine and coarse intervals are integrated once each. */
 const NEBULA_FRAGMENT = `#version 300 es
 precision highp float;
 precision highp int;
-uniform sampler2D uTiles;
-uniform sampler2D uFronts;
-uniform highp usampler2D uLookup;
-uniform int uTileCount;
+precision highp sampler3D;
+uniform sampler3D uCoarse;
+uniform sampler3D uFine;
+uniform sampler3D uContinuum;
+uniform vec3 uContinuumRef;
+uniform vec4 uBox[2];
+uniform vec4 uRef[2];
+uniform vec2 uSize;
+uniform vec3 uView;
+uniform vec3 uRight;
+uniform vec3 uUp;
+uniform float uExtent;
 out vec4 outMarch;
-${SEEDED_NOISE}
-${carveFunctionGlsl('localCarve', 3)}
-
-int gTile;
-vec3 gInvStretch;
-float gRadiusPc;
-float gSeedOffset;
-float gDensityScale;
-vec3 gSource;
-float gLit;
-float gBubblePc;
-float gFrontReachPc;
-float gGrowth;
-float gDilution;
-float gCavityPc;
-float gSourceHydrogen;
-float gHydrogenPerDust;
-float gShellBoost;
-float gConfining;
-
-float dustAt(vec3 p) {
-  return localCarve(p, gInvStretch, gRadiusPc, gSeedOffset) * gDensityScale;
-}
-
-int rayToward(vec3 u) {
-  int row = min(${FRONT_LOOKUP_ROWS - 1}, int(floor(
-    (asin(clamp(u.z, -1.0, 1.0)) / 3.141592653589793 + 0.5) * ${f(FRONT_LOOKUP_ROWS)})));
-  float longitude = atan(u.y, u.x);
-  if (longitude < 0.0) longitude += 6.283185307179586;
-  int col = min(${FRONT_LOOKUP_COLS - 1}, int(floor(
-    longitude / 6.283185307179586 * ${f(FRONT_LOOKUP_COLS)})));
-  return int(texelFetch(uLookup, ivec2(col, row), 0).r);
-}
-
-float rayRadius(int ray, int table) {
-  vec4 quad = texelFetch(uFronts, ivec2(table * ${FRONT_TEXELS} + (ray >> 2), gTile), 0);
-  return quad[ray & 3];
-}
-
-vec2 gasAt(vec3 p) {
-  if (gLit < 0.5) return vec2(dustAt(p), 0.0);
-  vec3 d = p - gSource;
-  float r = length(d);
-  if (r > gFrontReachPc * 1.5) return vec2(dustAt(p), 0.0);
-  int ray = r > 0.0 ? rayToward(d / r) : -1;
-  float bubble = ray >= 0 ? rayRadius(ray, 0) : gBubblePc;
-  if (r < bubble) {
-    float natal = dustAt(gSource + d / gGrowth) * gDilution;
-    float cavity = gCavityPc;
-    if (cavity > 0.0 && r > 0.0) {
-      float ploughed = dustAt(gSource + d * (cavity / gGrowth / r)) * gHydrogenPerDust;
-      cavity *= clamp(
-        pow(gSourceHydrogen / max(1e-6, ploughed), 0.25), ${f(WIND_STALL)}, ${f(WIND_REACH)});
+${CELL_TRANSFER_GLSL}
+${CONTINUUM_SAMPLE_GLSL}
+vec2 interval(vec4 box, vec3 origin) {
+  float near = -1e20, far = 1e20;
+  for (int axis = 0; axis < 3; axis++) {
+    float p = origin[axis] - box[axis], d = uView[axis];
+    if (abs(d) < 1e-12) { if (abs(p) > box.w) return vec2(0.0); }
+    else {
+      float a = (-box.w - p) / d, b = (box.w - p) / d;
+      near = max(near, min(a,b)); far = min(far, max(a,b));
     }
-    float wind = r < cavity
-      ? ${f(WIND_CAVITY_RESIDUAL)}
-      : (r <= cavity * ${f(1 + WIND_WALL_WIDTH)} ? ${f(WIND_WALL_BOOST)} : 1.0);
-    float vent = ray >= 0 ? rayRadius(ray, 1) : 0.0;
-    float residual = ${f(VENT_RESIDUAL)} * (r > vent ? (vent * vent) / (r * r) : 1.0);
-    float confinement = gConfining > 0.0
-      ? max(residual, min(dustAt(p) * gHydrogenPerDust / gConfining, 1.0))
-      : 1.0;
-    float dust = natal * wind * confinement;
-    return vec2(dust * ${f(1 / DUST_DEPLETION)}, dust * gHydrogenPerDust);
   }
-  float swept = r <= bubble * ${f(1 + SHELL_WIDTH)} ? gShellBoost : 1.0;
-  float dust = dustAt(p) * swept;
-  float skin = exp(-(r - bubble) / (${f(SHELL_SKIN_SHARE * SHELL_WIDTH)} * bubble));
-  return vec2(dust / (1.0 + ${f(DUST_DEPLETION - 1)} * skin), dust * gHydrogenPerDust * skin);
+  return far > near ? vec2(near,far) : vec2(0.0);
 }
-
-void main() {
-  ivec2 texel = ivec2(gl_FragCoord.xy);
-  ivec2 tileAt = texel / ${NEBULA_TILE};
-  gTile = tileAt.y * ${NEBULA_ATLAS_COLS} + tileAt.x;
-  ivec2 cell = texel - tileAt * ${NEBULA_TILE};
-  outMarch = vec4(0.0);
-  if (gTile >= uTileCount) return;
-  if (cell.x == 0 || cell.y == 0 || cell.x == ${NEBULA_TILE - 1} || cell.y == ${NEBULA_TILE - 1}) return;
-  vec4 view = texelFetch(uTiles, ivec2(0, gTile), 0);
-  vec4 right = texelFetch(uTiles, ivec2(1, gTile), 0);
-  vec4 up = texelFetch(uTiles, ivec2(2, gTile), 0);
-  vec4 shape = texelFetch(uTiles, ivec2(3, gTile), 0);
-  vec4 source = texelFetch(uTiles, ivec2(4, gTile), 0);
-  vec4 region = texelFetch(uTiles, ivec2(5, gTile), 0);
-  vec4 wind = texelFetch(uTiles, ivec2(6, gTile), 0);
-  vec4 gate = texelFetch(uTiles, ivec2(7, gTile), 0);
-  float extent = view.w;
-  float floorSq = right.w;
-  gInvStretch = shape.xyz;
-  gRadiusPc = up.w;
-  gSeedOffset = shape.w;
-  gDensityScale = source.w;
-  gSource = source.xyz;
-  gLit = region.x;
-  gBubblePc = region.y;
-  gFrontReachPc = region.z;
-  gGrowth = region.w;
-  gDilution = wind.x;
-  gCavityPc = wind.y;
-  gSourceHydrogen = wind.z;
-  gHydrogenPerDust = wind.w;
-  gShellBoost = gate.x;
-  gConfining = gate.y;
-
-  float u = ((float(cell.x) + 0.5) / ${f(NEBULA_TILE)}) * 2.0 - 1.0;
-  float v = ((float(cell.y) + 0.5) / ${f(NEBULA_TILE)}) * 2.0 - 1.0;
-  vec3 o = (right.xyz * u + up.xyz * v) * extent;
-  float dt = 2.0 * extent / ${f(NEBULA_TILE_STEPS)};
-  float tau = 0.0;
-  vec4 sums = vec4(0.0);
-  for (int s = 0; s < ${NEBULA_TILE_STEPS}; s++) {
-    float t = -extent + (float(s) + 0.5) * dt;
-    vec3 p = o + view.xyz * t;
-    vec2 gas = gasAt(p);
-    if (gas.x <= 0.0 && gas.y <= 0.0) continue;
-    vec3 shine = p - gSource;
-    float scattering = gas.x * dt / max(dot(shine, shine), floorSq);
-    float emitting = gas.y * gas.y * dt;
-    float transmitted = exp(-tau);
-    sums += vec4(emitting * transmitted, scattering * transmitted, emitting, scattering);
-    tau += gas.x * ${f(DUST_OPACITY_PER_PC)} * dt;
+vec3 gOrigin;
+float gTau;
+vec4 gSums;
+void integrate(sampler3D field, int grid, float near, float far) {
+  if (far <= near) return;
+  float cellPc = 2.0 * uBox[grid].w / uSize[grid];
+  int count = min(${NEBULA_TILE_MAX_STEPS}, max(1, int(ceil((far-near)/cellPc*(1.0-2e-6)))));
+  float dt = (far-near)/float(count);
+  for (int step = 0; step < ${NEBULA_TILE_MAX_STEPS}; step++) {
+    if (step >= count) break;
+    vec3 p = gOrigin + uView * (near+(float(step)+0.5)*dt);
+    vec4 raw = texture(field, (p-uBox[grid].xyz)/(2.0*uBox[grid].w)+0.5);
+    float dust = raw.r*raw.r*uRef[grid].x;
+    float emitting = pow((raw.g*256.0+raw.a)/257.0*uRef[grid].y, 2.0)*mix(uRef[grid].z,uRef[grid].w,raw.b)*dt;
+    float scattering = 0.0;
+    if (uContinuumRef[grid] > 0.0) {
+      vec3 coord = (p-uBox[grid].xyz)/(2.0*uBox[grid].w)+0.5;
+      vec3 rgb = texture(uContinuum, continuumCoord(coord,uContinuumRef.z,float(2*grid))).rgb;
+      vec3 moment = texture(uContinuum, continuumCoord(coord,uContinuumRef.z,float(2*grid+1))).rgb*2.0-1.0;
+      scattering = dot(rgb*rgb,vec3(0.2126,0.7152,0.0722))*uContinuumRef[grid]*continuumPhase(moment,uView)
+        *${f(SCATTER_EMISSIVITY_PER_LSUN)}*dust*dt;
+    }
+    float depth = dust*${f(DUST_OPACITY_PER_PC)}*dt;
+    float transmitted = exp(-gTau)*cellEmissionWeight(depth);
+    gSums += vec4(emitting*transmitted,scattering*transmitted,emitting,scattering);
+    gTau += depth;
   }
-  outMarch = sums;
+}
+void main() {
+  ivec2 cell = ivec2(gl_FragCoord.xy);
+  outMarch = vec4(0.0);
+  if (cell.x==0 || cell.y==0 || cell.x==${NEBULA_TILE-1} || cell.y==${NEBULA_TILE-1}) return;
+  vec2 uv = (vec2(cell)+0.5)/${f(NEBULA_TILE)}*2.0-1.0;
+  gOrigin = (uRight*uv.x+uUp*uv.y)*uExtent;
+  vec2 outer = interval(uBox[0],gOrigin);
+  if (outer.y<=outer.x) return;
+  vec2 inner = uBox[1].w>0.0 ? interval(uBox[1],gOrigin) : vec2(0.0);
+  gTau=0.0;gSums=vec4(0.0);
+  if (inner.y>inner.x) {
+    integrate(uCoarse,0,outer.x,inner.x);
+    integrate(uFine,1,inner.x,inner.y);
+    integrate(uCoarse,0,inner.y,outer.y);
+  } else integrate(uCoarse,0,outer.x,outer.y);
+  outMarch=gSums;
 }
 `;
 
@@ -469,13 +384,14 @@ export function createSkyBakeGpu(): SkyMapBaker | null {
     console.warn('sky GPU bake unavailable:', error);
     return null;
   }
+  let portraitBaker: ReturnType<typeof createNebulaGpuBaker> | undefined;
   const at = (program: WebGLProgram, name: string): WebGLUniformLocation | null =>
     gl.getUniformLocation(program, name);
   const framebuffer = gl.createFramebuffer();
   let permTexture: WebGLTexture | null = null;
   let armTexture: WebGLTexture | null = null;
+  let selectionTexture: WebGLTexture | null = null;
   let armGalaxy = -1n;
-  let lookupTexture: WebGLTexture | null = null;
 
   const floatTexture = (width: number, height: number, data: Float32Array | null): WebGLTexture => {
     const texture = gl.createTexture();
@@ -546,12 +462,31 @@ export function createSkyBakeGpu(): SkyMapBaker | null {
         armTexture = floatTexture(ARM_LUT_SIZE, ARM_LUT_SIZE, rgba);
         armGalaxy = galaxySeed();
       }
+      if (!selectionTexture) {
+        const data=fieldSelectionData(),rgba=new Float32Array(SELECTION_WIDTH*SELECTION_HEIGHT*4);
+        for(let i=0;i<data.length/3;i++)for(let c=0;c<3;c++)rgba[i*4+c]=data[i*3+c];
+        selectionTexture=floatTexture(SELECTION_WIDTH,SELECTION_HEIGHT,rgba);
+      }
       return pass(glowProgram, GLOW_WIDTH, GLOW_HEIGHT, () => {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D,selectionTexture);
+        gl.uniform1i(at(glowProgram,'uFieldSelection'),1);
+        const scales=fieldSelectionScales(),rows=fieldSelectionRows();
+        for(const [c,suffix] of ['R','G','B'].entries())gl.uniform4fv(at(glowProgram,'uSelectionScale'+suffix),scales.map(v=>v[c]));
+        gl.uniform4fv(at(glowProgram,'uSelectionCaps'),rows.map(r=>r.cap));
+        gl.uniform4fv(at(glowProgram,'uSelectionYoung'),rows.map(r=>r.youngPc));
+        gl.uniform4fv(at(glowProgram,'uSelectionOld'),rows.map(r=>r.oldPc));
+        gl.uniform1f(at(glowProgram,'uCensusPc'),neighborRadiusPc(viewpoint));
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, armTexture);
         gl.uniform1i(at(glowProgram, 'uArmLut'), 0);
         gl.uniform3f(at(glowProgram, 'uViewPc'), viewpoint.xPc, viewpoint.yPc, viewpoint.zPc);
-        gl.uniform1f(at(glowProgram, 'uMeanLum'), meanPopulationLuminosity());
+        const components = galaxyComponentUniforms();
+        gl.uniform3fv(at(glowProgram, 'uBulgeModel'), components.bulge);
+        gl.uniform3fv(at(glowProgram, 'uBulgeCore'), components.core);
+        for (const [c, suffix] of ['R', 'G', 'B'].entries()) {
+          gl.uniform4fv(at(glowProgram, 'uPopulation' + suffix), components.optical[c]);
+        }
         // expectedCloudField is linear in dust with the (0.4 + 0.6·boost)
         // factor applied here; the unit-dust, unit-boost value carries
         // the rest of its constant.
@@ -625,89 +560,76 @@ export function createSkyBakeGpu(): SkyMapBaker | null {
       }
     },
 
-    nebulaTiles(jobs: NebulaTileJob[]): Float32Array {
-      const rows = Math.max(1, jobs.length);
-      const table = new Float32Array(NEBULA_TEXELS * rows * 4);
-      const fronts = new Float32Array(2 * FRONT_TEXELS * rows * 4);
-      jobs.forEach((job, i) => {
-        const { cloud, nebula } = job;
-        const { invStretch, seedOffset } = cloudRow(cloud);
-        const source = nebulaIlluminant(nebula);
-        const lit = nebula.sources.length > 0 && nebula.bubbleRadiusPc > 0;
-        const { growth, dilution } = nebulaGrowth(nebula);
-        const base = i * NEBULA_TEXELS * 4;
-        table.set([...job.view, job.extentPc], base);
-        table.set([...job.right, (MEMBER_SPREAD * cloud.radiusPc) ** 2], base + 4);
-        table.set([...job.up, cloud.radiusPc], base + 8);
-        table.set([...invStretch, seedOffset], base + 12);
-        table.set(
-          [
-            source?.dxPc ?? 0,
-            source?.dyPc ?? 0,
-            source?.dzPc ?? 0,
-            cloud.amplitude * CARVE_GAIN * nebula.dustFactor,
-          ],
-          base + 16,
-        );
-        table.set([lit ? 1 : 0, nebula.bubbleRadiusPc, nebula.frontReachPc, growth], base + 20);
-        table.set(
-          [
-            dilution,
-            nebula.windCavityPc,
-            nebula.sourceHydrogenDensity,
-            HYDROGEN_PER_DUST / dustToGas(nebula.metallicity),
-          ],
-          base + 24,
-        );
-        table.set(
-          [sweptShellBoost(dilution), VENT_CONFINEMENT * nebula.sourceHydrogenDensity * dilution, 0, 0],
-          base + 28,
-        );
-        if (lit) {
-          fronts.set(nebula.frontPc, i * 2 * FRONT_TEXELS * 4);
-          fronts.set(nebula.ventPc, i * 2 * FRONT_TEXELS * 4 + FRONT_DIRECTIONS);
-        }
-      });
-      if (!lookupTexture) {
-        lookupTexture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, lookupTexture);
-        gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8UI, FRONT_LOOKUP_COLS, FRONT_LOOKUP_ROWS);
-        gl.texSubImage2D(
-          gl.TEXTURE_2D, 0, 0, 0, FRONT_LOOKUP_COLS, FRONT_LOOKUP_ROWS,
-          gl.RED_INTEGER, gl.UNSIGNED_BYTE, FRONT_LOOKUP,
-        );
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      const tileTexture = floatTexture(NEBULA_TEXELS, rows, table);
-      const frontTexture = floatTexture(2 * FRONT_TEXELS, rows, fronts);
+    nebulaTiles(jobs: NebulaTileJob[], onProgress?: (completed: number, total: number) => void): Float32Array {
+      const width = NEBULA_ATLAS_COLS * NEBULA_TILE;
+      const atlas = new Float32Array(width * NEBULA_ATLAS_ROWS * NEBULA_TILE * 4);
+      // Reuse two upload textures across the selected objects. Their
+      // contents come from the bounded portrait cache, not a second model.
+      const textures: (WebGLTexture | null)[] = [null, null];
+      let heldSize = 0;
+      const lightTexture = gl.createTexture();
+      let lightSize = 0;
       try {
-        return pass(
-          nebulaProgram,
-          NEBULA_ATLAS_COLS * NEBULA_TILE,
-          NEBULA_ATLAS_ROWS * NEBULA_TILE,
-          () => {
-            ensurePermutation(0, nebulaProgram);
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, tileTexture);
-            gl.uniform1i(at(nebulaProgram, 'uTiles'), 1);
-            gl.activeTexture(gl.TEXTURE2);
-            gl.bindTexture(gl.TEXTURE_2D, frontTexture);
-            gl.uniform1i(at(nebulaProgram, 'uFronts'), 2);
-            gl.activeTexture(gl.TEXTURE3);
-            gl.bindTexture(gl.TEXTURE_2D, lookupTexture);
-            gl.uniform1i(at(nebulaProgram, 'uLookup'), 3);
-            gl.uniform1i(at(nebulaProgram, 'uTileCount'), jobs.length);
-          },
-        );
+        jobs.forEach((job, tile) => {
+          const pair = job.portrait ?? nebulaPortrait(job.nebula, (cloud, nebula, size) => {
+            if (portraitBaker === undefined) portraitBaker = createNebulaGpuBaker();
+            return portraitBaker ? bakeNebulaPair(cloud, nebula, size, portraitBaker.sample, portraitBaker.attenuate) : bakeNebulaPair(cloud, nebula, size);
+          }), bakes = [pair.coarse, pair.fine ?? pair.coarse];
+          nebulaPortraitPhotometry(job.nebula, job.view, pair);
+          if (heldSize !== pair.coarse.size) {
+            heldSize = pair.coarse.size;
+            for (let grid = 0; grid < 2; grid++) {
+              gl.deleteTexture(textures[grid]); textures[grid] = gl.createTexture();
+              if (!textures[grid]) throw new Error('portrait texture allocation failed');
+              gl.bindTexture(gl.TEXTURE_3D, textures[grid]);
+              gl.texStorage3D(gl.TEXTURE_3D, 1, gl.RGBA8, heldSize, heldSize, heldSize);
+              gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+              gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+              for (const axis of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, axis, gl.CLAMP_TO_EDGE);
+            }
+          }
+          const light = packContinuumPair(pair.coarse.continuum, pair.fine?.continuum);
+          gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_3D, lightTexture);
+          // texImage permits a test-grade field to change dimensions.
+          gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, light.size, light.size, 4 * light.size, 0, gl.RGBA, gl.HALF_FLOAT, light.data);
+          if (lightSize !== light.size) {
+            lightSize = light.size;
+            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            for (const axis of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, axis, gl.CLAMP_TO_EDGE);
+          }
+          const out = pass(nebulaProgram, NEBULA_TILE, NEBULA_TILE, () => {
+            bakes.forEach((bake, grid) => {
+              gl.activeTexture(gl.TEXTURE0 + grid);
+              gl.bindTexture(gl.TEXTURE_3D, textures[grid]);
+              gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, heldSize, heldSize, heldSize, gl.RGBA, gl.UNSIGNED_BYTE, bake.data);
+              gl.uniform4fv(at(nebulaProgram, `uBox[${grid}]`), [...bake.originPc, grid===1 && !pair.fine ? 0 : bake.halfExtentsPc[0]]);
+              gl.uniform4fv(at(nebulaProgram, `uRef[${grid}]`), [bake.dustRef,bake.densityRef,bake.emissionCoefficient,bake.emissionHotCoefficient]);
+            });
+            gl.uniform1i(at(nebulaProgram, 'uContinuum'),2);
+            gl.uniform3f(at(nebulaProgram,'uContinuumRef'),pair.coarse.continuum?.irradianceRef??0,pair.fine?.continuum?.irradianceRef??0,light.size);
+            gl.uniform1i(at(nebulaProgram, 'uCoarse'),0);gl.uniform1i(at(nebulaProgram, 'uFine'),1);
+            gl.uniform2f(at(nebulaProgram,'uSize'),heldSize,heldSize);
+            gl.uniform3fv(at(nebulaProgram,'uView'),job.view);gl.uniform3fv(at(nebulaProgram,'uRight'),job.right);gl.uniform3fv(at(nebulaProgram,'uUp'),job.up);
+            gl.uniform1f(at(nebulaProgram,'uExtent'),job.extentPc);
+          });
+          for (let row=0;row<NEBULA_TILE;row++) {
+            const target=((Math.floor(tile/NEBULA_ATLAS_COLS)*NEBULA_TILE+row)*width+(tile%NEBULA_ATLAS_COLS)*NEBULA_TILE)*4;
+            atlas.set(out.subarray(row*NEBULA_TILE*4,(row+1)*NEBULA_TILE*4),target);
+          }
+          onProgress?.(tile + 1, jobs.length);
+        });
+        return atlas;
       } finally {
-        gl.deleteTexture(tileTexture);
-        gl.deleteTexture(frontTexture);
+        gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_3D,null);
+        gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_3D,null);
+        for (const texture of textures) gl.deleteTexture(texture);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_3D,null); gl.deleteTexture(lightTexture);
+        gl.activeTexture(gl.TEXTURE0);
       }
     },
 
     dispose(): void {
+      portraitBaker?.dispose();
       gl.getExtension('WEBGL_lose_context')?.loseContext();
     },
   };

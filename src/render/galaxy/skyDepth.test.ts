@@ -1,6 +1,7 @@
-import { Mesh, Points, ShaderMaterial } from 'three';
-import { describe, expect, it } from 'vitest';
-import type { SkyField } from '../../universe/galaxy/skyfield';
+import { starGlobalDustUniforms } from '../starfield/globalDustState';
+import { DataTexture, Camera, Scene, Mesh, Points, ShaderMaterial, type WebGLRenderer } from 'three';
+import { describe, expect, it, vi } from 'vitest';
+import { applySkyPortrait, NEBULA_TILE, NEBULA_ATLAS_COLS, NEBULA_ATLAS_ROWS, type NebulaPatch, type SkyField } from '../../universe/galaxy/skyfield';
 import { GalaxyVolume } from './galaxyVolume';
 import { StarfieldBackdrop } from '../starfield/starfieldBackdrop';
 
@@ -90,4 +91,45 @@ describe('galactic background depth', () => {
     expectFarBackground(volume.mesh.material as ShaderMaterial);
     volume.dispose();
   });
+});
+
+it('streams out-of-order portraits into fixed slots without replacing the backdrop or its fades', () => {
+  const sky = emptySky();
+  const placeholder = (tile: number): NebulaPatch => ({ seed: BigInt(tile + 1), tile, dir: [0, 0, 1],
+    right: [1, 0, 0], up: [0, 1, 0], angularRadius: 0.1, distancePc: 100, color: [0, 0, 0],
+    brightness: 0, peakRadiance: 0, emissionHue: [0, 0, 0], emissionHueNarrow: [0, 0, 0], reflectionHue: [0, 0, 0] });
+  sky.nebulae = [placeholder(0), placeholder(1)];
+  sky.nebulaAtlas = new Float32Array(NEBULA_ATLAS_COLS * NEBULA_ATLAS_ROWS * NEBULA_TILE ** 2 * 4);
+  const backdrop = new StarfieldBackdrop(sky, 2000);
+  const children = [...backdrop.group.children];
+  backdrop.setNebulaVolumeFades(new Map([[2n, 0.75]]));
+  const pixels = new Float32Array(NEBULA_TILE ** 2 * 4).fill(0.5);
+  const patch = { ...sky.nebulae[1], peakRadiance: 42, emissionHue: [1, 2, 3] as [number, number, number] };
+  backdrop.updatePortrait({ patch, pixels });
+  expect(backdrop.group.children).toEqual(children);
+  expect(sky.nebulaAtlas[0]).toBe(0);
+  expect(sky.nebulaAtlas[NEBULA_TILE * 4]).toBe(0.5);
+  expect(sky.nebulae[1].peakRadiance).toBe(42);
+  const dome = children.find(child => (child as Mesh).material instanceof ShaderMaterial && ((child as Mesh).material as ShaderMaterial).uniforms.uNebulaAtlas) as Mesh;
+  const material = dome.material as ShaderMaterial;
+  expect(material.uniforms.uNebulaAtlas.value.updateRanges).toHaveLength(NEBULA_TILE);
+  dome.onBeforeRender({} as WebGLRenderer, new Scene(), new Camera(), dome.geometry, material, null!);
+  expect(material.uniforms.uSprites.value.image.data[8 * 4 + 6 * 4]).toBe(0.25);
+  expect(material.uniforms.uSprites.value.image.data[8 * 4 + 1 * 4 + 3]).toBe(42);
+  expect(applySkyPortrait(sky, { patch: { ...patch, seed: 999n }, pixels })).toBe(false);
+  expect(applySkyPortrait(sky, { patch, pixels: pixels.subarray(1) })).toBe(false);
+  const owned = new Set<DataTexture>();
+  for (const child of children) {
+    for (const uniform of Object.values(((child as Mesh).material as ShaderMaterial).uniforms)) {
+      if (uniform.value instanceof DataTexture && uniform.value !== starGlobalDustUniforms.uStarArmLut.value) owned.add(uniform.value);
+    }
+  }
+  expect(owned.size).toBe(5);
+  const disposed = [...owned].map(texture => { const listener = vi.fn(); texture.addEventListener('dispose', listener); return listener; });
+  const borrowed = new DataTexture(), borrowedDisposal = vi.fn();
+  borrowed.addEventListener('dispose', borrowedDisposal);
+  material.uniforms.uBorrowed = { value: borrowed };
+  backdrop.dispose(); backdrop.dispose();
+  disposed.forEach(listener => expect(listener).toHaveBeenCalledOnce());
+  expect(borrowedDisposal).not.toHaveBeenCalled();
 });

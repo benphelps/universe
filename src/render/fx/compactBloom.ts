@@ -128,6 +128,8 @@ function blurMaterial(kernelRadius: number, reversedDepth: boolean): ShaderMater
     },
     vertexShader: VERTEX,
     fragmentShader: BLUR_FRAGMENT,
+    depthTest: false,
+    depthWrite: false,
   });
 }
 
@@ -192,7 +194,9 @@ export class CompactBloomPass extends Pass {
     this.needsSwap = false;
     this.levels = options.levels ?? BLOOM_LEVELS;
     const reversedDepth = options.reversedDepth ?? true;
-    const half = { type: HalfFloatType };
+    // Blur samples the scene's depth texture; its own intermediate
+    // full-screen targets never need a depth attachment.
+    const half = { type: HalfFloatType, depthBuffer: false };
     this.bright = new WebGLRenderTarget(1, 1, half);
     for (const level of this.levels) {
       this.horizontal.push(new WebGLRenderTarget(1, 1, half));
@@ -203,6 +207,8 @@ export class CompactBloomPass extends Pass {
       uniforms: { tDiffuse: { value: null } },
       vertexShader: VERTEX,
       fragmentShader: BRIGHT_FRAGMENT,
+      depthTest: false,
+      depthWrite: false,
     });
     this.blend = blendMaterial(this.levels, strength);
   }

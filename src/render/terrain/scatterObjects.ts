@@ -8,18 +8,23 @@ import {
 } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { TreeSpecies } from '../../universe/surface/flora';
+import { seasonalSurfaceUniforms, SEASONAL_SURFACE_GLSL } from './seasonalSurface';
+import { thermalUniforms, ownThermalTexture, THERMAL_EMISSION_GLSL } from '../lighting/thermalMaterial';
 import { SECOND_SUN_GLSL, secondSunUniforms } from '../lighting/secondSun';
 import { SURFACE_LIGHT_GLSL, surfaceLightUniforms } from '../lighting/surfaceLight';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { createShadowUniforms, SHADOW_GLSL } from '../planet/shadows';
 
 const VERTEX = /* glsl */ `
+uniform float uPlanetRadius;
 attribute vec3 color;
 
 varying vec3 vColor;
 varying vec3 vNormal;
 varying vec3 vViewPos;
 varying vec3 vWorldPos;
+varying float vSurfaceAltitudeKm;
+varying float vVisibility;
 
 void main() {
   vec4 local = vec4(position, 1.0);
@@ -38,10 +43,17 @@ void main() {
   vNormal = normalize(n);
   // Directions and shadow rays only — see terrainMaterial.
   vWorldPos = (modelMatrix * local).xyz;
+  vSurfaceAltitudeKm = length(vWorldPos) - uPlanetRadius;
   // Through modelViewMatrix (CPU-composed camera-relative in f64), never
   // via a materialized f32 world position — see terrainMaterial.
   vec4 mvPosition = modelViewMatrix * local;
   vViewPos = mvPosition.xyz;
+  float sizeKm = 1.0;
+  #ifdef USE_INSTANCING
+    sizeKm = length(instanceMatrix[0].xyz);
+  #endif
+  // Resolve objects only while their silhouettes occupy useful pixels.
+  vVisibility = 1.0 - smoothstep(sizeKm * 180.0, sizeKm * 320.0, length(mvPosition.xyz));
   gl_Position = projectionMatrix * mvPosition;
 }
 `;
@@ -51,16 +63,22 @@ varying vec3 vColor;
 varying vec3 vNormal;
 varying vec3 vViewPos;
 varying vec3 vWorldPos;
+varying float vSurfaceAltitudeKm;
+varying float vVisibility;
 
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 ${SECOND_SUN_GLSL}
+${THERMAL_EMISSION_GLSL}
+${SEASONAL_SURFACE_GLSL}
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
 ${SURFACE_LIGHT_GLSL}
 
 void main() {
+  float threshold = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  if (vVisibility <= threshold) discard;
   vec3 normal = normalize(vNormal);
   vec3 up = normalize(vWorldPos);
   float shadow = shadowFactor(vWorldPos, uLightDir, uStarAngularRadius, 1e30);
@@ -70,7 +88,8 @@ void main() {
     float shadow2 = shadowFactor(vWorldPos, uLight2Dir, uStar2AngularRadius, uLight2Reach);
     light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, up, shadow2, diffuseShadow(shadow2));
   }
-  vec3 color = vColor * light;
+  vec3 ground = seasonalSnow(vColor, up, normal, vSurfaceAltitudeKm, 1.0);
+  vec3 color = ground * light + (vec3(1.0) - clamp(ground, 0.0, 1.0)) * surfaceThermal(uSurfaceTemperatureK);
   // Aerial perspective: the air along the run to the eye keeps some of
   // the ground's light and adds the sunlight it scatters — blue by day,
   // red under a low sun, nothing in a vacuum.
@@ -94,7 +113,7 @@ void main() {
 
 /** Shared by every scatter instance; per-frame uniforms set by the viewer. */
 export function createScatterMaterial(): ShaderMaterial {
-  return new ShaderMaterial({
+  return ownThermalTexture(new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
@@ -103,8 +122,10 @@ export function createScatterMaterial(): ShaderMaterial {
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
+      ...thermalUniforms(),
+      ...seasonalSurfaceUniforms(),
     },
-  });
+  }));
 }
 
 /** Fill a geometry's vertex-color attribute with one flat color. */
@@ -131,10 +152,9 @@ export function createRockGeometry(): BufferGeometry {
     // Hash-displaced vertices: irregular but identical every run.
     const wobble =
       1 +
-      0.3 * Math.sin(x * 37.7 + y * 17.3 + z * 51.1) +
-      0.16 * Math.sin(x * 91.3 - z * 63.7) +
-      0.07 * Math.sin(x * 171.1 + y * 133.7 + z * 89.3);
-    positions.setXYZ(i, x * wobble, y * wobble * 0.8, z * wobble);
+      0.18 * Math.sin(x * 5.7 + y * 3.3 + z * 4.1) +
+      0.09 * Math.sin(x * 11.3 - z * 6.7);
+    positions.setXYZ(i, x * wobble * 1.12, y * wobble * 0.65, z * wobble * 0.85);
   }
   geometry.computeVertexNormals();
   bakeColor(geometry, 1, 1, 1);
@@ -196,8 +216,8 @@ export function createShrubGeometry(): BufferGeometry {
     const x = positions.getX(i);
     const y = positions.getY(i);
     const z = positions.getZ(i);
-    const wobble = 1 + 0.42 * Math.sin(x * 53.9 + y * 29.1 + z * 77.3);
-    positions.setXYZ(i, x * wobble, Math.max(-0.1, y * 0.55 * wobble), z * wobble);
+    const wobble = 1 + 0.18 * Math.sin(x * 9.9 + y * 7.1 + z * 11.3);
+    positions.setXYZ(i, x * wobble, Math.max(0, (y + 0.25) * 0.16 * wobble), z * wobble);
   }
   geometry.computeVertexNormals();
   bakeColor(geometry, 1, 1, 1);

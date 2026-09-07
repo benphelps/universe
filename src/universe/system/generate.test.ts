@@ -46,6 +46,48 @@ describe('Holman–Wiegert limits', () => {
 });
 
 describe('generateSystem', () => {
+  it('closes the disk mass ledger through planet formation, satellite allocation and pruning', () => {
+    for (const seed of [0x978b932deed43c44n, ...Array.from({ length: 400 }, (_, i) => BigInt(9000 + i))]) {
+      const s = generateSystem(seed);
+      for (const h of [{ planets: s.planets, belts: s.belts, formation: s.formation }, ...s.companions]) {
+        const b = h.formation;
+        if (!b) continue;
+        const planets = h.planets.reduce((sum, p) => sum + p.physical.bulk.massEarth, 0);
+        const moons = h.planets.flatMap(p => p.moons).reduce((sum, m) => sum + m.physical.bulk.massEarth, 0);
+        expect(planets).toBeCloseTo(b.planetMassEarth, 8);
+        expect(moons).toBeCloseTo(b.satelliteMassEarth, 8);
+        expect(b.remainingSolidsEarth).toBeGreaterThanOrEqual(0);
+        expect(b.remainingGasEarth).toBeGreaterThanOrEqual(0);
+        expect(b.lostMassEarth).toBeGreaterThanOrEqual(-1e-8);
+        const belts = h.belts.reduce((sum, belt) => sum + (belt.inventory?.massEarth ?? 0), 0);
+        for (const belt of h.belts) {
+          expect(belt.inventory!.massEarth).toBeGreaterThan(0);
+          expect(belt.inventory!.massEarth).toBeLessThanOrEqual(belt.inventory!.initialMassEarth);
+          expect(belt.resonantPopulations).toEqual([]);
+        }
+        expect(belts).toBeCloseTo(b.beltMassEarth, 10);
+        expect((planets + moons + belts + b.lostMassEarth + b.remainingSolidsEarth + b.remainingGasEarth) / b.diskMassEarth).toBeCloseTo(1, 12);
+      }
+    }
+  });
+  it('resonance labels retain their surviving inner neighbor after all pruning', () => {
+    let checked = 0;
+    for (let i = 0; i < 400; i++) {
+      const system = generateSystem(BigInt(9000 + i));
+      for (const planets of [system.planets, ...system.companions.map(c => c.planets)]) {
+        for (let j = 0; j < planets.length; j++) {
+          const label = planets[j].resonanceWithInner;
+          if (!label) continue;
+          checked++;
+          expect(j).toBeGreaterThan(0);
+          const [p, q] = label.split(':').map(Number);
+          const ratio = (planets[j].elements.semiMajorAxis / planets[j - 1].elements.semiMajorAxis) ** 1.5;
+          expect(Math.abs(ratio / (p / q) - 1)).toBeLessThan(0.04);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(10);
+  });
   it('is deterministic', () => {
     const a = generateSystem(0xabcdef12n);
     const b = generateSystem(0xabcdef12n);
