@@ -382,7 +382,7 @@ const MOON_COLOR = 'rgb(154, 164, 174)';
 export function WorldLevel({ snap }: { snap: AppSnapshot }): ReactNode {
   const { planets } = host(snap);
   if (snap.coreView || snap.cloud || snap.viewMode !== 'planet') {
-    return <div className="empty">no world focused — pick one from the system rung</div>;
+    return <div className="empty">no world focused</div>;
   }
   if (snap.planetFocus === 'empty') return <div className="empty">this star hosts no worlds</div>;
   if (snap.planetFocus !== 'planet' && snap.planetFocus !== 'moon') return null;

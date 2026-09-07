@@ -46,7 +46,7 @@ export function PoiLevel(): ReactNode {
             })}
             {folder.here && folder.marks.length === 0 && (
               <div className="empty">
-                nothing marked here yet — the bookmark beside a body’s name saves it
+                nothing marked here
               </div>
             )}
           </div>

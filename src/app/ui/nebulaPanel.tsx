@@ -142,7 +142,7 @@ export function NebulaLevel({ snap }: { snap: AppSnapshot }): ReactNode {
               />
             ))
           ) : (
-            <div className="empty">clear sky — no clouds within reach</div>
+            <div className="empty">no clouds within reach</div>
           )
         ) : (
           <div className="empty">charting the clouds nearby…</div>

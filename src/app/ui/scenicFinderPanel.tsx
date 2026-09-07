@@ -162,7 +162,7 @@ export function ScenicFinderPanel({
         </div>
         {searching && <div className="finder-status" role="status">{progress ? `${progress.stage} · ${progress.checked} / ${progress.total}` : 'Starting survey…'}</div>}
         {error && <div className="finder-empty" role="alert">{error}</div>}
-        {!searching && batches > 0 && results.length === 0 && <div className="finder-empty">No matches in this survey. {canScanMore ? 'Scan more or choose another scene type.' : 'Try another location or scene type.'}</div>}
+        {!searching && batches > 0 && results.length === 0 && <div className="finder-empty">No matches in this survey.</div>}
         {results.length > 0 && (
           <p className="finder-copy" role="status">
             {results.length} candidates · scores rank visual potential{from && !here ? ` · surveyed from ${from.name}` : ''}

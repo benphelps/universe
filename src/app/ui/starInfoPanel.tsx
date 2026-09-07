@@ -58,7 +58,7 @@ function holePlateSpec(star: Star, system: StarSystem, index: number): PlateSpec
     rows.push(['Accretion', 'starved · interstellar gas only']);
     rows.push([
       'Luminosity',
-      `${feeding.eddingtonRatio.toExponential(1)} L_Edd — a lens, and nothing more`,
+      `${feeding.eddingtonRatio.toExponential(1)} L_Edd · lensing only`,
     ]);
   } else {
     rows.push([

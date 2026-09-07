@@ -475,10 +475,14 @@ table.props th {
   transform: none;
 }
 
+/* Nothing to list, said in a row's own box: the same height as one,
+   and its text starting where the names do. */
 .empty {
+  margin: 0 -5px;
+  padding: 3px 5px 3px 24px;
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--faint);
-  font-size: 12px;
-  margin-top: 2px;
 }
 
 /* ---- shared fragments ---- */
