@@ -7,6 +7,7 @@ import { NEAR_CLOUD_REACH_PC, type CloudEntry } from '../localeInventory';
 import { travelToCloud, type AppSnapshot, type CloudSummary } from '../store';
 import { BodyRow, type BodyRowSpec } from './bodyRow';
 import { fmt, fmtSolarMasses } from './format';
+import { LevelGroup } from './levelGroup';
 import { cssColor, groupPlateRows, type PlateRows, type PlateSpec } from './plate';
 
 /** A cloud's own colour: its emission lines, the starlight it
@@ -111,8 +112,7 @@ export function NebulaLevel({ snap }: { snap: AppSnapshot }): ReactNode {
   return (
     <>
       {cloud && cloud.sources.length > 0 && (
-        <>
-          <h2>Ionizing stars · {cloud.sources.length}</h2>
+        <LevelGroup name="Ionizing stars" tally={cloud.sources.length} folded>
           {cloud.sources.map((source, index) => {
             const { cls, subtype } = spectralClassAndSubtype(source.tEff);
             return (
@@ -130,23 +130,24 @@ export function NebulaLevel({ snap }: { snap: AppSnapshot }): ReactNode {
               />
             );
           })}
-        </>
+        </LevelGroup>
       )}
-      <h2>Clouds near · within {NEAR_CLOUD_REACH_PC} pc</h2>
-      {near ? (
-        near.length > 0 ? (
-          near.map((entry) => (
-            <BodyRow
-              key={entry.seedHex}
-              spec={cloudRowSpec(entry, { here: entry.seedHex === snap.cloud?.seedHex })}
-            />
-          ))
+      <LevelGroup name="Clouds near" tally={`within ${NEAR_CLOUD_REACH_PC} pc`}>
+        {near ? (
+          near.length > 0 ? (
+            near.map((entry) => (
+              <BodyRow
+                key={entry.seedHex}
+                spec={cloudRowSpec(entry, { here: entry.seedHex === snap.cloud?.seedHex })}
+              />
+            ))
+          ) : (
+            <div className="empty">clear sky — no clouds within reach</div>
+          )
         ) : (
-          <div className="empty">clear sky — no clouds within reach</div>
-        )
-      ) : (
-        <div className="empty">charting the clouds nearby…</div>
-      )}
+          <div className="empty">charting the clouds nearby…</div>
+        )}
+      </LevelGroup>
     </>
   );
 }

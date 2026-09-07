@@ -4,6 +4,7 @@ import type { Star } from '../../universe/star/types';
 import type { Planet, StarSystem } from '../../universe/system/types';
 import { host, selectPlanet, selectStar, selectSystemMap, type AppSnapshot } from '../store';
 import { starRowSpec } from './starInfoPanel';
+import { LevelGroup } from './levelGroup';
 import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
 import { fmt } from './format';
 import { cssColor, groupPlateRows, type PlateRows, type PlateSpec } from './plate';
@@ -146,37 +147,39 @@ export function SystemLevel({ snap }: { snap: AppSnapshot }): ReactNode {
 
   return (
     <>
-      <h2>Stars · {primary.companions.length + 1}</h2>
-      {starRow(primary, 0, null)}
-      {primary.companions.map(({ star: other, orbit }, i) => starRow(other, i + 1, orbit))}
-      <BodyRow
-        spec={{
-          name: `${star.designation} system`,
-          kind: 'map',
-          figures: [
-            [String(planets.length), 'planets'],
-            [fmt(extentAu(planets, belts)), 'AU'],
-          ],
-          here: bodyFocused && viewMode === 'system',
-          onClick: selectSystemMap,
-        }}
-      />
-      <h2>Planets · {planets.length}</h2>
-      {planets.length > 0 ? (
-        planets.map((planet, index) => (
-          <BodyRow
-            key={index}
-            spec={planetRowSpec(planet, {
-              here: bodyFocused && viewMode === 'planet' && snap.planetIndex === index,
-              onClick: () => selectPlanet(index, companionIndex),
-            })}
-          />
-        ))
-      ) : (
-        <div className="empty">
-          {companion ? 'no room for planets this close to the primary' : 'no planets formed here'}
-        </div>
-      )}
+      <LevelGroup name="Stars" tally={primary.companions.length + 1}>
+        {starRow(primary, 0, null)}
+        {primary.companions.map(({ star: other, orbit }, i) => starRow(other, i + 1, orbit))}
+        <BodyRow
+          spec={{
+            name: `${star.designation} system`,
+            kind: 'map',
+            figures: [
+              [String(planets.length), 'planets'],
+              [fmt(extentAu(planets, belts)), 'AU'],
+            ],
+            here: bodyFocused && viewMode === 'system',
+            onClick: selectSystemMap,
+          }}
+        />
+      </LevelGroup>
+      <LevelGroup name="Planets" tally={planets.length}>
+        {planets.length > 0 ? (
+          planets.map((planet, index) => (
+            <BodyRow
+              key={index}
+              spec={planetRowSpec(planet, {
+                here: bodyFocused && viewMode === 'planet' && snap.planetIndex === index,
+                onClick: () => selectPlanet(index, companionIndex),
+              })}
+            />
+          ))
+        ) : (
+          <div className="empty">
+            {companion ? 'no room for planets this close to the primary' : 'no planets formed here'}
+          </div>
+        )}
+      </LevelGroup>
     </>
   );
 }

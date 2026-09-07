@@ -417,7 +417,8 @@ table.props th {
 }
 
 /* Section bar, the address bar's sibling: it stays put while the
-   table scrolls beneath it. */
+   table scrolls beneath it. A press folds the section away, and the
+   chevron says which way it stands. */
 #level h2 {
   position: sticky;
   top: 0;
@@ -430,6 +431,48 @@ table.props th {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: var(--faint);
+}
+
+#level h2.folded {
+  margin-bottom: 4px;
+}
+
+#level h2 button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#level h2 button:hover {
+  color: var(--dim);
+}
+
+#level h2 button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#level h2 .group-chevron {
+  flex: none;
+  color: var(--faint);
+  transform: rotate(90deg);
+  transition: transform 120ms ease-out;
+}
+
+#level h2.folded .group-chevron {
+  transform: none;
 }
 
 .empty {
@@ -548,6 +591,10 @@ table.props th {
   .finder-status::before,
   .finder-busy::before {
     animation: none;
+  }
+
+  #level h2 .group-chevron {
+    transition: none;
   }
 }
 
@@ -1515,7 +1562,7 @@ table.props th {
 }
 
 #ladder #level {
-  padding: 4px 16px 8px 40px;
+  padding: 0 16px 8px 40px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -2060,7 +2107,7 @@ table.props th {
   }
 
   #ladder #level {
-    padding: 4px 14px 8px 36px;
+    padding: 0 14px 8px 36px;
   }
 
   #level h2 {
