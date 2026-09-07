@@ -8,7 +8,7 @@ import { travelToCloud, type AppSnapshot } from '../store';
 import { BodyRow } from './bodyRow';
 import { fmt } from './format';
 import { nucleusRowSpec } from './nucleusPanel';
-import { cssColor, type PlateSpec } from './plate';
+import { cssColor, groupPlateRows, type PlateRows, type PlateSpec } from './plate';
 
 /** Galaxy level's plate: the current star's full galactic address. */
 export function galaxyPlateSpec(
@@ -17,6 +17,13 @@ export function galaxyPlateSpec(
   neighborCount: number,
   localePc: GalacticPosition,
 ): PlateSpec {
+  const rows: PlateRows = [
+    ['Region', address.label.split(' · ')[1]],
+    ['Nearest arm', `the ${address.arm} Arm`],
+    ['R_galactic', `${(address.radiusPc / 1000).toFixed(2)} kpc`],
+    ['Height', `${address.heightPc >= 0 ? '+' : '−'}${fmt(Math.abs(address.heightPc), 3)} pc`],
+    ['Neighborhood', `${neighborCount} stars within ${fmt(neighborRadiusPc(localePc), 3)} pc`],
+  ];
   return {
     title: current.designation,
     subtitle: `${current.spectralType} · ${address.sector} Sector`,
@@ -27,13 +34,16 @@ export function galaxyPlateSpec(
       kind: current.spectralType,
       figures: [[`${(address.radiusPc / 1000).toFixed(2)}`, 'kpc']],
     },
-    rows: [
-      ['Region', address.label.split(' · ')[1]],
-      ['Nearest arm', `the ${address.arm} Arm`],
-      ['R_galactic', `${(address.radiusPc / 1000).toFixed(2)} kpc`],
-      ['Height', `${address.heightPc >= 0 ? '+' : '−'}${fmt(Math.abs(address.heightPc), 3)} pc`],
-      ['Neighborhood', `${neighborCount} stars within ${fmt(neighborRadiusPc(localePc), 3)} pc`],
+    rows: [],
+    metrics: [
+      { label: 'Galactic radius', value: (address.radiusPc / 1000).toFixed(2), unit: 'kpc' },
+      { label: 'Height', value: `${address.heightPc >= 0 ? '+' : '−'}${fmt(Math.abs(address.heightPc))}`, unit: 'pc' },
+      { label: 'Nearby stars', value: String(neighborCount), unit: '' },
     ],
+    sections: groupPlateRows(rows, [
+      { id: 'address', title: 'Galactic address', summary: address.label.split(' · ')[1], labels: ['Region', 'Nearest arm', 'R_galactic', 'Height'] },
+      { id: 'neighborhood', title: 'Stellar neighborhood', summary: `within ${fmt(neighborRadiusPc(localePc))} pc`, labels: ['Neighborhood'] },
+    ]),
   };
 }
 

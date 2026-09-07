@@ -6,7 +6,7 @@ import { host, selectPlanet, selectStar, selectSystemMap, type AppSnapshot } fro
 import { starRowSpec } from './starInfoPanel';
 import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
 import { fmt } from './format';
-import { cssColor, type PlateSpec } from './plate';
+import { cssColor, groupPlateRows, type PlateRows, type PlateSpec } from './plate';
 
 export const CLASS_LABEL: Record<Planet['class'], string> = {
   rocky: 'rocky',
@@ -73,6 +73,11 @@ export function systemPlateSpec(system: StarSystem, hostIndex: number): PlateSpe
         ? ' · binary'
         : '';
 
+  const rows: PlateRows = [
+    ['Star', `${fmt(star.mass)} M☉ · ${fmt(star.luminosity)} L☉`],
+    ['Habitable zone', `${fmt(zones.habitableInnerAu)}–${fmt(zones.habitableOuterAu)} AU`],
+    ['Frost line', `${fmt(zones.frostLineAu)} AU`],
+  ];
   return {
     title: star.designation,
     subtitle: `${star.spectralType}${configuration} · ${planets.length} planets`,
@@ -86,11 +91,15 @@ export function systemPlateSpec(system: StarSystem, hostIndex: number): PlateSpe
         [String(planets.length), 'planets'],
       ],
     },
-    rows: [
-      ['Star', `${fmt(star.mass)} M☉ · ${fmt(star.luminosity)} L☉`],
-      ['Habitable zone', `${fmt(zones.habitableInnerAu)}–${fmt(zones.habitableOuterAu)} AU`],
-      ['Frost line', `${fmt(zones.frostLineAu)} AU`],
+    rows: [],
+    metrics: [
+      { label: 'Star mass', value: fmt(star.mass), unit: 'M☉' },
+      { label: 'Luminosity', value: fmt(star.luminosity), unit: 'L☉' },
+      { label: 'Planets', value: String(planets.length), unit: '' },
     ],
+    sections: groupPlateRows(rows, [
+      { id: 'zones', title: 'Host star & orbital zones', summary: `${fmt(zones.habitableInnerAu)}–${fmt(zones.habitableOuterAu)} AU habitable zone`, labels: ['Star', 'Habitable zone', 'Frost line'] },
+    ]),
   };
 }
 

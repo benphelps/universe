@@ -6,7 +6,7 @@ import { galacticNucleus, type GalacticNucleus } from '../../universe/galaxy/nuc
 import { viewCore } from '../store';
 import type { BodyRowSpec } from './bodyRow';
 import { fmt, fmtSolarMasses } from './format';
-import { cssColor, type PlateSpec } from './plate';
+import { cssColor, groupPlateRows, type PlateRows, type PlateSpec } from './plate';
 
 const FLOW_LABEL: Record<FlowRegime, string> = {
   'thin-disc': 'thin accretion disc',
@@ -49,22 +49,32 @@ function span(metres: number): string {
 export function nucleusPlateSpec(): PlateSpec {
   const n = galacticNucleus();
   const flow = n.flow;
+  const rows: PlateRows = [
+    ['Mass', `${fmt(n.massSolar)} M☉`],
+    ['Spin a★', n.spin.toFixed(3)],
+    ['Schwarzschild r', span(2 * n.gravitationalRadiusM)],
+    ['Shadow radius', span(n.shadowRadiusM)],
+    ['Last stable orbit', `${span(n.iscoRadiusM)} · ${fmt(n.iscoPeriodS / 60)} min`],
+    ['Influence radius', `${fmt(n.influenceRadiusPc)} pc`],
+    ['L / L_Edd', fmt(flow.eddingtonRatio)],
+    ['Luminosity', `${fmt(flow.luminosityW / SOLAR_LUMINOSITY)} L☉`],
+    ['Efficiency', `${(100 * flow.efficiency).toFixed(1)}%`],
+    ['Inner flow T', `${fmt(flow.innerTemperatureK)} K`],
+  ];
   return {
     title: 'Galactic Core',
     subtitle: `supermassive black hole · ${FLOW_LABEL[flow.regime]}`,
     row: nucleusRowSpec(n),
     // A hole has no light of its own; the strip stays dark.
-    rows: [
-      ['Mass', `${fmt(n.massSolar)} M☉`],
-      ['Spin a★', n.spin.toFixed(3)],
-      ['Schwarzschild r', span(2 * n.gravitationalRadiusM)],
-      ['Shadow radius', span(n.shadowRadiusM)],
-      ['Last stable orbit', `${span(n.iscoRadiusM)} · ${fmt(n.iscoPeriodS / 60)} min`],
-      ['Influence radius', `${fmt(n.influenceRadiusPc)} pc`],
-      ['L / L_Edd', fmt(flow.eddingtonRatio)],
-      ['Luminosity', `${fmt(flow.luminosityW / SOLAR_LUMINOSITY)} L☉`],
-      ['Efficiency', `${(100 * flow.efficiency).toFixed(1)}%`],
-      ['Inner flow T', `${fmt(flow.innerTemperatureK)} K`],
+    rows: [],
+    metrics: [
+      { label: 'Mass', value: fmtSolarMasses(n.massSolar), unit: 'M☉' },
+      { label: 'Spin a★', value: n.spin.toFixed(3), unit: '' },
+      { label: 'Shadow radius', value: span(n.shadowRadiusM), unit: '' },
     ],
+    sections: groupPlateRows(rows, [
+      { id: 'geometry', title: 'Mass & geometry', summary: `${fmt(n.influenceRadiusPc)} pc influence radius`, labels: ['Mass', 'Spin a★', 'Schwarzschild r', 'Shadow radius', 'Last stable orbit', 'Influence radius'] },
+      { id: 'accretion', title: 'Accretion & light', summary: FLOW_LABEL[flow.regime], labels: ['L / L_Edd', 'Luminosity', 'Efficiency', 'Inner flow T'] },
+    ]),
   };
 }

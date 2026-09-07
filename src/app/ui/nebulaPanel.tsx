@@ -5,8 +5,8 @@ import { spectralClassAndSubtype } from '../../universe/star/classification';
 import { NEAR_CLOUD_REACH_PC, type CloudEntry } from '../localeInventory';
 import { travelToCloud, type AppSnapshot, type CloudSummary } from '../store';
 import { BodyRow, type BodyRowSpec } from './bodyRow';
-import { fmt } from './format';
-import { cssColor, type PlateSpec } from './plate';
+import { fmt, fmtSolarMasses } from './format';
+import { cssColor, groupPlateRows, type PlateRows, type PlateSpec } from './plate';
 
 /** A cloud's own colour: its emission lines, the starlight it
  *  scatters, or the grey of dust that catches nothing. */
@@ -36,6 +36,22 @@ export function cloudTitle(name: string, kind: NebulaKind): string {
 export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
   const color = CLOUD_COLOR[cloud.kind];
   const kind = CLOUD_KIND[cloud.kind];
+  const rows: PlateRows = [
+    ['Natal gas mass', `≈ ${fmt(cloud.massSolar, 3)} M☉`],
+    ['Natal mean density', `≈ ${fmt(cloud.meanDensity, 3)} H/cm³`],
+    ['Metallicity', `${cloud.metallicity >= 0 ? '+' : '−'}${Math.abs(cloud.metallicity).toFixed(2)} dex`],
+    ...(cloud.sources.length > 0
+      ? ([
+          ['Ionizing stars', `${cloud.sources.length}`],
+          ['Hottest', `${fmt(cloud.hottestTeff, 3)} K`],
+          ['Gas at those stars', `${fmt(cloud.sourceDensity, 3)} H/cm³`],
+          ['Initial Strömgren radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
+          ['Expanded bubble radius', `${fmt(cloud.bubbleRadiusPc, 3)} pc`],
+          ['Expansion reach estimate', `${fmt(cloud.frontReachPc, 3)} pc`],
+          ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
+        ] as Array<[string, string]>)
+      : ([['Star formation', 'none lit']] as Array<[string, string]>)),
+  ];
   return {
     title: cloudTitle(cloud.name, cloud.kind),
     subtitle: `${kind} · ${fmt(cloud.spanPc, 3)} pc across`,
@@ -46,22 +62,17 @@ export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
       kind,
       figures: [[fmt(cloud.radiusPc, 3), 'pc']],
     },
-    rows: [
-      ['Natal gas mass', `≈ ${fmt(cloud.massSolar, 3)} M☉`],
-      ['Natal mean density', `≈ ${fmt(cloud.meanDensity, 3)} H/cm³`],
-      ['Metallicity', `${cloud.metallicity >= 0 ? '+' : '−'}${Math.abs(cloud.metallicity).toFixed(2)} dex`],
-      ...(cloud.sources.length > 0
-        ? ([
-            ['Ionizing stars', `${cloud.sources.length}`],
-            ['Hottest', `${fmt(cloud.hottestTeff, 3)} K`],
-            ['Gas at those stars', `${fmt(cloud.sourceDensity, 3)} H/cm³`],
-            ['Initial Strömgren radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
-            ['Expanded bubble radius', `${fmt(cloud.bubbleRadiusPc, 3)} pc`],
-            ['Expansion reach estimate', `${fmt(cloud.frontReachPc, 3)} pc`],
-            ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
-          ] as Array<[string, string]>)
-        : ([['Star formation', 'none lit']] as Array<[string, string]>)),
+    rows: [],
+    metrics: [
+      { label: 'Span', value: fmt(cloud.spanPc), unit: 'pc' },
+      { label: 'Natal mass', value: `≈ ${cloud.massSolar >= 1000 ? fmtSolarMasses(cloud.massSolar) : fmt(cloud.massSolar)}`, unit: 'M☉' },
+      { label: 'Ionizing stars', value: String(cloud.sources.length), unit: '' },
     ],
+    sections: groupPlateRows(rows, [
+      { id: 'gas', title: 'Gas & composition', summary: `≈ ${fmt(cloud.meanDensity)} H/cm³ natal mean`, labels: ['Natal gas mass', 'Natal mean density', 'Metallicity'] },
+      { id: 'sources', title: 'Sources & illumination', summary: cloud.sources.length ? `${fmt(cloud.hottestTeff)} K hottest source` : 'no ionizing stars lit', labels: ['Ionizing stars', 'Hottest', 'Gas at those stars', 'Star formation'] },
+      { id: 'expansion', title: 'Extent & evolution', summary: `${fmt(cloud.ageMyr, 2)} Myr`, labels: ['Initial Strömgren radius', 'Expanded bubble radius', 'Expansion reach estimate', 'Age'] },
+    ]),
   };
 }
 

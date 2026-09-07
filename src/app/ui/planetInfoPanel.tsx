@@ -12,8 +12,8 @@ import type { Planet, StarSystem } from '../../universe/system/types';
 import { host, selectMoon, stepBody, stepMoon, type AppSnapshot } from '../store';
 import { BodyRow, type Badge, type BodyRowSpec } from './bodyRow';
 import { fmt, fmtDays } from './format';
-import type { PlateSpec } from './plate';
-import { CLASS_COLOR, planetRowSpec } from './systemInfoPanel';
+import { groupPlateRows, type PlateRows, type PlateSection, type PlateSpec } from './plate';
+import { CLASS_COLOR, CLASS_LABEL, planetRowSpec } from './systemInfoPanel';
 import { SeasonalReadout } from './seasonalReadout';
 
 const TAXONOMY_LABEL: Record<Asteroid['taxonomy'], string> = {
@@ -119,47 +119,77 @@ export function planetPlateSpec(
   const { bulk, interior, rotation, atmosphere, climate, appearance } = planet.physical;
   const aAu = planet.elements.semiMajorAxis / AU;
 
-  const rows: Array<[string, ReactNode]> = [
-    ['Class', planet.class + (climate.snowball ? ' (snowball)' : '')],
-    ['Mass', `${fmt(bulk.massEarth)} M⊕`],
-    ['Radius', `${fmt(bulk.radiusEarth)} R⊕ · ${fmt(bulk.densityGcc)} g/cm³`],
-    ['Gravity', `${fmt(bulk.gravityMs2 / 9.81, 2)} g`],
-    ['Orbit', `${fmt(aAu)} AU · e ${fmt(planet.elements.eccentricity, 2)}`],
-    [
-      'Rotation',
-      rotation.locked
-        ? 'tidally locked'
-        : rotation.spinOrbitResonance
-          ? `3:2 resonance (${fmtDays(rotation.periodHours / 24)})`
-          : `${fmtDays(rotation.periodHours / 24)} · tilt ${fmt((rotation.obliquityRad * 180) / Math.PI, 2)}°${
-              rotation.obliquityRad > Math.PI / 2 ? ' · retrograde' : ''
-            }`,
-    ],
+  const giant = atmosphere.class === 'hydrogen-helium';
+  const classLabel = CLASS_LABEL[planet.class] + (climate.snowball ? ' · snowball' : '');
+  const rotationLabel = rotation.locked
+    ? 'tidally locked'
+    : rotation.spinOrbitResonance
+      ? `3:2 resonance (${fmtDays(rotation.periodHours / 24)})`
+      : `${fmtDays(rotation.periodHours / 24)} · tilt ${fmt((rotation.obliquityRad * 180) / Math.PI, 2)}°${rotation.obliquityRad > Math.PI / 2 ? ' · retrograde' : ''}`;
+  const climateRows: PlateRows = [
+    ['Temperature', temperatureLine(planet)],
+    ['Albedo', fmt(climate.bondAlbedo, 2)],
+  ];
+  if (climate.surfaceField) climateRows.push(
+    ['Annual reference', <span title="Equilibrium under annual-average forcing, not seasonal extrema">{`${fmt(climate.surfaceField.minimumK, 3)}–${fmt(climate.surfaceField.maximumK, 3)} K · datum`}</span>],
+    ['Below view', <SeasonalReadout key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />],
+    ['Terrain climate', <SeasonalReadout annual key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />],
+  );
+  if (!giant) climateRows.push(['Surface', surfaceLine(planet)]);
+
+  const airRows: PlateRows = [
     ['Atmosphere', atmosphereLine(planet)],
     [appearance.banding ? 'Atmospheric bands' : 'Clouds', appearance.banding
       ? `${appearance.banding.bandCount} belts/zones${appearance.banding.majorStormSize > 0 ? ' · major storm' : ''}`
       : cloudLine(appearance.clouds)],
-    ['T', temperatureLine(planet)],
-    ['Albedo', fmt(climate.bondAlbedo, 2)],
   ];
-  if (climate.surfaceField) rows.push(['Annual reference', <span title="Equilibrium under annual-average forcing, not seasonal extrema">{`${fmt(climate.surfaceField.minimumK, 3)}–${fmt(climate.surfaceField.maximumK, 3)} K · datum`}</span>]);
-  if (climate.surfaceField) rows.push(['Seasonal T', <SeasonalReadout key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />]);
-  if (climate.surfaceField) rows.push(['Terrain climate', <SeasonalReadout annual key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />]);
-  if (atmosphere.class !== 'hydrogen-helium') {
-    rows.push(['Surface', surfaceLine(planet)]);
-    rows.push(['Geology', REGIME_LABEL[interior.regime]]);
-  }
-  if (atmosphere.surfacePressureBar > 0 && atmosphere.partialPressuresBar) {
-    rows.push(['Gas mixture', compositionLine(atmosphere)]);
-    rows.push(['Scale height', `${fmt(atmosphere.scaleHeightKm, 3)} km · μ ${fmt(atmosphere.meanMolecularMassAmu ?? 0, 3)} u`]);
-  }
-  rows.push(...columnRows(planet.physical));
-  rows.push([
-    'Magnetic',
-    interior.magneticFieldRelEarth > 0.02
-      ? `${fmt(interior.magneticFieldRelEarth, 2)}× Earth`
-      : 'none',
-  ]);
+  if (atmosphere.surfacePressureBar > 0 && atmosphere.partialPressuresBar) airRows.push(
+    ['Gas mixture', compositionLine(atmosphere)],
+    ['Scale height', `${fmt(atmosphere.scaleHeightKm, 3)} km · μ ${fmt(atmosphere.meanMolecularMassAmu ?? 0, 3)} u`],
+  );
+  airRows.push(...columnRows(planet.physical));
+
+  const bodyRows: PlateRows = [
+    ['Class', classLabel],
+    ['Mass', `${fmt(bulk.massEarth)} M⊕`],
+    ['Radius', `${fmt(bulk.radiusEarth)} R⊕`],
+    ['Density', `${fmt(bulk.densityGcc)} g/cm³`],
+    ['Gravity', `${fmt(bulk.gravityMs2 / 9.81, 2)} g`],
+  ];
+  if (!giant) bodyRows.push(['Geology', REGIME_LABEL[interior.regime]]);
+  bodyRows.push(['Magnetic', interior.magneticFieldRelEarth > 0.02
+    ? `${fmt(interior.magneticFieldRelEarth, 2)}× Earth` : 'none']);
+
+  const sections: PlateSection[] = [
+    {
+      id: 'climate', title: giant ? 'Temperature & climate' : 'Climate & surface',
+      summary: giant ? `${fmt(climate.surfaceMeanK, 3)} K ${appearance.banding ? 'effective' : climate.surfaceField ? 'annual equilibrium' : 'mean'}` : surfaceLine(planet),
+      rows: climateRows,
+      notes: climate.surfaceField ? 'The annual reference is equilibrium under annual-average forcing, not seasonal extrema. Below-view temperature is a seasonal estimate at the camera latitude; terrain climate is its persistent reference. Seasonal snow changes appearance while water-phase geometry stays fixed.' : undefined,
+    },
+    {
+      id: 'atmosphere', title: appearance.banding ? 'Atmosphere & bands' : 'Atmosphere & clouds',
+      summary: <>{atmosphereLine(planet)}{appearance.banding
+        ? ` · ${appearance.banding.bandCount} belts/zones`
+        : appearance.clouds.condensate !== 'none' ? ` · ${fmt(appearance.clouds.coverage * 100, 2)}% cloud cover` : ''}</>,
+      rows: airRows,
+      notes: atmosphere.surfacePressureBar > 0 ? 'Gas abundances and the atmospheric column are model estimates. Reference humidity uses the annual datum temperature, not current weather. Infrared opacity is approximate; a habitable-zone or biosphere flag does not imply breathable air.' : undefined,
+    },
+    {
+      id: 'body', title: giant ? 'Body & interior' : 'Body & geology',
+      summary: `${fmt(bulk.massEarth)} M⊕${giant ? '' : ` · ${REGIME_LABEL[interior.regime]}`}`,
+      rows: bodyRows,
+    },
+    {
+      id: 'orbit', title: planet.rings ? 'Orbit, rotation & rings' : 'Orbit & rotation',
+      summary: `${fmt(aAu)} AU · ${rotation.locked ? 'tidally locked' : fmtDays(rotation.periodHours / 24) + ' rotation'}`,
+      rows: [['Orbit', `${fmt(aAu)} AU · e ${fmt(planet.elements.eccentricity, 2)}`], ['Rotation', rotationLabel]],
+      extra: planet.rings && <div className="belt-row">
+        {planet.rings.composition} rings · {fmt(planet.rings.innerPlanetRadii, 2)}–{fmt(planet.rings.outerPlanetRadii, 2)} R_p
+        {planet.rings.gaps.length > 0 && ` · ${planet.rings.gaps.length} gaps`}
+      </div>,
+    },
+  ];
 
   return {
     title: planet.name,
@@ -175,14 +205,14 @@ export function planetPlateSpec(
     ),
     color: CLASS_COLOR[planet.class],
     row: planetRowSpec(planet),
-    rows,
-    extra: planet.rings && (
-      <div className="belt-row">
-        {planet.rings.composition} rings · {fmt(planet.rings.innerPlanetRadii, 2)}–
-        {fmt(planet.rings.outerPlanetRadii, 2)} R_p
-        {planet.rings.gaps.length > 0 && ` · ${planet.rings.gaps.length} gaps`}
-      </div>
-    ),
+    rows: [],
+    classification: classLabel,
+    metrics: [
+      { label: 'Radius', value: fmt(bulk.radiusEarth), unit: 'R⊕' },
+      { label: 'Gravity', value: fmt(bulk.gravityMs2 / 9.81, 2), unit: 'g' },
+      { label: appearance.banding ? 'Effective T' : climate.surfaceField ? 'Annual eq.' : 'Mean T', value: fmt(climate.surfaceMeanK, 3), unit: 'K' },
+    ],
+    sections,
     onStep: stepBody,
   };
 }
@@ -233,7 +263,19 @@ export function moonPlateSpec(
     subtitle: `moon ${moonIndex + 1} of ${parent.moons.length} · ${parent.name} · ${hostStar.spectralType}`,
     color: CLASS_COLOR[parent.class],
     row: moonRowSpec(moon),
-    rows,
+    rows: [],
+    classification: moon.channel === 'capture' ? 'captured moon' : `${moon.channel} moon`,
+    metrics: [
+      { label: 'Radius', value: fmt(radiusKm), unit: 'km' },
+      { label: 'Gravity', value: fmt(bulk.gravityMs2 / 9.81, 2), unit: 'g' },
+      { label: climate.surfaceField ? 'Annual eq.' : 'Mean T', value: fmt(climate.surfaceMeanK, 3), unit: 'K' },
+    ],
+    sections: groupPlateRows(rows, [
+      { id: 'climate', title: 'Climate & surface', summary: hydrosphereLine(climate), labels: ['T', 'Surface', 'Annual reference', 'Seasonal T', 'Terrain climate'] },
+      { id: 'atmosphere', title: 'Atmosphere & clouds', summary: atmosphere.class === 'none' ? 'airless' : `${ATMOSPHERE_LABEL[atmosphere.class]} · ${fmt(atmosphere.surfacePressureBar)} bar`, labels: ['Atmosphere', 'Clouds', 'Gas mixture', 'Scale height', 'Column estimate', 'Water vapor', 'Water partition', 'Cloud-top gas'] },
+      { id: 'body', title: 'Body & tides', summary: moon.tidalState === 'dead' ? REGIME_LABEL[interior.regime] : TIDAL_LABEL[moon.tidalState], labels: ['Origin', 'Radius', 'Gravity', 'Geology', 'Tidal state'] },
+      { id: 'orbit', title: 'Orbit & rotation', summary: `${fmt(moon.semiMajorAxisPlanetRadii)} R_p · ${rotation.locked ? 'locked to planet' : fmtDays(rotation.periodHours / 24)}`, labels: ['Orbit', 'Rotation', 'Solar day'] },
+    ]),
     onStep: stepMoon,
   };
 }
@@ -253,24 +295,34 @@ export function asteroidPlateSpec(
   ]
     .filter(Boolean)
     .join(' · ');
+  const rows: PlateRows = [
+    ['Diameter', `${fmt(asteroid.diameterKm)} km`],
+    [
+      'Shape',
+      `elongation ${fmt(1 / shape.elongation, 2)} : 1 · flattening ${fmt(shape.flattening, 2)}`,
+    ],
+    ['Structure', structure],
+    ['Spin', fmtDays(asteroid.spinPeriodHours / 24)],
+    [
+      'Orbit',
+      `${fmt(aAu)} AU · e ${fmt(asteroid.elements.eccentricity, 2)} · i ${fmt((asteroid.elements.inclination * 180) / Math.PI, 2)}°`,
+    ],
+    ['Albedo', fmt(asteroid.albedo, 2)],
+  ];
   return {
     title: `${system.star.designation} ${asteroidDesignation(asteroid)}`,
     subtitle: `${subtitle} · ${TAXONOMY_LABEL[asteroid.taxonomy]}`,
     color: TAXONOMY_COLOR[asteroid.taxonomy],
-    rows: [
-      ['Diameter', `${fmt(asteroid.diameterKm)} km`],
-      [
-        'Shape',
-        `elongation ${fmt(1 / shape.elongation, 2)} : 1 · flattening ${fmt(shape.flattening, 2)}`,
-      ],
-      ['Structure', structure],
-      ['Spin', fmtDays(asteroid.spinPeriodHours / 24)],
-      [
-        'Orbit',
-        `${fmt(aAu)} AU · e ${fmt(asteroid.elements.eccentricity, 2)} · i ${fmt((asteroid.elements.inclination * 180) / Math.PI, 2)}°`,
-      ],
-      ['Albedo', fmt(asteroid.albedo, 2)],
+    rows: [],
+    metrics: [
+      { label: 'Diameter', value: fmt(asteroid.diameterKm), unit: 'km' },
+      { label: 'Spin', value: fmtDays(asteroid.spinPeriodHours / 24), unit: '' },
+      { label: 'Orbit', value: fmt(aAu), unit: 'AU' },
     ],
+    sections: groupPlateRows(rows, [
+      { id: 'body', title: 'Shape & material', summary: structure, labels: ['Diameter', 'Shape', 'Structure', 'Albedo'] },
+      { id: 'orbit', title: 'Orbit & rotation', summary: `e ${fmt(asteroid.elements.eccentricity, 2)}${asteroid.tumbling ? ' · tumbling' : ''}`, labels: ['Orbit', 'Spin'] },
+    ]),
     onStep,
   };
 }

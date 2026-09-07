@@ -12,7 +12,7 @@ import { stellarBlackHole } from '../../universe/star/stellarHole';
 import type { StarSystem } from '../../universe/system/types';
 import { BodyRow, type BodyRowSpec } from './bodyRow';
 import { fmt, fmtDays, fmtYears } from './format';
-import { cssColor, type PlateSpec } from './plate';
+import { cssColor, groupPlateRows, type PlateSpec } from './plate';
 
 /** The travel table stays readable: nearest systems only, of thousands. */
 const TRAVEL_ROWS = 80;
@@ -87,7 +87,17 @@ function holePlateSpec(star: Star, system: StarSystem, index: number): PlateSpec
         [fmt(2 * hole.shadowRadiusM / 1000), 'km'],
       ],
     },
-    rows,
+    rows: [],
+    metrics: [
+      { label: 'Mass', value: fmt(star.mass), unit: 'M☉' },
+      { label: 'Spin a★', value: fmt(hole.spin), unit: '' },
+      { label: 'Horizon', value: fmt(hole.horizonRadiusM / 1000), unit: 'km' },
+    ],
+    sections: groupPlateRows(rows, [
+      { id: 'geometry', title: 'Mass & geometry', summary: `${fmt(2 * hole.shadowRadiusM / 1000)} km shadow diameter`, labels: ['Mass', 'Spin', 'Horizon', 'Photon orbit', 'Last stable orbit', 'Shadow', 'Gravitational radius'] },
+      { id: 'accretion', title: 'Accretion & light', summary: feeding.mode === 'starved' ? 'starved · interstellar gas only' : feeding.mode === 'roche-lobe' ? 'Roche-lobe overflow' : 'wind-fed', labels: ['Accretion', 'Ṁ', 'Luminosity'] },
+      { id: 'history', title: 'History & identity', summary: fmtYears(star.ageGyr * 1e9), labels: ['Age', 'Survey id'] },
+    ]),
   };
 }
 
@@ -162,7 +172,17 @@ export function starPlateSpec(star: Star, system?: StarSystem, index = 0): Plate
     subtitle: `${star.spectralType} · ${STAGE_LABEL[star.stage]}`,
     color: cssColor(star.linearRgb),
     row: starRowSpec(star),
-    rows,
+    rows: [],
+    metrics: [
+      { label: 'Mass', value: fmt(star.mass), unit: 'M☉' },
+      { label: 'Radius', value: fmt(star.radius), unit: 'R☉' },
+      { label: 'Effective T', value: star.tEff > 0 ? fmt(star.tEff, 4) : '—', unit: star.tEff > 0 ? 'K' : '' },
+    ],
+    sections: groupPlateRows(rows, [
+      { id: 'stellar', title: 'Stellar properties', summary: `${fmt(star.luminosity)} L☉ · ${STAGE_LABEL[star.stage]}`, labels: ['Mass', 'Radius', 'Luminosity', 'T_eff'] },
+      { id: 'activity', title: 'Rotation & activity', summary: `${fmtDays(star.activity.rotationPeriodDays)} rotation${star.variability ? ` · ${star.variability.type}` : ''}`, labels: ['Rotation', 'Spots', 'Clouds', 'Variable', 'Flares'] },
+      { id: 'history', title: 'History & composition', summary: `${fmtYears(star.ageGyr * 1e9)} · ${star.population.replace('-', ' ')}`, labels: ['Age', '[Fe/H]', 'Survey id'] },
+    ]),
   };
 }
 
