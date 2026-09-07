@@ -40,7 +40,7 @@ export function SectorLevel({ snap }: { snap: AppSnapshot }): ReactNode {
           <div className="empty">nothing lit in this sector</div>
         )}
       </LevelGroup>
-      <LevelGroup name="Rifts" tally={rifts.length}>
+      <LevelGroup name="Rifts" tally={rifts.length} folded>
         {rifts.length > 0 ? (
           rifts.map((entry) => (
             <BodyRow key={entry.seedHex} spec={cloudRowSpec(entry, { here: entry.seedHex === focused })} />
@@ -49,7 +49,7 @@ export function SectorLevel({ snap }: { snap: AppSnapshot }): ReactNode {
           <div className="empty">no dark clouds in this sector</div>
         )}
       </LevelGroup>
-      <LevelGroup name="Clusters" tally={clusters.length}>
+      <LevelGroup name="Clusters" tally={clusters.length} folded>
         {clusters.length > 0 ? (
           clusters.map((cluster, index) => (
             <BodyRow
