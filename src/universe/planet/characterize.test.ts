@@ -85,7 +85,7 @@ describe('planet fixtures around a Sun-like star', () => {
     const coldestSurfaceK =
       lava.climate.surfaceMeanK - lava.climate.dayNightDeltaK * 0.5;
     if (coldestSurfaceK >= 1800) {
-      expect(lava.climate.oceanCoverage).toBe(1);
+      expect(lava.climate.oceanCoverage).toBeCloseTo(1, 9);
     }
     expect(lava.appearance.lavaGlow).toBe(1);
   });

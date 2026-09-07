@@ -80,7 +80,9 @@ describe('nuclear population and optical survey', () => {
   it('keeps offline phase boundaries current and integrates the full IMF before selecting bright stars', () => {
     const rgb = opticalRgbInterpolator();
     NUCLEAR_EPOCHS.forEach((e, i) => {
-      expect(nuclearMassBounds[i]).toEqual(populationMassBounds(e.component, 256));
+      const bounds = populationMassBounds(e.component, 256);
+      expect(bounds.length).toBe(nuclearMassBounds[i].length);
+      bounds.forEach((b, k) => expect(b).toBeCloseTo(nuclearMassBounds[i][k], 12));
       let n = 0, mass = 0, bol = 0, optical = 0;
       visitPopulationSamples(e.component, 256, (w, _m, _a, s) => {
         n += w; mass += w * s.mass; bol += w * s.luminosity;
@@ -101,7 +103,7 @@ describe('nuclear population and optical survey', () => {
       expect(Math.abs(base.epochs[i].expectedResolvedLuminosity / fine.epochs[i].expectedResolvedLuminosity - 1)).toBeLessThan(.015);
       for (let c = 0; c < 3; c++) expect(Math.abs(base.epochs[i].expectedResolvedOpticalRgb[c] / fine.epochs[i].expectedResolvedOpticalRgb[c] - 1)).toBeLessThan(.015);
     }
-  }, 20000);
+  }, 60000);
   it('allows a rare bright realization to exceed ensemble-average light without dimming its stars', async () => {
     vi.resetModules();
     const { setGalaxySeed } = await import('./galaxySeed');

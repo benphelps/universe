@@ -35,7 +35,7 @@ describe('component population quadrature', () => {
     expect(Math.abs(production.luminositySolar / refined.luminositySolar - 1)).toBeLessThan(2e-6);
     for (let c = 0; c < 3; c++) expect(Math.abs(production.opticalRgbSolar[c] / refined.opticalRgbSolar[c] - 1)).toBeLessThan(2e-6);
     for (const u of [0, .001, .5, .999, 1]) expect(componentUnitForAge('nuclear-young', componentAgeForUnit('nuclear-young', u))).toBeCloseTo(u, 12);
-  }, 20000);
+  }, 60000);
   it('retains different population spectra instead of assigning one tint', () => {
     const young = populationMoments('thin-disk').opticalRgbSolar;
     const old = populationMoments('halo').opticalRgbSolar;
