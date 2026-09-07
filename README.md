@@ -46,6 +46,8 @@ Scroll to ride between scales · drag to orbit · right-drag (or right-shift + d
 
 On a planet's surface: `W`/`A`/`S`/`D` flies where you look, `Space`/`C` for altitude, `Shift` to boost.
 
+For photographic locations, open **Finders → Scenic locations**, choose a scene type, and select **Find scenes**. Surveys rank nearby worlds, local nebulae, galaxy shapes, and catalog nuclei by physical traits. **Scan more** expands the shortlist; each candidate opens in a separate tab with framing suggestions. These are scouting destinations, not precomposed camera poses or guaranteed sunsets.
+
 ### Addresses
 
 The URL records your location and selected body. Share it to revisit that destination with the same model version; exact camera pose, simulation time and viewing settings are not all encoded.

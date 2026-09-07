@@ -11,6 +11,7 @@ import {
   type AppSnapshot,
 } from '../store';
 import { fmt, fmtDays } from './format';
+import { ScenicFinderPanel } from './scenicFinderPanel';
 
 const FINDER = (
   <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round">
@@ -144,6 +145,7 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
       </button>
       <div id="finder-menu" hidden={!open} role="dialog" aria-label="finders">
         <h3 className="finder-title">Finders</h3>
+        <ScenicFinderPanel snap={snap} />
         <section className="finder-tool">
           <div className="finder-tool-head">
             <span className="finder-tool-icon">{ECLIPSE}</span>

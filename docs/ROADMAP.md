@@ -9,6 +9,8 @@ The September 2026 audit has reached an integration checkpoint. Galaxy structure
 3. **Targeted scientific validation.** Expand population/track coverage, calibrate galaxy families and test end-to-end light/extinction across selected cameras. Add reference cases where they constrain the model meaningfully.
 4. **Focused surface and system improvements.** Use visual review to select remaining geology, gas-giant and small-body work. Prefer coherent changes to adding more loosely coupled layers.
 
+Scenic-finder validation follow-up: recheck cold entry to cloud `763471a21928992d` in galaxy `53494d5f554e4956`, via system `c85d28a653fa4657` at `-1770.5965_-8167.8053_-122.7545`. The in-app browser preview stalled; distinguish a rendering/loading hitch from a browser-session issue before assigning a cause. The worker survey and planet/companion destination checks completed.
+
 ## Deliberately deferred
 
 - Full radiation hydrodynamics, nebular metal chemistry and evolving dust.
