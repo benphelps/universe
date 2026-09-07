@@ -820,6 +820,7 @@ export function travelToEclipse(destination: {
   positionPc: GalacticPosition;
   hostIndex: number;
   planetIndex: number;
+  observerMoonIndex: number;
   timeDays: number;
   arrivalTimeDays: number;
   surfaceDirection: [number, number, number];
@@ -832,7 +833,7 @@ export function travelToEclipse(destination: {
   if (viewer) viewer.simulationTimeDays = destination.arrivalTimeDays;
   focusBody('planet', 'world');
   planetIndex = destination.planetIndex;
-  moonIndex = -1;
+  moonIndex = destination.observerMoonIndex;
   companionIndex = destination.hostIndex;
   load(destination.seedHex, destination.positionPc);
   // A system change deliberately resets host selection. Restore a
@@ -840,6 +841,7 @@ export function travelToEclipse(destination: {
   if (companionIndex !== destination.hostIndex) {
     companionIndex = destination.hostIndex;
     planetIndex = destination.planetIndex;
+    moonIndex = destination.observerMoonIndex;
     load(destination.seedHex);
   }
   viewer?.landAtSurface(destination.surfaceDirection, destination.sunDirection);

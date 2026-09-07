@@ -1,6 +1,6 @@
+import { searchEclipses } from '../eclipseSearch';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
-  findNearbyEclipses,
   MAX_ECLIPSE_NEIGHBORS,
   type EclipseResult,
   type EclipseSearchProgress,
@@ -30,6 +30,7 @@ const ECLIPSE = (
 );
 
 function resultTitle(result: EclipseResult): string {
+  if (result.kind === 'transit') return 'Planetary transit';
   return `${result.kind[0].toUpperCase()}${result.kind.slice(1)} eclipse`;
 }
 
@@ -74,6 +75,8 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
   const [progress, setProgress] = useState<EclipseSearchProgress | null>(null);
   const [results, setResults] = useState<EclipseResult[]>([]);
   const [empty, setEmpty] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [eventFilter, setEventFilter] = useState<import('../eclipseFinder').EclipseFilter>('all');
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<AbortController | null>(null);
 
@@ -108,20 +111,24 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
     });
     setResults([]);
     setEmpty(false);
+    setSearchError(null);
     try {
-      const found = await findNearbyEclipses(
+      const found = await searchEclipses(
         snap.system,
         snap.neighbors,
         simulationTimeDays(),
         setProgress,
         controller.signal,
+        eventFilter,
       );
       if (!controller.signal.aborted) {
         setResults(found);
         setEmpty(found.length === 0);
       }
+    } catch (error) {
+      if (!controller.signal.aborted) setSearchError(error instanceof Error ? error.message : 'Eclipse search failed');
     } finally {
-      if (!controller.signal.aborted) setSearching(false);
+      setSearching(false);
     }
   };
 
@@ -151,12 +158,23 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
             <span className="finder-tool-icon">{ECLIPSE}</span>
             <span>
               <strong>Eclipse</strong>
-              <small>Next-day moon shadow in an atmospheric sky</small>
+              <small>Eclipses and transits from planets and moons</small>
             </span>
           </div>
           <p className="finder-copy">
-            Rank up to three active or next-day eclipses by sky clarity, depth, timing, and distance.
+            Rank up to three active or next-day events by sky clarity, depth, timing, and distance. Airless worlds included.
           </p>
+          <label className="scenic-filter finder-copy">
+            Event type{' '}
+            <select aria-label="Eclipse event type" value={eventFilter} disabled={searching}
+              onChange={event => { setEventFilter(event.target.value as typeof eventFilter); setResults([]); setEmpty(false); }}>
+              <option value="all">All eclipses and transits</option>
+              <option value="moon-shadow">Moon across star · from planet</option>
+              <option value="parent-planet">Parent across star · from moon</option>
+              <option value="sibling-moon">Moon across star · from another moon</option>
+              <option value="other-planet">Other planet across star</option>
+            </select>
+          </label>
           <button
             className="finder-action"
             disabled={!snap || searching}
@@ -164,14 +182,16 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
           >
             {searching ? 'Searching…' : results.length > 0 || empty ? 'Search again' : 'Find eclipses'}
           </button>
+          {searching && <button className="finder-action" onClick={() => search.current?.abort()}>Cancel search</button>}
           {status && <div className="finder-status">{status}</div>}
+          {searchError && <div className="finder-empty" role="alert">{searchError}</div>}
           {empty && !searching && (
-            <div className="finder-empty">No substantial eclipse found in the nearby survey.</div>
+            <div className="finder-empty">No matching event found in the next day of the nearby survey.</div>
           )}
           {results.map((result, index) => (
             <button
               className="finder-result"
-              key={`${result.seedHex}:${result.hostIndex}:${result.planetIndex}:${result.moonIndex}:${result.timeDays}`}
+              key={`${result.seedHex}:${result.hostIndex}:${result.planetIndex}:${result.observerMoonIndex}:${result.eventType}:${result.occluderName}:${result.timeDays}`}
               onClick={() => {
                 travelToEclipse(result);
                 setResults([]);
@@ -181,15 +201,15 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
             >
               <span className="finder-result-top">
                 <strong>{index + 1}. {resultTitle(result)}</strong>
-                <span>{Math.round(result.obscuration * 100)}%</span>
+                <span>{result.obscuration < 0.01 ? (result.obscuration * 100).toFixed(2) : Math.round(result.obscuration * 100)}%</span>
               </span>
-              <span className="finder-result-world">{result.planetName}</span>
+              <span className="finder-result-world">{result.observerName}</span>
               <span className="finder-result-meta">{resultAtmosphere(result)}</span>
               <span className="finder-result-meta">
-                {result.moonName} · {resultPlace(result)} · {resultWait(result)} ·{' '}
+                Blocked by {result.occluderName} · {resultPlace(result)} · {resultWait(result)} ·{' '}
                 {fmtDays(result.endTimeDays - result.startTimeDays)} long
               </span>
-              <span className="finder-result-go">Go to eclipse</span>
+              <span className="finder-result-go">Go to event</span>
             </button>
           ))}
         </section>

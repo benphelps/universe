@@ -53,7 +53,7 @@ import { createTemperatureLutTexture } from '../render/color/temperatureLut';
 import { createAtmosphereShell } from '../render/planet/atmosphereShell';
 import { PlanetObject } from '../render/planet/planetObject';
 import { createRingMesh } from '../render/planet/ringMaterial';
-import { applyOccluders, applyRingShadow, clearRingShadow, shadowAt } from '../render/planet/shadows';
+import { applyOccluders, selectShadowCasters, applyRingShadow, clearRingShadow, shadowAt } from '../render/planet/shadows';
 import { planetSeedOffset } from '../render/planet/cloudPattern';
 import { RenderPipeline } from '../render/fx/pipeline';
 import { SKY_POINT_VISIBILITY_FLOOR } from '../render/fx/skyLayer';
@@ -2997,7 +2997,7 @@ export class UnifiedViewer {
     lookDirection: readonly [number, number, number],
   ): boolean {
     const surface = this.flightSurface();
-    if (!surface || !this.focusPlanet || this.focusMoon) return false;
+    if (!surface || !this.focusPlanet) return false;
     const up = new Vector3(...surfaceDirection);
     const gaze = new Vector3(...lookDirection);
     if (
@@ -5142,6 +5142,7 @@ export class UnifiedViewer {
     (this.beltRockMaterial.uniforms.uHostLightAtAu.value as Color).setRGB(...starlight(hostStar, AU_KM, this.simTimeDays, this.surfaceExposure));
     const light2 = this.otherSunAt(ORIGIN, hostIndex, this.simTimeDays);
 
+    const planetCasters: { position: Vector3; radius: number }[] = [];
     // Planets on their orbits. The focused one is rendered at the origin
     // by terrain or the envelope sphere, so its node hides; the rest are
     // true-scale spheres with adaptive markers once they fall subpixel.
@@ -5167,6 +5168,7 @@ export class UnifiedViewer {
 
       const cameraDistance = this.camera.position.distanceTo(worldPos);
       const bodyRadiusKm = node.planet.physical.bulk.radiusEarth * EARTH_RADIUS_KM;
+      if (!isFocus) planetCasters.push({position:worldPos.clone(),radius:bodyRadiusKm});
       if (this.markersVisible && bodyRadiusKm / cameraDistance < 0.004) {
         node.marker.visible = true;
         node.marker.position.copy(positionKm);
@@ -5308,15 +5310,18 @@ export class UnifiedViewer {
     // A focused envelope takes its own moons as eclipse casters, so
     // transit shadows crawl across the deck (they already darken the
     // moons the other way).
-    if (this.bodyObject && moonCasters.length > 0) {
-      this.bodyObject.setOccluders(moonCasters, angularRadius);
+    if (this.bodyObject) {
+      this.bodyObject.setOccluders(selectShadowCasters([...moonCasters, ...planetCasters],
+        ORIGIN, sunDir, angularRadius, this.starDistanceKm), angularRadius);
     }
     // A focused solid body's ground takes the same casters — and, for
     // a moon, its parent planet: the eclipse that darkens the whole
     // sky from the ground.
-    const groundCasters = focusEntry
-      ? [{ position: groupShift, radius: parentRadiusKm }, ...moonCasters]
-      : moonCasters;
+    const groundCasters = selectShadowCasters(focusEntry
+      ? [{ position: groupShift, radius: parentRadiusKm }, ...moonCasters, ...planetCasters]
+      : [...moonCasters, ...planetCasters], this.camera.position,
+      hostWorld.clone().sub(this.camera.position).normalize(), angularRadius,
+      hostWorld.distanceTo(this.camera.position));
     if (solid) {
       for (const material of this.groundMaterials()) {
         applyOccluders(material, groundCasters, angularRadius);

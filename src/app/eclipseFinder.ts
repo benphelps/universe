@@ -1,3 +1,5 @@
+import { findSurfaceEclipses, observerDiscs } from './eclipseGeometry';
+import { orbitWorldPosition, stellarForcing } from '../universe/planet/illumination';
 import { elementsToState } from '../core/math/kepler';
 import { orbitalPeriod } from '../core/math/orbit';
 import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
@@ -18,7 +20,8 @@ const ARRIVAL_LEAD_DAYS = 2 / 1440;
 const MIN_ARRIVAL_ELEVATION = (10 * Math.PI) / 180;
 const MAX_ARRIVAL_ELEVATION = (25 * Math.PI) / 180;
 const TARGET_TRACK_ELEVATION = (20 * Math.PI) / 180;
-const MIN_ECLIPSE_PRESSURE_BAR = 0.05;
+export type EclipseEventType = 'moon-shadow' | 'parent-planet' | 'sibling-moon' | 'other-planet';
+export type EclipseFilter = EclipseEventType | 'all';
 /** Finder results must already be happening or begin inside this window. */
 export const ECLIPSE_WINDOW_DAYS = 1;
 /** A larger, cheap near-time survey keeps the strict one-day window useful. */
@@ -31,14 +34,20 @@ interface Vec {
   z: number;
 }
 
-/** A real, visitable moon shadow in one of the catalog's systems. */
+/** A real, visitable eclipse in one of the catalog's systems. */
 export interface EclipseResult {
   seedHex: string;
   positionPc: Neighbor['positionPc'];
   distancePc: number;
   hostIndex: number;
   planetIndex: number;
+  /** Occluding moon, or -1 when the caster is a planet. */
   moonIndex: number;
+  /** Destination moon, or -1 for the planet's surface. */
+  observerMoonIndex: number;
+  eventType: EclipseEventType;
+  observerName: string;
+  occluderName: string;
   starName: string;
   planetName: string;
   moonName: string;
@@ -56,7 +65,7 @@ export interface EclipseResult {
   active: boolean;
   waitDays: number;
   obscuration: number;
-  kind: 'total' | 'annular' | 'partial';
+  kind: 'total' | 'annular' | 'partial' | 'transit';
   /** Planet-fixed ground direction at maximum eclipse. */
   surfaceDirection: [number, number, number];
   /** Planet-fixed direction toward the star at the arrival epoch. */
@@ -532,7 +541,7 @@ function hosts(system: StarSystem): Host[] {
 }
 
 export const ECLIPSE_ATMOSPHERE_VISIBILITY: Record<AtmosphereClass, number> = {
-  none: 0,
+  none: 1,
   'hydrogen-helium': 0.12,
   nitrogen: 0.96,
   'nitrogen-oxygen': 1,
@@ -543,8 +552,9 @@ export const ECLIPSE_ATMOSPHERE_VISIBILITY: Record<AtmosphereClass, number> = {
   'rock-vapor': 0.2,
 };
 
-function eclipseAtmosphereScore(planet: Planet): number {
+function eclipseAtmosphereScore(planet: Pick<Planet, 'physical'>): number {
   const { atmosphere, appearance } = planet.physical;
+  if (atmosphere.class === 'none') return 1;
   const pressureFit = Math.max(
     0,
     1 - Math.abs(Math.log10(Math.max(atmosphere.surfacePressureBar, 1e-6))) / 1.5,
@@ -588,35 +598,204 @@ function compareEclipses(a: RankedEclipse, b: RankedEclipse): number {
   return a.planetName.localeCompare(b.planetName);
 }
 
+/** Additional caster/observer pairs use the same placement frames as UnifiedViewer:
+ * heliocentric planets lean with the body; local satellites spin in the
+ * equatorial group. Stellar reflex is included for circumbinary systems. */
+function additionalEclipses(
+  system: StarSystem,
+  host: Host,
+  planetIndex: number,
+  startDays: number,
+  windowDays: number,
+  distancePc: number,
+  filter: EclipseFilter,
+): Array<Omit<EclipseResult, 'positionPc'>> {
+  const parent = host.planets[planetIndex];
+  const pmu = (planet: Planet): Mu =>
+    host.companion ? companionPlanetMu(host.companion, planet) : planetMu(system, planet);
+  const mmu = (moon: Moon): Mu =>
+    muOf(G * (parent.physical.bulk.massEarth + moon.physical.bulk.massEarth) * EARTH_MASS);
+  const position = (body: Planet | Moon, mu: Mu, t: number): Vec =>
+    toWorld(elementsToState(body.elements, mu, seconds(t * DAY)).position);
+  const period = (body: Planet | Moon, mu: Mu): number =>
+    ((orbitalPeriod(mu, body.elements.semiMajorAxis) / DAY) *
+      Math.pow(1 - body.elements.eccentricity, 1.5)) /
+    Math.sqrt(1 + body.elements.eccentricity);
+  const forcing = stellarForcing(system.star, system.companions, system.configuration, host.index);
+  const found: Array<Omit<EclipseResult, 'positionPc'>> = [];
+  for (let observerMoonIndex = -1; observerMoonIndex < parent.moons.length; observerMoonIndex++) {
+    const observer = observerMoonIndex < 0 ? parent : parent.moons[observerMoonIndex];
+    if (observer.physical.appearance.banding) continue;
+    const pairs: { body: Planet | Moon; type: EclipseEventType; moonIndex: number }[] = [];
+    if (observerMoonIndex >= 0) {
+      pairs.push({ body: parent, type: 'parent-planet', moonIndex: -1 });
+      parent.moons.forEach((moon, i) => {
+        if (i !== observerMoonIndex) pairs.push({ body: moon, type: 'sibling-moon', moonIndex: i });
+      });
+    }
+    if (observerMoonIndex < 0)
+      parent.moons.forEach((moon, i) =>
+        pairs.push({ body: moon, type: 'moon-shadow', moonIndex: i }),
+      );
+    host.planets.forEach((planet) => {
+      if (planet !== parent) pairs.push({ body: planet, type: 'other-planet', moonIndex: -1 });
+    });
+    for (const pair of pairs) {
+      if (pair.type === 'moon-shadow' || (filter !== 'all' && filter !== pair.type)) continue;
+      const peri = (body: Planet | Moon) =>
+        body.elements.semiMajorAxis * (1 - body.elements.eccentricity);
+      const apo = (body: Planet | Moon) =>
+        body.elements.semiMajorAxis * (1 + body.elements.eccentricity);
+      const radialGap = (a: Planet | Moon, b: Planet | Moon) =>
+        Math.max(0, peri(a) - apo(b), peri(b) - apo(a));
+      const moonReach = observerMoonIndex >= 0 ? apo(observer) : 0;
+      const separationBound =
+        pair.type === 'other-planet'
+          ? radialGap(parent, pair.body) - moonReach
+          : pair.type === 'sibling-moon'
+            ? radialGap(observer, pair.body)
+            : peri(observer);
+      const starReach = [...forcing.origin, ...forcing.sources[host.index].path].reduce(
+        (sum, term) =>
+          sum +
+          Math.abs(term.scale ?? 1) *
+            term.elements.semiMajorAxis *
+            (1 + term.elements.eccentricity),
+        0,
+      );
+      const observerRadius = observer.physical.bulk.radiusEarth * EARTH_RADIUS;
+      const maxStarDistance = apo(parent) + moonReach + starReach + observerRadius;
+      const maxCasterAngle = Math.asin(
+        Math.min(
+          1,
+          (pair.body.physical.bulk.radiusEarth * EARTH_RADIUS) /
+            Math.max(1, separationBound - observerRadius),
+        ),
+      );
+      const minStarAngle = Math.asin(
+        Math.min(1, (host.star.radius * SOLAR_RADIUS) / maxStarDistance),
+      );
+      const threshold = pair.type === 'other-planet' ? 0.001 : MIN_OBSCURATION;
+      // Safe radial bound: most interplanetary crossings are too small
+      // to meet the visibility threshold, regardless of orbital phase.
+      if ((maxCasterAngle / minStarAngle) ** 2 < threshold) continue;
+      const fastest = Math.min(
+        period(parent, pmu(parent)),
+        observerMoonIndex >= 0 ? period(observer, mmu(observer as Moon)) : Infinity,
+        pair.type === 'sibling-moon'
+          ? period(pair.body, mmu(pair.body as Moon))
+          : pair.type === 'other-planet'
+            ? period(pair.body, pmu(pair.body as Planet))
+            : Infinity,
+      );
+      const geometryFor = (candidate: typeof pair, t: number): { star: Vec; caster: Vec } => {
+        const p = position(parent, pmu(parent), t);
+        const moon =
+          observerMoonIndex >= 0
+            ? position(observer, mmu(observer as Moon), t)
+            : { x: 0, y: 0, z: 0 };
+        const starOffset = subtract(
+          orbitWorldPosition(forcing.sources[host.index].path, t * DAY),
+          orbitWorldPosition(forcing.origin, t * DAY),
+        );
+        const rotation = observer.physical.rotation;
+        const spin = (-TAU * 24 * t) / rotation.periodHours;
+        const star = turnAroundY(
+          lean(subtract(subtract(starOffset, p), moon), rotation.obliquityRad),
+          spin,
+        );
+        const caster =
+          candidate.type === 'other-planet'
+            ? lean(
+                subtract(
+                  subtract(position(candidate.body, pmu(candidate.body as Planet), t), p),
+                  moon,
+                ),
+                rotation.obliquityRad,
+              )
+            : candidate.type === 'parent-planet'
+              ? scale(moon, -1)
+              : subtract(position(candidate.body, mmu(candidate.body as Moon), t), moon);
+        return { star, caster: turnAroundY(caster, spin) };
+      };
+      const geometry = (t: number) => geometryFor(pair, t);
+      for (const event of findSurfaceEclipses({
+        geometry,
+        bodyRadius: observer.physical.bulk.radiusEarth * EARTH_RADIUS,
+        casterRadius: pair.body.physical.bulk.radiusEarth * EARTH_RADIUS,
+        starRadius: host.star.radius * SOLAR_RADIUS,
+        startDays,
+        windowDays,
+        shortestPeriodDays: fastest,
+        minimumObscuration: threshold,
+        planetaryTransit: pair.type === 'other-planet',
+      })) {
+        const surface = {
+          x: event.surfaceDirection[0],
+          y: event.surfaceDirection[1],
+          z: event.surfaceDirection[2],
+        };
+        // Do not advertise a sibling/planet transit inside the much
+        // larger parent's eclipse (or any other simultaneous cover).
+        if (
+          pairs.some(
+            (other) =>
+              other !== pair &&
+              observerDiscs(
+                geometryFor(other, event.timeDays),
+                surface,
+                observer.physical.bulk.radiusEarth * EARTH_RADIUS,
+                host.star.radius * SOLAR_RADIUS,
+                other.body.physical.bulk.radiusEarth * EARTH_RADIUS,
+              ).obscuration > 0.01,
+          )
+        )
+          continue;
+        const active = event.startTimeDays <= startDays && event.endTimeDays >= startDays;
+        found.push({
+          ...event,
+          seedHex: system.seedHex,
+          distancePc,
+          hostIndex: host.index,
+          planetIndex,
+          observerMoonIndex,
+          eventType: pair.type,
+          moonIndex: pair.moonIndex,
+          observerName: observer.name,
+          occluderName: pair.body.name,
+          planetName: parent.name,
+          moonName: pair.moonIndex >= 0 ? pair.body.name : '',
+          starName: host.star.designation,
+          atmosphereClass: observer.physical.atmosphere.class,
+          atmospherePressureBar: observer.physical.atmosphere.surfacePressureBar,
+          atmosphereScore: eclipseAtmosphereScore(observer),
+          active,
+          waitDays: active ? 0 : Math.max(0, event.startTimeDays - startDays),
+        });
+      }
+    }
+  }
+  return found;
+}
+
 /** Ranked active or next-day eclipses in one system. */
 export function findEclipsesInSystem(
   system: StarSystem,
   startDays: number,
   distancePc = 0,
   windowDays = ECLIPSE_WINDOW_DAYS,
+  filter: EclipseFilter = 'all',
 ): Array<Omit<EclipseResult, 'positionPc'>> {
   const found: Array<Omit<EclipseResult, 'positionPc'>> = [];
   for (const host of hosts(system)) {
     for (let planetIndex = 0; planetIndex < host.planets.length; planetIndex++) {
       const planet = host.planets[planetIndex];
-      // Envelope worlds have no ground for the traveler to stand on.
-      if (planet.physical.appearance.banding) continue;
-      // An eclipse finder should lead to a sky event. A vacuum—or a
-      // trace column too slight to light the horizon and carry the
-      // shadow's colour change—does not make a worthwhile destination.
-      if (
-        planet.physical.atmosphere.class === 'none' ||
-        planet.physical.atmosphere.surfacePressureBar < MIN_ECLIPSE_PRESSURE_BAR
-      ) {
-        continue;
-      }
+
       const planetMuValue = host.companion
         ? companionPlanetMu(host.companion, planet)
         : planetMu(system, planet);
-      // The material's analytic shadow seats the first four casters.
-      // Search that same visible set: a mathematically valid fifth
-      // shadow is not a useful destination if the scene does not draw it.
-      for (let moonIndex = 0; moonIndex < Math.min(4, planet.moons.length); moonIndex++) {
+      // The renderer selects the strongest aligned casters, not the first moons.
+      for (let moonIndex = 0; !planet.physical.appearance.banding && (filter === 'all' || filter === 'moon-shadow') && moonIndex < planet.moons.length; moonIndex++) {
         const moon = planet.moons[moonIndex];
         for (const event of moonEclipses(
           host.star,
@@ -633,6 +812,10 @@ export function findEclipsesInSystem(
             hostIndex: host.index,
             planetIndex,
             moonIndex,
+            observerMoonIndex: -1,
+            eventType: 'moon-shadow',
+            observerName: planet.name,
+            occluderName: moon.name,
             starName: host.star.designation,
             planetName: planet.name,
             moonName: moon.name,
@@ -653,6 +836,7 @@ export function findEclipsesInSystem(
           found.push(result);
         }
       }
+      found.push(...additionalEclipses(system, host, planetIndex, startDays, windowDays, distancePc, filter));
     }
   }
   return found.sort(compareEclipses);
@@ -669,7 +853,7 @@ export function findEclipseInSystem(
 }
 
 const nextPaint = (): Promise<void> =>
-  new Promise((resolve) => {
+  typeof document === 'undefined' ? Promise.resolve() : new Promise((resolve) => {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
     else setTimeout(resolve, 0);
   });
@@ -684,6 +868,7 @@ export async function findNearbyEclipses(
   startDays: number,
   onProgress?: (progress: EclipseSearchProgress) => void,
   signal?: AbortSignal,
+  filter: EclipseFilter = 'all',
 ): Promise<EclipseResult[]> {
   const destinations: Array<{ system?: StarSystem; seedHex: string; positionPc: Neighbor['positionPc']; distancePc: number }> = [
     { system: current, seedHex: current.seedHex, positionPc: current.localePc, distancePc: 0 },
@@ -701,10 +886,11 @@ export async function findNearbyEclipses(
     if (signal?.aborted) return [];
     const destination = destinations[index];
     onProgress?.({ checked: index, total: destinations.length, distancePc: destination.distancePc });
-    if (index > 0 && index % 4 === 0) await nextPaint();
+    if (index > 0) await nextPaint();
+    if (signal?.aborted) return [];
     const system =
       destination.system ?? generateSystem(seedFromHex(destination.seedHex), destination.positionPc);
-    const events = findEclipsesInSystem(system, startDays, destination.distancePc);
+    const events = findEclipsesInSystem(system, startDays, destination.distancePc, ECLIPSE_WINDOW_DAYS, filter);
     for (const event of events) {
       found.push({ ...event, positionPc: destination.positionPc });
     }
@@ -717,7 +903,7 @@ export async function findNearbyEclipses(
   const shortlist: EclipseResult[] = [];
   const worlds = new Set<string>();
   for (const result of found.sort(compareEclipses)) {
-    const world = `${result.seedHex}:${result.hostIndex}:${result.planetIndex}`;
+    const world = `${result.seedHex}:${result.hostIndex}:${result.planetIndex}:${result.observerMoonIndex}`;
     if (worlds.has(world)) continue;
     worlds.add(world);
     shortlist.push(result);

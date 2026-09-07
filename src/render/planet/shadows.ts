@@ -96,6 +96,35 @@ export interface ShadowCaster {
   radius: number;
 }
 
+/** Spend the four shader slots on bodies aligned with the light at the
+ * viewing location. Catalog order must not hide a fifth moon or another
+ * planet's real eclipse. All units match the scene (normally kilometres). */
+export function selectShadowCasters(
+  candidates: ShadowCaster[],
+  observer: Vector3,
+  lightDirection: Vector3,
+  starAngularRadius: number,
+  lightDistance: number,
+): ShadowCaster[] {
+  return candidates
+    .map((caster) => {
+      const delta = caster.position.clone().sub(observer);
+      const along = delta.dot(lightDirection);
+      if (along <= 0 || along >= lightDistance) return { caster, score: -Infinity };
+      const perpendicular = Math.sqrt(Math.max(0, delta.lengthSq() - along * along));
+      const projectedStar = along * starAngularRadius;
+      // Near misses remain useful across terrain/cloud fragments, but
+      // every actual overlap ranks above them.
+      const gap = (perpendicular - caster.radius - projectedStar) / Math.max(projectedStar, 1e-9);
+      const cover = Math.min(1, (caster.radius / Math.max(projectedStar, 1e-9)) ** 2);
+      return { caster, score: gap < 0 ? 1 + cover : -gap };
+    })
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4)
+    .map((entry) => entry.caster);
+}
+
 export function createShadowUniforms(): Record<string, { value: unknown }> {
   return {
     uOccluderCount: { value: 0 },

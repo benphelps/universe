@@ -48,6 +48,8 @@ On a planet's surface: `W`/`A`/`S`/`D` flies where you look, `Space`/`C` for alt
 
 For photographic locations, open **Finders → Scenic locations**, choose a scene type, and select **Find scenes**. Surveys rank nearby worlds, local nebulae, galaxy shapes, and catalog nuclei by physical traits. **Scan more** expands the shortlist; each candidate opens in a separate tab with framing suggestions. World rankings include sampled visible starlight, atmospheric clarity, reflection, and lava emission; nebula rankings include estimated optical power per area. Galaxy-shape candidates still need a visual lighting check. These are scouting destinations, not precomposed camera poses or guaranteed sunsets.
 
+**Finders → Eclipse** searches active or next-day events from planetary and lunar surfaces, including airless worlds. Filter for a moon crossing the star, a parent planet eclipsing it from a moon, mutual moon eclipses, or another planet's transit. Results name the observing world and blocking body, then land you shortly before first contact with time paused. Small planetary transits down to 0.1% stellar coverage are included; predictions use spherical body silhouettes. The survey runs in a cancellable worker.
+
 ### Addresses
 
 The URL records your location and selected body. Share it to revisit that destination with the same model version; exact camera pose, simulation time and viewing settings are not all encoded.
