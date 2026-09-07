@@ -3,6 +3,7 @@ import type { LinearRgb } from '../../core/color/srgb';
 import { bookmarkKey, isMarked, type Bookmark } from '../bookmarks';
 import type { BodyRowSpec } from './bodyRow';
 import { toggleCurrentMark } from '../store';
+import { kelvinFigureTooltip } from './temperature';
 
 /** Display color: gamma-encoded swatch from linear RGB. */
 export function cssColor(linearRgb: LinearRgb): string {
@@ -49,7 +50,7 @@ export interface PlateSpec {
   row?: BodyRowSpec;
   rows: PlateRows;
   classification?: string;
-  metrics?: Array<{ label: string; value: string; unit: string }>;
+  metrics?: Array<{ label: string; value: string; unit: string; kelvin?: number }>;
   sections?: PlateSection[];
   extra?: ReactNode;
   onStep?: (delta: number) => void;
@@ -90,7 +91,7 @@ export function Plate({ spec, mark }: { spec: PlateSpec; mark?: Bookmark }): Rea
       {spec.metrics && <dl className="plate-metrics">
         {spec.metrics.map(metric => <div key={metric.label}>
           <dt>{metric.label}</dt>
-          <dd>{metric.value} <span>{metric.unit}</span></dd>
+          <dd title={kelvinFigureTooltip(metric.value, metric.unit, metric.kelvin)}>{metric.value} <span>{metric.unit}</span></dd>
         </div>)}
       </dl>}
       {spec.rows.length > 0 && <PropertyTable rows={spec.rows} />}

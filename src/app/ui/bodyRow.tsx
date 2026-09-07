@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { kelvinFigureTooltip } from './temperature';
 
 /** A measurement and the unit it is in; the unit is what lets a row be
  *  read without a column header above it. */
@@ -72,7 +73,7 @@ export function BodyRow({ spec }: { spec: BodyRowSpec }): ReactNode {
       </span>
       <span className="body-figs">
         {spec.figures?.map(([value, unit]) => (
-          <span key={`${value}${unit ?? ''}`}>
+          <span key={`${value}${unit ?? ''}`} title={kelvinFigureTooltip(value, unit)}>
             {value}
             {unit && <span className="u"> {unit}</span>}
           </span>

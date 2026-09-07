@@ -1,3 +1,4 @@
+import { Temperature } from './temperatureReadout';
 import { useMemo, type ReactNode } from 'react';
 import { seedFromHex } from '../../core/rng/hash';
 import { neighborRadiusPc, type Neighbor } from '../../universe/galaxy/neighborhood';
@@ -142,7 +143,7 @@ export function starPlateSpec(star: Star, system?: StarSystem, index = 0): Plate
     ['Mass', `${fmt(star.mass)} M☉${massLossNote(star)}`],
     ['Radius', `${fmt(star.radius)} R☉`],
     ['Luminosity', `${fmt(star.luminosity)} L☉`],
-    ['T_eff', star.tEff > 0 ? `${fmt(star.tEff, 4)} K` : '—'],
+    ['T_eff', star.tEff > 0 ? <Temperature kelvin={star.tEff} digits={4} /> : '—'],
     ['Age', fmtYears(star.ageGyr * 1e9)],
     ['[Fe/H]', `${fmt(star.feH, 2)} · ${star.population.replace('-', ' ')}`],
     [
@@ -176,7 +177,7 @@ export function starPlateSpec(star: Star, system?: StarSystem, index = 0): Plate
     metrics: [
       { label: 'Mass', value: fmt(star.mass), unit: 'M☉' },
       { label: 'Radius', value: fmt(star.radius), unit: 'R☉' },
-      { label: 'Effective T', value: star.tEff > 0 ? fmt(star.tEff, 4) : '—', unit: star.tEff > 0 ? 'K' : '' },
+      { label: 'Effective T', value: star.tEff > 0 ? fmt(star.tEff, 4) : '—', unit: star.tEff > 0 ? 'K' : '', kelvin: star.tEff },
     ],
     sections: groupPlateRows(rows, [
       { id: 'stellar', title: 'Stellar properties', summary: `${fmt(star.luminosity)} L☉ · ${STAGE_LABEL[star.stage]}`, labels: ['Mass', 'Radius', 'Luminosity', 'T_eff'] },

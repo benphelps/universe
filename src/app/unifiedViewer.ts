@@ -206,6 +206,7 @@ import { OrbitArcball } from './orbitArcball';
 import { easeInOut, edgeOn, faceOn, lookingFrom, poleOnScreen, rolledToPole, turnAbout } from './reorient';
 import { type GizmoScale, ReorientGizmo } from './ui/reorientGizmo';
 import { fmt } from './ui/format';
+import { kelvinTooltip } from './ui/temperature';
 import type { Planet, StarSystem } from '../universe/system/types';
 
 const EARTH_RADIUS_KM = EARTH_RADIUS / 1000;
@@ -379,6 +380,7 @@ interface Pickable {
   z: number;
   name: string;
   info: string;
+  temperatureK?: number;
   action: string | null;
   target: PickTarget | null;
 }
@@ -3430,6 +3432,7 @@ export class UnifiedViewer {
       this.tooltip.innerHTML = `
         <div class="tip-name">${best.name}</div>
         <div class="tip-info">${best.info}</div>
+        ${best.temperatureK === undefined ? '' : `<div class="tip-info">${kelvinTooltip(best.temperatureK) ?? ''}</div>`}
         ${action ? `<div class="tip-action">${action}</div>` : ''}
       `;
       this.tooltip.style.display = 'block';
@@ -5174,6 +5177,7 @@ export class UnifiedViewer {
         z: worldPos.z,
         name: node.planet.name,
         info: `${node.planet.class} · ${fmt(bulk.massEarth)} M⊕ · ${fmt(climate.surfaceMeanK, 3)} K`,
+        temperatureK: climate.surfaceMeanK,
         action: 'click to visit',
         target: { kind: 'planet', index: i },
       });

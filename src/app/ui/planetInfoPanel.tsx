@@ -1,3 +1,4 @@
+import { Temperature } from './temperatureReadout';
 import { ASTEROID_ROUNDING_DIAMETER_KM } from '../../universe/smallbody/asteroids';
 import type { ReactNode } from 'react';
 import { AU, EARTH_RADIUS } from '../../core/physics/constants';
@@ -104,7 +105,7 @@ function columnRows(physical: Characterization): Array<[string, ReactNode]> {
   const clouds = physical.appearance.clouds;
   if (clouds.condensate !== 'none') {
     const state = columnStateAt(column, clouds.topAltitudeKm * 1000);
-    rows.push(['Cloud-top gas', `≈ ${fmt(state.pressurePa / 1e5, 3)} bar · ${fmt(state.temperatureK, 3)} K`]);
+    rows.push(['Cloud-top gas', <>≈ {fmt(state.pressurePa / 1e5, 3)} bar · <Temperature kelvin={state.temperatureK} /></>]);
   }
   return rows;
 }
@@ -131,7 +132,7 @@ export function planetPlateSpec(
     ['Albedo', fmt(climate.bondAlbedo, 2)],
   ];
   if (climate.surfaceField) climateRows.push(
-    ['Annual reference', <span title="Equilibrium under annual-average forcing, not seasonal extrema">{`${fmt(climate.surfaceField.minimumK, 3)}–${fmt(climate.surfaceField.maximumK, 3)} K · datum`}</span>],
+    ['Annual reference', <><Temperature kelvin={climate.surfaceField.minimumK} maximumK={climate.surfaceField.maximumK} note="Equilibrium under annual-average forcing, not seasonal extrema" /> · datum</>],
     ['Below view', <SeasonalReadout key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />],
     ['Terrain climate', <SeasonalReadout annual key={planet.physical.seedHex} seedHex={planet.physical.seedHex} />],
   );
@@ -163,7 +164,7 @@ export function planetPlateSpec(
   const sections: PlateSection[] = [
     {
       id: 'climate', title: giant ? 'Temperature & climate' : 'Climate & surface',
-      summary: giant ? `${fmt(climate.surfaceMeanK, 3)} K ${appearance.banding ? 'effective' : climate.surfaceField ? 'annual equilibrium' : 'mean'}` : surfaceLine(planet),
+      summary: giant ? <><Temperature kelvin={climate.surfaceMeanK} /> {appearance.banding ? 'effective' : climate.surfaceField ? 'annual equilibrium' : 'mean'}</> : surfaceLine(planet),
       rows: climateRows,
       notes: climate.surfaceField ? 'The annual reference is equilibrium under annual-average forcing, not seasonal extrema. Below-view temperature is a seasonal estimate at the camera latitude; terrain climate is its persistent reference. Seasonal snow changes appearance while water-phase geometry stays fixed.' : undefined,
     },
@@ -210,7 +211,7 @@ export function planetPlateSpec(
     metrics: [
       { label: 'Radius', value: fmt(bulk.radiusEarth), unit: 'R⊕' },
       { label: 'Gravity', value: fmt(bulk.gravityMs2 / 9.81, 2), unit: 'g' },
-      { label: appearance.banding ? 'Effective T' : climate.surfaceField ? 'Annual eq.' : 'Mean T', value: fmt(climate.surfaceMeanK, 3), unit: 'K' },
+      { label: appearance.banding ? 'Effective T' : climate.surfaceField ? 'Annual eq.' : 'Mean T', value: fmt(climate.surfaceMeanK, 3), unit: 'K', kelvin: climate.surfaceMeanK },
     ],
     sections,
     onStep: stepBody,
@@ -239,11 +240,11 @@ export function moonPlateSpec(
         : `${ATMOSPHERE_LABEL[atmosphere.class]} · ${fmt(atmosphere.surfacePressureBar)} bar`,
     ],
     ['Clouds', cloudLine(appearance.clouds)],
-    ['T', `${fmt(climate.surfaceMeanK, 3)} K${climate.surfaceField ? ' annual equilibrium' : ''}`],
+    ['T', <><Temperature kelvin={climate.surfaceMeanK} />{climate.surfaceField ? ' annual equilibrium' : ''}</>],
     ['Surface', hydrosphereLine(climate)],
     ['Geology', REGIME_LABEL[interior.regime]],
   ];
-  if (climate.surfaceField) rows.push(['Annual reference', <span title="Equilibrium under annual-average forcing, not seasonal extrema">{`${fmt(climate.surfaceField.minimumK, 3)}–${fmt(climate.surfaceField.maximumK, 3)} K · datum`}</span>]);
+  if (climate.surfaceField) rows.push(['Annual reference', <><Temperature kelvin={climate.surfaceField.minimumK} maximumK={climate.surfaceField.maximumK} note="Equilibrium under annual-average forcing, not seasonal extrema" /> · datum</>]);
   if (climate.surfaceField) rows.push(['Seasonal T', <SeasonalReadout key={moon.physical.seedHex} seedHex={moon.physical.seedHex} />]);
   if (climate.surfaceField) rows.push(['Terrain climate', <SeasonalReadout annual key={moon.physical.seedHex} seedHex={moon.physical.seedHex} />]);
   if (rotation.solarDayHours != null) rows.push(['Solar day', fmtDays(rotation.solarDayHours / 24)]);
@@ -268,7 +269,7 @@ export function moonPlateSpec(
     metrics: [
       { label: 'Radius', value: fmt(radiusKm), unit: 'km' },
       { label: 'Gravity', value: fmt(bulk.gravityMs2 / 9.81, 2), unit: 'g' },
-      { label: climate.surfaceField ? 'Annual eq.' : 'Mean T', value: fmt(climate.surfaceMeanK, 3), unit: 'K' },
+      { label: climate.surfaceField ? 'Annual eq.' : 'Mean T', value: fmt(climate.surfaceMeanK, 3), unit: 'K', kelvin: climate.surfaceMeanK },
     ],
     sections: groupPlateRows(rows, [
       { id: 'climate', title: 'Climate & surface', summary: hydrosphereLine(climate), labels: ['T', 'Surface', 'Annual reference', 'Seasonal T', 'Terrain climate'] },
@@ -414,28 +415,28 @@ function atmosphereLine(planet: Planet): string {
   return `${ATMOSPHERE_LABEL[atmosphere.class]}${pressure}`;
 }
 
-function temperatureLine(planet: Planet): string {
+function temperatureLine(planet: Planet): ReactNode {
   const { climate, rotation } = planet.physical;
   const kind = planet.physical.appearance.banding ? 'effective' : climate.surfaceField ? 'annual equilibrium' : 'mean';
-  const base = `${fmt(climate.surfaceMeanK, 3)} K ${kind} (stellar eq ${fmt(climate.equilibriumK, 3)} K)`;
+  const base = <><Temperature kelvin={climate.surfaceMeanK} /> {kind} (stellar eq <Temperature kelvin={climate.equilibriumK} />)</>;
   return rotation.locked && climate.dayNightDeltaK > 20
-    ? `${base} · Δday-night ${fmt(climate.dayNightDeltaK, 3)} K`
+    ? <>{base} · Δday-night <Temperature kelvin={climate.dayNightDeltaK} difference /></>
     : base;
 }
 
-function surfaceLine(planet: Planet): string {
+function surfaceLine(planet: Planet): ReactNode {
   const { climate } = planet.physical;
   return hydrosphereLine(climate);
 }
 
-function hydrosphereLine(climate: Planet['physical']['climate']): string {
+function hydrosphereLine(climate: Planet['physical']['climate']): ReactNode {
   const label = HYDROSPHERE_LABEL[climate.hydrosphere];
   if (climate.hydrosphere === 'oceans') {
     return `water basins (${fmt(climate.oceanCoverage * 100, 2)}% cover)`;
   }
   if (climate.hydrosphere === 'magma') {
     if (climate.oceanCoverage < 0.01) {
-      return `localized lava (${fmt(climate.oceanCoverage * 100, 2)}% · ${fmt(climate.magmaTemperatureK ?? 1800, 3)} K)`;
+      return <>localized lava ({fmt(climate.oceanCoverage * 100, 2)}% · <Temperature kelvin={climate.magmaTemperatureK ?? 1800} />)</>;
     }
     return climate.oceanCoverage >= 1 - 1e-6
       ? 'global magma ocean'

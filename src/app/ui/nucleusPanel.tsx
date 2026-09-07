@@ -1,3 +1,4 @@
+import { Temperature } from './temperatureReadout';
 import type { ReactNode } from 'react';
 import { AU, SOLAR_LUMINOSITY } from '../../core/physics/constants';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
@@ -59,7 +60,7 @@ export function nucleusPlateSpec(): PlateSpec {
     ['L / L_Edd', fmt(flow.eddingtonRatio)],
     ['Luminosity', `${fmt(flow.luminosityW / SOLAR_LUMINOSITY)} L☉`],
     ['Efficiency', `${(100 * flow.efficiency).toFixed(1)}%`],
-    ['Inner flow T', `${fmt(flow.innerTemperatureK)} K`],
+    ['Inner flow T', <Temperature kelvin={flow.innerTemperatureK} />],
   ];
   return {
     title: 'Galactic Core',

@@ -1,3 +1,4 @@
+import { Temperature } from './temperatureReadout';
 import type { ReactNode } from 'react';
 import { blackbodyLinearRgb } from '../../core/color/blackbody';
 import type { NebulaKind } from '../../universe/galaxy/nebula';
@@ -43,14 +44,14 @@ export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
     ...(cloud.sources.length > 0
       ? ([
           ['Ionizing stars', `${cloud.sources.length}`],
-          ['Hottest', `${fmt(cloud.hottestTeff, 3)} K`],
+          ['Hottest', <Temperature kelvin={cloud.hottestTeff} />],
           ['Gas at those stars', `${fmt(cloud.sourceDensity, 3)} H/cm³`],
           ['Initial Strömgren radius', `${fmt(cloud.stromgrenRadiusPc, 3)} pc`],
           ['Expanded bubble radius', `${fmt(cloud.bubbleRadiusPc, 3)} pc`],
           ['Expansion reach estimate', `${fmt(cloud.frontReachPc, 3)} pc`],
           ['Age', `${fmt(cloud.ageMyr, 2)} Myr`],
-        ] as Array<[string, string]>)
-      : ([['Star formation', 'none lit']] as Array<[string, string]>)),
+        ] as PlateRows)
+      : ([['Star formation', 'none lit']] as PlateRows)),
   ];
   return {
     title: cloudTitle(cloud.name, cloud.kind),
@@ -70,7 +71,7 @@ export function cloudPlateSpec(cloud: CloudSummary): PlateSpec {
     ],
     sections: groupPlateRows(rows, [
       { id: 'gas', title: 'Gas & composition', summary: `≈ ${fmt(cloud.meanDensity)} H/cm³ natal mean`, labels: ['Natal gas mass', 'Natal mean density', 'Metallicity'] },
-      { id: 'sources', title: 'Sources & illumination', summary: cloud.sources.length ? `${fmt(cloud.hottestTeff)} K hottest source` : 'no ionizing stars lit', labels: ['Ionizing stars', 'Hottest', 'Gas at those stars', 'Star formation'] },
+      { id: 'sources', title: 'Sources & illumination', summary: cloud.sources.length ? <><Temperature kelvin={cloud.hottestTeff} /> hottest source</> : 'no ionizing stars lit', labels: ['Ionizing stars', 'Hottest', 'Gas at those stars', 'Star formation'] },
       { id: 'expansion', title: 'Extent & evolution', summary: `${fmt(cloud.ageMyr, 2)} Myr`, labels: ['Initial Strömgren radius', 'Expanded bubble radius', 'Expansion reach estimate', 'Age'] },
     ]),
   };
