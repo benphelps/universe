@@ -58,7 +58,7 @@ export function ScenicFinderPanel({ snap }: { snap: AppSnapshot | null }) {
       : filter === 'nucleus' ? 'Compare active nuclei in the galaxy catalog and the current galaxy.'
       : filter === 'all' ? 'Search 256 nearby systems, local clouds, 24 galaxy shapes, and catalog nuclei.'
       : 'Search 256 nearby systems per batch, including planets and moons around companion stars.'}
-      {' '}Ranked by physical traits; lighting and exact viewpoints need your eye.</p>
+      {' '}Worlds rank visible illumination and subject contrast; local lighting and exact viewpoints still need your eye.</p>
     <div className="scenic-actions">
       <button className="finder-action" disabled={!snap || searching} onClick={() => void scan(0)}>{batches ? 'Start fresh' : 'Find scenes'}</button>
       {searching && <button className="finder-action" onClick={cancel}>Cancel</button>}

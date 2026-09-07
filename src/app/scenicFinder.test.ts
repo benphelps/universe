@@ -10,6 +10,7 @@ describe('scenic location screening', () => {
     const system = fixture();
     const giant = system.planets.find(p => p.rings && p.moons.length)!;
     system.planets = [giant]; system.companions = [];
+    system.star.luminosity = 1; system.star.tEff = 5772; // daylight for the geometry test
     giant.rings!.opticalDepth = 1; giant.rings!.albedo = 0.8;
     giant.rings!.innerPlanetRadii = 1.3; giant.rings!.outerPlanetRadii = 2.5;
     giant.moons = [giant.moons[0]];

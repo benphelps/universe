@@ -7,6 +7,8 @@ import { buildSpiralStructure } from '../universe/galaxy/spiralStructure';
 import { galaxyName } from '../universe/galaxy/regions';
 import { cloudsNear } from '../universe/galaxy/clouds';
 import { cloudGateway } from '../universe/galaxy/gateway';
+import { nebulaFor, nebulaLineLuminositySolar } from '../universe/galaxy/nebula';
+import { splitStellarLight, stellarBandRgb } from '../core/color/stellarLight';
 import { galacticNucleus } from '../universe/galaxy/nucleus';
 import { CATALOG_GALAXIES, HOME_GALAXY } from '../app/galaxyCatalog';
 import { chartLocale } from '../app/localeInventory';
@@ -52,16 +54,27 @@ self.onmessage = (event: MessageEvent<ScenicRequest>) => {
       const clouds = [...new Map([...inventory.sector.clouds, ...inventory.nearClouds].map(c => [c.seedHex, c])).values()];
       const dark = clouds.filter(c => c.kind === 'dark');
       const distance = (a: GalacticPosition, b: GalacticPosition) => Math.hypot(a.xPc-b.xPc, a.yPc-b.yPc, a.zPc-b.zPc);
-      const lit = clouds.filter(c => c.kind !== 'dark').map(c => ({ cloud: c,
-        dust: dark.filter(d => distance(c.positionPc, d.positionPc) < (c.spanPc + d.spanPc) / 2 + 100).length }))
-        .sort((a, b) => (b.dust > 0 ? 1 : 0) - (a.dust > 0 ? 1 : 0) || b.cloud.ionizingStars - a.cloud.ionizingStars || b.cloud.spanPc-a.cloud.spanPc).slice(0, 6);
-      for (const { cloud, dust } of lit) {
+      const lit = clouds.filter(c => c.kind !== 'dark').flatMap(cloud => {
         const physical = cloudsNear(cloud.positionPc, 5).find(c => seedToHex(c.seed) === cloud.seedHex);
-        if (!physical) continue;
+        const nebula = physical && nebulaFor(physical);
+        if (!physical || !nebula) return [];
+        const scattered = nebula.scatteredShare * nebula.members.reduce((sum, star) =>
+          sum + splitStellarLight(stellarBandRgb(star.luminosity, star.tEff)).luminosity, 0);
+        const opticalPower = nebulaLineLuminositySolar(nebula) + scattered;
+        const powerPerArea = opticalPower / Math.max(Math.PI * (cloud.spanPc / 2) ** 2, 1e-9);
+        if (!(powerPerArea > 0)) return [];
+        const dust = dark.filter(d => distance(cloud.positionPc, d.positionPc) < (cloud.spanPc + d.spanPc) / 2 + 100).length;
+        // Pre-bake optical power/area: nearby dust can add contrast, but a large
+        // faint cloud does not become brighter just because it has many sources.
+        const lightScore = Math.max(0, Math.min(1, (Math.log10(powerPerArea) + 4) / 7));
+        const score = Math.round(25 + 20 * Number(dust > 0) + 55 * lightScore);
+        return [{ cloud, physical, dust, powerPerArea, score }];
+      }).sort((a, b) => b.score - a.score || a.cloud.seedHex.localeCompare(b.cloud.seedHex)).slice(0, 6);
+      for (const { cloud, physical, dust, powerPerArea, score } of lit) {
         const gateway = cloudGateway(physical);
         candidates.push({ id: `cloud:${job.galaxy}:${cloud.seedHex}`, kind: 'nebula', name: cloud.name,
-          score: Math.round(50 + 20 * Number(dust > 0) + 20 * Math.min(1, cloud.ionizingStars / 10) + 10 * Math.min(1, cloud.spanPc / 150)),
-          reasons: [`${cloud.kind} nebula · ${fmt(cloud.spanPc)} pc across`, `${dust} nearby dark clouds · ${cloud.ionizingStars} ionizing stars`],
+          score,
+          reasons: [`${cloud.kind} nebula · ${fmt(cloud.spanPc)} pc across`, `${dust} nearby dark clouds · ${cloud.ionizingStars} ionizing stars`, `Optical power/area ≈ ${fmt(powerPerArea, 2)} L☉/pc² · before foreground dust`],
           framing: 'Orbit the illuminated cloud face. Nearby dark clouds are candidates for silhouettes; their overlap depends on your line of sight.',
           destination: { galaxy: job.galaxy, seed: gateway.seedHex, positionPc: gateway.positionPc, cloud: cloud.seedHex } });
       }
@@ -74,7 +87,7 @@ self.onmessage = (event: MessageEvent<ScenicRequest>) => {
         const pitchRange = Math.max(...shape.arms.flatMap(a => [...a.pitchDegrees])) - Math.min(...shape.arms.flatMap(a => [...a.pitchDegrees]));
         candidates.push({ id: `galaxy:${seedToHex(seed)}`, kind: 'galaxy', variant: shape.family, name: galaxyName(seed),
           score: Math.round(55 + 20 * Number(shape.barRadiusPc > 0) + 15 * Math.min(1, pitchRange / 25) + 10 * Number(shape.family === 'grand-design')),
-          reasons: [`${shape.family.replace('-', ' ')} · ${shape.arms.length} main arms`, shape.barRadiusPc ? `${fmt(shape.barRadiusPc / 1000)} kpc bar · branching dust lanes` : 'Unbarred · irregular arm structure'],
+          reasons: [`${shape.family.replace('-', ' ')} · ${shape.arms.length} main arms`, shape.barRadiusPc ? `${fmt(shape.barRadiusPc / 1000)} kpc bar · branching dust lanes` : 'Unbarred · irregular arm structure', 'Morphology only · lighting needs visual review'],
           framing: 'Arrive at the core, ride out until the galaxy fills the frame, then look down the galactic pole. Shape is ranked; final lighting needs inspection.',
           destination: { galaxy: seedToHex(seed), seed: job.seed, core: true } });
       }
@@ -86,7 +99,7 @@ self.onmessage = (event: MessageEvent<ScenicRequest>) => {
       for (const entry of entries.values()) if (entry.eddingtonRatio >= 0.001) candidates.push({
         id: `nucleus:${entry.galaxy}`, kind: 'nucleus', name: `${galaxyName(seedFromHex(entry.galaxy))} core`,
         score: Math.round(60 + 30 * Number(entry.regime === 'thin-disc') + 10 * Math.min(1, entry.eddingtonRatio)),
-        reasons: [`${fmtSolarMasses(entry.massSolar)} M☉ · ${entry.regime === 'thin-disc' ? 'luminous disc' : 'hot torus'}`, `${fmt(entry.eddingtonRatio)} Eddington ratio · galaxy catalog`],
+        reasons: [`${fmtSolarMasses(entry.massSolar)} M☉ · ${entry.regime === 'thin-disc' ? 'luminous disc' : 'hot torus'}`, `${fmt(entry.eddingtonRatio)} Eddington ratio · galaxy catalog`, 'Self-lit accretion flow · exposure dependent'],
         framing: 'Tilt toward the flow plane until the shadow and lensed light separate clearly. Adjust exposure for bright accretion.',
         destination: { galaxy: entry.galaxy, seed: entry.seed, core: true } });
     }
