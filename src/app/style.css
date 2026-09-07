@@ -475,11 +475,11 @@ table.props th {
   transform: none;
 }
 
-/* Nothing to list, said in a row's own box: the same height as one,
-   and its text starting where the names do. */
+/* Nothing to list, said in a box the height of a rung — the rows an
+   empty level sits among — with its text starting where names do. */
 .empty {
   margin: 0 -5px;
-  padding: 3px 5px 3px 24px;
+  padding: 6px 5px 6px 24px;
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--faint);
