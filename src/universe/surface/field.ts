@@ -9,6 +9,7 @@ import type { Characterization } from '../planet/types';
 import type { AnnualMeanField } from '../planet/annualMean';
 import { buildClimate, wrapClimate, type ClimateField } from './climate';
 import { createCraterField } from './craters';
+import { confineLakeBasins } from './lakeBasins';
 import { createCubeGrid, type CubeGrid } from './cubeGrid';
 import {
   buildDrainage,
@@ -34,10 +35,11 @@ export interface SurfaceField {
   seaLevelM: number;
   /**
    * Local water surface, meters above datum: the sea, a lake's fill
-   * level, or a river's stage on its graded bed — −Infinity where the
-   * ground is dry.
+   * level, or a river's stage on its graded bed. Buried levels are
+   * hidden by terrain; −Infinity means no fluid reservoir. A mesh may
+   * supply its already sampled height at the same LOD to avoid a repeat.
    */
-  waterLevelAt(dir: Vec3, lodAngularRad?: number): number;
+  waterLevelAt(dir: Vec3, lodAngularRad?: number, terrainHeightM?: number): number;
   /** The river network carving this world, on wet worlds. */
   drainage?: DrainageGraph | null;
   /** The climate field feeding it, on the same grid. */
@@ -308,14 +310,14 @@ export function createSurfaceField(
       if (fade > 0.02) {
         const across = river.distRad / widthRad;
         carve -= depthM * (1 - across * across) ** 1.5 * fade;
-        // The channel floor meets the graph's graded bed absolutely, so
-        // the water that fills it steps downhill reach by reach instead
-        // of stranding on local band noise.
+        // Incise toward the graph's graded bed. A finer valley can
+        // already lie below it: erosion must not build a raised embankment
+        // to match the coarse graph (water is bounded separately).
         const channelRad = Math.max(6, 4 * Math.sqrt(q)) / params.radiusM;
         if (river.distRad < channelRad) {
           const chFade = lodAngularRad > 0 ? Math.min(1, channelRad / lodAngularRad / 1.5) : 1;
           const chAcross = river.distRad / channelRad;
-          carve += (river.bedM - (h + carve)) * (1 - chAcross * chAcross) * chFade * fade;
+          carve += Math.min(0, river.bedM - (h + carve)) * (1 - chAcross * chAcross) * chFade * fade;
         }
       }
     }
@@ -546,7 +548,7 @@ export function createSurfaceField(
       // spacing every river is sub-texel, but the climate still places
       // the deserts.
       if (options?.rivers !== false) {
-        drainage = buildDrainage(
+        const graph = buildDrainage(
           grid,
           cellHeights,
           oceanMask,
@@ -555,6 +557,9 @@ export function createSurfaceField(
           seaLevelM,
           channelDropM,
         );
+        // Survey the uncarved terrain before installing the river graph.
+        confineLakeBasins(graph, heightAt);
+        drainage = graph;
       }
     }
   }
@@ -563,21 +568,32 @@ export function createSurfaceField(
   // levels, and river stages riding the graded beds. Paleo-carved dry
   // worlds keep their channels empty — today's rain fills nothing.
   const wetWorld = wetness > 0.05;
-  const waterLevelAt = (dir: Vec3, lodAngularRad = 0): number => {
-    let level = solvedSeaLevelM;
-    if (drainage && wetWorld && lodAngularRad < 0.012) {
-      const river = drainage.nearestRiver(warpDir(dir));
-      if (river) {
-        const halfWidthM = Math.min(
-          25000,
-          Math.max(220, 1200 * Math.sqrt(river.dischargeM3s / 1000)),
-        );
-        if (river.distRad < (halfWidthM / params.radiusM) * 1.2 && river.stageM > level) {
-          level = river.stageM;
-        }
-      }
-      const lake = drainage.lakeLevelAt(warped);
-      if (lake > level) level = lake;
+  const waterLevelAt = (dir: Vec3, lodAngularRad = 0, terrainHeightM?: number): number => {
+    if (!drainage || !wetWorld || lodAngularRad >= 0.012) return solvedSeaLevelM;
+    const river = drainage.nearestRiver(warpDir(dir));
+    // Only river courses meander. Moving the surveyed lake cells would
+    // move their shorelines off the retaining banks we just checked.
+    let level = Math.max(solvedSeaLevelM, drainage.lakeLevelAt(dir));
+    const channelRad = river ? Math.max(6, 4 * Math.sqrt(river.dischargeM3s)) / params.radiusM : 0;
+    const hasRiver = river && river.distRad < channelRad && river.stageM > solvedSeaLevelM;
+    if (level <= solvedSeaLevelM && !hasRiver) return solvedSeaLevelM;
+    // Callers building a mesh already sampled the identical terrain LOD.
+    // Cache the reused river result before a standalone height query.
+    const stage = river?.stageM ?? -Infinity;
+    const depth = river ? 0.27 * river.dischargeM3s ** 0.3 : 0;
+    const across = hasRiver ? river.distRad / channelRad : 1;
+    const h = terrainHeightM ?? heightAt(dir, lodAngularRad);
+    // The global sea already fills every submerged point. A coarse
+    // inland pool must never introduce a second sheet over that ocean.
+    if (h <= solvedSeaLevelM) return solvedSeaLevelM;
+    if (hasRiver) {
+      // Coarse routing can span a fine valley or crater. Keep the water
+      // within hydraulic depth of its rendered bed and bury its lateral
+      // edge; never join an elevated stage to sea level as a water wall.
+      const support = 1 - across * across;
+      const coast = smooth01((h - solvedSeaLevelM) / Math.max(1, depth));
+      const boundedStage = Math.min(stage, h - 0.25 + (depth + 0.25) * support * coast);
+      level = Math.max(level, boundedStage);
     }
     return level;
   };

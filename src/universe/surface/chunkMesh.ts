@@ -96,10 +96,13 @@ export function buildChunkMesh(
   // them once, then interpolate the same b-c diagonal as the index buffer.
   const parentStride = res / 2 + 1;
   const parentPositions = new Float64Array(parentStride * parentStride * 3);
+  const parentHeights = new Float64Array(parentStride * parentStride);
   for (let j = 0; j < parentStride; j++) {
     for (let i = 0; i < parentStride; i++) {
       const dir = faceUvToDir(face, (x + 2 * i / res) / tiles, (y + 2 * j / res) / tiles);
-      const r = radiusKm + field.heightAt(dir, lodAngularRad * 2) / 1000;
+      const h = field.heightAt(dir, lodAngularRad * 2);
+      parentHeights[j * parentStride + i] = h;
+      const r = radiusKm + h / 1000;
       const k = (j * parentStride + i) * 3;
       parentPositions[k] = dir.x * r - centerKm[0];
       parentPositions[k + 1] = dir.y * r - centerKm[1];
@@ -159,7 +162,7 @@ export function buildChunkMesh(
           y: dirs[extIndex * 3 + 1],
           z: dirs[extIndex * 3 + 2],
         };
-        const level = field.waterLevelAt(dir, lodAngularRad);
+        const level = field.waterLevelAt(dir, lodAngularRad, heights[extIndex]);
         levels[outIndex] = level;
         if (level > heights[extIndex] - 5) wet = true;
       }
@@ -194,7 +197,7 @@ export function buildChunkMesh(
           for (let i = 0; i < parentStride; i++) {
             const dir = faceUvToDir(face, (x + 2 * i / res) / tiles, (y + 2 * j / res) / tiles);
             const k = (j * parentStride + i) * 3;
-            const levelM = field.waterLevelAt(dir, lodAngularRad * 2);
+            const levelM = field.waterLevelAt(dir, lodAngularRad * 2, parentHeights[k / 3]);
             // Dry parent vertices have the same buried fluid fallback as
             // an independently built parent tile. Never import the ground's
             // relief delta into an otherwise level sea.
