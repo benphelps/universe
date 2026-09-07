@@ -38,6 +38,9 @@ uniform vec3 uLight2Dir;
 uniform vec3 uLight2Color;
 uniform float uOpticalDepth;
 uniform float uForwardScatter;
+// 0: ordinary ring; 1: behind-cloud beauty fragments; 2: foreground pass.
+uniform float uRingCloudPass;
+uniform float uRingCloudRadius;
 
 ${SIMPLEX_NOISE_GLSL}
 ${SHADOW_GLSL}
@@ -55,6 +58,18 @@ float slabShade(vec3 nView, vec3 lightDir, float density) {
 }
 
 void main() {
+  if (uRingCloudPass > 0.5) {
+    vec3 ray = vWorldPos - cameraPosition;
+    float distanceToRing = length(ray);
+    ray /= max(distanceToRing, 1e-9);
+    float b = dot(cameraPosition, ray);
+    float c = dot(cameraPosition, cameraPosition) - uRingCloudRadius * uRingCloudRadius;
+    float discriminant = b * b - c;
+    float entry = discriminant >= 0.0 ? -b - sqrt(max(discriminant, 0.0)) : 1e30;
+    float exitDistance = discriminant >= 0.0 ? -b + sqrt(max(discriminant, 0.0)) : -1.0;
+    bool behindCloud = exitDistance > 0.0 && max(entry, 0.0) < distanceToRing;
+    if ((uRingCloudPass < 1.5) != behindCloud) discard;
+  }
   float r = length(vObjPos.xy);
   float rNorm = (r - uRingShadow.x) / (uRingShadow.y - uRingShadow.x);
   float density = ringDensity(r, fwidth(r));
@@ -116,6 +131,8 @@ export function createRingMesh(rings: RingSystem, planetRadiusUnits: number): Me
     uniforms: {
       ...createShadowUniforms(),
       ...airViewUniforms(),
+      uRingCloudPass: { value: 0 },
+      uRingCloudRadius: { value: 0 },
       uHue: { value: new Color(...rings.hue) },
       uLightDir: { value: [0, 0, 1] },
       uLightColor: { value: new Color(1, 1, 1) },
@@ -132,6 +149,9 @@ export function createRingMesh(rings: RingSystem, planetRadiusUnits: number): Me
     side: DoubleSide,
     transparent: true,
     depthWrite: false,
+    // A zero-thickness sheet needs both faces in one draw, not Three's
+    // separate back/front transparent draws (which cannot overlap here).
+    forceSinglePass: true,
   });
 
   const mesh = new Mesh(new RingGeometry(inner, outer, 256, 8), material);

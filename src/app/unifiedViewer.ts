@@ -2892,6 +2892,8 @@ export class UnifiedViewer {
       this.ringMesh = createRingMesh(rings, this.radiusKm);
       this.ringMesh.rotation.x = -Math.PI / 2;
       this.scene.add(this.ringMesh);
+      this.pipeline.foregroundRings.setRing(this.ringMesh,
+        this.cloudShell && cloudBounds ? this.radiusKm + cloudBounds.topKm : 0);
     }
     // Depth-only globe: writes the body's depth even where terrain
     // isn't loaded, so sky objects eclipse per-fragment. Sized below
@@ -4111,6 +4113,7 @@ export class UnifiedViewer {
       clearRingShadow(material);
     }
     this.surveying = false;
+    this.pipeline.foregroundRings.setRing(null);
     this.pipeline.clouds.setShell(null);
     for (const mesh of [
       this.atmosphereShell,

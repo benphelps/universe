@@ -14,6 +14,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { CompactBloomPass } from './compactBloom';
 import { CloudPass } from './cloudPass';
+import { ForegroundRingPass } from './foregroundRingPass';
 import { DiagramPass } from './diagramLayer';
 import { SkyLayer } from './skyLayer';
 import { GpuFrameTimer } from './gpuFrameTimer';
@@ -38,6 +39,7 @@ export class RenderPipeline {
    *  scene pass as a single depth-tested quad. */
   readonly sky = new SkyLayer();
   readonly clouds: CloudPass;
+  readonly foregroundRings: ForegroundRingPass;
   private readonly composer: EffectComposer;
   private readonly bloom: CompactBloomPass;
   private readonly stopGlAudit: () => void;
@@ -80,6 +82,8 @@ export class RenderPipeline {
     this.composer.addPass(new RenderPass(scene, camera));
     this.clouds = new CloudPass(camera);
     this.composer.addPass(this.clouds);
+    this.foregroundRings = new ForegroundRingPass(camera);
+    this.composer.addPass(this.foregroundRings);
     // Glare is a compact optical cue around HDR emitters: a broad
     // point-spread turns the physically small solar disc into a white
     // bank across the horizon, hiding sunset color and eclipse contacts.
