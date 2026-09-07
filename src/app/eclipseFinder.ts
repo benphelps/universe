@@ -1,8 +1,10 @@
 import { findSurfaceEclipses, observerDiscs } from './eclipseGeometry';
+import { airmass, horizonAirmass } from '../render/lighting/surfaceLight';
+import { aerosolSurfaceExposure, atmosphereColumn } from '../universe/planet/atmosphere';
 import { orbitWorldPosition, stellarForcing } from '../universe/planet/illumination';
 import { elementsToState } from '../core/math/kepler';
 import { orbitalPeriod } from '../core/math/orbit';
-import { DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
+import { AU, DAY, EARTH_MASS, EARTH_RADIUS, G, SOLAR_RADIUS } from '../core/physics/constants';
 import { mu as muOf, seconds, type Mu } from '../core/physics/units';
 import { seedFromHex } from '../core/rng/hash';
 import type { Neighbor } from '../universe/galaxy/neighborhood';
@@ -24,9 +26,9 @@ export type EclipseEventType = 'moon-shadow' | 'parent-planet' | 'sibling-moon' 
 export type EclipseFilter = EclipseEventType | 'all';
 /** Finder results must already be happening or begin inside this window. */
 export const ECLIPSE_WINDOW_DAYS = 1;
-/** A larger, cheap near-time survey keeps the strict one-day window useful. */
-export const MAX_ECLIPSE_NEIGHBORS = 1024;
-export const ECLIPSE_RESULT_LIMIT = 3;
+export const ECLIPSE_RESULT_LIMIT = 24;
+/** Systems searched between reports of progress and the shortlist so far. */
+export const ECLIPSE_REPORT_EVERY = 64;
 
 interface Vec {
   x: number;
@@ -53,8 +55,15 @@ export interface EclipseResult {
   moonName: string;
   atmosphereClass: AtmosphereClass;
   atmospherePressureBar: number;
-  /** Direct-sun readability of the atmosphere and its cloud deck, 0–1. */
+  /** The sky's part in the event, 0–1: air that scatters enough to make
+   *  a sky yet passes enough of the beam to show the eclipsed disc. */
   atmosphereScore: number;
+  /** Share of the sun's beam reaching the site through gas and haze at
+   *  arrival, and the share scattered into skylight along that path. */
+  airTransmission: number;
+  airScattering: number;
+  /** Weather-mean fraction of the globe under cloud. */
+  cloudCover: number;
   /** Maximum eclipse. */
   timeDays: number;
   /** First and last visible contact at the observing site. */
@@ -66,6 +75,9 @@ export interface EclipseResult {
   waitDays: number;
   obscuration: number;
   kind: 'total' | 'annular' | 'partial' | 'transit';
+  /** Angular radii of the star's and the blocker's discs from the site at maximum eclipse. */
+  starAngularRadius: number;
+  casterAngularRadius: number;
   /** Planet-fixed ground direction at maximum eclipse. */
   surfaceDirection: [number, number, number];
   /** Planet-fixed direction toward the star at the arrival epoch. */
@@ -78,22 +90,20 @@ export interface EclipseSearchProgress {
   distancePc: number;
 }
 
-interface EclipseEvent {
-  timeDays: number;
-  startTimeDays: number;
-  endTimeDays: number;
-  arrivalTimeDays: number;
-  obscuration: number;
-  kind: EclipseResult['kind'];
-  surfaceDirection: EclipseResult['surfaceDirection'];
-  sunDirection: EclipseResult['sunDirection'];
-}
-
 interface EclipseMaximum {
   timeDays: number;
   obscuration: number;
   kind: EclipseResult['kind'];
+  starAngularRadius: number;
+  casterAngularRadius: number;
   surfaceDirection: EclipseResult['surfaceDirection'];
+}
+
+interface EclipseEvent extends EclipseMaximum {
+  startTimeDays: number;
+  endTimeDays: number;
+  arrivalTimeDays: number;
+  sunDirection: EclipseResult['sunDirection'];
 }
 
 interface Host {
@@ -132,6 +142,10 @@ function turnAroundY(v: Vec, angle: number): Vec {
 }
 
 const tuple = (v: Vec): [number, number, number] => [v.x, v.y, v.z];
+
+/** Angular radius of a sphere seen from a site, in the metres of both. */
+const apparentRadius = (radius: number, offset: Vec): number =>
+  Math.asin(Math.min(1, radius / Math.max(length(offset), 1)));
 
 function wrapSigned(angle: number): number {
   return ((angle + Math.PI) % TAU + TAU) % TAU - Math.PI;
@@ -258,8 +272,8 @@ function eclipseAt(
   // penumbra that merely brushes the limb: this is the ground track
   // we can put the traveler under.
   if (crossTrack >= planetRadius) return null;
-  const starAngularRadius = (star.radius * SOLAR_RADIUS) / Math.max(length(planetState.position), 1);
-  const stellarDiscAtMoon = along * starAngularRadius;
+  const starDistance = Math.max(length(planetState.position), 1);
+  const stellarDiscAtMoon = (along * star.radius * SOLAR_RADIUS) / starDistance;
   // The point on the globe closest to the shadow axis sees this much
   // residual offset between the moon and stellar discs.
   const obscuration = discObscuration(stellarDiscAtMoon, moonRadius, 0);
@@ -269,6 +283,7 @@ function eclipseAt(
   const perpendicular = subtract(moonPosition, scale(sun, along));
   const towardStar = Math.sqrt(Math.max(0, planetRadius ** 2 - crossTrack ** 2));
   const surface = normalize(add(perpendicular, scale(sun, towardStar)));
+  const site = scale(surface, planetRadius);
   // The terrain is fixed while the celestial frame turns around it.
   // Carry both the track and the star into that planet-fixed frame at
   // the event epoch, exactly as UnifiedViewer does each frame.
@@ -276,6 +291,8 @@ function eclipseAt(
     timeDays,
     obscuration,
     kind,
+    starAngularRadius: apparentRadius(star.radius * SOLAR_RADIUS, subtract(scale(sun, starDistance), site)),
+    casterAngularRadius: apparentRadius(moonRadius, subtract(moonPosition, site)),
     surfaceDirection: tuple(turnAroundY(surface, groundSpin(planet, timeDays))),
   };
 }
@@ -540,46 +557,106 @@ function hosts(system: StarSystem): Host[] {
   ];
 }
 
-export const ECLIPSE_ATMOSPHERE_VISIBILITY: Record<AtmosphereClass, number> = {
-  none: 1,
-  'hydrogen-helium': 0.12,
-  nitrogen: 0.96,
-  'nitrogen-oxygen': 1,
-  'thin-co2': 0.72,
-  'co2-hothouse': 0.06,
-  // Tholin aerosol is optically deep even when the bulk pressure is low.
-  'nitrogen-methane': 0.05,
-  'rock-vapor': 0.2,
-};
+export interface EclipseSky {
+  transmission: number;
+  scattering: number;
+  cloudCover: number;
+  score: number;
+}
 
-function eclipseAtmosphereScore(planet: Pick<Planet, 'physical'>): number {
-  const { atmosphere, appearance } = planet.physical;
-  if (atmosphere.class === 'none') return 1;
-  const pressureFit = Math.max(
-    0,
-    1 - Math.abs(Math.log10(Math.max(atmosphere.surfacePressureBar, 1e-6))) / 1.5,
+/**
+ * The sky's part in an eclipse as the site sees it at arrival. The air
+ * must scatter enough sunlight to make a sky that can darken, yet pass
+ * enough of the beam that the eclipsed disc still shows. Both follow
+ * the green-band column the renderer draws with, along the slant to
+ * the sun, and their product peaks where half the beam gets through.
+ * An airless world has nothing to take part, and a cloud deck dims
+ * what does, softened because its cover is a weather mean rather than
+ * a forecast for the site.
+ */
+export function eclipseSky(body: Pick<Planet, 'physical'>, sunElevationSin: number): EclipseSky {
+  const { atmosphere, bulk, climate, appearance } = body.physical;
+  if (atmosphere.class === 'none') return { transmission: 1, scattering: 0, cloudCover: 0, score: 0 };
+  const column = atmosphereColumn(
+    atmosphere,
+    bulk,
+    aerosolSurfaceExposure(atmosphere, climate.iceCapLatitudeRad),
   );
+  const radiusKm = (bulk.radiusEarth * EARTH_RADIUS) / 1000;
+  const mu = Math.max(0, sunElevationSin);
+  const gasPath = airmass(mu, horizonAirmass(radiusKm, atmosphere.scaleHeightKm));
+  const hazePath = airmass(
+    mu,
+    horizonAirmass(radiusKm, atmosphere.scaleHeightKm * column.aerosolScaleHeightRatio),
+  );
+  const transmission = Math.exp(
+    -(column.rayleigh[1] * gasPath + column.aerosolExtinction[1] * hazePath),
+  );
+  const scattering = 1 - Math.exp(-(column.rayleigh[1] * gasPath + column.aerosol[1] * hazePath));
   const clouds = appearance.clouds;
   const cloudTransmission =
     1 - clouds.coverage + clouds.coverage * Math.exp(-clouds.opticalDepth);
-  return (
-    ECLIPSE_ATMOSPHERE_VISIBILITY[atmosphere.class] *
-    (0.55 + 0.45 * pressureFit) *
-    (0.35 + 0.65 * cloudTransmission)
-  );
+  return {
+    transmission,
+    scattering,
+    cloudCover: clouds.coverage,
+    score: 4 * transmission * scattering * (0.35 + 0.65 * cloudTransmission),
+  };
 }
 
-function eclipseMerit(
+/** A result's sky as its observing body and its arrival sun give it. */
+function skyFields(
+  body: Planet | Moon,
+  event: Pick<EclipseEvent, 'surfaceDirection' | 'sunDirection'>,
+): Pick<
+  EclipseResult,
+  | 'atmosphereClass'
+  | 'atmospherePressureBar'
+  | 'atmosphereScore'
+  | 'airTransmission'
+  | 'airScattering'
+  | 'cloudCover'
+> {
+  const sky = eclipseSky(
+    body,
+    event.surfaceDirection.reduce((sum, c, i) => sum + c * event.sunDirection[i], 0),
+  );
+  return {
+    atmosphereClass: body.physical.atmosphere.class,
+    atmospherePressureBar: body.physical.atmosphere.surfacePressureBar,
+    atmosphereScore: sky.score,
+    airTransmission: sky.transmission,
+    airScattering: sky.scattering,
+    cloudCover: sky.cloudCover,
+  };
+}
+
+/** The Sun's angular radius from Earth: an eclipse this wide scores half on size. */
+const REFERENCE_ECLIPSE_RADIUS = SOLAR_RADIUS / AU;
+
+/** Angular radius of the disc the eclipse takes out of the sky: the
+ *  whole star when it is covered, the blocker inside an annulus, and
+ *  the equal-area disc of a partial bite. */
+export function eclipsedAngularRadius(
+  result: Pick<EclipseResult, 'starAngularRadius' | 'obscuration'>,
+): number {
+  return result.starAngularRadius * Math.sqrt(result.obscuration);
+}
+
+export function eclipseMerit(
   result: Pick<
     EclipseResult,
-    'active' | 'waitDays' | 'distancePc' | 'obscuration' | 'atmosphereScore'
+    'active' | 'waitDays' | 'distancePc' | 'obscuration' | 'atmosphereScore' | 'starAngularRadius'
   >,
 ): number {
   const timing = result.active ? 1 : Math.max(0, 1 - result.waitDays / ECLIPSE_WINDOW_DAYS);
   const proximity = 1 / (1 + result.distancePc / 8);
+  const eclipsed = eclipsedAngularRadius(result);
+  const size = eclipsed / (eclipsed + REFERENCE_ECLIPSE_RADIUS);
   return (
-    result.atmosphereScore * 0.55 +
-    result.obscuration * 0.25 +
+    result.atmosphereScore * 0.4 +
+    result.obscuration * 0.2 +
+    size * 0.2 +
     timing * 0.14 +
     proximity * 0.06
   );
@@ -587,7 +664,13 @@ function eclipseMerit(
 
 type RankedEclipse = Pick<
   EclipseResult,
-  'active' | 'waitDays' | 'distancePc' | 'obscuration' | 'atmosphereScore' | 'planetName'
+  | 'active'
+  | 'waitDays'
+  | 'distancePc'
+  | 'obscuration'
+  | 'atmosphereScore'
+  | 'starAngularRadius'
+  | 'planetName'
 >;
 
 function compareEclipses(a: RankedEclipse, b: RankedEclipse): number {
@@ -596,6 +679,28 @@ function compareEclipses(a: RankedEclipse, b: RankedEclipse): number {
   if (Math.abs(a.waitDays - b.waitDays) > 1e-8) return a.waitDays - b.waitDays;
   if (Math.abs(a.distancePc - b.distancePc) > 1e-6) return a.distancePc - b.distancePc;
   return a.planetName.localeCompare(b.planetName);
+}
+
+const worldOf = (
+  result: Pick<EclipseResult, 'seedHex' | 'hostIndex' | 'planetIndex' | 'observerMoonIndex'>,
+): string => `${result.seedHex}:${result.hostIndex}:${result.planetIndex}:${result.observerMoonIndex}`;
+
+/** The shortlist with ranked events folded in: each world keeps its
+ *  best event, and the list keeps its best worlds. A world is searched
+ *  once, so one that falls off the end never comes back. */
+export function shortlistEclipses(
+  shortlist: readonly EclipseResult[],
+  events: readonly EclipseResult[],
+): EclipseResult[] {
+  const worlds = new Set(shortlist.map(worldOf));
+  const merged = [...shortlist];
+  for (const event of events) {
+    const world = worldOf(event);
+    if (worlds.has(world)) continue;
+    worlds.add(world);
+    merged.push(event);
+  }
+  return merged.sort(compareEclipses).slice(0, ECLIPSE_RESULT_LIMIT);
 }
 
 /** Additional caster/observer pairs use the same placement frames as UnifiedViewer:
@@ -766,9 +871,7 @@ function additionalEclipses(
           planetName: parent.name,
           moonName: pair.moonIndex >= 0 ? pair.body.name : '',
           starName: host.star.designation,
-          atmosphereClass: observer.physical.atmosphere.class,
-          atmospherePressureBar: observer.physical.atmosphere.surfacePressureBar,
-          atmosphereScore: eclipseAtmosphereScore(observer),
+          ...skyFields(observer, event),
           active,
           waitDays: active ? 0 : Math.max(0, event.startTimeDays - startDays),
         });
@@ -819,9 +922,7 @@ export function findEclipsesInSystem(
             starName: host.star.designation,
             planetName: planet.name,
             moonName: moon.name,
-            atmosphereClass: planet.physical.atmosphere.class,
-            atmospherePressureBar: planet.physical.atmosphere.surfacePressureBar,
-            atmosphereScore: eclipseAtmosphereScore(planet),
+            ...skyFields(planet, event),
             timeDays: event.timeDays,
             startTimeDays: event.startTimeDays,
             endTimeDays: event.endTimeDays,
@@ -830,6 +931,8 @@ export function findEclipsesInSystem(
             waitDays: active ? 0 : Math.max(0, event.startTimeDays - startDays),
             obscuration: event.obscuration,
             kind: event.kind,
+            starAngularRadius: event.starAngularRadius,
+            casterAngularRadius: event.casterAngularRadius,
             surfaceDirection: event.surfaceDirection,
             sunDirection: event.sunDirection,
           };
@@ -859,8 +962,10 @@ const nextPaint = (): Promise<void> =>
   });
 
 /**
- * Search outward from the current system. Work is yielded between
- * generated systems so opening the finder never stalls the scene.
+ * Search outward through the whole neighbourhood, nearest first. The
+ * shortlist so far is reported every few systems, so a rare event type
+ * can be waited for and a common one stopped early. Work is yielded
+ * between generated systems so opening the finder never stalls the scene.
  */
 export async function findNearbyEclipses(
   current: StarSystem,
@@ -869,6 +974,7 @@ export async function findNearbyEclipses(
   onProgress?: (progress: EclipseSearchProgress) => void,
   signal?: AbortSignal,
   filter: EclipseFilter = 'all',
+  onResults?: (results: EclipseResult[]) => void,
 ): Promise<EclipseResult[]> {
   const destinations: Array<{ system?: StarSystem; seedHex: string; positionPc: Neighbor['positionPc']; distancePc: number }> = [
     { system: current, seedHex: current.seedHex, positionPc: current.localePc, distancePc: 0 },
@@ -878,36 +984,38 @@ export async function findNearbyEclipses(
     if (seen.has(neighbor.seedHex)) continue;
     seen.add(neighbor.seedHex);
     destinations.push(neighbor);
-    if (destinations.length >= MAX_ECLIPSE_NEIGHBORS + 1) break;
   }
 
-  const found: EclipseResult[] = [];
+  let shortlist: EclipseResult[] = [];
+  let reported = shortlist;
+  const progress = (checked: number): void =>
+    onProgress?.({
+      checked,
+      total: destinations.length,
+      distancePc: destinations[Math.min(checked, destinations.length - 1)].distancePc,
+    });
   for (let index = 0; index < destinations.length; index++) {
     if (signal?.aborted) return [];
-    const destination = destinations[index];
-    onProgress?.({ checked: index, total: destinations.length, distancePc: destination.distancePc });
+    if (index % ECLIPSE_REPORT_EVERY === 0) {
+      progress(index);
+      if (shortlist !== reported) {
+        reported = shortlist;
+        onResults?.(shortlist);
+      }
+    }
     if (index > 0) await nextPaint();
     if (signal?.aborted) return [];
+    const destination = destinations[index];
     const system =
       destination.system ?? generateSystem(seedFromHex(destination.seedHex), destination.positionPc);
     const events = findEclipsesInSystem(system, startDays, destination.distancePc, ECLIPSE_WINDOW_DAYS, filter);
-    for (const event of events) {
-      found.push({ ...event, positionPc: destination.positionPc });
+    if (events.length > 0) {
+      shortlist = shortlistEclipses(
+        shortlist,
+        events.map((event) => ({ ...event, positionPc: destination.positionPc })),
+      );
     }
   }
-  onProgress?.({
-    checked: destinations.length,
-    total: destinations.length,
-    distancePc: destinations.at(-1)?.distancePc ?? 0,
-  });
-  const shortlist: EclipseResult[] = [];
-  const worlds = new Set<string>();
-  for (const result of found.sort(compareEclipses)) {
-    const world = `${result.seedHex}:${result.hostIndex}:${result.planetIndex}:${result.observerMoonIndex}`;
-    if (worlds.has(world)) continue;
-    worlds.add(world);
-    shortlist.push(result);
-    if (shortlist.length >= ECLIPSE_RESULT_LIMIT) break;
-  }
+  progress(destinations.length);
   return shortlist;
 }

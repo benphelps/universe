@@ -32,6 +32,10 @@ describe('arbitrary surface eclipses', () => {
     };
     const at = (t: number) => observerDiscs(geometry(t), surface, 1, 10, 0.3);
     expect(at(event.timeDays).obscuration).toBeCloseTo(event.obscuration, 7);
+    expect(event.starAngularRadius).toBeCloseTo(Math.asin(10 / 1000), 4);
+    expect(event.starAngularRadius).toBeCloseTo(at(event.timeDays).star, 10);
+    expect(event.casterAngularRadius).toBeCloseTo(at(event.timeDays).caster, 10);
+    expect(event.casterAngularRadius).toBeGreaterThan(event.starAngularRadius);
     expect(Math.abs(at(event.startTimeDays).margin)).toBeLessThan(1e-7);
     expect(Math.abs(at(event.endTimeDays).margin)).toBeLessThan(1e-7);
     expect(at(event.arrivalTimeDays).margin).toBeLessThan(0);

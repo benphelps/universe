@@ -12,8 +12,9 @@ self.onmessage = async (event: MessageEvent<EclipseSearchRequest>) => {
       (progress) => send({ progress }),
       undefined,
       filter,
+      (results) => send({ results, done: false }),
     );
-    send({ results });
+    send({ results, done: true });
   } catch (error) {
     send({ error: error instanceof Error ? error.message : String(error) });
   }

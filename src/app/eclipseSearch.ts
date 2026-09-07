@@ -10,11 +10,12 @@ export interface EclipseSearchRequest {
 }
 export type EclipseSearchReply =
   | { progress: EclipseSearchProgress }
-  | { results: EclipseResult[] }
+  | { results: EclipseResult[]; done: boolean }
   | { error: string };
 
-/** A wider conjunction survey belongs off the animation thread. Each
- * search owns its worker, so cancellation also stops Kepler solving. */
+/** A neighbourhood-wide conjunction survey belongs off the animation
+ * thread. Each search owns its worker, so cancellation also stops Kepler
+ * solving; the shortlist so far arrives while it runs. */
 export function searchEclipses(
   current: StarSystem,
   neighbors: readonly Neighbor[],
@@ -22,6 +23,7 @@ export function searchEclipses(
   onProgress?: (progress: EclipseSearchProgress) => void,
   signal?: AbortSignal,
   filter: EclipseFilter = 'all',
+  onResults?: (results: EclipseResult[]) => void,
 ): Promise<EclipseResult[]> {
   if (signal?.aborted) return Promise.resolve([]);
   return new Promise((resolve, reject) => {
@@ -40,6 +42,7 @@ export function searchEclipses(
     worker.onmessage = (event: MessageEvent<EclipseSearchReply>) => {
       const reply = event.data;
       if ('progress' in reply) onProgress?.(reply.progress);
+      else if ('results' in reply && !reply.done) onResults?.(reply.results);
       else {
         cleanup();
         if ('error' in reply) reject(new Error(reply.error));

@@ -16,6 +16,9 @@ export interface SurfaceEclipse {
   arrivalTimeDays: number;
   obscuration: number;
   kind: 'total' | 'annular' | 'partial' | 'transit';
+  /** Angular radii of the star's and the caster's discs from the site at maximum. */
+  starAngularRadius: number;
+  casterAngularRadius: number;
   surfaceDirection: [number, number, number];
   sunDirection: [number, number, number];
 }
@@ -208,6 +211,8 @@ export function findSurfaceEclipses(options: {
           arrivalTimeDays: arrival,
           obscuration: peak.obscuration,
           kind,
+          starAngularRadius: peak.star,
+          casterAngularRadius: peak.caster,
           surfaceDirection: tuple(surface),
           sunDirection: tuple(arrivalSun),
         };

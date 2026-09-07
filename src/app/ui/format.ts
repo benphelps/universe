@@ -12,6 +12,11 @@ export function fmtYears(years: number): string {
   return `${fmt(years)} yr`;
 }
 
+/** Degrees for the angles the eye judges: a disc's width, a tilt. */
+export function fmtAngle(radians: number): string {
+  return `${fmt((radians * 180) / Math.PI, 2)}°`;
+}
+
 export function fmtDays(days: number): string {
   if (days >= 365.25) return fmtYears(days / 365.25);
   if (days >= 1) return `${fmt(days)} d`;

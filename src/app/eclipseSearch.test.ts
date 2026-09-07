@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { EclipseResult } from './eclipseFinder';
 import { searchEclipses, type EclipseSearchReply } from './eclipseSearch';
 import type { StarSystem } from '../universe/system/types';
 
@@ -17,10 +18,11 @@ class FakeWorker {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('eclipse search worker lifecycle', () => {
-  it('forwards filters and progress, then releases the worker on completion', async () => {
+  it('forwards filters, progress and the shortlist so far, then releases the worker on completion', async () => {
     vi.stubGlobal('Worker', FakeWorker);
     const progress = vi.fn();
-    const pending = searchEclipses({} as StarSystem, [], 12, progress, undefined, 'sibling-moon');
+    const partial = vi.fn();
+    const pending = searchEclipses({} as StarSystem, [], 12, progress, undefined, 'sibling-moon', partial);
     const worker = FakeWorker.last;
     expect(worker.postMessage).toHaveBeenCalledWith({
       current: {},
@@ -31,7 +33,11 @@ describe('eclipse search worker lifecycle', () => {
     const report = { checked: 1, total: 2, distancePc: 3 };
     worker.reply({ progress: report });
     expect(progress).toHaveBeenCalledWith(report);
-    worker.reply({ results: [] });
+    const found = [{ seedHex: 'a' } as EclipseResult];
+    worker.reply({ results: found, done: false });
+    expect(partial).toHaveBeenCalledWith(found);
+    expect(worker.terminate).not.toHaveBeenCalled();
+    worker.reply({ results: [], done: true });
     await expect(pending).resolves.toEqual([]);
     expect(worker.terminate).toHaveBeenCalledOnce();
   });

@@ -2,15 +2,16 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { seedToHex } from '../../core/rng/hash';
 import { galaxySeed } from '../../universe/galaxy/galaxySeed';
 import {
-  MAX_ECLIPSE_NEIGHBORS,
+  ECLIPSE_RESULT_LIMIT,
+  eclipsedAngularRadius,
   type EclipseFilter,
   type EclipseResult,
   type EclipseSearchProgress,
 } from '../eclipseFinder';
 import { searchEclipses } from '../eclipseSearch';
-import { simulationTimeDays, travelToEclipse, type AppSnapshot } from '../store';
+import { setTimePaused, simulationTimeDays, travelToEclipse, type AppSnapshot } from '../store';
 import { FinderList, type FinderGroup } from './finderList';
-import { fmt, fmtDays } from './format';
+import { fmt, fmtAngle, fmtDays } from './format';
 import { sceneGlyph } from './sceneGlyphs';
 import { useSessionState } from './sessionState';
 
@@ -49,21 +50,35 @@ function resultTiming(result: EclipseResult, nowDays: number): string {
   return `starts in ${fmtDays(result.startTimeDays - nowDays)}`;
 }
 
+/** The sky in a few words: whether the sun still shows through the
+ *  air, and whether there is enough air to make a sky at all. */
 function resultAtmosphere(result: EclipseResult): string {
-  const quality =
-    result.atmosphereScore >= 0.72
-      ? 'clear sky'
-      : result.atmosphereScore >= 0.45
-        ? 'readable sky'
-        : result.atmosphereScore >= 0.2
-          ? 'cloudy sky'
-          : 'dim haze';
-  return `${quality} · ${ATMOSPHERES[result.atmosphereClass]} · ${fmt(result.atmospherePressureBar, 2)} bar`;
+  if (result.atmosphereClass === 'none') return 'airless · black sky';
+  const word =
+    result.airTransmission < 0.25
+      ? 'murky sky'
+      : result.airTransmission < 0.5
+        ? 'dimmed sun'
+        : result.airScattering < 0.1
+          ? 'thin sky'
+          : 'clear sky';
+  const cloud = result.cloudCover >= 0.05 ? ` · ${Math.round(result.cloudCover * 100)}% cloud` : '';
+  return `${word} · ${ATMOSPHERES[result.atmosphereClass]} · ${fmt(result.atmospherePressureBar, 2)} bar${cloud}`;
 }
 
 function resultDepth(result: EclipseResult): string {
   const percent = result.obscuration * 100;
   return `${percent < 1 ? percent.toFixed(2) : Math.round(percent)}%`;
+}
+
+/** How wide the eclipse stands in the sky: the star's whole disc when
+ *  it is covered, otherwise the bite taken out of it. */
+function resultSize(result: EclipseResult): string {
+  return `${fmtAngle(2 * eclipsedAngularRadius(result))} across`;
+}
+
+function resultDiscs(result: EclipseResult): string {
+  return `Star disc ${fmtAngle(2 * result.starAngularRadius)} · blocking disc ${fmtAngle(2 * result.casterAngularRadius)}`;
 }
 
 const resultKey = (r: EclipseResult): string =>
@@ -78,10 +93,14 @@ interface EclipseSurvey {
 
 /**
  * The eclipse survey behind its finder tab: the event type and the
- * search pinned at the top, the ranked events as rows beneath. An
- * opened row names the sky, the blocking body and the timing, and
- * carries the travel to the event; the list stays through the trip,
- * its timing read against the clock you arrive on.
+ * search pinned at the top, the ranked events as rows beneath. The
+ * survey walks the whole neighbourhood outward and the rows fill in as
+ * it goes; cancelling keeps what it found. Starting one pauses the
+ * clock, since every row is timed from that moment and a long search
+ * would otherwise leave the list behind. An opened row names the sky,
+ * the blocking body and the timing, and carries the travel to the
+ * event; the list stays through the trip, its timing read against the
+ * clock you arrive on.
  */
 export function EclipseFinderPanel({
   snap,
@@ -116,12 +135,9 @@ export function EclipseFinderPanel({
     search.current?.abort();
     const controller = new AbortController();
     search.current = controller;
+    setTimePaused(true);
     setSearching(true);
-    setProgress({
-      checked: 0,
-      total: Math.min(MAX_ECLIPSE_NEIGHBORS + 1, snap.neighbors.length + 1),
-      distancePc: 0,
-    });
+    setProgress({ checked: 0, total: snap.neighbors.length + 1, distancePc: 0 });
     setSurvey({ galaxy: galaxy ?? '', filter, results: [] });
     setEmpty(false);
     setError(null);
@@ -133,6 +149,7 @@ export function EclipseFinderPanel({
         setProgress,
         controller.signal,
         filter,
+        partial => setSurvey({ galaxy: galaxy ?? '', filter, results: partial }),
       );
       if (!controller.signal.aborted) {
         setSurvey({ galaxy: galaxy ?? '', filter, results: found });
@@ -162,7 +179,7 @@ export function EclipseFinderPanel({
       key: resultKey(result),
       glyph: sceneGlyph('eclipse'),
       title: `${index + 1}. ${result.observerName}`,
-      sub: `${resultTiming(result, nowDays)} · ${fmtDays(result.endTimeDays - result.startTimeDays)} long`,
+      sub: `${resultTiming(result, nowDays)} · ${fmtDays(result.endTimeDays - result.startTimeDays)} long · ${resultSize(result)}`,
       score: result.obscuration * 100,
       scoreLabel: resultDepth(result),
       detail: (
@@ -170,6 +187,7 @@ export function EclipseFinderPanel({
           <ul>
             <li>{resultTitle(result)} · {resultAtmosphere(result)}</li>
             <li>Blocked by {result.occluderName} · {resultPlace(result)}</li>
+            <li>{resultDiscs(result)}</li>
           </ul>
           <button className="finder-go" onClick={() => go(result)}>Go to event</button>
         </>
@@ -189,7 +207,7 @@ export function EclipseFinderPanel({
         </label>
         {!searching && results.length === 0 && !empty && (
           <p className="finder-copy">
-            Rank up to three active or next-day events by sky clarity, depth, timing, and distance. Airless worlds included.
+            Search outward through the whole neighbourhood, ranking up to {ECLIPSE_RESULT_LIMIT} active or next-day events by a sky that takes part yet still shows the sun, depth, size in the sky, timing, and distance as they are found. Airless worlds rank low. Stop whenever the list is good enough.
           </p>
         )}
         <div className="finder-actions">
@@ -201,7 +219,7 @@ export function EclipseFinderPanel({
         {status && <div className="finder-status" role="status">{status}</div>}
         {error && <div className="finder-empty" role="alert">{error}</div>}
         {empty && !searching && (
-          <div className="finder-empty">No matching event found in the next day of the nearby survey.</div>
+          <div className="finder-empty">No matching event found in the next day across the neighbourhood.</div>
         )}
       </div>
       {groups.length > 0 && <FinderList groups={groups} />}
