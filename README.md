@@ -46,13 +46,13 @@ Scroll to ride between scales · drag to orbit · right-drag (or right-shift + d
 
 On a planet's surface: `W`/`A`/`S`/`D` flies where you look, `Space`/`C` for altitude, `Shift` to boost.
 
-For photographic locations, open **Finders → Scenic locations**, choose a scene type, and select **Find scenes**. Surveys rank nearby worlds, local nebulae, galaxy shapes, and catalog nuclei by physical traits. **Scan more** expands the shortlist; each candidate opens in a separate tab with framing suggestions. World rankings include sampled visible starlight, atmospheric clarity, reflection, and lava emission; nebula rankings include estimated optical power per area. Galaxy-shape candidates still need a visual lighting check. These are scouting destinations, not precomposed camera poses or guaranteed sunsets.
+For photographic locations, open **Finders → Scenic**, choose a scene type, and select **Find scenes**. Surveys rank nearby worlds, local nebulae, galaxy shapes, and catalog nuclei by physical traits. Candidates stand as rows under their scene types; the chips narrow a mixed shortlist to one type, and a row opens to show its reasons and a framing suggestion and to travel to the candidate. The shortlist stays after a trip, even the clean boot into another galaxy, and says where it was surveyed from; **Scan more** extends it while you are still there. World rankings include sampled visible starlight, atmospheric clarity, reflection, and lava emission; nebula rankings include estimated optical power per area. Galaxy-shape candidates still need a visual lighting check. These are scouting destinations, not precomposed camera poses or guaranteed sunsets.
 
-**Finders → Eclipse** searches active or next-day events from planetary and lunar surfaces, including airless worlds. Filter for a moon crossing the star, a parent planet eclipsing it from a moon, mutual moon eclipses, or another planet's transit. Results name the observing world and blocking body, then land you shortly before first contact with time paused. Small planetary transits down to 0.1% stellar coverage are included; predictions use spherical body silhouettes. The survey runs in a cancellable worker.
+The **Finders → Eclipse** tab searches active or next-day events from planetary and lunar surfaces, including airless worlds. Filter for a moon crossing the star, a parent planet eclipsing it from a moon, mutual moon eclipses, or another planet's transit. Results name the observing world and blocking body, then land you shortly before first contact with time paused; the list stays for the next event, with its timing read against the clock. Small planetary transits down to 0.1% stellar coverage are included; predictions use spherical body silhouettes. The survey runs in a cancellable worker.
 
 ### Addresses
 
-The URL records your location and selected body. Share it to revisit that destination with the same model version; exact camera pose, simulation time and viewing settings are not all encoded.
+The URL records your location and selected body. Share it to revisit that destination with the same model version. The address bar carries the body; the link orb beside the shutter copies a link that also carries the picture — the camera's stance and gaze and the clock held at this moment — so the reader lands on exactly this view, with time paused there. Viewing settings are not encoded.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -63,8 +63,10 @@ The URL records your location and selected body. Share it to revisit that destin
 | `planet`, `moon`, `companion` | Which body is in focus |
 | `cloud` | The molecular cloud being framed, rather than the star sharing its patch of space |
 | `core` | Stand at the galactic nucleus |
+| `cam` | The camera, from the link orb only: `g` on the ground or `o` in orbit, then its position in km from the body's centre, its orientation, its heading and pitch, and a panned anchor when there is one |
+| `t` | The clock, in simulation days, held there on arrival |
 
-A link decides only the trip, never your home galaxy — that is set once, by choosing it.
+A link decides only the trip, never your home galaxy — that is set once, by choosing it. Every trip within a galaxy is a history entry, so the browser's back and forward buttons retrace them body by body; a trip into another galaxy is a page of its own.
 
 ## Architecture
 

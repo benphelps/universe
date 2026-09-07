@@ -143,20 +143,3 @@ export function shortlistScenes(candidates: readonly SceneCandidate[], filter: S
   }
   return result;
 }
-
-/** Preserve the deployment path, with a clean, complete destination instead of stale moon/core parameters. */
-export function sceneUrl(candidate: SceneCandidate, base: string): string {
-  const url = new URL(base);
-  url.search = ''; url.hash = '';
-  const d = candidate.destination;
-  url.searchParams.set('galaxy', d.galaxy);
-  url.searchParams.set('seed', d.seed);
-  url.searchParams.set('view', d.planet === undefined ? 'galaxy' : 'planet');
-  if (d.positionPc) url.searchParams.set('at', [d.positionPc.xPc, d.positionPc.yPc, d.positionPc.zPc].map(v => v.toFixed(4)).join('_'));
-  if (d.planet !== undefined) url.searchParams.set('planet', String(d.planet));
-  if (d.moon !== undefined) url.searchParams.set('moon', String(d.moon));
-  if (d.companion) url.searchParams.set('companion', String(d.companion));
-  if (d.cloud) url.searchParams.set('cloud', d.cloud);
-  if (d.core) url.searchParams.set('core', '1');
-  return url.toString();
-}

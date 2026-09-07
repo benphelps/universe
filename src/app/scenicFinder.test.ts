@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateSystem } from '../universe/system/generate';
-import { scenicSkyClarity, scenicWorlds, sceneUrl, shortlistScenes, type SceneCandidate } from './scenicFinder';
+import { scenicSkyClarity, scenicWorlds, shortlistScenes, type SceneCandidate } from './scenicFinder';
 
 const galaxy = '53494d5f554e4956';
 const fixture = () => structuredClone(generateSystem(0xd50464b00652fab0n));
@@ -80,18 +80,5 @@ describe('scenic location screening', () => {
     expect(mixed.length).toBeLessThanOrEqual(8);
     expect(new Set(mixed.map(c => c.id)).size).toBe(mixed.length);
     expect(new Set(mixed.map(c => c.kind)).size).toBeGreaterThan(1);
-  });
-
-  it('retains companion moon addresses and deployment paths without stale focus parameters', () => {
-    const candidate = { destination: { galaxy, seed: '0123456789abcdef', planet: 2, moon: 0, companion: 1,
-      positionPc: { xPc: 1.234567, yPc: -2, zPc: 3 } } } as SceneCandidate;
-    const url = new URL(sceneUrl(candidate, 'https://example.com/universe/?core=1&cloud=old#stale'));
-    expect(url.pathname).toBe('/universe/');
-    expect(url.searchParams.get('moon')).toBe('0');
-    expect(url.searchParams.get('companion')).toBe('1');
-    expect(url.searchParams.get('at')).toBe('1.2346_-2.0000_3.0000');
-    expect(url.searchParams.has('core')).toBe(false);
-    expect(url.searchParams.has('cloud')).toBe(false);
-    expect(url.hash).toBe('');
   });
 });

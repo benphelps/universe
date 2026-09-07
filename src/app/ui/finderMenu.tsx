@@ -1,16 +1,6 @@
-import { searchEclipses } from '../eclipseSearch';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import {
-  MAX_ECLIPSE_NEIGHBORS,
-  type EclipseResult,
-  type EclipseSearchProgress,
-} from '../eclipseFinder';
-import {
-  simulationTimeDays,
-  travelToEclipse,
-  type AppSnapshot,
-} from '../store';
-import { fmt, fmtDays } from './format';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import type { AppSnapshot } from '../store';
+import { EclipseFinderPanel } from './eclipseFinderPanel';
 import { ScenicFinderPanel } from './scenicFinderPanel';
 
 const FINDER = (
@@ -21,66 +11,38 @@ const FINDER = (
   </svg>
 );
 
-const ECLIPSE = (
-  <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
-    <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="1" opacity=".35" />
-    <circle cx="10.7" cy="12" r="6.2" fill="currentColor" opacity=".16" />
-    <path d="M14.7 6.9a6.2 6.2 0 0 0 0 10.2A6.15 6.15 0 0 1 12 18.2 6.2 6.2 0 1 1 12 5.8c.96 0 1.87.22 2.7 1.1z" fill="currentColor" />
-  </svg>
-);
+type FinderTab = 'scenic' | 'eclipse';
 
-function resultTitle(result: EclipseResult): string {
-  if (result.kind === 'transit') return 'Planetary transit';
-  return `${result.kind[0].toUpperCase()}${result.kind.slice(1)} eclipse`;
+interface FinderSummary {
+  count: number;
+  busy: boolean;
 }
 
-function resultPlace(result: EclipseResult): string {
-  return result.distancePc < 1e-4 ? 'in this system' : `${fmt(result.distancePc, 3)} pc away`;
-}
+const TABS: Array<{ name: FinderTab; label: string }> = [
+  { name: 'scenic', label: 'Scenic' },
+  { name: 'eclipse', label: 'Eclipse' },
+];
 
-function resultWait(result: EclipseResult): string {
-  return result.active ? 'active now' : `starts in ${fmtDays(result.waitDays)}`;
-}
-
-function resultAtmosphere(result: EclipseResult): string {
-  const labels: Record<EclipseResult['atmosphereClass'], string> = {
-    none: 'airless',
-    'hydrogen-helium': 'H₂/He',
-    nitrogen: 'N₂',
-    'nitrogen-oxygen': 'N₂/O₂',
-    'co2-hothouse': 'CO₂ hothouse',
-    'thin-co2': 'thin CO₂',
-    'nitrogen-methane': 'N₂/CH₄ haze',
-    'rock-vapor': 'rock vapor',
-  };
-  const quality =
-    result.atmosphereScore >= 0.72
-      ? 'clear sky'
-      : result.atmosphereScore >= 0.45
-        ? 'readable sky'
-        : result.atmosphereScore >= 0.2
-          ? 'cloudy sky'
-          : 'dim haze';
-  return `${quality} · ${labels[result.atmosphereClass]} · ${fmt(result.atmospherePressureBar, 2)} bar`;
-}
+const QUIET: FinderSummary = { count: 0, busy: false };
 
 /**
- * The bottom-right tool drawer. It starts with eclipse search, but the
- * shell deliberately belongs to finders as a family so more surveys can
- * join it without adding another corner button for every question.
+ * The tool drawer in the view's foot corner — the right beside the
+ * console, the left on a phone where the clock keeps the right. One
+ * survey per tab, so a long scenic shortlist never buries the eclipse
+ * search, and each tab wears the count its survey found. Both surveys
+ * stay mounted behind their tabs, so a search keeps running while the
+ * other tab is up. The drawer grows from the orb and keeps the orb in
+ * a foot band of its own, beside the drawer's name, so it never sits
+ * over a result.
  */
 export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
   const [open, setOpen] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const [progress, setProgress] = useState<EclipseSearchProgress | null>(null);
-  const [results, setResults] = useState<EclipseResult[]>([]);
-  const [empty, setEmpty] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [eventFilter, setEventFilter] = useState<import('../eclipseFinder').EclipseFilter>('all');
+  const [tab, setTab] = useState<FinderTab>('scenic');
+  const [summary, setSummary] = useState<Record<FinderTab, FinderSummary>>({ scenic: QUIET, eclipse: QUIET });
   const root = useRef<HTMLDivElement>(null);
-  const search = useRef<AbortController | null>(null);
-
-  useEffect(() => () => search.current?.abort(), []);
+  const reportScenic = useCallback((count: number, busy: boolean) => setSummary(all => ({ ...all, scenic: { count, busy } })), []);
+  const reportEclipse = useCallback((count: number, busy: boolean) => setSummary(all => ({ ...all, eclipse: { count, busy } })), []);
+  const close = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
     if (!open) return;
@@ -98,46 +60,6 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
     };
   }, [open]);
 
-  const findEclipse = async (): Promise<void> => {
-    if (!snap || searching) return;
-    search.current?.abort();
-    const controller = new AbortController();
-    search.current = controller;
-    setSearching(true);
-    setProgress({
-      checked: 0,
-      total: Math.min(MAX_ECLIPSE_NEIGHBORS + 1, snap.neighbors.length + 1),
-      distancePc: 0,
-    });
-    setResults([]);
-    setEmpty(false);
-    setSearchError(null);
-    try {
-      const found = await searchEclipses(
-        snap.system,
-        snap.neighbors,
-        simulationTimeDays(),
-        setProgress,
-        controller.signal,
-        eventFilter,
-      );
-      if (!controller.signal.aborted) {
-        setResults(found);
-        setEmpty(found.length === 0);
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) setSearchError(error instanceof Error ? error.message : 'Eclipse search failed');
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const status = searching
-    ? progress && progress.checked > 0
-      ? `Searching ${progress.checked + 1} of ${progress.total} · ${fmt(progress.distancePc, 2)} pc`
-      : 'Checking this system'
-    : null;
-
   return (
     <div id="finder-corner" ref={root}>
       <button
@@ -151,68 +73,28 @@ export function FinderMenu({ snap }: { snap: AppSnapshot | null }): ReactNode {
         {FINDER}
       </button>
       <div id="finder-menu" hidden={!open} role="dialog" aria-label="finders">
-        <h3 className="finder-title">Finders</h3>
-        <ScenicFinderPanel snap={snap} />
-        <section className="finder-tool">
-          <div className="finder-tool-head">
-            <span className="finder-tool-icon">{ECLIPSE}</span>
-            <span>
-              <strong>Eclipse</strong>
-              <small>Eclipses and transits from planets and moons</small>
-            </span>
-          </div>
-          <p className="finder-copy">
-            Rank up to three active or next-day events by sky clarity, depth, timing, and distance. Airless worlds included.
-          </p>
-          <label className="scenic-filter finder-copy">
-            Event type{' '}
-            <select aria-label="Eclipse event type" value={eventFilter} disabled={searching}
-              onChange={event => { setEventFilter(event.target.value as typeof eventFilter); setResults([]); setEmpty(false); }}>
-              <option value="all">All eclipses and transits</option>
-              <option value="moon-shadow">Moon across star · from planet</option>
-              <option value="parent-planet">Parent across star · from moon</option>
-              <option value="sibling-moon">Moon across star · from another moon</option>
-              <option value="other-planet">Other planet across star</option>
-            </select>
-          </label>
-          <button
-            className="finder-action"
-            disabled={!snap || searching}
-            onClick={() => void findEclipse()}
-          >
-            {searching ? 'Searching…' : results.length > 0 || empty ? 'Search again' : 'Find eclipses'}
-          </button>
-          {searching && <button className="finder-action" onClick={() => search.current?.abort()}>Cancel search</button>}
-          {status && <div className="finder-status">{status}</div>}
-          {searchError && <div className="finder-empty" role="alert">{searchError}</div>}
-          {empty && !searching && (
-            <div className="finder-empty">No matching event found in the next day of the nearby survey.</div>
-          )}
-          {results.map((result, index) => (
-            <button
-              className="finder-result"
-              key={`${result.seedHex}:${result.hostIndex}:${result.planetIndex}:${result.observerMoonIndex}:${result.eventType}:${result.occluderName}:${result.timeDays}`}
-              onClick={() => {
-                travelToEclipse(result);
-                setResults([]);
-                setProgress(null);
-                setOpen(false);
-              }}
-            >
-              <span className="finder-result-top">
-                <strong>{index + 1}. {resultTitle(result)}</strong>
-                <span>{result.obscuration < 0.01 ? (result.obscuration * 100).toFixed(2) : Math.round(result.obscuration * 100)}%</span>
-              </span>
-              <span className="finder-result-world">{result.observerName}</span>
-              <span className="finder-result-meta">{resultAtmosphere(result)}</span>
-              <span className="finder-result-meta">
-                Blocked by {result.occluderName} · {resultPlace(result)} · {resultWait(result)} ·{' '}
-                {fmtDays(result.endTimeDays - result.startTimeDays)} long
-              </span>
-              <span className="finder-result-go">Go to event</span>
-            </button>
-          ))}
-        </section>
+        <div className="finder-tabs" role="tablist">
+          {TABS.map(({ name, label }) => {
+            const { count, busy } = summary[name];
+            return (
+              <button
+                key={name}
+                role="tab"
+                aria-selected={tab === name}
+                className={tab === name ? 'on' : undefined}
+                onClick={() => setTab(name)}
+              >
+                {label}
+                {(count > 0 || busy) && (
+                  <span className={busy ? 'finder-count finder-busy' : 'finder-count'}>{count > 0 ? count : ''}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <ScenicFinderPanel snap={snap} hidden={tab !== 'scenic'} onSummary={reportScenic} onTravel={close} />
+        <EclipseFinderPanel snap={snap} hidden={tab !== 'eclipse'} onSummary={reportEclipse} onTravel={close} />
+        <div className="finder-foot">Finders</div>
       </div>
     </div>
   );

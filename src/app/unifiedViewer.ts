@@ -201,6 +201,7 @@ import { getGalacticLandmarks } from './landmarkService';
 import { cancelSkyBuilds, getSkyField, skyPending, skyProgress, watchSkyBuild } from './skyService';
 import { bakeQueueDepth } from '../render/planet/surfaceBakeQueue';
 import { CLEARANCE_M, FlightCamera, type FlightSurface } from './flightCamera';
+import type { CameraPose } from './cameraPose';
 import { gazeQuaternion, headingOf, tangentFrame } from './cameraGaze';
 import { OrbitArcball } from './orbitArcball';
 import { easeInOut, edgeOn, faceOn, lookingFrom, poleOnScreen, rolledToPole, turnAbout } from './reorient';
@@ -1218,6 +1219,8 @@ export class UnifiedViewer {
   }
   /** WASD locomotion once the wheel ride touches down. */
   private readonly flight = new FlightCamera();
+  /** A landing asked for before its terrain was built, stood once it is. */
+  private pendingLanding: (() => void) | null = null;
   private stopAuditFlight(): void {
     if (!this.auditGroundFlightUntil) return;
     this.auditGroundFlightUntil = 0;
@@ -2909,6 +2912,10 @@ export class UnifiedViewer {
     );
     this.occlusionGlobe.renderOrder = -5;
     this.scene.add(this.occlusionGlobe);
+    // A landing asked for before this ground existed stands on it now.
+    const landing = this.pendingLanding;
+    this.pendingLanding = null;
+    landing?.();
   }
 
   /** Focus-specific content for a small body: streamed irregular terrain. */
@@ -2996,8 +3003,12 @@ export class UnifiedViewer {
     surfaceDirection: readonly [number, number, number],
     lookDirection: readonly [number, number, number],
   ): boolean {
+    if (!this.focusPlanet) return false;
     const surface = this.flightSurface();
-    if (!surface || !this.focusPlanet) return false;
+    if (!surface) {
+      this.pendingLanding = () => void this.landAtSurface(surfaceDirection, lookDirection);
+      return false;
+    }
     const up = new Vector3(...surfaceDirection);
     const gaze = new Vector3(...lookDirection);
     if (
@@ -3024,6 +3035,61 @@ export class UnifiedViewer {
     this.flight.begin(surface);
     this.inBand = true;
     this.aimCamera();
+    return true;
+  }
+
+  /** The camera as a link carries it, or null with no body to stand
+   *  it against: the core has no frame of its own. */
+  cameraPose(): CameraPose | null {
+    if (!this.system || this.coreView) return null;
+    return {
+      grounded: this.flight.active,
+      position: this.camera.position.toArray() as [number, number, number],
+      quaternion: this.camera.quaternion.toArray() as [number, number, number, number],
+      target: this.controls.target.toArray() as [number, number, number],
+      headingRad: this.headingRad,
+      pitchRad: this.pitchRad,
+    };
+  }
+
+  /**
+   * Stand the camera where a link left it. A grounded pose waits for
+   * the terrain if it is still building, then enters the same flight
+   * state a landing does, at the pose's own height and gaze; any
+   * other pose is placed as it stood, and the frame loop keeps
+   * deriving its altitude — and in the horizon band its gaze — from
+   * there.
+   */
+  applyCameraPose(pose: CameraPose): boolean {
+    if (!this.system || this.coreView) return false;
+    const position = new Vector3(...pose.position);
+    if (position.lengthSq() < 1e-12) return false;
+    const surface = pose.grounded ? this.flightSurface() : null;
+    if (pose.grounded && !surface) {
+      this.pendingLanding = () => void this.applyCameraPose(pose);
+      return false;
+    }
+    this.camera.position.copy(position);
+    if (surface) {
+      const up = position.clone().normalize();
+      const groundKm = Math.max(surface.heightM(up), surface.waterLevelM(up)) / 1000;
+      this.altitudeKm = Math.max(position.length() - (this.radiusKm + groundKm), CLEARANCE_M / 1000);
+    } else {
+      this.camera.quaternion.set(...pose.quaternion).normalize();
+      this.altitudeKm = Math.min(
+        this.maxAltitudeKm(),
+        Math.max(position.length() - this.radiusKm, this.minAltitudeKm),
+      );
+    }
+    this.controls.target.set(...pose.target);
+    this.pendingWheelFactor = 1;
+    this.lastSpinRad = null;
+    this.stopRideOut();
+    this.headingRad = pose.headingRad;
+    this.pitchRad = pose.pitchRad;
+    if (surface) this.flight.begin(surface);
+    this.inBand = surface !== null || this.surfaceBlend() > 0;
+    if (this.inBand) this.aimCamera();
     return true;
   }
 
@@ -4105,6 +4171,7 @@ export class UnifiedViewer {
     this.oceanMaterial?.dispose();
     this.oceanMaterial = null;
     this.field = null;
+    this.pendingLanding = null;
     this.focusAir = null;
     // The shared ground materials go back to vacuum, or the next
     // airless body would be lit through this one's sky.

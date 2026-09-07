@@ -3,7 +3,7 @@ import { seedToHex } from '../../core/rng/hash';
 import { galaxySeed } from '../../universe/galaxy/galaxySeed';
 import { bookmarkKey, savedMarks, type Bookmark } from '../bookmarks';
 import { poiFolders } from '../poiFolders';
-import { removeSavedMark, saveCaption, travelToMark } from '../store';
+import { removeSavedMark, saveCaption, travelToAddress } from '../store';
 import { BodyRow, type BodyRowSpec } from './bodyRow';
 import { galaxyRowSpec } from './universePanel';
 
@@ -77,7 +77,7 @@ function markRowSpec(
     kind: row?.kind ?? kindOf(mark),
     figures: row?.figures,
     badges: row?.badges,
-    onClick: () => travelToMark(mark),
+    onClick: () => travelToAddress(mark),
     note: edit.editing ? (
       <NoteEdit mark={mark} onDone={() => edit.onEdit(false)} />
     ) : (

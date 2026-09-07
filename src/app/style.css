@@ -545,7 +545,8 @@ table.props th {
     animation: none;
   }
 
-  .finder-status::before {
+  .finder-status::before,
+  .finder-busy::before {
     animation: none;
   }
 }
@@ -754,8 +755,11 @@ table.props th {
 }
 
 /* A family of destination/event tools, folded into one orb at the
-   bottom-right. Like settings, the panel grows from the button and
-   keeps that button in its own header corner. */
+   bottom-right — or the bottom-left on a phone, where the clock keeps
+   the right. Like settings, the panel grows from the button, but here
+   the button keeps a foot band of its own, beside the drawer's name,
+   so it never sits over a result. One survey per tab; each tab wears
+   the count its survey found. */
 #finder-corner {
   position: absolute;
   right: 12px;
@@ -784,8 +788,8 @@ table.props th {
   bottom: 0;
   width: 320px;
   max-height: calc(100dvh - 76px);
-  padding: 0 14px 14px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
   background: rgba(10, 14, 20, 0.86);
   backdrop-filter: blur(8px);
   border: 1px solid var(--line);
@@ -798,58 +802,108 @@ table.props th {
   display: none;
 }
 
-#finder-menu .finder-title {
-  margin: 0 40px 2px 0;
+/* The foot band is the orb's row: the drawer's name at its left, the
+   orb at its right. */
+.finder-foot {
+  flex: none;
+  padding: 0 40px 0 14px;
+  border-top: 1px solid var(--line);
   font: 600 11px/32px var(--display);
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: var(--dim);
 }
 
+.finder-tabs {
+  flex: none;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  margin: 12px 14px 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(10, 14, 20, 0.5);
+}
+
+.finder-tabs button {
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: 600 11px/1 var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+
+.finder-tabs button + button {
+  border-left: 1px solid var(--line);
+}
+
+.finder-tabs button:hover {
+  color: var(--accent-hi);
+}
+
+.finder-tabs button.on {
+  background: var(--accent-soft);
+  color: var(--accent-hi);
+}
+
+.finder-tabs button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.finder-count {
+  margin-left: 6px;
+  font: 500 10px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.finder-tabs button.on .finder-count {
+  color: var(--accent);
+}
+
+/* A survey behind its tab: the controls pinned at the top, the list
+   scrolling beneath them. */
 .finder-tool {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-.finder-tool-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.finder-tool[hidden] {
+  display: none;
 }
 
-.finder-tool-icon {
+.finder-head {
   flex: none;
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  color: var(--accent-hi);
-  background: var(--accent-soft);
-}
-
-.finder-tool-head > span:last-child {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  padding: 0 14px 12px;
+}
+
+.finder-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.finder-field select {
+  width: 100%;
   min-width: 0;
-}
-
-.finder-tool-head strong,
-.finder-result strong {
-  font: 600 12px/1.3 var(--display);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
+  padding: 7px;
   color: var(--ink);
-}
-
-.finder-tool-head small {
-  margin-top: 2px;
-  font: 10.5px/1.35 var(--mono);
-  color: var(--faint);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
 }
 
 .finder-copy,
@@ -859,8 +913,13 @@ table.props th {
   color: var(--dim);
 }
 
+.finder-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .finder-action {
-  width: 100%;
+  flex: 1;
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -888,7 +947,10 @@ table.props th {
   font-variant-numeric: tabular-nums;
 }
 
-.finder-status::before {
+/* The live dot: on a status line while its survey runs, and on the
+   count of a tab whose survey runs out of sight. */
+.finder-status::before,
+.finder-busy::before {
   content: '';
   display: inline-block;
   width: 5px;
@@ -900,65 +962,222 @@ table.props th {
   animation: finder-pulse 900ms ease-in-out infinite alternate;
 }
 
+.finder-busy::before {
+  margin: 0 4px 1px 0;
+}
+
 @keyframes finder-pulse {
   to { opacity: 0.35; }
 }
 
-.finder-result {
+/* The chip rail: the scene types the shortlist holds, with counts. */
+.finder-chips {
+  flex: none;
   display: flex;
-  flex-direction: column;
-  width: 100%;
-  padding: 10px 11px;
-  text-align: left;
+  gap: 6px;
+  padding: 8px 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-top: 1px solid var(--line);
+}
+
+.finder-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.finder-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
   border: 1px solid var(--line);
-  border-radius: 5px;
-  background: rgba(70, 174, 198, 0.06);
+  border-radius: 11px;
+  background: rgba(10, 14, 20, 0.5);
   color: var(--dim);
+  font: 10.5px/1 var(--mono);
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.finder-result:hover {
+.finder-chip i {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.finder-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent-hi);
+}
+
+.finder-chip.on {
   border-color: var(--accent);
   background: var(--accent-soft);
-}
-
-.finder-result-top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.finder-result-top > span {
   color: var(--accent-hi);
-  font: 11px/1.3 var(--mono);
+}
+
+.finder-chip.on i {
+  color: var(--accent);
+}
+
+/* The list: rows under sticky group heads, one row open at a time. */
+.finder-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--faint) transparent;
+  padding-bottom: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.finder-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 8px 14px 4px;
+  background: rgba(10, 14, 20, 0.96);
+  font: 600 10px/1.3 var(--display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.finder-group i {
+  font: 10px var(--mono);
+  font-style: normal;
   font-variant-numeric: tabular-nums;
 }
 
-.finder-result-world {
-  margin-top: 5px;
+.finder-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1px 9px;
+  width: 100%;
+  padding: 6px 14px;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: var(--ink);
+  font: 11.5px/1.4 var(--mono);
+  cursor: pointer;
+}
+
+.finder-row:hover,
+.finder-row.open {
+  background: var(--accent-soft);
+}
+
+.finder-row.open .finder-row-name {
   color: var(--accent-hi);
-  font: 12px/1.4 var(--mono);
 }
 
-.finder-result-meta {
-  margin-top: 1px;
+.finder-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The second line runs under the name and the score both, and wraps
+   rather than clips: a wait and a duration are the row's point. */
+.finder-row-sub {
+  grid-column: 2 / -1;
+  font-size: 10px;
+  line-height: 1.4;
   color: var(--faint);
-  font: 10px/1.45 var(--mono);
 }
 
-.finder-result-go {
+.finder-glyph {
+  width: 16px;
+  height: 16px;
+  color: var(--accent-hi);
+}
+
+.finder-glyph svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.finder-score {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 11px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-hi);
+}
+
+.finder-bar {
+  position: relative;
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(170, 210, 255, 0.2);
+  overflow: hidden;
+}
+
+.finder-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.finder-detail {
+  padding: 4px 14px 12px 39px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(70, 174, 198, 0.04);
+  font: 10.5px/1.5 var(--mono);
+  color: var(--dim);
+}
+
+.finder-detail ul {
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  color: var(--faint);
+}
+
+.finder-framing {
+  color: var(--dim);
+}
+
+.finder-go {
+  display: inline-block;
   margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--accent);
   font: 600 9.5px/1.3 var(--display);
   text-transform: uppercase;
   letter-spacing: 0.14em;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.finder-go:hover {
+  color: var(--accent-hi);
 }
 
 .finder-action:focus-visible,
-.finder-result:focus-visible {
+.finder-chip:focus-visible,
+.finder-go:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 2px;
+}
+
+.finder-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
 }
 
 #sidebar button {
@@ -1884,14 +2103,30 @@ table.props th {
     width: min(82vw, 300px);
   }
 
+  /* The finder takes the clock's row at the foot's left, the one
+     corner the thumb chrome leaves free, and the drawer grows from
+     there: the orb keeps the foot band's left, the name beside it. */
   #finder-corner {
-    right: calc(16px + env(safe-area-inset-right));
-    bottom: calc(130px + env(safe-area-inset-bottom));
+    right: auto;
+    left: calc(8px + env(safe-area-inset-left));
+    bottom: calc(8px + env(safe-area-inset-bottom));
   }
 
   #finder-menu {
+    right: auto;
+    left: 0;
     width: min(86vw, 320px);
-    max-height: calc(100dvh - 154px - env(safe-area-inset-top));
+    max-height: calc(100dvh - 70px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    transform-origin: bottom left;
+  }
+
+  .finder-foot {
+    padding: 0 14px 0 40px;
+  }
+
+  #finder-corner [data-tip]::after {
+    right: auto;
+    left: 0;
   }
 
   /* The overlays sit clear of the drawer handle and the cog. */
@@ -1977,12 +2212,3 @@ table.props th {
 @media (pointer: coarse) {
   .plate-section > summary, .plate-model-notes > summary { min-height: 44px; }
 }
-
-/* Scene surveys share the finder drawer and retain visitable shortlists. */
-.scenic-finder { padding-bottom: 16px; }
-.scenic-filter { display: flex; flex-direction: column; gap: 5px; color: var(--dim); font-size: 12px; }
-.scenic-filter select { width: 100%; min-width: 0; padding: 7px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; font: inherit; }
-.scenic-actions { display: flex; gap: 8px; }
-.scenic-actions > button { flex: 1; }
-a.scenic-result { text-decoration: none; color: inherit; }
-.scenic-framing { font-size: 11px; line-height: 1.5; color: var(--dim); margin-top: 4px; }

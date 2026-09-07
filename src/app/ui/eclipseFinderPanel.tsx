@@ -1,0 +1,210 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { seedToHex } from '../../core/rng/hash';
+import { galaxySeed } from '../../universe/galaxy/galaxySeed';
+import {
+  MAX_ECLIPSE_NEIGHBORS,
+  type EclipseFilter,
+  type EclipseResult,
+  type EclipseSearchProgress,
+} from '../eclipseFinder';
+import { searchEclipses } from '../eclipseSearch';
+import { simulationTimeDays, travelToEclipse, type AppSnapshot } from '../store';
+import { FinderList, type FinderGroup } from './finderList';
+import { fmt, fmtDays } from './format';
+import { sceneGlyph } from './sceneGlyphs';
+import { useSessionState } from './sessionState';
+
+const EVENT_TYPES: Array<{ value: EclipseFilter; label: string }> = [
+  { value: 'all', label: 'All eclipses and transits' },
+  { value: 'moon-shadow', label: 'Moon across star · from planet' },
+  { value: 'parent-planet', label: 'Parent across star · from moon' },
+  { value: 'sibling-moon', label: 'Moon across star · from another moon' },
+  { value: 'other-planet', label: 'Other planet across star' },
+];
+
+const ATMOSPHERES: Record<EclipseResult['atmosphereClass'], string> = {
+  none: 'airless',
+  'hydrogen-helium': 'H₂/He',
+  nitrogen: 'N₂',
+  'nitrogen-oxygen': 'N₂/O₂',
+  'co2-hothouse': 'CO₂ hothouse',
+  'thin-co2': 'thin CO₂',
+  'nitrogen-methane': 'N₂/CH₄ haze',
+  'rock-vapor': 'rock vapor',
+};
+
+function resultTitle(result: EclipseResult): string {
+  if (result.kind === 'transit') return 'Planetary transit';
+  return `${result.kind[0].toUpperCase()}${result.kind.slice(1)} eclipse`;
+}
+
+function resultPlace(result: EclipseResult): string {
+  return result.distancePc < 1e-4 ? 'in this system' : `${fmt(result.distancePc, 3)} pc away`;
+}
+
+/** Where the event stands against the clock now, not when it was found. */
+function resultTiming(result: EclipseResult, nowDays: number): string {
+  if (nowDays > result.endTimeDays) return 'passed';
+  if (nowDays >= result.startTimeDays) return 'active now';
+  return `starts in ${fmtDays(result.startTimeDays - nowDays)}`;
+}
+
+function resultAtmosphere(result: EclipseResult): string {
+  const quality =
+    result.atmosphereScore >= 0.72
+      ? 'clear sky'
+      : result.atmosphereScore >= 0.45
+        ? 'readable sky'
+        : result.atmosphereScore >= 0.2
+          ? 'cloudy sky'
+          : 'dim haze';
+  return `${quality} · ${ATMOSPHERES[result.atmosphereClass]} · ${fmt(result.atmospherePressureBar, 2)} bar`;
+}
+
+function resultDepth(result: EclipseResult): string {
+  const percent = result.obscuration * 100;
+  return `${percent < 1 ? percent.toFixed(2) : Math.round(percent)}%`;
+}
+
+const resultKey = (r: EclipseResult): string =>
+  `${r.seedHex}:${r.hostIndex}:${r.planetIndex}:${r.observerMoonIndex}:${r.eventType}:${r.occluderName}:${r.timeDays}`;
+
+/** A search and the galaxy it was made in: events elsewhere cannot be reached from here. */
+interface EclipseSurvey {
+  galaxy: string;
+  filter: EclipseFilter;
+  results: EclipseResult[];
+}
+
+/**
+ * The eclipse survey behind its finder tab: the event type and the
+ * search pinned at the top, the ranked events as rows beneath. An
+ * opened row names the sky, the blocking body and the timing, and
+ * carries the travel to the event; the list stays through the trip,
+ * its timing read against the clock you arrive on.
+ */
+export function EclipseFinderPanel({
+  snap,
+  hidden,
+  onSummary,
+  onTravel,
+}: {
+  snap: AppSnapshot | null;
+  hidden: boolean;
+  /** How many events the survey holds, and whether it is still running. */
+  onSummary: (count: number, busy: boolean) => void;
+  onTravel: () => void;
+}): ReactNode {
+  const [survey, setSurvey] = useSessionState<EclipseSurvey>('finder-eclipses', { galaxy: '', filter: 'all', results: [] });
+  const [searching, setSearching] = useState(false);
+  const [progress, setProgress] = useState<EclipseSearchProgress | null>(null);
+  const [empty, setEmpty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const search = useRef<AbortController | null>(null);
+  // The galaxy locks at first use, so it is only asked for once a
+  // system stands, after boot has chosen it.
+  const galaxy = snap ? seedToHex(galaxySeed()) : null;
+  const { filter } = survey;
+  const results = galaxy && survey.galaxy === galaxy ? survey.results : [];
+  const nowDays = simulationTimeDays();
+
+  useEffect(() => () => search.current?.abort(), []);
+  useEffect(() => onSummary(results.length, searching), [results.length, searching, onSummary]);
+
+  const find = async (): Promise<void> => {
+    if (!snap || searching) return;
+    search.current?.abort();
+    const controller = new AbortController();
+    search.current = controller;
+    setSearching(true);
+    setProgress({
+      checked: 0,
+      total: Math.min(MAX_ECLIPSE_NEIGHBORS + 1, snap.neighbors.length + 1),
+      distancePc: 0,
+    });
+    setSurvey({ galaxy: galaxy ?? '', filter, results: [] });
+    setEmpty(false);
+    setError(null);
+    try {
+      const found = await searchEclipses(
+        snap.system,
+        snap.neighbors,
+        simulationTimeDays(),
+        setProgress,
+        controller.signal,
+        filter,
+      );
+      if (!controller.signal.aborted) {
+        setSurvey({ galaxy: galaxy ?? '', filter, results: found });
+        setEmpty(found.length === 0);
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Eclipse search failed');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const go = (result: EclipseResult): void => {
+    travelToEclipse(result);
+    onTravel();
+  };
+
+  const status = searching
+    ? progress && progress.checked > 0
+      ? `Searching ${progress.checked + 1} of ${progress.total} · ${fmt(progress.distancePc, 2)} pc`
+      : 'Checking this system'
+    : null;
+
+  const groups: FinderGroup[] = results.length === 0 ? [] : [{
+    label: 'Ranked events',
+    entries: results.map((result, index) => ({
+      key: resultKey(result),
+      glyph: sceneGlyph('eclipse'),
+      title: `${index + 1}. ${result.observerName}`,
+      sub: `${resultTiming(result, nowDays)} · ${fmtDays(result.endTimeDays - result.startTimeDays)} long`,
+      score: result.obscuration * 100,
+      scoreLabel: resultDepth(result),
+      detail: (
+        <>
+          <ul>
+            <li>{resultTitle(result)} · {resultAtmosphere(result)}</li>
+            <li>Blocked by {result.occluderName} · {resultPlace(result)}</li>
+          </ul>
+          <button className="finder-go" onClick={() => go(result)}>Go to event</button>
+        </>
+      ),
+    })),
+  }];
+
+  return (
+    <section className="finder-tool" hidden={hidden} role="tabpanel" aria-label="eclipses and transits">
+      <div className="finder-head">
+        <label className="finder-field">
+          Event type
+          <select value={filter} disabled={searching}
+            onChange={event => { setSurvey({ galaxy: galaxy ?? '', filter: event.target.value as EclipseFilter, results: [] }); setEmpty(false); }}>
+            {EVENT_TYPES.map(type => <option value={type.value} key={type.value}>{type.label}</option>)}
+          </select>
+        </label>
+        {!searching && results.length === 0 && !empty && (
+          <p className="finder-copy">
+            Rank up to three active or next-day events by sky clarity, depth, timing, and distance. Airless worlds included.
+          </p>
+        )}
+        <div className="finder-actions">
+          <button className="finder-action" disabled={!snap || searching} onClick={() => void find()}>
+            {searching ? 'Searching…' : results.length > 0 || empty ? 'Search again' : 'Find eclipses'}
+          </button>
+          {searching && <button className="finder-action" onClick={() => search.current?.abort()}>Cancel</button>}
+        </div>
+        {status && <div className="finder-status" role="status">{status}</div>}
+        {error && <div className="finder-empty" role="alert">{error}</div>}
+        {empty && !searching && (
+          <div className="finder-empty">No matching event found in the next day of the nearby survey.</div>
+        )}
+      </div>
+      {groups.length > 0 && <FinderList groups={groups} />}
+    </section>
+  );
+}

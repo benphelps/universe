@@ -32,6 +32,7 @@ import {
   type Bookmark,
   type SavedRow,
 } from './bookmarks';
+import type { SceneCandidate } from './scenicFinder';
 import type { BodyRowSpec } from './ui/bodyRow';
 import type { PlateSpec } from './ui/plate';
 import { getGalacticLandmarks, landmarksNow } from './landmarkService';
@@ -43,6 +44,7 @@ import type { GenerationStatus } from './ui/generationIndicator';
 import type { Rung } from './ui/ladder';
 import type { PerfStats } from './ui/perfReadout';
 import { homeGalaxy, randomHex, setHomeGalaxy } from './home';
+import { decodeDays, decodePose, encodeDays, encodePose } from './cameraPose';
 
 /** The pace before the clock control has spoken: one minute a second. */
 const DEFAULT_TIME_SCALE = 1 / 1440;
@@ -350,12 +352,12 @@ function load(nextSeedHex: string, nextLocalePc?: GalacticPosition): void {
 }
 
 /**
- * Write where we are into the address bar. Every field the boot reads
- * back, so the URL in the bar is always a link that lands someone else
- * exactly here — which is only true if it is rewritten wherever the
- * view changes, not only where a system is loaded.
+ * Where we are, as a link. Every field the boot reads back, so the
+ * URL in the bar is always a link that lands someone else here —
+ * which is only true if it is rewritten wherever the view changes,
+ * not only where a system is loaded.
  */
-function syncAddress(): void {
+function addressUrl(): URL {
   const url = new URL(location.href);
   url.searchParams.set('seed', seedHex);
   // Always, even in the prime galaxy. A seed means nothing without the
@@ -397,8 +399,72 @@ function syncAddress(): void {
   } else {
     url.searchParams.delete('companion');
   }
-  history.replaceState(null, '', url);
+  // The camera and the clock belong to a shared view, not to the
+  // address the bar keeps: read once at boot, they are spent.
+  url.searchParams.delete('cam');
+  url.searchParams.delete('t');
+  return url;
+}
+
+/** Whether the bar has been written since boot: the first write only
+ *  normalizes the entry we arrived on. */
+let addressCommitted = false;
+let addressPending = false;
+/** A back or forward step stands at an entry that already exists, so
+ *  its write must not make another. */
+let restoringAddress = false;
+
+function syncAddress(): void {
   notify();
+  if (addressPending) return;
+  addressPending = true;
+  queueMicrotask(commitAddress);
+}
+
+/**
+ * Write where we are into the bar once the trip that changed it has
+ * finished — a trip may load twice on its way to a companion, and only
+ * where it ends is a place. Each new address is a history entry, so
+ * the browser's back button retraces the trips; the first write after
+ * boot and a restore only rewrite the entry they stand on.
+ */
+function commitAddress(): void {
+  addressPending = false;
+  const url = addressUrl().href;
+  const rewrite = !addressCommitted || restoringAddress;
+  addressCommitted = true;
+  restoringAddress = false;
+  if (url === location.href) return;
+  if (rewrite) history.replaceState(null, '', url);
+  else history.pushState(null, '', url);
+}
+
+/**
+ * The view as a link: the address, plus the camera's stance and gaze
+ * and the clock's moment, so the reader lands on exactly this
+ * picture rather than on the body it is a picture of.
+ */
+export function viewLink(): string {
+  const url = addressUrl();
+  const pose = viewer?.cameraPose();
+  if (pose) {
+    url.searchParams.set('cam', encodePose(pose));
+    url.searchParams.set('t', encodeDays(simulationTimeDays()));
+  }
+  return url.toString();
+}
+
+/** Copy the view's link. When the clipboard is out of reach the link
+ *  goes into the address bar instead, to be copied from there. */
+export async function copyViewLink(): Promise<boolean> {
+  const link = viewLink();
+  try {
+    await navigator.clipboard.writeText(link);
+    return true;
+  } catch {
+    history.replaceState(null, '', link);
+    return false;
+  }
 }
 
 /**
@@ -419,31 +485,8 @@ export function boot(viewElement: HTMLElement): void {
   // star for every reader. Home is now set in one place only, by the
   // traveler choosing it; a link decides nothing but the trip.
   setGalaxySeed(seedFromHex(params.get('galaxy') ?? homeGalaxy()));
-  const viewParam = params.get('view');
-  viewMode =
-    viewParam === 'system' || viewParam === 'planet' || viewParam === 'galaxy'
-      ? viewParam
-      : viewParam === 'surface'
-        ? 'planet'
-        : 'star';
-  const cloudParam = params.get('cloud');
-  cloudFocus = cloudParam !== null;
-  cloudSubjectHex = cloudParam && cloudParam !== '1' ? cloudParam : null;
-  planetIndex = Number(params.get('planet') ?? 0) || 0;
-  moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
-  companionIndex = Number(params.get('companion') ?? 0) || 0;
-  // The ladder opens at the level the link's focus lives on.
-  rung =
-    params.get('core') !== null
-      ? 'galaxy'
-      : cloudFocus
-        ? 'nebula'
-        : viewMode === 'planet'
-          ? 'world'
-          : 'system';
 
   viewer = new UnifiedViewer(viewElement);
-  viewer.hoverPreference = HOVER_PREFERENCE[rung];
   // Dev/test hook: inspection access to the live viewer.
   (window as unknown as { __sim: unknown }).__sim = {
     get viewer() {
@@ -475,14 +518,71 @@ export function boot(viewElement: HTMLElement): void {
     }
   };
 
-  load(params.get('seed') ?? randomHex(), parseLocale(params.get('at')));
-  // The centre is a place a link can name, so it has to be a place a
-  // link can restore.
-  if (params.get('core') !== null) viewCore();
+  // A shared view carries its moment: the clock is held there before
+  // the system builds, as a finder arrival holds it.
+  const heldDays = decodeDays(params.get('t'));
+  if (heldDays !== null) holdClockAt(heldDays);
+  applyAddress(params);
+  // A shared view's camera stands where it was shared, on the body
+  // the address restored; a grounded one waits for its terrain.
+  const pose = decodePose(params.get('cam'));
+  if (pose && !coreView) viewer.applyCameraPose(pose);
+  // The browser's back and forward retrace the trips made here. An
+  // entry in another galaxy is another document's: the galaxy locks
+  // at first use, so standing there is a clean boot.
+  window.addEventListener('popstate', () => {
+    const entry = new URLSearchParams(location.search);
+    if ((entry.get('galaxy') ?? homeGalaxy()) !== seedToHex(galaxySeed())) {
+      location.reload();
+      return;
+    }
+    restoringAddress = true;
+    applyAddress(entry);
+  });
 
   // Chart the landmark catalog in the background; the snapshot picks
   // it up once it lands.
   void getGalacticLandmarks().then(() => notify());
+}
+
+/**
+ * Stand at an address: the focus a link names, read the way boot
+ * reads it. Boot's first stand and every step of the browser's back
+ * and forward come through here.
+ */
+function applyAddress(params: URLSearchParams): void {
+  const viewParam = params.get('view');
+  viewMode =
+    viewParam === 'system' || viewParam === 'planet' || viewParam === 'galaxy'
+      ? viewParam
+      : viewParam === 'surface'
+        ? 'planet'
+        : 'star';
+  const cloudParam = params.get('cloud');
+  cloudFocus = cloudParam !== null;
+  cloudSubjectHex = cloudParam && cloudParam !== '1' ? cloudParam : null;
+  const companion = Number(params.get('companion') ?? 0) || 0;
+  const standAtBodies = (): void => {
+    planetIndex = Number(params.get('planet') ?? 0) || 0;
+    moonIndex = params.get('moon') === null ? -1 : Number(params.get('moon')) || 0;
+    companionIndex = companion;
+  };
+  standAtBodies();
+  // The ladder opens at the level the link's focus lives on.
+  setRung(
+    params.get('core') !== null ? 'galaxy' : cloudFocus ? 'nebula' : viewMode === 'planet' ? 'world' : 'system',
+  );
+  const seed = params.get('seed') ?? randomHex();
+  load(seed, parseLocale(params.get('at')));
+  // A system change resets the companion focus; a companion address
+  // asks for it back once the system exists.
+  if (companion && companionIndex !== companion) {
+    standAtBodies();
+    load(seed);
+  }
+  // The centre is a place a link can name, so it has to be a place a
+  // link can restore.
+  if (params.get('core') !== null) viewCore();
 }
 
 export function toggleConsole(): void {
@@ -630,8 +730,15 @@ export function travelToCloud(
 function arriveAtCloud(cloudSeedHex: string, positionPc: GalacticPosition, level: Rung): void {
   const seed = seedFromHex(cloudSeedHex);
   const cloud = cloudsNear(positionPc, 5).find((candidate) => candidate.seed === seed);
-  if (!cloud) return;
-  const gateway = cloudGateway(cloud);
+  if (cloud) standOffCloud(cloudSeedHex, cloudGateway(cloud), level);
+}
+
+/** Stand at a cloud's gateway star, on the galaxy map, looking at the cloud. */
+function standOffCloud(
+  cloudSeedHex: string,
+  gateway: { seedHex: string; positionPc: GalacticPosition },
+  level: Rung,
+): void {
   viewMode = 'galaxy';
   planetIndex = 0;
   moonIndex = -1;
@@ -678,42 +785,75 @@ export function makeHome(): void {
   notify();
 }
 
+/** The part of a mark that is an address: enough to stand at a body again. */
+export type TravelAddress = Pick<
+  Bookmark,
+  'galaxy' | 'seed' | 'view' | 'planet' | 'moon' | 'companion' | 'at' | 'core'
+>;
+
 /**
- * A mark within the current galaxy restores its state in place; one in
- * another galaxy needs a clean boot, since the galaxy locks at first
- * use — so it navigates. Nothing about the traveler's home is touched
- * either way: a trip is a trip.
+ * An address within the current galaxy restores its state in place;
+ * one in another galaxy needs a clean boot, since the galaxy locks at
+ * first use — so it navigates. Nothing about the traveler's home is
+ * touched either way: a trip is a trip.
  */
-export function travelToMark(mark: Bookmark): void {
+export function travelToAddress(address: TravelAddress): void {
   acted();
-  if (mark.galaxy !== seedToHex(galaxySeed())) {
+  if (address.galaxy !== seedToHex(galaxySeed())) {
     const url = new URL(location.origin + location.pathname);
-    url.searchParams.set('seed', mark.seed);
-    url.searchParams.set('galaxy', mark.galaxy);
-    url.searchParams.set('view', mark.view);
-    if (mark.at) url.searchParams.set('at', mark.at);
-    if (mark.view === 'planet') url.searchParams.set('planet', String(mark.planet ?? 0));
-    if (mark.moon !== undefined) url.searchParams.set('moon', String(mark.moon));
-    if (mark.companion) url.searchParams.set('companion', String(mark.companion));
-    if (mark.core) url.searchParams.set('core', '1');
+    url.searchParams.set('seed', address.seed);
+    url.searchParams.set('galaxy', address.galaxy);
+    url.searchParams.set('view', address.view);
+    if (address.at) url.searchParams.set('at', address.at);
+    if (address.view === 'planet') url.searchParams.set('planet', String(address.planet ?? 0));
+    if (address.moon !== undefined) url.searchParams.set('moon', String(address.moon));
+    if (address.companion) url.searchParams.set('companion', String(address.companion));
+    if (address.core) url.searchParams.set('core', '1');
     location.href = url.toString();
     return;
   }
-  if (mark.core) {
+  if (address.core) {
     viewCore();
     return;
   }
-  focusBody(mark.view, mark.view === 'planet' ? 'world' : mark.view === 'galaxy' ? 'nebula' : 'system');
-  planetIndex = mark.planet ?? 0;
-  moonIndex = mark.moon ?? -1;
-  companionIndex = mark.companion ?? 0;
-  load(mark.seed, parseLocale(mark.at ?? null));
-  // A system change resets the companion focus; a companion mark asks
-  // for it back once the system exists.
-  if (mark.companion && companionIndex !== mark.companion) {
-    companionIndex = mark.companion;
-    load(mark.seed);
+  focusBody(address.view, address.view === 'planet' ? 'world' : address.view === 'galaxy' ? 'nebula' : 'system');
+  planetIndex = address.planet ?? 0;
+  moonIndex = address.moon ?? -1;
+  companionIndex = address.companion ?? 0;
+  load(address.seed, parseLocale(address.at ?? null));
+  // A system change resets the companion focus; a companion address
+  // asks for it back once the system exists.
+  if (address.companion && companionIndex !== address.companion) {
+    companionIndex = address.companion;
+    load(address.seed);
   }
+}
+
+/**
+ * Travel to a scene the finder shortlisted. A world is stood at the
+ * way a mark is; a cloud from the gateway star the survey named; a
+ * galaxy or a nucleus at its centre, which is a clean boot when the
+ * galaxy is another one.
+ */
+export function travelToScene(destination: SceneCandidate['destination']): void {
+  if (destination.cloud && destination.positionPc) {
+    acted();
+    standOffCloud(destination.cloud, { seedHex: destination.seed, positionPc: destination.positionPc }, 'nebula');
+    return;
+  }
+  if (destination.core || destination.planet === undefined) {
+    travelToGalaxy(destination);
+    return;
+  }
+  travelToAddress({
+    galaxy: destination.galaxy,
+    seed: destination.seed,
+    view: 'planet',
+    at: destination.positionPc && localeParam(destination.positionPc),
+    planet: destination.planet,
+    moon: destination.moon,
+    companion: destination.companion,
+  });
 }
 
 /**
@@ -814,6 +954,15 @@ export function simulationTimeDays(): number {
   return viewer?.simulationTimeDays ?? 0;
 }
 
+/** Hold the clock at a moment a finder or a link named: paused there,
+ *  and seated at real time so Play runs forward from that moment. */
+function holdClockAt(days: number): void {
+  timePaused = true;
+  timeScale = ECLIPSE_TIME_SCALE;
+  eclipseClockEpoch++;
+  if (viewer) viewer.simulationTimeDays = days;
+}
+
 /** Travel to a finder result, held just before the event begins. */
 export function travelToEclipse(destination: {
   seedHex: string;
@@ -827,10 +976,7 @@ export function travelToEclipse(destination: {
   sunDirection: [number, number, number];
 }): void {
   acted();
-  timePaused = true;
-  timeScale = ECLIPSE_TIME_SCALE;
-  eclipseClockEpoch++;
-  if (viewer) viewer.simulationTimeDays = destination.arrivalTimeDays;
+  holdClockAt(destination.arrivalTimeDays);
   focusBody('planet', 'world');
   planetIndex = destination.planetIndex;
   moonIndex = destination.observerMoonIndex;
