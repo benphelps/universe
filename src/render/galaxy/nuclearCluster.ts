@@ -175,7 +175,11 @@ export class NuclearCluster {
     shown.uCameraRotation.value.setFromMatrix4(camera.matrixWorld);
     this.points.matrix.copy(this.group.matrixWorld);this.aggregate.matrix.copy(this.group.matrixWorld);
     const distance=this.centreView.length();
-    const pixelAngle=Math.max(2*tile.width/(width*p[0]*tile.targetWidth),2*tile.height/(height*p[5]*tile.targetHeight));
+    // CubeCamera uses a negative FOV: signed focal lengths orient its
+    // image, but angular sizes must stay positive. A negative pixel
+    // angle made an enclosing cluster look subpixel and aggregated all
+    // its stars away from the sky used by the black-hole tracer.
+    const pixelAngle=Math.max(2*tile.width/(width*Math.abs(p[0])*tile.targetWidth),2*tile.height/(height*Math.abs(p[5])*tile.targetHeight));
     const radiusPixels=this.radiusPc/Math.max(distance,1e-12)/pixelAngle;
     const fade=Math.min(1,Math.max(0,(1-radiusPixels)/.5));const aggregateShare=fade*fade*(3-2*fade);
     this.aggregationShare=aggregateShare;

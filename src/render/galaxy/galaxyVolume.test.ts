@@ -54,3 +54,11 @@ it('applies instrument response to the joint light while preserving Eye and the 
   expect(f.material.uniforms.uContinuumShare.value).toBe(.06);expect(f.material.uniforms.uPedestalRadiance.value).toBe(2);
   f.volume.setInstrument(EYE_INSTRUMENT,2,4);f.update(.5);expect(f.material.uniforms.uPedestalRadiance.value).toBe(0);f.dispose();
 });
+it('keeps the full galaxy background through asynchronous source arrival',async()=>{
+  const f=fixture();expect(f.volume.ready).toBe(false);f.volume.setInstrument(NARROWBAND_INSTRUMENT,1,8);
+  f.update(1);expect(f.material.uniforms.uPedestalRadiance.value).toBe(0);
+  const gain=f.material.uniforms.uGain.value;
+  f.deliver();await flush();expect(f.volume.ready).toBe(true);f.update(1);f.draw();
+  expect(f.material.uniforms.uPedestalRadiance.value).toBe(0);
+  expect(f.material.uniforms.uGain.value).toBe(gain);f.dispose();
+});

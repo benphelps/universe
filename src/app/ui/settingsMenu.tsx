@@ -43,7 +43,7 @@ const COG = (
 export function SettingsMenu(): ReactNode {
   const [open, setOpen] = useState(false);
   const [skyMode, setSkyMode] = useState<SkyInstrumentName>('camera');
-  const [exposure, setExposureValue] = useState(1);
+  const [exposureStops, setExposureStops] = useState(0);
   const [skyDepth, setSkyDepth] = useState(0);
   const root = useRef<HTMLDivElement>(null);
 
@@ -81,22 +81,24 @@ export function SettingsMenu(): ReactNode {
         <section className="setting">
           <div className="setting-head">
             <label htmlFor="exposure">Exposure</label>
-            <output htmlFor="exposure">{times(exposure, 2)}</output>
+            <output htmlFor="exposure">{exposureStops > 0 ? '+' : ''}{Number(exposureStops.toFixed(2))} stops</output>
           </div>
           <input
             id="exposure"
             type="range"
-            min={0.1}
+            min={-16}
             max={4}
-            step={0.05}
-            value={exposure}
-            style={{ '--fill': fillOf(exposure, 0.1, 4) } as CSSProperties}
+            step={0.25}
+            value={exposureStops}
+            aria-valuetext={`${exposureStops} stops from the starting exposure`}
+            style={{ '--fill': fillOf(exposureStops, -16, 4) } as CSSProperties}
             onChange={(event) => {
               const value = Number(event.currentTarget.value);
-              setExposureValue(value);
-              setExposure(value);
+              setExposureStops(value);
+              setExposure(2 ** value);
             }}
           />
+          <p className="setting-hint">Each stop doubles or halves the light across the whole view. Zero uses the starting exposure.</p>
         </section>
         <section className="setting">
           <div className="setting-head">

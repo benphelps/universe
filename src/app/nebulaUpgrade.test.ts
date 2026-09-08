@@ -23,7 +23,8 @@ vi.mock('../render/galaxy/nebulaVolume', async importOriginal => ({
     constructor(bake: NebulaVolumeBake, fine: NebulaVolumeBake | null) { this.bakedSize = bake.size; this.hasFine = !!fine; }
   },
 }));
-vi.mock('./skyService', () => ({ skyPending: () => sky.pending }));
+vi.mock('./skyService', () => ({ skyPending: () => sky.pending,
+  skyProgress: () => ({ fraction: 0, stage: '', stageFraction: 0 }) }));
 vi.mock('./nebulaService', () => ({
   pendingNebulaBakes: () => pending.size,
   pendingNebulaGrade: (cloud: MolecularCloud) => pending.get(cloud.seed) ?? 0,
@@ -38,6 +39,10 @@ beforeEach(() => { pending.clear(); requests.mockClear(); ownership.hold.mockCle
 // Exercise the viewer's scheduling/arrival methods without constructing a
 // WebGL renderer. The carrier has the actual array-shaped merged uniform.
 type Probe = {
+  readonly generationStatus: UnifiedViewer['generationStatus'];
+  residencyService: { pending: boolean };
+  coreView: boolean;
+  skyCaptured: boolean;
   nebulaVolumes: Map<bigint, { bakedSize: number; retiring: boolean; box: { halfPc: number }; cameraDistancePc: number; mesh: unknown }>;
   residentClouds: Map<bigint, MolecularCloud>;
   nebulaMemory: NebulaResidentBudget;
@@ -58,6 +63,7 @@ type Probe = {
 function viewer(): Probe {
   const result = Object.create(UnifiedViewer.prototype) as Probe;
   Object.assign(result, { nebulaVolumes: new Map(), residentClouds: new Map(), nebulaMemory: new NebulaResidentBudget(),
+    residencyService: { pending: false }, coreView: false, skyCaptured: true, surveying: false,
     focusCloud: null, viewpointPc: { xPc: 0, yPc: 0, zPc: 0 }, wantedNebulae: new Set(), coarseBakes: new Map(),
     fineBakes: new Map(), heldBakes: new Map(), nebulaUploads: new Map(), pipeline: { renderer: {}, sky: { scene: new Scene() } } });
   for (const [seed, halfPc] of [[1n, 20], [2n, 70], [3n, 80], [4n, 30]] as const) {
@@ -88,6 +94,31 @@ function stage(v: Probe, size: number): NebulaVolumeBake {
   v.coarseBakes.clear();
   return bake;
 }
+
+it.each([false, true])('reports cloud selection and cached uploads through visibility (core: %s)', core => {
+  const v = viewer();
+  Object.assign(v,{blackHole:null,starNodes:[]});
+  v.coreView = core;
+  v.nebulaVolumes.delete(1n);
+  if (core) Object.assign(v, { lensedSky: {} });
+  v.residencyService.pending = true;
+  expect(v.generationStatus).toMatchObject({ locatingNebulae: true, nebulae: 0 });
+  v.residencyService.pending = false;
+  pending.set(1n, 96);
+  expect(v.generationStatus.nebulae).toBe(1);
+  pending.clear();
+  // A cached pair skips the worker queue but still needs upload and preparation.
+  stage(v, 96);
+  const upload = v.nebulaUploads.get(1n)!;
+  vi.spyOn(upload.upload, 'step').mockReturnValueOnce(false).mockReturnValue(true);
+  v.advanceNebulaUpload();
+  expect(v.generationStatus).toMatchObject({ locatingNebulae: false, nebulae: 1 });
+  v.advanceNebulaUpload();
+  expect(v.generationStatus).toMatchObject({ nebulae: 0, updatingSky: core });
+  // At the core, upload alone does not put the cloud into the lensed sky.
+  v.skyCaptured = true;
+  expect(v.generationStatus).toMatchObject({ locatingNebulae: false, nebulae: 0, updatingSky: false });
+});
 
 it('retains the visible grid and its lease through partial uploads, then swaps the complete pair', () => {
   const v = viewer(), oldBake = { size: 48 } as NebulaVolumeBake;

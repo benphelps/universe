@@ -21,6 +21,10 @@
 export const KERR_GLSL = /* glsl */ `
 uniform float uSpin;
 uniform float uHorizonRg;
+uniform vec2 uIscoOrbit;
+uniform sampler2D uCaptureTable;
+uniform vec2 uCaptureRange;
+float kerrCriticalMargin = 1.0;
 
 /** Boyer–Lindquist Σ = r² + a²cos²θ. */
 float kerrSigma(float r, float mu, float a) {
@@ -157,14 +161,17 @@ float kerrPolarTurn(float mu, float xi, float eta, float a) {
 float kerrAxisAzimuth(float sinSq, float mu, float dmu, float xi, float eta, float a) {
   float x2 = xi * xi;
   float b = eta + a * a + x2;
-  float disc = sqrt(max(b * b - 4.0 * a * a * x2, 0.0));
-  float arg = clamp((b * sinSq - 2.0 * x2) / max(sinSq * disc, 1.0e-30), -1.0, 1.0);
+  // atan2 is the same antiderivative without asin's loss of precision
+  // when its argument rounds to ±1. That loss made neighbouring rays
+  // jump between quantized sky directions near the polar meridian.
+  float polar = max(kerrPolarFrom(sinSq, mu, xi, eta, a), 0.0);
+  float angle = atan(2.0 * abs(xi) * sqrt(polar), 2.0 * x2 - b * sinSq);
   // Which branch the ray is on: climbing toward its pole, or falling
   // back from it. The bracket is zero where the two meet, so a step
   // that turns around inside itself is still only a difference.
   float branch = mu * dmu < 0.0 ? -1.0 : 1.0;
   float sgn = xi < 0.0 ? -1.0 : 1.0;
-  return -0.5 * sgn * branch * (asin(arg) + 1.5707963);
+  return -0.5 * sgn * branch * angle;
 }
 
 /**
@@ -179,10 +186,8 @@ float kerrAxisAzimuth(float sinSq, float mu, float dmu, float xi, float eta, flo
 float kerrEquatorJump(float xi, float eta, float a) {
   float x2 = xi * xi;
   float b = eta + a * a + x2;
-  float disc = sqrt(max(b * b - 4.0 * a * a * x2, 0.0));
-  float arg = clamp((b - 2.0 * x2) / max(disc, 1.0e-30), -1.0, 1.0);
   float sgn = xi < 0.0 ? -1.0 : 1.0;
-  return sgn * (asin(arg) + 1.5707963);
+  return sgn * atan(2.0 * abs(xi) * sqrt(max(eta, 0.0)), 2.0 * x2 - b);
 }
 
 /**
@@ -313,11 +318,41 @@ vec2 kerrCritical(float r, float a) {
  * and resolve into whatever the arithmetic happens to do there.
  */
 bool kerrCaptured(float xiIn, float eta, float aIn) {
-  if (abs(aIn) < 0.01) return xiIn * xiIn + eta < 27.0;
+  kerrCriticalMargin = 1.0;
+  // Every Kerr critical orbit lies inside b=8; most screen rays can
+  // skip the spin-dependent root search altogether.
+  if (xiIn * xiIn + eta > 64.0) return false;
+  if (abs(aIn) < 0.01) {
+    kerrCriticalMargin=abs(xiIn*xiIn+eta-27.0)/27.0;
+    return xiIn * xiIn + eta < 27.0;
+  }
   // A retrograde hole is the mirror of a prograde one, so one branch
   // serves both: reflect the photon's angular momentum with the spin.
   float a = abs(aIn);
   float xi = aIn < 0.0 ? -xiIn : xiIn;
+#ifndef REFERENCE_TRACE
+  if(xi<uCaptureRange.x || xi>uCaptureRange.y){
+    kerrCriticalMargin=min(abs(xi-uCaptureRange.x),abs(xi-uCaptureRange.y))/max(abs(xi),1.0);
+    return false;
+  }
+  float index=clamp((xi-uCaptureRange.x)/(uCaptureRange.y-uCaptureRange.x)*511.0,0.0,510.9999);
+  vec2 left=texelFetch(uCaptureTable,ivec2(int(index),0),0).rg;
+  vec2 right=texelFetch(uCaptureTable,ivec2(int(index)+1,0),0).rg;
+  // eta(r) has a single maximum, 27 at r=3, between the equatorial
+  // photon orbits. These bounds include that maximum when necessary.
+  float lower=min(left.y,right.y)-.0001;
+  float upper=max(left.y,right.y)+.0001;
+  if(right.x<=3.0 && left.x>=3.0)upper=27.0001;
+  kerrCriticalMargin=min(abs(eta-lower),abs(eta-upper))/max(xi*xi+eta,1.0);
+  if(eta<lower)return true;
+  if(eta>upper)return false;
+  float lo=right.x,hi=left.x;
+  for(int i=0;i<12;i++){
+    float mid=.5*(lo+hi);
+    if(kerrCritical(mid,a).x>xi)lo=mid;else hi=mid;
+  }
+  return eta<kerrCritical(.5*(lo+hi),a).y;
+#else
   float lo = 2.0 * (1.0 + cos(0.6666667 * acos(-a)));
   float hi = 2.0 * (1.0 + cos(0.6666667 * acos(a)));
   vec2 atLo = kerrCritical(lo, a);
@@ -332,6 +367,7 @@ bool kerrCaptured(float xiIn, float eta, float aIn) {
     if (above == descending) lo = mid; else hi = mid;
   }
   return eta < kerrCritical(0.5 * (lo + hi), a).y;
+#endif
 }
 
 /** Energy and angular momentum of the prograde circular orbit at r. */
@@ -365,6 +401,13 @@ vec2 kerrOrbitEL(float r, float a) {
  * short of the region a real one occupies.
  */
 vec3 kerrFlowVelocity(float r, float a, float iscoRg) {
+  // The circular solution avoids reconstructing E and L and then
+  // subtracting two almost equal radial potentials at every gas sample.
+  if (r >= iscoRg) {
+    float r32 = r * sqrt(r);
+    float inverse = inversesqrt(max(r*r*r - 3.0*r*r + 2.0*a*r32, 1.0e-9));
+    return vec3((r32+a)*inverse,inverse,0.0);
+  }
   // The last stable circular orbit, and not the flow's inner edge —
   // for a cold disc they are the same radius, but a hot flow reaches
   // its horizon, and asking kerrOrbitEL for a circular orbit below the
@@ -377,7 +420,7 @@ vec3 kerrFlowVelocity(float r, float a, float iscoRg) {
   // so a stray pixel within a percent of the horizon came out three
   // hundred times blueshifted and, beamed as the fourth power, some
   // two thousand times brighter than the pixel beside it.
-  vec2 el = kerrOrbitEL(max(r, iscoRg), a);
+  vec2 el = uIscoOrbit;
   float e = el.x;
   float l = el.y;
   float d = kerrDelta(r, a);

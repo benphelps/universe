@@ -50,7 +50,10 @@ export interface ClusterStars {
   epochs: NuclearLightBudget[];
 }
 
-export const NUCLEAR_POINT_COUNT = 18000;
+/** Bounded bright-to-faint realization, shared by the native cluster
+ * and its cached lensed sky. Fainter light is debited from the smooth
+ * population below; increasing detail must not add stellar luminosity. */
+export const NUCLEAR_POINT_COUNT = 196608;
 /** The bright tail is represented by phase-aware quadrature nodes.
  * These are physical (mass, age) samples, not mass/age rectangles to
  * jitter across a giant/remnant transition. Refinement tests compare
@@ -69,8 +72,9 @@ interface Member {
 }
 
 /** Uncached: runs in the nuclear worker in production. */
-export function buildNuclearClusterStars(massBins = NUCLEAR_MASS_BINS, quadratureOrder: 2 | 4 | 8 = 2): ClusterStars {
+export function buildNuclearClusterStars(massBins = NUCLEAR_MASS_BINS, quadratureOrder: 2 | 4 | 8 = 2, pointLimit = NUCLEAR_POINT_COUNT): ClusterStars {
   const cluster = nuclearStarCluster(), starCount = galaxyNuclearStarCount();
+  const limit = Math.min(NUCLEAR_POINT_COUNT, Math.max(0, Math.floor(pointLimit)));
   const rng = new Rng(deriveSeed(galaxyRoot(0x4e534331n), 'cluster-stars'));
   const opticalRgb = opticalRgbInterpolator();
   const members: Member[] = [];
@@ -98,7 +102,7 @@ export function buildNuclearClusterStars(massBins = NUCLEAR_MASS_BINS, quadratur
   const drawn: Member[] = [], cdf: number[] = [];
   let represented = 0;
   for (const member of members) {
-    const take = Math.min(member.weight, NUCLEAR_POINT_COUNT - represented);
+    const take = Math.min(member.weight, limit - represented);
     if (take <= 0) break;
     const epoch = epochs[member.epoch];
     epoch.expectedResolvedStars += take;
@@ -112,9 +116,11 @@ export function buildNuclearClusterStars(massBins = NUCLEAR_MASS_BINS, quadratur
   const initialMasses = new Float64Array(count), agesGyr = new Float64Array(count), epochIndices = new Uint8Array(count);
   let cutLuminosity = Infinity;
   // Stratify the sorted luminosity CDF: rare bright bins are sampled
-  // without the large aggregate fluctuations of 18000 independent draws.
+  // without the large aggregate fluctuations of independent draws.
   for (let i = 0; i < count; i++) {
-    const target = (i + rng.float()) / count * represented;
+    // One expected star per CDF stratum. Increasing the budget appends
+    // fainter stars without moving or changing the existing bright ones.
+    const target = i + rng.float();
     let lo = 0, hi = cdf.length - 1;
     while (lo < hi) { const mid = (lo + hi) >>> 1; if (cdf[mid] < target) lo = mid + 1; else hi = mid; }
     const member = drawn[lo], budget = epochs[member.epoch];

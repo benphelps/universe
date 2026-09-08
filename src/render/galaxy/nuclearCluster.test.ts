@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { Color, Mesh, PerspectiveCamera, Scene, ShaderMaterial, Vector4, WebGLRenderTarget, type Object3D, type WebGLRenderer } from 'three';
+import { Color, CubeCamera, Mesh, PerspectiveCamera, Scene, ShaderMaterial, Vector4, WebGLCoordinateSystem, WebGLCubeRenderTarget, WebGLRenderTarget, type Object3D, type WebGLRenderer } from 'three';
 import { NuclearCluster } from './nuclearCluster';
 import { CAMERA_INSTRUMENT, EYE_INSTRUMENT, NARROWBAND_INSTRUMENT } from '../../universe/galaxy/displayLaw';
 import type { ClusterStars, NuclearLightBudget } from '../../universe/galaxy/clusterStars';
@@ -19,8 +19,7 @@ function fixture() {
   const composite = cluster.group.children[0] as Mesh;
   return {cluster, composite, material:composite.material as ShaderMaterial, ready, cancel, deliver};
 }
-function renderFixture(cluster: NuclearCluster) {
-  const camera = new PerspectiveCamera(45, 1, .01, 1e8);
+function renderFixture(cluster: NuclearCluster, camera = new PerspectiveCamera(45, 1, .01, 1e8)) {
   camera.position.z=3; camera.updateMatrixWorld(); cluster.group.updateMatrixWorld(true);
   const state = {target:new WebGLRenderTarget(64,64), face:3, level:2, viewport:new Vector4(4,8,2048,2048),
     scissor:new Vector4(1,2,30,40), scissorTest:false, color:new Color(.2,.3,.4), alpha:.4};
@@ -48,6 +47,21 @@ function renderFixture(cluster: NuclearCluster) {
   const render=()=>composite.onBeforeRender(renderer as unknown as WebGLRenderer,new Scene(),camera,composite.geometry,composite.material as ShaderMaterial,null!);
   return {camera,renderer,state,initial,render};
 }
+it('retains individual surrounding stars on every black-hole sky cube face', () => {
+  const {cluster,deliver}=fixture();deliver(sample);
+  const target=new WebGLCubeRenderTarget(1024);
+  const cube=new CubeCamera(.01,1e8,target);
+  cube.coordinateSystem=WebGLCoordinateSystem;cube.updateCoordinateSystem();
+  for(const face of cube.children as PerspectiveCamera[]) {
+    const {camera,initial,render}=renderFixture(cluster,face);
+    camera.position.set(0,0,0);camera.updateMatrixWorld();render();
+    expect(camera.projectionMatrix.elements[0]).toBeLessThan(0);
+    expect(cluster.lastTile).not.toBeNull();
+    expect(cluster.aggregationShare).toBe(0);
+    initial.target.dispose();
+  }
+  target.dispose();cluster.dispose();
+});
 it('keeps instrument, optical source and foreground state through asynchronous arrival', async () => {
   const {cluster,composite,material,ready,cancel,deliver}=fixture();
   const prepared:Object3D[]=[];

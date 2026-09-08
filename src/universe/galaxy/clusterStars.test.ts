@@ -40,7 +40,7 @@ describe('nuclear population and optical survey', () => {
       expect(radius).toBeLessThan(NUCLEAR_TRUNCATION * scale * (1 + 1e-6));
       radialCdf[epoch] += nuclearEnclosedFraction(radius, scale); counts[epoch]++;
     }
-    expect(Math.min(...stars.opticalLuminosities)).toBeGreaterThanOrEqual(stars.cutOpticalLuminosity * (1 - 1e-6));
+    expect(stars.opticalLuminosities.reduce((min, value) => Math.min(min, value), Infinity)).toBeGreaterThanOrEqual(stars.cutOpticalLuminosity * (1 - 1e-6));
     expect(maxBolError).toBeLessThan(6e-8);
     expect(maxOpticalError).toBeLessThan(6e-8);
     expect(maxHueError).toBeLessThan(6e-8);
@@ -104,6 +104,23 @@ describe('nuclear population and optical survey', () => {
       for (let c = 0; c < 3; c++) expect(Math.abs(base.epochs[i].expectedResolvedOpticalRgb[c] / fine.epochs[i].expectedResolvedOpticalRgb[c] - 1)).toBeLessThan(.015);
     }
   }, 60000);
+  it('adds fainter stars without moving the bright sample or changing the population inventory', () => {
+    const sparse = buildNuclearClusterStars(256, 2, 18000), dense = nuclearClusterStars();
+    const count = sparse.luminosities.length;
+    expect(dense.luminosities.length).toBeGreaterThan(count);
+    expect(dense.cutOpticalLuminosity).toBeLessThan(sparse.cutOpticalLuminosity);
+    expect(dense.positionsPc.subarray(0, count * 3)).toEqual(sparse.positionsPc);
+    expect(dense.opticalLuminosities.subarray(0, count)).toEqual(sparse.opticalLuminosities);
+    expect(dense.colors.subarray(0, count * 3)).toEqual(sparse.colors);
+    for (let i = 0; i < dense.epochs.length; i++) {
+      const before = sparse.epochs[i], after = dense.epochs[i];
+      expect(after.starCount).toBe(before.starCount);
+      expect(after.massSolar).toBe(before.massSolar);
+      expect(after.expectedOpticalRgb).toEqual(before.expectedOpticalRgb);
+      expect(after.unresolvedLuminosity).toBeLessThan(before.unresolvedLuminosity);
+      expect(after.unresolvedLuminosity).toBeGreaterThan(0);
+    }
+  });
   it('allows a rare bright realization to exceed ensemble-average light without dimming its stars', async () => {
     vi.resetModules();
     const { setGalaxySeed } = await import('./galaxySeed');
@@ -113,6 +130,7 @@ describe('nuclear population and optical survey', () => {
     expect(young.resolvedLuminosity).toBeGreaterThan(young.expectedLuminosity);
     expect(young.unresolvedLuminosity).toBeGreaterThan(0);
     expect(young.totalLuminosity).toBe(young.resolvedLuminosity + young.unresolvedLuminosity);
-    expect(stars.luminosities.length).toBe(NUCLEAR_POINT_COUNT);
+    expect(stars.luminosities.length).toBeGreaterThan(18000);
+    expect(stars.luminosities.length).toBeLessThanOrEqual(NUCLEAR_POINT_COUNT);
   });
 });

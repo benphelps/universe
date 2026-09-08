@@ -1,5 +1,7 @@
 import {
   CubeCamera,
+  Color,
+  type Camera,
   HalfFloatType,
   LinearMipmapLinearFilter,
   NoColorSpace,
@@ -9,6 +11,7 @@ import {
   type Scene,
   type WebGLRenderer,
 } from 'three';
+import { skyVolumeVisible } from '../fx/skyVolumeVisibility';
 
 /**
  * The sky as it arrives at the hole.
@@ -49,19 +52,58 @@ export class LensedSky {
     this.camera = new CubeCamera(1, 1e18, this.target);
   }
 
+  get captured(): boolean { return (this.target.texture.userData.lensedSkyVersion ?? 0) > 0; }
+
   /**
    * Render the sky from `atWorldKm`, with `hidden` left out — the hole
    * itself above all, which would otherwise photograph its own shadow.
    */
-  capture(renderer: WebGLRenderer, scene: Scene, atWorldKm: Vector3, hidden: Object3D[]): void {
+  capture(renderer: WebGLRenderer, scene: Scene, atWorldKm: Vector3, hidden: Object3D[], background?: Scene): void {
     const was = hidden.map((object) => object.visible);
-    for (const object of hidden) object.visible = false;
     const previousTarget = renderer.getRenderTarget();
+    const face = renderer.getActiveCubeFace(), level = renderer.getActiveMipmapLevel();
+    const autoClear = renderer.autoClear, xr = renderer.xr.enabled;
+    const color = renderer.getClearColor(new Color()), alpha = renderer.getClearAlpha();
+    const mipmaps = this.target.texture.generateMipmaps;
     this.camera.position.copy(atWorldKm);
     this.camera.updateMatrixWorld(true);
-    this.camera.update(renderer, scene);
-    renderer.setRenderTarget(previousTarget);
-    for (let i = 0; i < hidden.length; i++) hidden[i].visible = was[i];
+    if (this.camera.coordinateSystem !== renderer.coordinateSystem) {
+      this.camera.coordinateSystem = renderer.coordinateSystem;
+      this.camera.updateCoordinateSystem();
+    }
+    try {
+      for (const object of hidden) object.visible = false;
+      renderer.xr.enabled = false;
+      renderer.setClearColor(0, 0);
+      this.target.texture.generateMipmaps = false;
+      // Keep Three's cube orientations, but draw the volume layer and
+      // foreground separately on each face. No screen-size intermediate:
+      // the galaxy and clouds render directly at the cube's resolution.
+      for (let i = 0; i < 6; i++) {
+        const camera = this.camera.children[i] as Camera;
+        renderer.setRenderTarget(this.target, i);
+        renderer.autoClear = true;
+        if (background) {
+          const culled = background.children.filter(object => object.visible && !skyVolumeVisible(object, camera));
+          culled.forEach(object => { object.visible = false; });
+          try { renderer.render(background, camera); }
+          finally { culled.forEach(object => { object.visible = true; }); }
+          renderer.autoClear = false;
+        }
+        // Generate the complete mip chain only after the last foreground.
+        this.target.texture.generateMipmaps = i === 5 && mipmaps;
+        renderer.render(scene, camera);
+      }
+      this.target.texture.needsPMREMUpdate = true;
+      this.target.texture.userData.lensedSkyVersion = (this.target.texture.userData.lensedSkyVersion ?? 0) + 1;
+    } finally {
+      this.target.texture.generateMipmaps = mipmaps;
+      renderer.setRenderTarget(previousTarget, face, level);
+      renderer.setClearColor(color, alpha);
+      renderer.autoClear = autoClear;
+      renderer.xr.enabled = xr;
+      hidden.forEach((object, i) => { object.visible = was[i]; });
+    }
   }
 
   /** Pixels per radian of one face: the faces span a right angle. */

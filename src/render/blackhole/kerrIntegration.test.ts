@@ -328,6 +328,15 @@ function criticalEta(xi: number, spin: number): number | null {
 }
 
 describe('the traced deflection', () => {
+  it('bounds capture rejection conservatively for all supported critical orbits',()=>{
+    for(const spin of [.01,.1,.5,.89,.998]){
+      const low=2*(1+Math.cos(2/3*Math.acos(-spin))),high=2*(1+Math.cos(2/3*Math.acos(spin)));
+      for(let i=0;i<=200;i++){
+        const ray=criticalConstants(low+(high-low)*i/200,spin);
+        expect(ray.xi*ray.xi+ray.eta).toBeLessThan(64);
+      }
+    }
+  });
   it('bends light the way general relativity does, not the way Newton would', () => {
     // The integrator's zero point: get this wrong and every lensed
     // image is the wrong size. The trace has to start somewhere finite,
@@ -638,9 +647,10 @@ describe('the spin axis', () => {
         -(Math.PI - deficit), 12,
       );
     }
-    // Below what a double can resolve the deficit simply is not there,
-    // and the half turn is exact — which is the limit itself.
-    expect(equatorAzimuthJump({ xi: 1e-9, eta, dr: 0, dmu: 0 }, spin)).toBe(Math.PI);
+    // atan2 retains the small deficit that asin rounded away.
+    const tinyDeficit=Math.PI-equatorAzimuthJump({xi:1e-9,eta,dr:0,dmu:0},spin);
+    expect(tinyDeficit).toBeGreaterThan(0);
+    expect(tinyDeficit/(2e-9*Math.sqrt(eta)/(eta+spin*spin))).toBeCloseTo(1,5);
   });
 
   it('splits the azimuthal rate without changing it', () => {
@@ -714,7 +724,7 @@ describe('the shader and the module', () => {
     expect(KERR_GLSL).toContain('2.0 * r * p - (r - 1.0) * kk');
     expect(KERR_GLSL).toContain('-mu * (eta + xi * xi - a * a) - 2.0 * a * a * mu * mu * mu');
     expect(KERR_GLSL).toContain('a * p / kerrDelta(r, a) - a + xi / (1.0 + abs(mu))');
-    expect(KERR_GLSL).toContain('-0.5 * sgn * branch * (asin(arg) + 1.5707963)');
+    expect(KERR_GLSL).toContain('-0.5 * sgn * branch * angle');
     // The step is bounded by speed and by curvature, and takes the
     // smaller: drop either limit and the mirror stops being one.
     expect(GEODESIC_GLSL).toContain('STEP_EPS / max(speed, 1.0e-4)');

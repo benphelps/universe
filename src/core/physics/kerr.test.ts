@@ -207,7 +207,10 @@ describe('what the flow is doing', () => {
     for (const spin of [0, 0.5, 0.9, 0.998]) {
       const isco = iscoRadiusRg(spin);
       for (const r of [isco, isco * 1.5, isco * 4, 50]) {
-        expect(flowFourVelocity(r, spin, isco).ur).toBeCloseTo(0, 6);
+        const u=flowFourVelocity(r,spin,isco);
+        expect(u.ur).toBe(0);
+        expect(u.uphi/u.ut).toBeCloseTo(orbitAngularVelocity(r,spin),12);
+        expect(u.ut).toBeCloseTo(orbitTimeDilation(r,spin),12);
       }
       for (const f of [0.98, 0.9, 0.75]) {
         const inside = flowFourVelocity(isco * f, spin, isco);

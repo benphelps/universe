@@ -183,11 +183,11 @@ export function axisAzimuth(
   const a = clampSpin(spin);
   const x2 = ray.xi * ray.xi;
   const b = ray.eta + a * a + x2;
-  const disc = Math.sqrt(Math.max(b * b - 4 * a * a * x2, 0));
-  const arg = Math.min(1, Math.max(-1, (b * sinSq - 2 * x2) / Math.max(sinSq * disc, 1e-300)));
+  const polar = Math.max(polarFromSinSq(sinSq, mu, ray, a), 0);
+  const angle = Math.atan2(2 * Math.abs(ray.xi) * Math.sqrt(polar), 2 * x2 - b * sinSq);
   const branch = mu * dmu < 0 ? -1 : 1;
   const sgn = ray.xi < 0 ? -1 : 1;
-  return -0.5 * sgn * branch * (Math.asin(arg) + Math.PI / 2);
+  return -0.5 * sgn * branch * angle;
 }
 
 /**
@@ -199,9 +199,7 @@ export function equatorAzimuthJump(ray: PhotonRay, spin: number): number {
   const a = clampSpin(spin);
   const x2 = ray.xi * ray.xi;
   const b = ray.eta + a * a + x2;
-  const disc = Math.sqrt(Math.max(b * b - 4 * a * a * x2, 0));
-  const arg = Math.min(1, Math.max(-1, (b - 2 * x2) / Math.max(disc, 1e-300)));
-  return (ray.xi < 0 ? -1 : 1) * (Math.asin(arg) + Math.PI / 2);
+  return (ray.xi < 0 ? -1 : 1) * Math.atan2(2 * Math.abs(ray.xi) * Math.sqrt(Math.max(ray.eta, 0)), 2 * x2 - b);
 }
 
 /** What is left of dφ/dσ once the axis has been taken out of it. */
@@ -321,9 +319,8 @@ export function orbitEnergyAngular(r: number, spin: number): { e: number; l: num
  * Outside the innermost stable orbit it is a circular geodesic. Inside
  * there are none, so the matter falls carrying the energy and angular
  * momentum it left the last stable circle with — nothing in the
- * plunging region has time to change them. One expression covers both,
- * because a circular orbit's own constants make the radial term vanish
- * identically at and outside the boundary.
+ * plunging region has time to change them. Use the circular solution
+ * directly outside ISCO so its zero radial velocity is exact in floats.
  */
 export function flowFourVelocity(
   r: number,
@@ -331,7 +328,12 @@ export function flowFourVelocity(
   iscoRg: number,
 ): { ut: number; uphi: number; ur: number } {
   const a = clampSpin(spin);
-  const { e, l } = orbitEnergyAngular(Math.max(r, iscoRg), a);
+  if (r >= iscoRg) {
+    const r32 = r * Math.sqrt(r);
+    const inverse = 1 / Math.sqrt(Math.max(r*r*r - 3*r*r + 2*a*r32, 1e-9));
+    return { ut: (r32+a)*inverse, uphi: inverse, ur: 0 };
+  }
+  const { e, l } = orbitEnergyAngular(iscoRg, a);
   const d = delta(r, a);
   const p = e * (r * r + a * a) - a * l;
   const lae = l - a * e;

@@ -9,12 +9,13 @@ export function nuclearTile(view: readonly [number, number, number], radius: num
   let left = 0, bottom = 0, right = width, top = height;
   if (depth > radius) {
     // Project the enclosing AABB conservatively at its near/far faces.
-    const xs = [(x-radius)/(depth-radius), (x+radius)/(depth-radius), (x-radius)/(depth+radius), (x+radius)/(depth+radius)];
-    const ys = [(y-radius)/(depth-radius), (y+radius)/(depth-radius), (y-radius)/(depth+radius), (y+radius)/(depth+radius)];
-    left = Math.max(0, Math.floor((1 + Math.min(...xs) * projectionX) * width / 2) - 3);
-    right = Math.min(width, Math.ceil((1 + Math.max(...xs) * projectionX) * width / 2) + 3);
-    bottom = Math.max(0, Math.floor((1 + Math.min(...ys) * projectionY) * height / 2) - 3);
-    top = Math.min(height, Math.ceil((1 + Math.max(...ys) * projectionY) * height / 2) + 3);
+    const xs = [(x-radius)/(depth-radius), (x+radius)/(depth-radius), (x-radius)/(depth+radius), (x+radius)/(depth+radius)].map(v => v * projectionX);
+    const ys = [(y-radius)/(depth-radius), (y+radius)/(depth-radius), (y-radius)/(depth+radius), (y+radius)/(depth+radius)].map(v => v * projectionY);
+    // Project before taking bounds: cube faces reverse both axes.
+    left = Math.max(0, Math.floor((1 + Math.min(...xs)) * width / 2) - 3);
+    right = Math.min(width, Math.ceil((1 + Math.max(...xs)) * width / 2) + 3);
+    bottom = Math.max(0, Math.floor((1 + Math.min(...ys)) * height / 2) - 3);
+    top = Math.min(height, Math.ceil((1 + Math.max(...ys)) * height / 2) + 3);
   }
   if (right <= left || top <= bottom) return null;
   const w = right - left, h = top - bottom;

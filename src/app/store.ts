@@ -487,6 +487,7 @@ export function boot(viewElement: HTMLElement): void {
   setGalaxySeed(seedFromHex(params.get('galaxy') ?? homeGalaxy()));
 
   viewer = new UnifiedViewer(viewElement);
+  viewer.onBlackHoleReady = notify;
   // Dev/test hook: inspection access to the live viewer.
   (window as unknown as { __sim: unknown }).__sim = {
     get viewer() {

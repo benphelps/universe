@@ -15,13 +15,11 @@ import {
 } from '../../core/physics/blackHole';
 import { flowFourVelocity } from '../../core/physics/kerr';
 import {
-  DISPLAY_FALLOFF,
   FLOW_DRAW_SPAN,
   GEODESIC_GLSL,
   LENSING_REACH_RG,
   drawnFlowRadiusRg,
   framedFlowRadiusRg,
-  profileStretch,
 } from './geodesicGlsl';
 import { KERR_GLSL } from './kerrGlsl';
 
@@ -353,42 +351,13 @@ describe('the geodesic tracer', () => {
     expect(reads).toBeGreaterThan(before);
   });
 
-  it('gives either flow regime the same readable falloff', () => {
-    // A hot torus runs T ∝ r^-1 and a thin disc r^-3/4; both have to
-    // reach the screen falling at the same rate, or one is a haze and
-    // the other a dot. Ten times the radius, twenty-five times fainter.
-    for (const profileExponent of [1, 0.75, 0.5]) {
-      const gamma = profileStretch(profileExponent);
-      const decade = (10 ** (-4 * profileExponent)) ** gamma;
-      expect(decade).toBeCloseTo(10 ** -DISPLAY_FALLOFF, 6);
-      expect(gamma).toBeGreaterThan(0);
-      expect(gamma).toBeLessThanOrEqual(1);
-    }
-  });
-
-  it('draws a torus whole and a disc only as far as it is worth', () => {
-    // Only one of the two regimes has decades of cold outskirts to
-    // leave off. A hot flow ends where the hot gas ends — sixty r_g,
-    // a real edge and a near one — and it is bright to that rim, so
-    // the span that spares a disc its cold tail was cutting the torus
-    // off at a quarter of itself for nothing.
+  it('draws the physical flow extent while framing the bright inner region', () => {
     const torus = { regime: 'riaf', innerRadiusRg: 1.36, outerRadiusRg: 60 };
-    expect(drawnFlowRadiusRg(torus)).toBe(60);
-    expect(drawnFlowRadiusRg(torus) / (torus.innerRadiusRg * FLOW_DRAW_SPAN)).toBeGreaterThan(3);
-
-    // A disc's own edge is where its gravity fragments it, hundreds of
-    // inner radii out, and it keeps the limit.
     const disc = { regime: 'thin-disc', innerRadiusRg: 4.24, outerRadiusRg: 1640 };
-    expect(drawnFlowRadiusRg(disc)).toBeCloseTo(4.24 * FLOW_DRAW_SPAN, 6);
-
-    // Where the camera stands is the other question, and it is the
-    // bright part in both regimes. Answering both with one number is
-    // what made drawing the whole torus cost the shadow two thirds of
-    // its size — the flow got bigger, so the camera backed away from
-    // the thing the picture is of.
+    expect(drawnFlowRadiusRg(torus)).toBe(60);
+    expect(drawnFlowRadiusRg(disc)).toBe(1640);
     expect(framedFlowRadiusRg(torus)).toBeCloseTo(1.36 * FLOW_DRAW_SPAN, 6);
-    expect(framedFlowRadiusRg(disc)).toBe(drawnFlowRadiusRg(disc));
-    // A flow smaller than the span is framed on itself, never beyond.
+    expect(framedFlowRadiusRg(disc)).toBeCloseTo(4.24 * FLOW_DRAW_SPAN, 6);
     expect(framedFlowRadiusRg({ innerRadiusRg: 1.36, outerRadiusRg: 8 })).toBe(8);
   });
 

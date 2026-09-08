@@ -9,6 +9,7 @@ import {
   radiativeEfficiency,
   selfGravityRadiusRg,
 } from '../../core/physics/blackHole';
+import { hotOutflowPlan, type HotOutflowPlan, type HotOutflowOptions } from './hotOutflow';
 import { C_LIGHT, PROTON_MASS, SIGMA_SB, THOMSON_CROSS_SECTION } from '../../core/physics/constants';
 
 /**
@@ -31,7 +32,9 @@ export interface AccretionFlow {
   /** L/L_Edd. */
   eddingtonRatio: number;
   luminosityW: number;
-  /** Ṁ, kg/s. */
+  /** Hot-flow wind and spin-powered jet closure, absent for thin discs. */
+  outflows?: HotOutflowPlan;
+  /** Ṁ reaching the horizon, kg/s. */
   rateKgPerS: number;
   /** η = 1 − E(r_ISCO). */
   efficiency: number;
@@ -116,13 +119,14 @@ function riafOpacity(
 
 /**
  * The flow a hole of this mass and spin settles into at this feeding
- * rate. Pure: mass, spin and one dimensionless number decide the whole
- * structure.
+ * rate. Pure: mass, spin and feeding set the base structure; optional
+ * magnetic-flux and wind closures describe the hot outflows.
  */
 export function accretionFlowFor(
   massSolar: number,
   spin: number,
   eddingtonRatio: number,
+  outflowOptions: HotOutflowOptions = {},
 ): AccretionFlow {
   const efficiency = radiativeEfficiency(spin);
   const iscoRg = iscoRadiusRg(spin);
@@ -197,6 +201,7 @@ export function accretionFlowFor(
   );
   return {
     ...common,
+    outflows: hotOutflowPlan(hotRateKgPerS, hotEfficiency, spin, outerRadiusRg, outflowOptions),
     efficiency: hotEfficiency,
     rateKgPerS: hotRateKgPerS,
     regime: 'riaf',
@@ -218,9 +223,9 @@ export function accretionFlowFor(
  * Brightness temperature at the inner edge of a hot flow: the one
  * value for which ∫ 2σT⁴ 2πr dr over the torus equals the luminosity
  * the accretion rate produces. The flow radiates synchrotron, not a
- * Planck spectrum, so this is a brightness temperature standing in for
- * the real one — it carries the right total power out of the right
- * area, which is what an image needs.
+ * Planck spectrum. This retained bolometric equivalent is not the electron
+ * temperature and is not used for hot-torus color or emission; those come
+ * from hotFlowEmission's plasma model.
  */
 function riafInnerTemperature(
   massSolar: number,

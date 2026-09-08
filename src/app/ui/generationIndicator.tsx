@@ -3,10 +3,18 @@ import { generationStatus } from '../store';
 
 export interface GenerationStatus {
   surveying: boolean;
+  blackHoles: number;
+  blackHoleProgress: number;
+  blackHoleStage: string;
+  blackHoleError: string | null;
   terrain: number;
   worlds: number;
-  /** Nebula volume bakes still queued at their worker. */
+  /** Nebula bakes and uploads, including volumes restored from the cache. */
   nebulae: number;
+  /** Cloud selection can take time before any bakes have been queued. */
+  locatingNebulae: boolean;
+  /** The core's visible sky is still waiting for its next capture. */
+  updatingSky: boolean;
   skies: number;
   /** Rough progress of the running sky build, 0..1. */
   skyProgress: number;
@@ -69,13 +77,20 @@ export function GenerationIndicator(): ReactNode {
         parts.push(`${label} ${count}`);
         if (fill !== null) fills.push(fill);
       };
+      if(status.blackHoles>0) {
+        parts.push(`black hole ${Math.round(status.blackHoleProgress*100)}% · ${status.blackHoleStage}`);
+        fills.push(status.blackHoleProgress);
+      }
+      if(status.blackHoleError)parts.push('black-hole generation failed');
       if (status.surveying) parts.push('climate survey');
       if (status.skies > 0) {
         const stage = status.skyStage ? ` · ${status.skyStage}` : '';
         parts.push(`sky ${Math.round(status.skyProgress * 100)}%${stage}`);
         fills.push(status.skyProgress);
       }
+      if (status.locatingNebulae) parts.push('locating nearby clouds');
       note('nearby clouds', status.nebulae, nebulae.update(status.nebulae));
+      if (status.updatingSky && !status.locatingNebulae && status.nebulae === 0) parts.push('updating sky');
       note('terrain', status.terrain, terrain.update(status.terrain));
       note('worlds', status.worlds, worlds.update(status.worlds));
       setLine(

@@ -1,3 +1,10 @@
+import { FLOW_EDDY_LIFETIME, FLOW_NOISE_PERIOD, FLOW_NOISE_RANGE } from './flowNoise';
+import { FLOW_SPECTRUM_GLSL } from './flowSpectrum';
+import { HOT_FLOW_SPECTRUM_GLSL } from './hotFlowSpectrum';
+import { HOT_OUTFLOW_GLSL } from './hotOutflowSpectrum';
+import { HOT_ATLAS_GLSL } from './hotFlowAtlas';
+import { CELL_TRANSFER_GLSL } from '../../core/physics/radiativeTransfer';
+
 /**
  * Null geodesics in the Kerr metric, traced backwards from the eye, one
  * ray per pixel.
@@ -30,39 +37,16 @@
  * as by symmetry it has to be.
  */
 
-/**
- * How far out a *disc* is drawn, in units of its own inner radius.
- *
- * A cold disc's true outer edge is where its own gravity fragments it
- * into stars — thousands of r_g out, hundreds of times the shadow. But
- * σT⁴ ∝ r^−3 puts five sixths of its light inside a dozen inner radii,
- * and the cold decades past that carry a few percent of the luminosity
- * across nearly all of the area. Drawn, they are an opaque plane that
- * swallows the frame and leaves the hole a speck in the middle of it;
- * that is why no photograph, render or GRMHD simulation of an accretion
- * disc shows them either. The model keeps the true edge — this is what
- * a picture of it holds.
- */
+/** The camera frames the bright inner flow; the emitting disk may extend
+ * much farther, to the model's self-gravity radius. */
 export const FLOW_DRAW_SPAN = 12;
 
-/**
- * How far out to draw the flow, r_g — and it is not one rule.
- *
- * Only a disc has decades of cold outskirts to leave off. A hot torus
- * ends where the hot gas ends, sixty r_g, and it is bright to that rim
- * because its temperature falls as r^−1 rather than trailing away over
- * a thousand radii. Holding both to the same dozen inner radii cut the
- * torus off at sixteen r_g — a quarter of itself — to spare a disc
- * something the torus does not have.
- *
- */
 export function drawnFlowRadiusRg(flow: {
   regime: string;
   innerRadiusRg: number;
   outerRadiusRg: number;
 }): number {
-  if (flow.regime === 'riaf') return flow.outerRadiusRg;
-  return Math.min(flow.outerRadiusRg, flow.innerRadiusRg * FLOW_DRAW_SPAN);
+  return flow.outerRadiusRg;
 }
 
 /**
@@ -81,33 +65,6 @@ export function framedFlowRadiusRg(flow: {
   outerRadiusRg: number;
 }): number {
   return Math.min(flow.outerRadiusRg, flow.innerRadiusRg * FLOW_DRAW_SPAN);
-}
-
-/**
- * How steeply the flow's *source* falls off on screen: σT⁴ compressed
- * to r^−1. What reaches the eye falls faster than that wherever the
- * flow has gone translucent, because a thinning column emits less of
- * what it holds — so the picture's own falloff is this plus the
- * opacity's, and it is the source alone that is compressed.
- *
- * This is the one presentation choice in the whole render. Physically
- * the flow falls as σT⁴, which across a hot torus is five decades and
- * across a thin disc out to its self-gravity radius is eleven — further
- * than any screen reaches, and a linear exposure shows either the inner
- * edge or nothing. Fixing the falloff instead of the exposure gives
- * both regimes the same readable contrast without either being told
- * what its temperatures are. Nothing else is bent: colour is the
- * shifted blackbody and the beaming stays δ⁴.
- */
-export const DISPLAY_FALLOFF = 1.0;
-
-/**
- * Display gamma on the flow's radial profile, from the profile's own
- * slope: T ∝ r^−p makes σT⁴ ∝ r^−4p, and this is the power that turns
- * that into r^−DISPLAY_FALLOFF.
- */
-export function profileStretch(profileExponent: number): number {
-  return Math.min(1, DISPLAY_FALLOFF / (4 * Math.max(profileExponent, 0.05)));
 }
 
 /**
@@ -146,6 +103,7 @@ export const LENSING_REACH_RG = 160;
 export const LENSING_SOLID_RG = 88;
 
 export const GEODESIC_GLSL = /* glsl */ `
+${CELL_TRANSFER_GLSL}
 uniform vec3 uCamRg;
 uniform mat3 uViewToBh;
 uniform vec2 uTanHalfFov;
@@ -159,13 +117,30 @@ uniform float uProfileExp;
 uniform float uEdgeTaper;
 uniform float uOpticalDepth;
 uniform float uOpacityExp;
-uniform float uRefTempK;
-uniform float uProfileStretch;
+uniform float uRefLogVisible;
 uniform float uTurbSigma;
 uniform float uAspect;
 uniform float uFlowPhase;
 uniform float uDiscGain;
 uniform sampler2D uLut;
+uniform sampler2D uHotEmission;
+uniform sampler2D uHotAbsorption;
+uniform highp sampler3D uHotLocal;
+uniform sampler2D uHotState;
+uniform sampler2D uHotAtlas;
+uniform float uHotPower;
+uniform float uHotScatter;
+uniform highp sampler3D uWindSpectrum;
+uniform highp sampler3D uJetSpectrum;
+uniform sampler2D uOutflowKinematics;
+uniform float uWindLaunch;
+uniform float uJetLaunch;
+uniform float uWindEnabled;
+uniform float uJetEnabled;
+uniform highp sampler3D uFlowNoise;
+uniform vec4 uEddyPhase;
+uniform vec3 uEddyNewOffset;
+uniform vec3 uEddyOldOffset;
 
 const float LENSING_REACH = ${LENSING_REACH_RG}.0;
 const float LENSING_SOLID = ${LENSING_SOLID_RG}.0;
@@ -193,7 +168,7 @@ const float TAU = 6.28318531;
  * still an orbit or better wherever a disc is bright, still six
  * windings per e-fold at the very edge of the flow, which resolves.
  */
-const float EDDY_LIFETIME = 4.0;
+const float EDDY_LIFETIME = ${FLOW_EDDY_LIFETIME.toFixed(1)};
 /**
  * Mino-time step, as a fraction of the fastest coordinate's rate.
  *
@@ -302,7 +277,11 @@ float turbulentField(
   // path integral then averaged back out, at two thirds of the cost of
   // the whole trace. Dropped, the picture moves by a quarter of a
   // percent and the clumping keeps its contrast to within three.
+#ifdef REFERENCE_TRACE
   return snoise(q);
+#else
+  return (texture(uFlowNoise, q / ${FLOW_NOISE_PERIOD.toFixed(1)}).r * 2.0 - 1.0) * ${FLOW_NOISE_RANGE.toFixed(1)};
+#endif
 }
 
 /**
@@ -343,6 +322,17 @@ float turbulentField(
  * across the handover instead of dulling through it.
  */
 float flowDensity(float r, float phi, float mu) {
+#ifndef REFERENCE_TRACE
+  float ratio=r/uInnerRenderRg;
+  float keplerian=1.0/(ratio*sqrt(ratio));
+  vec3 base=vec3(6.5*log(r),0.0,2.2*mu/max(uAspect,.02));
+  float newer=phi+uEddyPhase.x*keplerian, older=phi+uEddyPhase.y*keplerian;
+  vec3 qNew=base+vec3(0.0,4.0*cos(newer),4.0*sin(newer))+uEddyNewOffset;
+  vec3 qOld=base+vec3(0.0,4.0*cos(older),4.0*sin(older))+uEddyOldOffset;
+  float value=uEddyPhase.z*(texture(uFlowNoise,qNew/${FLOW_NOISE_PERIOD.toFixed(1)}).r*2.0-1.0)*${FLOW_NOISE_RANGE.toFixed(1)}
+    +uEddyPhase.w*(texture(uFlowNoise,qOld/${FLOW_NOISE_PERIOD.toFixed(1)}).r*2.0-1.0)*${FLOW_NOISE_RANGE.toFixed(1)};
+  return clamp(exp(uTurbSigma*value-.5*uTurbSigma*uTurbSigma),.2,4.0);
+#else
   float keplerian = pow(r / uInnerRenderRg, -1.5);
   // Slots of half a lifetime, so two generations are alive at once:
   // the one just born and the one born a slot ago. At each boundary
@@ -371,6 +361,7 @@ float flowDensity(float r, float phi, float mu) {
     wOld * turbulentField(r, phi, mu, keplerian, 0.5 * (1.0 + f) * EDDY_LIFETIME, floor(t) - 1.0);
   // Log-normal, with the −σ²/2 that keeps the mean density unchanged.
   return clamp(exp(uTurbSigma * xi - 0.5 * uTurbSigma * uTurbSigma), 0.2, 4.0);
+#endif
 }
 
 /**
@@ -411,24 +402,16 @@ float flowColumn(float r, float mu) {
   return exp(-0.5 * z * z) / (2.5066282 * e * r);
 }
 
-/** Blackbody hue at T, from the same mired-indexed table the stars use. */
-vec3 lutColor(float tempK) {
-  float mired = 1.0e6 / max(tempK, 1.0);
-  return texture2D(uLut, vec2(clamp((mired - 20.0) / 980.0, 0.0, 1.0), 0.5)).rgb;
-}
+${FLOW_SPECTRUM_GLSL}
+${HOT_FLOW_SPECTRUM_GLSL}
+${HOT_ATLAS_GLSL}
+${HOT_OUTFLOW_GLSL}
 
-/**
- * How much flow is left at radius r, 0 to 1. The drawn edge is a limit
- * of the picture, not of the disc — the real one runs on out to where
- * its own gravity fragments it, still tens of thousands of degrees at
- * the radius drawn here — so the flow is thinned away rather than cut,
- * and thinned in substance: emission and opacity together, so it
- * dissolves and lets the sky through instead of ending in an opaque
- * dark rim it does not have.
- */
+/** Soften the physical outer boundary without losing half the disk. */
 float flowPresence(float r) {
   if (r < uInnerRenderRg || r > uOuterRg) return 0.0;
-  return 1.0 - smoothstep(0.5 * uOuterRg, uOuterRg, r);
+  float fadeStart = uAspect > THICK_FLOW ? 0.5 : 0.9;
+  return 1.0 - smoothstep(fadeStart * uOuterRg, uOuterRg, r);
 }
 
 /** Effective temperature of the flow at radius r, kelvin — the model's
@@ -552,13 +535,126 @@ float kerrStep(vec4 y, vec4 k1, float a, float xi) {
   return min(STEP_EPS / max(speed, 1.0e-4), sqrt(2.0 * STEP_EPS / max(bend, 1.0e-4)));
 }
 
+/** Shared radiative transfer for both geometric integrators. */
+bool flowSegment(vec4 prev, vec4 y, float prevPhi, float phi, vec4 midpoint, float phiMid, float ds,
+  float a, float xi, float eta, inout vec3 accum, inout vec3 transmittance,
+  inout float heldDensity, inout int held) {
+  if (uOuterRg <= 0.0) return false;
+    // A thick flow is passed through rather than crossed. A starved
+    // hole puffs its gas into an ion torus half as deep as it is wide
+    // and thin enough to see through, so there is no surface anywhere
+    // to intersect: what reaches the eye is the whole column the ray
+    // travelled, gathered step by step. This is the difference between
+    // a picture of a disc and a picture of what the Event Horizon
+    // Telescope resolved — the ring is not a ring of material, it is
+    // where the line of sight runs longest through the same plasma.
+    if (uAspect > THICK_FLOW) {
+      float rMid = midpoint.x;
+      float muMid = midpoint.y;
+      float presence = flowPresence(rMid);
+      if (presence > 0.002 && abs(muMid) < 3.5 * uAspect) {
+        // Radial kinematics are steady; torus spectra can be skipped in
+        // its evacuated funnel without skipping wind or jet transfer.
+        vec2 stateUv=vec2(phiMid/TAU+.18*muMid,
+          log(rMid/uInnerRenderRg)/log(uOuterRg/uInnerRenderRg));
+        vec3 kinematics=outflowKinematicsAt(stateUv.y);
+        float vertical = flowColumn(rMid, muMid) * 2.5066282 * uAspect * rMid;
+        vec3 tau=vec3(0.0);
+        vec3 cellLight=vec3(0.0);
+        if(vertical>1.0e-6) {
+          vec3 u = kerrFlowVelocity(rMid, a, uIscoRg);
+          float g = shiftFactor(u, xi, midpoint.z, rMid, a);
+          vec4 state=texture2D(uHotState,stateUv);
+#ifdef DIRECT_HOT_PLASMA
+          vec4 source = localHotFlowLight(rMid, g, state);
+          vec3 absorption=localHotAbsorption(rMid,g,state);
+#else
+          vec4 source = hotAtlasLight(stateUv.y,stateUv.x,g);
+          vec3 absorption=hotAtlasAbsorption(stateUv.y,stateUv.x,g);
+#endif
+          float density = vertical * (state.x<1.0?pow(.7,1.0-state.x):pow(1.4,state.x-1.0));
+          float emissive = vertical*vertical;
+          float distance = kerrProperLength(rMid, muMid, ds, g, a) * presence;
+          float scatter = uHotScatter * pow(rMid/uInnerRenderRg, -1.5) * kinematics.z * density;
+          tau = (absorption * emissive + vec3(scatter)) * distance;
+          cellLight = distance * emissive * source.rgb * uHotPower;
+        }
+        // Overlapping media share one transfer cell, each with its own
+        // comoving path length and frequency shift. Summing before transfer
+        // avoids imposing an artificial front/back order within a cell.
+        vec2 contraction=vec2(1.0,0.0);
+        if(uWindEnabled>0.5 || uJetEnabled>0.5)contraction=outflowContraction(rMid,muMid,a,xi,midpoint.z);
+        if(uWindEnabled>0.5 && rMid>uWindLaunch+0.0001) {
+          float wg=outflowShift(contraction,kinematics.x);
+          vec4 wind=outflowLight(uWindSpectrum,uWindLaunch,rMid,abs(muMid),wg);
+          float length=kerrProperLength(rMid,muMid,ds,wg,a)*presence;
+          cellLight+=wind.rgb*length;tau+=outflowExtinction(uWindSpectrum,uWindLaunch,rMid,abs(muMid),wg)*length;
+        }
+        float jetAngle=(1.0-abs(muMid))/${9*.18**2/2};
+        if(uJetEnabled>0.5 && rMid>uJetLaunch && jetAngle<1.0) {
+          float jg=outflowShift(contraction,kinematics.y);
+          vec4 jet=outflowLight(uJetSpectrum,uJetLaunch,rMid,jetAngle,jg);
+          float length=kerrProperLength(rMid,muMid,ds,jg,a)*presence;
+          cellLight+=jet.rgb*length;tau+=outflowExtinction(uJetSpectrum,uJetLaunch,rMid,jetAngle,jg)*length;
+        }
+        vec3 cellThrough = exp(-tau);
+        accum += transmittance * cellEmissionWeight(tau, cellThrough) * cellLight;
+        transmittance *= cellThrough;
+        if (max(transmittance.r,max(transmittance.g,transmittance.b)) < 0.004) return true;
+      }
+    }
+
+    // The equatorial flow is θ = π/2 at any spin: the step that changes
+    // the sign of μ crossed it.
+    if (uAspect <= THICK_FLOW && prev.y * y.y < 0.0) {
+      float f = prev.y / (prev.y - y.y);
+      float rHit = mix(prev.x, y.x, f);
+      float phiHit = mix(prevPhi, phi, f);
+      float tEmit = flowTemperature(rHit);
+      float presence = flowPresence(rHit);
+      if (tEmit > 0.0 && presence > 0.002) {
+        // Where the gas piles up it dissipates more and radiates
+        // hotter: an optically thick surface emits σT⁴ per unit area
+        // whatever its density, so a clump shows as the fourth root of
+        // itself in temperature — and, through T⁴, as itself in
+        // brightness. The same clump thickens the column.
+        float density = flowDensity(rHit, phiHit, 0.0);
+        tEmit *= pow(density, 0.25);
+        // Doppler and gravity in one factor: g = 1/(−p·u), the ratio of
+        // received to emitted frequency, contracted against the four-
+        // velocity the matter actually has — orbiting outside the last
+        // stable circle, plunging inside it. ξ is the photon's own
+        // conserved angular momentum, so which limb is approaching is
+        // decided by the ray rather than by any assumption about the
+        // geometry, and the infall term carries the extra redshift of
+        // matter falling away from the eye. A blackbody stays a
+        // blackbody under this, at temperature gT. Integrating its visible
+        // spectrum gives both received colour and band-limited brightness.
+        vec3 u = kerrFlowVelocity(rHit, a, uIscoRg);
+        vec4 at = mix(prev, y, f);
+        float g = shiftFactor(u, xi, at.z, rHit, a);
+        vec3 through = kerrHeading(vec4(rHit, 0.0, at.z, at.w), 1.0, phiHit, a, xi, eta);
+        float slant = max(abs(normalize(through).z), 0.04);
+        // Column through the flow: its vertical depth thinned by the
+        // radial fall-off, stretched by how obliquely the ray cuts it.
+        float column =
+          uOpticalDepth * pow(rHit / uInnerRenderRg, -uOpacityExp) * presence * density;
+        float alpha = 1.0 - exp(-column / slant);
+        accum += transmittance * alpha * flowLight(tEmit, g);
+        transmittance *= 1.0 - alpha;
+        if (max(transmittance.r,max(transmittance.g,transmittance.b)) < 0.004) return true;
+      }
+    }
+  return false;
+}
+
 /**
  * What the eye sees along one ray: the flow it crosses, and the sky
  * behind wherever it escapes to. escaped tells the caller whether a
  * background sample is owed and in which direction — a captured ray
  * carries only the light it picked up before falling in.
  */
-vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float transmittance) {
+vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out vec3 transmittance) {
   float a = uSpin;
   vec3 cam = uCamRg;
   // A camera lying exactly in the disc plane would have every ray stay
@@ -574,7 +670,7 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
 
   escapeDir = dir;
   escaped = true;
-  transmittance = 1.0;
+  transmittance = vec3(1.0);
 
   // The photon travels toward the camera, against the trace. Its
   // constants come from the frame of an observer there — exactly, at
@@ -737,107 +833,9 @@ vec3 traceGeodesic(vec3 dir, out vec3 escapeDir, out bool escaped, out float tra
     // difference above would otherwise read as a real sweep.
     if (prev.y * y.y < 0.0) phi -= prevBranch * equatorJump;
 
-    // A thick flow is passed through rather than crossed. A starved
-    // hole puffs its gas into an ion torus half as deep as it is wide
-    // and thin enough to see through, so there is no surface anywhere
-    // to intersect: what reaches the eye is the whole column the ray
-    // travelled, gathered step by step. This is the difference between
-    // a picture of a disc and a picture of what the Event Horizon
-    // Telescope resolved — the ring is not a ring of material, it is
-    // where the line of sight runs longest through the same plasma.
-    if (uAspect > THICK_FLOW) {
-      float rMid = 0.5 * (prev.x + y.x);
-      float muMid = 0.5 * (prev.y + y.y);
-      float presence = flowPresence(rMid);
-      if (presence > 0.002 && abs(muMid) < 3.5 * uAspect) {
-        float tEmit = flowTemperature(rMid);
-        if (tEmit > 0.0) {
-          if (held <= 0) {
-            heldDensity = flowDensity(rMid, 0.5 * (prevPhi + phi), muMid);
-            held = FLOW_SAMPLE_STRIDE;
-          }
-          held--;
-          float density = heldDensity;
-          tEmit *= pow(density, 0.25);
-          vec3 u = kerrFlowVelocity(rMid, a, uIscoRg);
-          float dr = 0.5 * (prev.z + y.z);
-          float g = shiftFactor(u, xi, dr, rMid, a);
-          float tObs = g * tEmit;
-          // How much gas this step went through: the distance the
-          // photon covered, as the gas measures it, times what is there
-          // at that height. Optically thin, so the emission is the path
-          // integral and the opacity only dims what lies behind — the
-          // two are separate, as they are not for a surface.
-          float through =
-            flowColumn(rMid, muMid) * kerrProperLength(rMid, muMid, ds, g, a) * presence;
-          float emitted = tEmit / uRefTempK;
-          float profile = emitted * emitted * emitted * emitted;
-          float shown = pow(profile, uProfileStretch);
-          float shift = tObs / max(tEmit, 1.0);
-          float beamed = shift * shift * shift * shift;
-          accum += transmittance * through * lutColor(tObs) * shown * beamed * uDiscGain;
-          transmittance *= exp(
-            -uOpticalDepth * pow(rMid / uInnerRenderRg, -uOpacityExp) * density * through
-          );
-          if (transmittance < 0.004) { escaped = false; settled = true; break; }
-        }
-      }
-    }
-
-    // The equatorial flow is θ = π/2 at any spin: the step that changes
-    // the sign of μ crossed it.
-    if (uAspect <= THICK_FLOW && prev.y * y.y < 0.0) {
-      float f = prev.y / (prev.y - y.y);
-      float rHit = mix(prev.x, y.x, f);
-      float phiHit = mix(prevPhi, phi, f);
-      float tEmit = flowTemperature(rHit);
-      float presence = flowPresence(rHit);
-      if (tEmit > 0.0 && presence > 0.002) {
-        // Where the gas piles up it dissipates more and radiates
-        // hotter: an optically thick surface emits σT⁴ per unit area
-        // whatever its density, so a clump shows as the fourth root of
-        // itself in temperature — and, through T⁴, as itself in
-        // brightness. The same clump thickens the column.
-        float density = flowDensity(rHit, phiHit, 0.0);
-        tEmit *= pow(density, 0.25);
-        // Doppler and gravity in one factor: g = 1/(−p·u), the ratio of
-        // received to emitted frequency, contracted against the four-
-        // velocity the matter actually has — orbiting outside the last
-        // stable circle, plunging inside it. ξ is the photon's own
-        // conserved angular momentum, so which limb is approaching is
-        // decided by the ray rather than by any assumption about the
-        // geometry, and the infall term carries the extra redshift of
-        // matter falling away from the eye. A blackbody stays a
-        // blackbody under this, at temperature gT — so the shift is the
-        // colour and, through σ(gT)⁴, the beaming as well.
-        vec3 u = kerrFlowVelocity(rHit, a, uIscoRg);
-        vec4 at = mix(prev, y, f);
-        float g = shiftFactor(u, xi, at.z, rHit, a);
-        float tObs = g * tEmit;
-        vec3 through = kerrHeading(vec4(rHit, 0.0, at.z, at.w), 1.0, phiHit, a, xi, eta);
-        float slant = max(abs(normalize(through).z), 0.04);
-        // Column through the flow: its vertical depth thinned by the
-        // radial fall-off, stretched by how obliquely the ray cuts it.
-        float column =
-          uOpticalDepth * pow(rHit / uInnerRenderRg, -uOpacityExp) * presence * density;
-        float alpha = 1.0 - exp(-column / slant);
-        // Brightness splits in two. The radial profile carries the
-        // flow's own σT⁴ from its inner edge outward, and between the
-        // edges that is four or more decades — further than any single
-        // exposure reaches, so it is shown under the gamma stretch
-        // every published image of an accretion flow uses. The Doppler
-        // and gravitational shift is left alone at its full δ⁴, so the
-        // beaming asymmetry on screen is the physical one and not a
-        // curve: what is compressed is the radius, never the physics.
-        float emitted = tEmit / uRefTempK;
-        float profile = emitted * emitted * emitted * emitted;
-        float shown = pow(profile, uProfileStretch);
-        float shift = tObs / max(tEmit, 1.0);
-        float beamed = shift * shift * shift * shift;
-        accum += transmittance * alpha * lutColor(tObs) * shown * beamed * uDiscGain;
-        transmittance *= 1.0 - alpha;
-        if (transmittance < 0.004) { escaped = false; settled = true; break; }
-      }
+    if (flowSegment(prev, y, prevPhi, phi, .5*(prev+y), .5*(prevPhi+phi), ds, a, xi, eta,
+      accum, transmittance, heldDensity, held)) {
+      escaped = false; settled = true; break;
     }
   }
 

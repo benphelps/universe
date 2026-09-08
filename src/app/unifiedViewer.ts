@@ -118,7 +118,8 @@ import {
 import { createSkyDome } from '../render/terrain/skyDome';
 import { createTerrainMaterial } from '../render/terrain/terrainMaterial';
 import { prepareGroundMaterials } from '../render/terrain/materialPreparation';
-import { BlackHoleObject } from '../render/blackhole/blackHoleObject';
+import { StreamingBlackHoleObject as BlackHoleObject } from '../render/blackhole/streamingBlackHoleObject';
+import { coreExposureFor, DEFAULT_CORE_EXPOSURE } from '../render/blackhole/coreExposure';
 import { framedFlowRadiusRg, LENSING_SOLID_RG } from '../render/blackhole/geodesicGlsl';
 import { LensedSky } from '../render/blackhole/lensedSky';
 import { stellarBlackHole } from '../universe/star/stellarHole';
@@ -319,16 +320,6 @@ const EMPTY_F32 = new Float32Array(0);
  *  and the hole is a bump on it — and close enough that it still
  *  reaches the edges of the frame. */
 const FLOW_STANDOFF = 1.6;
-
-/**
- * How far the camera stops down at the galactic centre. Eighteen
- * thousand of the cluster's stars are drawn and every one of them is
- * within a few parsecs — brighter, most of them, than Sirius is from
- * Earth. A sky like that is genuinely blinding, and a camera pointed
- * into it would be stopped right down; at the exposure the rest of the
- * universe is viewed at, it is a white sheet.
- */
-const CORE_EXPOSURE = 0.22;
 
 /** The galaxy's own centre — where the hole is, by definition. */
 const GALACTIC_CENTRE: GalacticPosition = { xPc: 0, yPc: 0, zPc: 0 };
@@ -631,8 +622,10 @@ export class UnifiedViewer {
   private blackHole: BlackHoleObject | null = null;
   private lensedSky: LensedSky | null = null;
   private skyCaptured = false;
+  private coreSkyCaptureAtMs = -Infinity;
   /** The exposure the session was viewing at before the centre. */
   private exposureOutsideCore = 1;
+  private coreExposure = DEFAULT_CORE_EXPOSURE;
   private nuclearCluster: NuclearCluster | null = null;
   /** Sky frame the cluster would be built in, once it is worth building. */
   private clusterFrame: Float32Array | null = null;
@@ -740,20 +733,35 @@ export class UnifiedViewer {
    *  climate survey, and sky fields still building. */
   get generationStatus(): {
     surveying: boolean;
+    blackHoles: number;
+    blackHoleProgress: number;
+    blackHoleStage: string;
+    blackHoleError: string | null;
     terrain: number;
     worlds: number;
     nebulae: number;
+    locatingNebulae: boolean;
+    updatingSky: boolean;
     skies: number;
     skyProgress: number;
     skyStage: string;
     skyStageProgress: number;
   } {
     const sky = skyProgress();
+    const holes = [this.blackHole,...this.starNodes.map(node=>node.hole)].filter(hole=>hole!==null);
+    const pending = holes.filter(hole=>hole.generation.pending);
+    const busiest = pending.reduce<BlackHoleObject|null>((a,b)=>!a||b.generation.fraction<a.generation.fraction?b:a,null);
     return {
+      blackHoles:pending.length,
+      blackHoleProgress:busiest?.generation.fraction??0,
+      blackHoleStage:busiest?.generation.stage??'',
+      blackHoleError:holes.find(hole=>hole.generation.error)?.generation.error??null,
       surveying: this.surveying,
       terrain: this.chunkManager?.outstanding ?? 0,
       worlds: bakeQueueDepth(),
       nebulae: pendingNebulaBakes() + this.nebulaUploads.size,
+      locatingNebulae: this.residencyService.pending,
+      updatingSky: this.coreView && !!this.lensedSky && !this.skyCaptured,
       skies: skyPending(),
       skyProgress: sky.fraction,
       skyStage: sky.stage,
@@ -1382,6 +1390,8 @@ export class UnifiedViewer {
   private readonly tooltipLine: SVGLineElement;
   /** Fired when the user clicks a picked body. */
   onPick: ((target: PickTarget) => void) | null = null;
+  /** Refresh physical readouts when a worker-built plasma model lands. */
+  onBlackHoleReady: (() => void) | null = null;
   private lastFrameMs = performance.now();
   private readonly performanceCapture: ReturnType<typeof createPerformanceCapture>;
   private capturingImage = false;
@@ -1809,7 +1819,10 @@ export class UnifiedViewer {
       let temperature = star.tEff;
       if (star.stage === 'black-hole') {
         const model = stellarBlackHole(star, holeDonors(system, index), this.holeAxis(system, index));
-        hole = new BlackHoleObject(model, this.lut, IDENTITY_FRAME);
+        hole = new BlackHoleObject(model, IDENTITY_FRAME);
+        hole.prepare(object => this.pipeline.prepareSceneObject(object, this.scene));
+        const preparingHole=hole;
+        void hole.ready.then(ready=>{if(ready&&this.starNodes.some(node=>node.hole===preparingHole))this.onBlackHoleReady?.();});
         holeSky = new LensedSky(512);
         hole.sky = holeSky.target;
         this.scene.add(hole.mesh);
@@ -2383,7 +2396,8 @@ export class UnifiedViewer {
     // A fresh volume dissolves in from nothing; a reinstall — the fine
     // bake landing over the coarse one — picks the fade up where the
     // volume it replaces stood, so the upgrade is invisible.
-    volume.fade = existing?.fade ?? 0;
+    volume.fade = this.coreView ? 1 : existing?.fade ?? 0;
+    if (this.coreView) this.skyCaptured = false;
     volume.opacity = volume.fade;
     this.nebulaVolumes.set(seed, volume);
     this.pipeline.sky.scene.add(volume.mesh);
@@ -3780,7 +3794,13 @@ export class UnifiedViewer {
   }
 
   set exposure(value: number) {
-    this.pipeline.exposure = value;
+    if (this.coreView) {
+      // The settings dial remains the user's exposure. The core preset
+      // is a multiplier, not a per-frame overwrite of that selection.
+      this.exposureOutsideCore = value;
+      const out = this.nuclearCluster?.update(this.camera.position.length() / PC_KM) ?? 0;
+      this.pipeline.exposure = value * (this.coreExposure + (1 - this.coreExposure) * out);
+    } else this.pipeline.exposure = value;
   }
 
   dispose(): void {
@@ -3910,6 +3930,8 @@ export class UnifiedViewer {
     this.dropHeldSky();
     this.clearSystem();
     this.coreView = true;
+    this.coreExposure = DEFAULT_CORE_EXPOSURE;
+    this.coreSkyCaptureAtMs = -Infinity;
 
     const nucleus = galacticNucleus();
     // The centre has no system to inherit a sky angle from, so it takes
@@ -3917,6 +3939,10 @@ export class UnifiedViewer {
     // accretion flow in the plane the turntable turns in.
     const frame = sceneFromUpAxis(nucleus.spinAxis);
     this.viewpointPc = GALACTIC_CENTRE;
+    this.sceneOrientation = frame;
+    this.skyPreviewFrame = frame;
+    this.skyFloorRadiance = 0;
+    this.chooseNebulaVolume(GALACTIC_CENTRE, frame);
     this.frameQuat.identity();
     this.lastSpinRad = null;
     this.heliocentric.quaternion.identity();
@@ -3931,7 +3957,13 @@ export class UnifiedViewer {
     this.nuclearCluster.setInstrument(this.skyInstrument, this.skyExposure);
     this.pcGroup.add(this.nuclearCluster.group);
 
-    const hole = new BlackHoleObject(nucleus, this.lut, frame);
+    const hole = new BlackHoleObject(nucleus, frame);
+    hole.prepare(object => this.pipeline.prepareSceneObject(object, this.scene));
+    void hole.ready.then(ready=>{
+      if(!ready || this.blackHole!==hole)return;
+      this.coreExposure = coreExposureFor(nucleus.flow,nucleus.gravitationalRadiusM,hole.preparedData?.hot?.data);
+      this.onBlackHoleReady?.();
+    });
     this.scene.add(hole.mesh);
     this.blackHole = hole;
     this.lensedSky = new LensedSky();
@@ -3972,7 +4004,7 @@ export class UnifiedViewer {
     // galaxy the system views show. Leaving restores it outright: the
     // store sets the exposure again on load.
     this.exposureOutsideCore = this.exposure;
-    this.exposure = CORE_EXPOSURE;
+    this.pipeline.exposure = this.coreExposure * this.exposureOutsideCore;
   }
 
   /** Whether the camera is at the galactic centre rather than a system. */
@@ -3983,6 +4015,7 @@ export class UnifiedViewer {
   private clearCore(): void {
     if (!this.coreView) return;
     this.coreView = false;
+    this.pipeline.exposure = this.exposureOutsideCore;
     this.lensedSky?.dispose();
     this.lensedSky = null;
     this.skyCaptured = false;
@@ -4031,15 +4064,21 @@ export class UnifiedViewer {
       this.nuclearCluster.intensity = 1;
       this.nuclearCluster.group.visible = true;
       const out = this.nuclearCluster.update(this.camera.position.length() / PC_KM);
-      this.exposure = CORE_EXPOSURE + (this.exposureOutsideCore - CORE_EXPOSURE) * out;
+      this.pipeline.exposure = this.exposureOutsideCore * (this.coreExposure + (1 - this.coreExposure) * out);
     }
     // The bent rays' background is the sky arriving at the hole, so it
     // is photographed from the hole — once, with the dome re-centred
     // there and the hole itself out of frame.
-    if (this.lensedSky && this.blackHole && !this.skyCaptured) {
-      this.skyCaptured = true;
+    // Coalesce asynchronous cloud uploads instead of recapturing six
+    // faces for every completed bake. Keep the previous complete sky
+    // visible while the next capture is pending.
+    if (this.lensedSky && this.blackHole && !this.skyCaptured && this.galaxyVolume?.ready && this.nuclearCluster?.ready
+      && performance.now() - this.coreSkyCaptureAtMs >= 250) {
       this.galaxyVolume?.update(ORIGIN, ORIGIN, identity, PC_KM, 1, 1e15);
+      this.updateCoreClouds(ORIGIN, identity, true);
       this.captureWithSkyAt(this.lensedSky, ORIGIN, [this.blackHole.mesh]);
+      this.skyCaptured = true;
+      this.coreSkyCaptureAtMs = performance.now();
     }
 
     // Close in, every ray on screen is bent enough that the hole draws
@@ -4051,7 +4090,7 @@ export class UnifiedViewer {
     // away from under a half-transparent image of it and left the
     // outside of the frame black but for the brightest arcs.
     const holeCoversSky =
-      this.blackHole !== null &&
+      this.lensedSky?.captured && this.blackHole !== null &&
       this.camera.position.length() < LENSING_SOLID_RG * this.blackHole.kmPerRg;
     this.galaxyVolume?.update(
       this.camera.position,
@@ -4061,11 +4100,29 @@ export class UnifiedViewer {
       holeCoversSky ? 0 : 1,
       Math.min(this.camera.far * 0.3, 3e15),
     );
+    this.updateCoreClouds(this.camera.position, identity, !holeCoversSky);
     if (this.nuclearCluster) this.nuclearCluster.group.visible = !holeCoversSky;
     this.blackHole?.update(this.camera, ORIGIN, identity, 1, 1, this.simTimeDays * 86400);
     // The geodesics are traced into the hole's own target before the
     // scene is drawn; what the scene holds is only the result.
+    if (this.blackHole) this.blackHole.mesh.visible = this.blackHole.mesh.visible && !!this.lensedSky?.captured;
     this.blackHole?.render(this.pipeline.renderer);
+  }
+
+  /** The same resident cloud volumes as system views, evaluated at the
+   * hole for capture and at the observer for the ordinary far view.
+   * Captured clouds are static: their marches are paid only on arrival. */
+  private updateCoreClouds(at: Vector3, worldToScene: Matrix3, visible: boolean): void {
+    const volumes = this.volumesByDistance;
+    volumes.length = 0;
+    for (const volume of this.nebulaVolumes.values()) {
+      volume.opacity = visible ? 1 : 0;
+      if (!visible) continue;
+      volume.update(at, ORIGIN, worldToScene, PC_KM, Math.min(this.camera.far * 0.3, 3e15));
+      volumes.push(volume);
+    }
+    volumes.sort((a, b) => b.cameraDistancePc - a.cameraDistancePc);
+    volumes.forEach((volume, index) => { volume.mesh.renderOrder = -6 - index; });
   }
 
   /**
@@ -4130,7 +4187,7 @@ export class UnifiedViewer {
    * Recentred for the capture and put back after, the sky the lensing
    * bends is the sky the eye is already looking at.
    */
-  private captureWithSkyAt(sky: LensedSky, atWorldKm: Vector3, hidden: Mesh[]): void {
+  private captureWithSkyAt(sky: LensedSky, atWorldKm: Vector3, hidden: Object3D[]): void {
     const skies = [this.backdrop?.group, this.skyHandover?.group].filter(
       (group): group is Group => group !== undefined,
     );
@@ -4139,10 +4196,21 @@ export class UnifiedViewer {
     // The volume domes reach the frame as a screen-space composite,
     // which a cube camera must not photograph: for the capture the
     // domes themselves stand in, recentred the way the backdrop is.
-    const domes = this.pipeline.sky.lendTo(this.scene, atWorldKm);
-    sky.capture(this.pipeline.renderer, this.scene, atWorldKm, hidden);
-    this.pipeline.sky.reclaim(domes);
-    skies.forEach((group, i) => group.position.copy(were[i]));
+    const domes = [...this.pipeline.sky.scene.children];
+    const domePositions = domes.map(dome => dome.position.clone());
+    domes.forEach(dome => dome.position.copy(atWorldKm));
+    const quadVisible = this.pipeline.sky.quad.visible;
+    this.pipeline.sky.quad.visible = false;
+    // Draw the cloud layer before foreground stars, exactly as in the
+    // ordinary sky. Lending transparent clouds into the main scene would
+    // place their extinction over nearby nuclear stars too.
+    try {
+      sky.capture(this.pipeline.renderer, this.scene, atWorldKm, hidden, this.pipeline.sky.scene);
+    } finally {
+      this.pipeline.sky.quad.visible = quadVisible;
+      domes.forEach((dome, i) => dome.position.copy(domePositions[i]));
+      skies.forEach((group, i) => group.position.copy(were[i]));
+    }
   }
 
   /** Distance to the nearest other star, which is the scale on which

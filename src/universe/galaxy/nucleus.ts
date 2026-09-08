@@ -26,8 +26,8 @@ import { centralSpheroid, nuclearStarCluster, type NuclearStarCluster } from './
  * case). Mass and spin then fix every length in the geometry exactly:
  * horizon, photon orbit, innermost stable orbit, shadow. Spin also
  * fixes how efficiently the hole converts what falls in, so the
- * accretion rate follows from the luminosity and nothing is left over
- * to tune.
+ * horizon accretion rate follows from the luminosity. Magnetic flux
+ * and outflow closures add explicit uncertain plasma parameters.
  *
  * What it is eating, and what that makes of it, is accretionFlow.
  */
@@ -100,6 +100,12 @@ export function galacticNucleus(): GalacticNucleus {
   const tilt = Math.acos(1 - 0.55 * rng.float());
   const azimuth = rng.range(0, 2 * Math.PI);
 
+  // Magnetic flux is independent of spin and the historical nucleus RNG.
+  // A broad log-uniform prior represents weakly to moderately magnetized
+  // feeding; its population distribution is a modeling assumption.
+  const fluxRng = new Rng(deriveSeed(galaxyRoot(0x53474141n), 'nucleus-magnetic-flux'));
+  const magneticFlux = 3 * (35 / 3) ** fluxRng.float();
+
   memo = {
     massSolar,
     spin,
@@ -117,7 +123,7 @@ export function galacticNucleus(): GalacticNucleus {
     ],
     hawkingTemperatureK: hawkingTemperature(massSolar),
     cluster: nuclearStarCluster(),
-    flow: accretionFlowFor(massSolar, spin, eddingtonRatio),
+    flow: accretionFlowFor(massSolar, spin, eddingtonRatio, { magneticFlux }),
   };
   return memo;
 }

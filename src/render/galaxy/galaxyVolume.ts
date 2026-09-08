@@ -94,6 +94,8 @@ export class GalaxyVolume {
   private instrument: DisplayInstrument = CAMERA_INSTRUMENT;
   private exposure = 1;
   private pedestal = 0;
+  private sourcesLoaded = false;
+  get ready(): boolean { return this.sourcesLoaded && !this.preparing && !this.disposed; }
   private preparing = false;
   private prepared = false;
   private disposed = false;
@@ -121,6 +123,7 @@ export class GalaxyVolume {
       m[2], m[5], m[8],
     );
     const luts = galaxyLutTextures();
+    void luts.ready.then(() => { this.sourcesLoaded = true; });
     const components = galaxyComponentUniforms();
     this.material = new ShaderMaterial({
       glslVersion: GLSL3,

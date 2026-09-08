@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Black hole rendering check</title>
+<style>body{margin:20px;background:#11151c;color:#d8e0ea;font:14px system-ui}button,select{margin:4px;padding:8px}canvas{display:block;max-width:100%;height:auto!important;margin:12px 0}pre{white-space:pre-wrap}label{margin-right:12px}</style>
+<h1>Black hole rendering check</h1>
+<label>Solver <select id="solver"><option>regular</option><option>fine</option><option>reference</option></select></label>
+<label>Sky <select id="sky"><option>grid</option><option>stars</option><option>constant</option></select></label>
+<label>Flow <select id="flow"><option>none</option><option>torus</option><option>disc</option></select></label>
+<label>View <select id="view"><option>close</option><option>far</option><option>pole</option><option>equator</option></select></label>
+<label><input id="lensing" type="checkbox" checked>Lensing</label>
+<button id="compare">Compare with fine trace</button><button id="compare-material">Compare material cache</button><button id="run">Measure 300 frames</button><button id="pause">Animate</button>
+<div id="canvas"></div><pre id="results">Preparing…</pre><details><summary>Plasma model and initialization</summary><pre id="plasma"></pre></details>
+<script type="module" src="./black-hole.ts"></script></html>
