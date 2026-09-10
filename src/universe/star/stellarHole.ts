@@ -28,6 +28,7 @@ import type { Star } from './types';
  */
 
 export interface StellarBlackHole {
+  flowSeed: bigint;
   massSolar: number;
   /** Dimensionless a★ = Jc/GM². */
   spin: number;
@@ -81,6 +82,7 @@ export function stellarBlackHole(
   const length = Math.hypot(axis[0], axis[1], axis[2]) || 1;
 
   return {
+    flowSeed: deriveSeed(BigInt(`0x${star.seedHex}`), 'hole-disk'),
     massSolar,
     spin,
     gravitationalRadiusM,

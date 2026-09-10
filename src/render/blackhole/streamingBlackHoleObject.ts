@@ -71,6 +71,7 @@ export class StreamingBlackHoleObject {
   }
   get kmPerRg(){return this.current.kmPerRg;}
   get spinAxisScene(){return this.current.spinAxisScene;}
+  get diskStatus(){return this.current.diskStatus;}
   get plasmaStatus(){return this.current.plasmaStatus;}
   set sky(target:WebGLCubeRenderTarget){this.skyTarget=target;this.current.sky=target;}
   update(...args:Parameters<BlackHoleObject['update']>):void {

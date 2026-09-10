@@ -1,4 +1,3 @@
-import { FLOW_EDDY_LIFETIME, FLOW_NOISE_PERIOD, FLOW_NOISE_RANGE } from './flowNoise';
 import { FLOW_SPECTRUM_GLSL } from './flowSpectrum';
 import { HOT_FLOW_SPECTRUM_GLSL } from './hotFlowSpectrum';
 import { HOT_OUTFLOW_GLSL } from './hotOutflowSpectrum';
@@ -118,7 +117,6 @@ uniform float uEdgeTaper;
 uniform float uOpticalDepth;
 uniform float uOpacityExp;
 uniform float uRefLogVisible;
-uniform float uTurbSigma;
 uniform float uAspect;
 uniform float uFlowPhase;
 uniform float uDiscGain;
@@ -137,38 +135,12 @@ uniform float uWindLaunch;
 uniform float uJetLaunch;
 uniform float uWindEnabled;
 uniform float uJetEnabled;
-uniform highp sampler3D uFlowNoise;
-uniform vec4 uEddyPhase;
-uniform vec3 uEddyNewOffset;
-uniform vec3 uEddyOldOffset;
+uniform sampler2D uThinState;
 
 const float LENSING_REACH = ${LENSING_REACH_RG}.0;
 const float LENSING_SOLID = ${LENSING_SOLID_RG}.0;
 const int MAX_STEPS = 512;
 const float TAU = 6.28318531;
-/**
- * How long a clump lasts, in orbits at the flow's inner edge.
- *
- * The magnetorotational instability turns its eddies over in about one
- * orbit — one *local* orbit, so the true lifetime falls off outward
- * with the orbital period. A clock per radius is what that asks for,
- * and it cannot be drawn: see flowDensity for why the picture, not the
- * arithmetic, is what fails. One clock for the whole flow means one
- * number here, and the number is the only free parameter left.
- *
- * It is bounded on both sides, and both bounds are visible. Too short
- * and no clump survives long enough to travel: at one inner orbit the
- * flow past a couple of gravitational radii is replaced before it has
- * been anywhere, and boils in place instead of turning. Too long and
- * differential rotation combs it — a clump is wound by 1.5 Ωτ per
- * e-fold of radius, and the clumping is sampled on a ring four noise
- * cells across, so at sixteen inner orbits there are more windings
- * across an e-fold than there are pixels, and the wisps draw as fine
- * combed strips and then as haze. Four is what sits between them:
- * still an orbit or better wherever a disc is bright, still six
- * windings per e-fold at the very edge of the flow, which resolves.
- */
-const float EDDY_LIFETIME = ${FLOW_EDDY_LIFETIME.toFixed(1)};
 /**
  * Mino-time step, as a fraction of the fastest coordinate's rate.
  *
@@ -179,18 +151,6 @@ const float EDDY_LIFETIME = ${FLOW_EDDY_LIFETIME.toFixed(1)};
  * test and not available to spend. This sits between them.
  */
 const float STEP_EPS = 0.06;
-/**
- * Steps between re-reads of the flow's clumping.
- *
- * A step carries the sample point about a quarter of a noise cell —
- * measured, along the rays this actually traces — so this is one read
- * per cell, which is the finest rate that tells you anything the field
- * has. Reading it every third step resolved the turbulence four times
- * finer than the turbulence has structure, and for a hot flow, which
- * is a volume rather than a surface and so pays this at every step
- * rather than once, that was over half the cost of the entire trace.
- */
-const int FLOW_SAMPLE_STRIDE = 5;
 /** Half-thickness above which the flow is passed through rather than
  *  crossed. Cold discs sit near 0.02, ion tori at 0.55. */
 const float THICK_FLOW = 0.15;
@@ -206,162 +166,13 @@ const float THICK_FLOW = 0.15;
  */
 const float AXIS_STANDOFF = 1.0e-4;
 
-/**
- * Where in the noise one generation of eddies is drawn from.
- *
- * Walking the sample point a fixed distance per generation is the
- * obvious way to get a fresh field each time, and it works until it
- * doesn't: after a few tens of thousands of turnovers the offset is
- * large enough that a float can no longer resolve the ±4 the pattern
- * itself spans, and the noise comes back flat. A disc watched at any
- * speed above real time reaches that in seconds, and what it looks
- * like is the clumping quietly dissolving into an even glow.
- *
- * A generation only has to be *different* from its neighbours, not
- * further away, so it is hashed into a bounded box instead. Four
- * thousand of them come round before one repeats, which at the inner
- * edge is an hour of watching, and by then no eddy that was there is
- * there to compare it against.
- */
-vec3 eddyOffset(float generation) {
-  vec3 h = fract(mod(generation, 4096.0) * vec3(0.1031, 0.11369, 0.13787));
-  h += dot(h, h.yzx + 33.33);
-  return fract((h.xxy + h.yzz) * h.zyx) * 128.0;
-}
-
-/**
- * The flow's density where a ray crosses it, relative to the smooth
- * profile. The magnetorotational instability leaves accreting gas
- * clumped on a log-normal distribution, and differential rotation
- * draws every clump out into a trailing spiral — so the field is
- * sampled in coordinates that wind with the Keplerian shear and are
- * stretched along it, which is what turns blobs into filaments. The
- * range is clipped to the one or two sigma that simulated density
- * histograms actually span.
- */
-float turbulentField(
-  float r,
-  float phi,
-  float mu,
-  float keplerian,
-  float age,
-  float generation
-) {
-  // Two things move the pattern round: the static winding it is born
-  // with, and the turning it has done since. The turning is at the
-  // local orbital rate and is measured from this realisation's own
-  // birth, so it never exceeds one lifetime's worth — and a lifetime
-  // is what bounds how far differential rotation can comb the field
-  // before the field is replaced.
-  //
-  // What matters about that bound is not the angle, which is read
-  // through a cosine and could be folded, but its derivative across
-  // the radius: that is the number of filaments packed into an e-fold,
-  // and it is 1.5 Ωτ, so an age reaching one turn draws three half
-  // turns of winding per e-fold and no more, at any spin and at any
-  // time since the flow was first drawn.
-  float a = phi + 9.0 * keplerian + TAU * age * keplerian;
-  // Sheared hard along the radius and stretched around it: turbulence
-  // in a flow that orbits differentially is drawn out into filaments
-  // far longer than they are wide, which is what banding is. Height
-  // enters in units of the flow's own thickness, so a thin disc is
-  // sampled on a surface and a thick torus through its whole depth.
-  vec3 q = vec3(6.5 * log(r), 4.0 * cos(a), 4.0 * sin(a));
-  q += vec3(0.0, 0.0, 2.2 * mu / max(uAspect, 0.02));
-  q += eddyOffset(generation);
-  // One octave, because the others were never resolved. A step carries
-  // the sample point about a quarter of a noise cell, and the flow is
-  // re-read every fifth step — so the second octave was being sampled
-  // at nearly two of its own cells per read and the third at four.
-  // Neither was drawing structure; both were drawing noise that the
-  // path integral then averaged back out, at two thirds of the cost of
-  // the whole trace. Dropped, the picture moves by a quarter of a
-  // percent and the clumping keeps its contrast to within three.
-#ifdef REFERENCE_TRACE
-  return snoise(q);
-#else
-  return (texture(uFlowNoise, q / ${FLOW_NOISE_PERIOD.toFixed(1)}).r * 2.0 - 1.0) * ${FLOW_NOISE_RANGE.toFixed(1)};
-#endif
-}
-
-/**
- * The flow's density where the ray meets it, relative to the smooth
- * profile — and how that changes while you watch.
- *
- * Accreting gas is not smooth. The magnetorotational instability, which
- * is what lets it accrete at all, leaves it clumped on a log-normal
- * distribution of the width simulations measure, and the shear draws
- * every clump into a trailing filament. Neither is it still: an eddy
- * turns over in about an orbit and is gone, replaced by another the
- * instability has just made.
- *
- * In about an orbit *of its own*, which asks for a clock per radius —
- * and a clock per radius cannot be drawn. Its phase at radius r is
- * fract(T Ω(r)), and while that stays inside a turn forever, its
- * derivative across the radius is 1.5 T Ω and grows for as long as
- * anyone watches. Within a minute or two it packs more windings of the
- * clumping into an e-fold of radius than there are pixels across one,
- * and what a viewer sees is the wispy structure combing itself into
- * ever finer strips and then into an even haze that never comes back.
- * Nothing goes out of range the whole time. It is the slope that runs
- * away, and no amount of folding touches a slope.
- *
- * So the flow turns over on one clock. The phase then has no radial
- * derivative at all, and the only thing left varying with radius is
- * the winding inside a single lifetime, which is bounded because the
- * lifetime is. What that gives up is written at EDDY_LIFETIME: flow
- * well outside the inner edge is replaced sooner than its own orbit
- * would replace it.
- *
- * Advecting one frozen field would show the first half of what
- * turbulence does and not the second: the pattern would shear without
- * bound, stretching into finer and finer threads that never renew. So
- * two realisations run half a lifetime out of phase, each introduced
- * and retired while it carries no weight, and are blended so the
- * variance is preserved rather than the mean — the contrast holds
- * across the handover instead of dulling through it.
- */
-float flowDensity(float r, float phi, float mu) {
-#ifndef REFERENCE_TRACE
-  float ratio=r/uInnerRenderRg;
-  float keplerian=1.0/(ratio*sqrt(ratio));
-  vec3 base=vec3(6.5*log(r),0.0,2.2*mu/max(uAspect,.02));
-  float newer=phi+uEddyPhase.x*keplerian, older=phi+uEddyPhase.y*keplerian;
-  vec3 qNew=base+vec3(0.0,4.0*cos(newer),4.0*sin(newer))+uEddyNewOffset;
-  vec3 qOld=base+vec3(0.0,4.0*cos(older),4.0*sin(older))+uEddyOldOffset;
-  float value=uEddyPhase.z*(texture(uFlowNoise,qNew/${FLOW_NOISE_PERIOD.toFixed(1)}).r*2.0-1.0)*${FLOW_NOISE_RANGE.toFixed(1)}
-    +uEddyPhase.w*(texture(uFlowNoise,qOld/${FLOW_NOISE_PERIOD.toFixed(1)}).r*2.0-1.0)*${FLOW_NOISE_RANGE.toFixed(1)};
-  return clamp(exp(uTurbSigma*value-.5*uTurbSigma*uTurbSigma),.2,4.0);
-#else
-  float keplerian = pow(r / uInnerRenderRg, -1.5);
-  // Slots of half a lifetime, so two generations are alive at once:
-  // the one just born and the one born a slot ago. At each boundary
-  // the new becomes the old and another is born behind it, which is
-  // what lets a generation be introduced and retired unseen. One clock
-  // for the whole flow, so every radius does it at the same moment.
-  float t = 2.0 * uFlowPhase / EDDY_LIFETIME;
-  float f = fract(t);
-  // Quarter-turn quadrature, so each weight rises from nothing and
-  // falls back to nothing over its own life and is never negative.
-  // Half a turn was: it carried the older realisation down through
-  // zero to minus one, and then across the slot boundary that same
-  // realisation — same hash, same age — came back at plus one. The
-  // clumping inverted between two frames, dense for sparse, everywhere
-  // that shared the moment. On a clock per radius nowhere shared it
-  // and the flash was smeared out into nothing; on one clock the whole
-  // flow does it at once, which is what a jump is.
-  //
-  // Their squares still sum to one, so what is held constant across
-  // the handover is the variance and not the mean: the clumping does
-  // not dull mid-crossfade.
-  float wNew = sin(1.5707963 * f);
-  float wOld = cos(1.5707963 * f);
-  float xi =
-    wNew * turbulentField(r, phi, mu, keplerian, 0.5 * f * EDDY_LIFETIME, floor(t)) +
-    wOld * turbulentField(r, phi, mu, keplerian, 0.5 * (1.0 + f) * EDDY_LIFETIME, floor(t) - 1.0);
-  // Log-normal, with the −σ²/2 that keeps the mean density unchanged.
-  return clamp(exp(uTurbSigma * xi - 0.5 * uTurbSigma * uTurbSigma), 0.2, 4.0);
-#endif
+/** Material samples follow the same Kerr azimuth as the gas velocity.
+ * Cell centers lie at (p+.5)/N and (r+.5)/N. Phi wraps; radius clamps.
+ * Density controls opacity; the independently evolved thermal reservoir
+ * sets bolometric flux, hence T_eff = T_background * reservoir^(1/4). */
+vec2 thinDiskState(float r, float phi) {
+  vec2 uv=vec2(phi/TAU,log(max(r,uInnerRg)/uInnerRg)/log(uOuterRg/uInnerRg));
+  return max(texture2D(uThinState,uv).rg,vec2(1.0e-6));
 }
 
 /**
@@ -613,13 +424,11 @@ bool flowSegment(vec4 prev, vec4 y, float prevPhi, float phi, vec4 midpoint, flo
       float tEmit = flowTemperature(rHit);
       float presence = flowPresence(rHit);
       if (tEmit > 0.0 && presence > 0.002) {
-        // Where the gas piles up it dissipates more and radiates
-        // hotter: an optically thick surface emits σT⁴ per unit area
-        // whatever its density, so a clump shows as the fourth root of
-        // itself in temperature — and, through T⁴, as itself in
-        // brightness. The same clump thickens the column.
-        float density = flowDensity(rHit, phiHit, 0.0);
-        tEmit *= pow(density, 0.25);
+        // Density changes the column; the evolved thermal reservoir sets
+        // the surface flux independently through sigma T_eff^4.
+        vec2 disk = thinDiskState(rHit, phiHit);
+        float density = disk.x;
+        tEmit *= pow(disk.y, 0.25);
         // Doppler and gravity in one factor: g = 1/(−p·u), the ratio of
         // received to emitted frequency, contracted against the four-
         // velocity the matter actually has — orbiting outside the last

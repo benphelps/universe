@@ -27,12 +27,12 @@ it('respects shared permits and releases them when active or queued generation i
   stopA();expect(FakeWorker.all[0].terminate).toHaveBeenCalledOnce();expect(scheduler.activeCount).toBe(0);
   FakeWorker.all[0].reply({type:'ready',data:{}});expect(a.ready).not.toHaveBeenCalled();expect(b.ready).not.toHaveBeenCalled();
 });
-it('delivers progress and completed buffers, reuses the bounded cache asynchronously, and can cancel a cache hit',async()=>{
+it('delivers progress and completed data, reuses the bounded cache asynchronously, and can cancel a cache hit',async()=>{
   const {requestBlackHoleTables}=await import('./blackHole');const a=callbacks();
   requestBlackHoleTables(flow,1000,a);
   FakeWorker.all[0].reply({type:'progress',progress:{fraction:.4,stage:'plasma spectra'}});
   expect(a.progress).toHaveBeenLastCalledWith({fraction:.4,stage:'plasma spectra'});
-  const data={noise:new Uint8Array([1,2,3])};FakeWorker.all[0].reply({type:'ready',data});
+  const data={};FakeWorker.all[0].reply({type:'ready',data});
   expect(a.ready).toHaveBeenCalledWith(data);expect(scheduler.activeCount).toBe(0);
   const b=callbacks(),c=callbacks();requestBlackHoleTables(flow,1000,b);
   expect(b.ready).not.toHaveBeenCalled();const stop=requestBlackHoleTables(flow,1000,c);stop();

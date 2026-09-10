@@ -14,7 +14,6 @@ import {
   ShaderMaterial,
   Vector2,
   Vector3,
-  Vector4,
   WebGLRenderTarget,
   type CubeTexture,
   type PerspectiveCamera,
@@ -25,11 +24,11 @@ import { discPeakRadiusRg, horizonRadiusRg, iscoRadiusRg } from '../../core/phys
 import { orbitEnergyAngular } from '../../core/physics/kerr';
 import { flowTemperature } from '../../universe/galaxy/accretionFlow';
 import type { AccretionFlow } from '../../universe/galaxy/accretionFlow';
-import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
 import { drawnFlowRadiusRg, GEODESIC_GLSL } from './geodesicGlsl';
 import { KERR_GLSL } from './kerrGlsl';
 import { REGULAR_KERR_GLSL } from './regularKerrGlsl';
-import { acquireFlowNoise, updateFlowEddies } from './flowNoise';
+import { ThinDiskField } from './thinDiskField';
+import { hashString } from '../../core/rng/hash';
 import { createCaptureTable } from './captureTable';
 import { createFlowSpectrum, thermalVisibleSample } from './flowSpectrum';
 import { createHotFlowSpectrum } from './hotFlowSpectrum';
@@ -47,29 +46,10 @@ const DISC_EXPOSURE = 2.0;
 const RENDER_REACH_RG = 3e5;
 /** Below this Eddington ratio a flow is not drawn at all. */
 const FLOW_VISIBILITY_FLOOR = 1e-10;
-/**
- * The most of a turn the flow is allowed to advance between two drawn
- * frames.
- *
- * Not a speed limit on the hole — the shadow, the beaming and the
- * shape of the flow do not depend on this clock at all, only the
- * clumping's motion does. It is a limit on what a sequence of frames
- * can carry. The turbulence is sampled on a ring some twenty-five
- * noise cells around, so a pattern moving more than half a cell
- * between frames is aliased, and past that showing it turn faster does
- * not show it turning faster: it shows a wagon wheel, and then, once
- * the count of turns is large enough to swallow the azimuth in a
- * float, nothing at all.
- *
- * The time control reaches ten years a second. At the galactic centre
- * that is eight million orbits of the inner edge every second, and at
- * a stellar hole it is far more; either one runs out of float inside a
- * second or two of watching, and what a viewer sees is the clumping
- * dissolving into an even glow and staying there. Held to a fiftieth
- * of a turn a frame, the inner edge turns about once a second however
- * hard time is driven, and the flow keeps its texture for as long as
- * anyone watches it.
- */
+/** Bound the displayed clock so high simulation speeds cannot request an
+ * unbounded catch-up workload or skip whole visible orbital structures.
+ * The thin disk integrates at 1/240 orbit and interpolates its material;
+ * the hot torus retains its own CFL-limited stepping. */
 const FLOW_TURNS_PER_FRAME = 0.02;
 
 const VERTEX = /* glsl */ `
@@ -99,7 +79,6 @@ uniform float uSkyOpacity;
 uniform float uOpacity;
 uniform vec2 uOutputSize;
 
-${SIMPLEX_NOISE_GLSL}
 ${KERR_GLSL}
 ${GEODESIC_GLSL}
 ${REGULAR_KERR_GLSL}
@@ -133,8 +112,9 @@ vec4 outerDisc(vec3 dir) {
   float r = sqrt(max(dot(hit.xy, hit.xy) - uSpin*uSpin, 0.0));
   if (r < LENSING_SOLID || r >= uOuterRg) return vec4(0.0);
   float phi = atan(hit.y, hit.x);
-  float density = flowDensity(r, phi, 0.0);
-  float tEmit = flowTemperature(r) * pow(density, 0.25);
+  vec2 disk = thinDiskState(r, phi);
+  float density = disk.x;
+  float tEmit = flowTemperature(r) * pow(disk.y, 0.25);
   vec2 radial = normalize(hit.xy);
   vec3 n = vec3(dot(-dir.xy, radial), dir.z, dot(-dir.xy, vec2(-radial.y, radial.x)));
   vec4 photon = kerrPhoton(r, 0.0, 1.0, uSpin, n);
@@ -187,6 +167,8 @@ void main() {
 export type BlackHoleSolver = 'regular' | 'fine' | 'reference';
 
 export interface TracedHole {
+  /** Independent material stream; generated holes supply their entity seed. */
+  flowSeed?: bigint;
   /** Dimensionless a★ = Jc/GM². */
   spin: number;
   /** GM/c², metres — the unit every length in the trace is quoted in. */
@@ -210,7 +192,7 @@ export interface TracedHole {
  */
 export class BlackHoleObject {
   readonly mesh: Mesh;
-  private readonly flowNoise: ReturnType<typeof acquireFlowNoise> | undefined;
+  private readonly thinField: ThinDiskField | null;
   private readonly captureTable: ReturnType<typeof createCaptureTable>;
   private readonly spectrum = createFlowSpectrum();
   private readonly hotSpectrum: ReturnType<typeof createHotFlowSpectrum> | null;
@@ -279,7 +261,8 @@ export class BlackHoleObject {
     // a fixed radiance reference and also fades continuously above it.
     const outerDrawn =
       flow.eddingtonRatio > FLOW_VISIBILITY_FLOOR ? drawnFlowRadiusRg(flow) : 0;
-    this.flowNoise = outerDrawn > 0 && !reference && flow.regime !== 'riaf' ? acquireFlowNoise(prepared?.noise) : undefined;
+    this.thinField = outerDrawn > 0 && flow.regime === 'thin-disc'
+      ? new ThinDiskField(flow,hole.spin,hole.flowSeed ?? hashString(JSON.stringify([hole.gravitationalRadiusM,hole.spin,flow.eddingtonRatio]))) : null;
     // Thin-disk exposure reference; the plasma branch does not use this.
     const peakRadius = Math.max(discPeakRadiusRg(flow.innerRadiusRg), innerRender);
     const refTempK = Math.max(flowTemperature(flow, peakRadius), 500);
@@ -330,12 +313,8 @@ export class BlackHoleObject {
         uOpticalDepth: { value: -Math.log(Math.max(1e-3, 1 - flow.opacity)) },
         uOpacityExp: { value: flow.opacityExponent },
         uRefLogVisible: { value: refLogVisible },
-        uTurbSigma: { value: flow.turbulenceSigma },
         uAspect: { value: flow.aspectRatio },
         uFlowPhase: { value: 0 },
-        uEddyPhase: { value: new Vector4() },
-        uEddyNewOffset: { value: new Vector3() },
-        uEddyOldOffset: { value: new Vector3() },
         uDiscGain: { value: DISC_EXPOSURE },
         uLut: { value: this.spectrum },
         uHotEmission: { value: this.hotSpectrum?.emission ?? null },
@@ -353,7 +332,7 @@ export class BlackHoleObject {
         uJetEnabled: { value: (this.outflowSpectrum?.data.jet.budgetW ?? 0)>0 ? 1 : 0 },
         uHotScatter: { value: (this.hotSpectrum?.data.model.shells[0].plasma.electronDensityCm3 ?? 0)
           * 6.6524587e-25 * hole.gravitationalRadiusM * 100 },
-        uFlowNoise: { value: this.flowNoise?.texture ?? null },
+        uThinState: { value: this.thinField?.texture ?? null },
       },
       blending: NormalBlending,
       transparent: true,
@@ -368,7 +347,7 @@ export class BlackHoleObject {
         'uSpin', 'uHorizonRg', 'uInnerRg', 'uIscoRg', 'uInnerRenderRg',
         'uOuterRg', 'uInnerTempK', 'uProfileExp', 'uEdgeTaper', 'uOpticalDepth',
         'uWindLaunch', 'uJetLaunch', 'uWindEnabled', 'uJetEnabled',
-        'uOpacityExp', 'uHotScatter', 'uRefLogVisible', 'uTurbSigma', 'uAspect', 'uDiscGain',
+        'uOpacityExp', 'uHotScatter', 'uRefLogVisible', 'uAspect', 'uDiscGain',
       ]) {
         const value = this.material.uniforms[name].value as number;
         this.material.fragmentShader = this.material.fragmentShader.replace(
@@ -465,9 +444,9 @@ export class BlackHoleObject {
     const advanced = Math.min(Math.max(asked, 0), FLOW_TURNS_PER_FRAME);
     this.flowTurns += advanced;
     this.hotField?.advance(advanced);
+    this.thinField?.advance(advanced);
     uniforms.uHotPower.value = this.hotField?.radiationScale ?? 1;
     uniforms.uFlowPhase.value = this.flowTurns;
-    if (this.flowNoise) updateFlowEddies(this.flowTurns, uniforms.uEddyPhase.value, uniforms.uEddyNewOffset.value, uniforms.uEddyOldOffset.value);
 
     // The camera's world matrix is only rebuilt when the scene renders,
     // which happens after this — so read straight off it and the trace
@@ -504,7 +483,7 @@ export class BlackHoleObject {
     (u.uCamRg.value as Vector3).toArray(this.nextState, 0);
     this.nextState.set((u.uViewToBh.value as Matrix3).elements, 3);
     (u.uTanHalfFov.value as Vector2).toArray(this.nextState, 12);
-    this.nextState[14] = u.uOuterRg.value > 0 ? u.uFlowPhase.value : 0;
+    this.nextState[14] = this.thinField ? this.thinField.version : u.uOuterRg.value > 0 ? u.uFlowPhase.value : 0;
     this.nextState[15] = u.uOpacity.value;
     this.nextState[16] = u.uSkyOpacity.value;
     this.nextState[17] = (u.uSkyCube.value as CubeTexture | null)?.userData.lensedSkyVersion ?? 0;
@@ -536,13 +515,22 @@ export class BlackHoleObject {
     this.material.dispose();
     this.composite.dispose();
     this.target.dispose();
-    this.flowNoise?.release();
+    this.thinField?.dispose();
     this.captureTable.texture.dispose();
     this.spectrum.dispose();
     this.hotSpectrum?.dispose();
     this.hotField?.dispose();
     this.hotAtlas?.dispose();
     this.outflowSpectrum?.dispose();
+  }
+
+  get diskStatus() {
+    const d=this.thinField?.dynamics;
+    if(!d)return null;
+    const ranges=Array.from({length:3},()=>[Infinity,-Infinity]);
+    d.state.forEach((value,i)=>{if(i%4<3){const range=ranges[i%4];range[0]=Math.min(range[0],value);range[1]=Math.max(range[1],value);}});
+    return {timeOrbits:d.time,version:d.version,initializationMs:d.initializationMs,
+      lastUpdateMs:this.thinField!.lastUpdateMs,lastSubsteps:d.lastSubsteps,textureBytes:d.state.byteLength,ranges};
   }
 
   /** Bounded diagnostic data; no renderer state is exposed to the UI. */

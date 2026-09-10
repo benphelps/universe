@@ -1,12 +1,10 @@
 import type { AccretionFlow } from '../../universe/galaxy/accretionFlow';
 import { buildHotFlowTables, buildHotResponseTables, type HotTables, type HotResponseTables } from './hotFlowSpectrum';
 import { buildOutflowTables, type OutflowTables } from './hotOutflowSpectrum';
-import { flowNoisePixels } from './flowNoise';
 
 export interface BlackHoleBuildProgress { fraction:number; stage:string }
 export interface BlackHoleTables {
   hot?:{data:HotTables;response:HotResponseTables;outflows?:OutflowTables};
-  noise?:Uint8Array;
 }
 /** CPU-only entry point. Production calls this inside a worker; texture and
  * shader objects are constructed on the main thread after data arrives. */
@@ -14,7 +12,7 @@ export function buildBlackHoleTables(flow:AccretionFlow,rgM:number,progress:(p:B
   if(flow.eddingtonRatio<=1e-10)return {};
   if(flow.regime!=='riaf') {
     progress({fraction:0,stage:'disk structure'});
-    return {noise:flowNoisePixels()};
+    return {};
   }
   progress({fraction:.01,stage:'plasma equilibrium'});
   const data=buildHotFlowTables(flow,rgM);

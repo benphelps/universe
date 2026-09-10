@@ -6,6 +6,8 @@ These pages describe the current implementation. Start with the model references
 | --- | --- |
 | [Architecture](ARCHITECTURE.md) | Layers, generation, rendering and resource ownership |
 | [Galaxies and stars](model/galaxies-and-stars.md) | Density, populations, evolution and optical light accounting |
+| [Black holes](model/black-holes.md) | Relativistic geometry, accretion, appearance, camera response and model limits |
+| [Hot-flow emission](model/hot-flow-emission.md) | Reduced plasma equations, transport, outflows and radiation accounting |
 | [Nebulae](model/nebulae.md) | Gas and photon budgets, dust, representations and limits |
 | [Worlds and surfaces](model/worlds-and-surfaces.md) | Systems, climate, atmosphere, terrain and seasonal appearance |
 | [Performance](PERFORMANCE.md) | Budgets, scheduling, representative measurements and profiling |

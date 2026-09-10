@@ -53,7 +53,7 @@ async function setup():Promise<boolean>{
   const mass=Number(params.get('mass') || 321000), spin=Number(params.get('spin') || .89);
   const feeding=Number(params.get('feeding') || (mode==='disc'?.1:1e-5));
   const options={windIndex:Number(params.get('windIndex')??.35),magneticFlux:Number(params.get('magneticFlux')??10)};
-  hole=new BlackHoleObject({spin,gravitationalRadiusM:gravitationalRadius(mass),spinAxis:[0,1,0],flow:accretionFlowFor(mass,spin,mode==='none'?1e-12:feeding,options)},new Float32Array([1,0,0,0,1,0,0,0,1]), select('solver') as BlackHoleSolver,plasmaSampling );
+  hole=new BlackHoleObject({flowSeed:BigInt(params.get('diskSeed') ?? '1'),spin,gravitationalRadiusM:gravitationalRadius(mass),spinAxis:[0,1,0],flow:accretionFlowFor(mass,spin,mode==='none'?1e-12:feeding,options)},new Float32Array([1,0,0,0,1,0,0,0,1]), select('solver') as BlackHoleSolver,plasmaSampling );
   hole.sky=sky.target;scene.add(hole.mesh);
   const active=hole;
   hole.prepare(object=>pipeline.prepareSceneObject(object,scene));
@@ -91,7 +91,7 @@ document.querySelector('#run')!.addEventListener('click',setup);
 document.querySelector('#pause')!.addEventListener('click',()=>{animate=!animate;document.querySelector('#pause')!.textContent=animate?'Pause':'Animate';setup();});
 function render(now:number){
   if(loading || frames<360 || animate){
-    const start=performance.now();if(animate&&!loading)time+=1/60;
+    const start=performance.now();if(animate&&!loading)time+=Number(params.get('timeScale')??1)/60;
     if(params.has('orbit')&&!loading) { camera.position.applyAxisAngle(orbitAxis,.004);camera.lookAt(origin); }
     pipeline.beginFrame();hole.update(camera,origin,identity,(document.querySelector('#lensing') as HTMLInputElement).checked?1:0,1,time);hole.render(pipeline.renderer);pipeline.render();
     if(!loading&&!comparing&&frames>=60&&frames<360){cpu.push(performance.now()-start);calls.push(pipeline.renderer.info.render.calls);if(last)intervals.push(now-last);if(pipeline.gpuFrameMs!==null)gpu.push(pipeline.gpuFrameMs);}
@@ -102,7 +102,7 @@ function render(now:number){
       document.querySelector('#results')!.textContent=`Preparing black hole ${Math.round(hole.generation.fraction*100)}% · ${hole.generation.stage} · ${loadingFrames} responsive frames`;
     }
     last=now;if(!loading&&!comparing)frames++;
-    if(frames===360)document.querySelector('#results')!.textContent=JSON.stringify({loading:{...loadingStats,maxMainThreadTaskMs:maxLoadingTaskMs},plasmaSampling,plasma:hole.plasmaStatus,sky:select('sky'),flow:select('flow'),view:select('view'),quality:'native',animate,resolution:`${width} × ${height}`,solver:select('solver'),orbit:params.has('orbit'),frames:cpu.length,medianDrawCalls:median(calls),medianGpuMs:median(gpu),medianSubmitMs:median(cpu),medianIntervalMs:median(intervals),p95IntervalMs:percentile(intervals,.95),p99IntervalMs:percentile(intervals,.99),p95GpuMs:percentile(gpu,.95),p99GpuMs:percentile(gpu,.99),maxGpuMs:Math.max(...gpu)},null,2);
+    if(frames===360)document.querySelector('#results')!.textContent=JSON.stringify({loading:{...loadingStats,maxMainThreadTaskMs:maxLoadingTaskMs},plasmaSampling,plasma:hole.plasmaStatus,disk:hole.diskStatus,sky:select('sky'),flow:select('flow'),view:select('view'),quality:'native',animate,resolution:`${width} × ${height}`,solver:select('solver'),orbit:params.has('orbit'),frames:cpu.length,medianDrawCalls:median(calls),medianGpuMs:median(gpu),medianSubmitMs:median(cpu),medianIntervalMs:median(intervals),p95IntervalMs:percentile(intervals,.95),p99IntervalMs:percentile(intervals,.99),p95GpuMs:percentile(gpu,.95),p99GpuMs:percentile(gpu,.99),maxGpuMs:Math.max(...gpu)},null,2);
   }
   requestAnimationFrame(render);
 }

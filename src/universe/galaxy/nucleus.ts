@@ -33,6 +33,7 @@ import { centralSpheroid, nuclearStarCluster, type NuclearStarCluster } from './
  */
 
 export interface GalacticNucleus {
+  flowSeed: bigint;
   massSolar: number;
   /** Dimensionless a★ = Jc/GM²; positive is prograde with the disc. */
   spin: number;
@@ -107,6 +108,7 @@ export function galacticNucleus(): GalacticNucleus {
   const magneticFlux = 3 * (35 / 3) ** fluxRng.float();
 
   memo = {
+    flowSeed: deriveSeed(galaxyRoot(0x53474141n), 'nucleus-disk'),
     massSolar,
     spin,
     gravitationalRadiusM,

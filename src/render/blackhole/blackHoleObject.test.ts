@@ -51,3 +51,14 @@ it('waits for sibling shader preparation before reporting a compile failure',asy
   await Promise.resolve();await Promise.resolve();expect(settled).toBe(false);
   release();expect((await done).message).toBe('shader');f.dispose();
 });
+it('uses the evolving thin disk at native resolution and reuses a paused image',()=>{
+  const f=fixture(.1);
+  expect(f.hole.diskStatus?.textureBytes).toBe(131072);
+  expect(f.hole.plasmaStatus).toBeNull();
+  f.draw();expect(f.renderer.render).toHaveBeenCalledTimes(1);
+  f.draw();expect(f.renderer.render).toHaveBeenCalledTimes(1);
+  f.draw(1);expect(f.renderer.render).toHaveBeenCalledTimes(2);
+  expect(f.hole.diskStatus!.timeOrbits).toBeGreaterThan(0);
+  f.draw(1);expect(f.renderer.render).toHaveBeenCalledTimes(2);
+  f.dispose();
+});
