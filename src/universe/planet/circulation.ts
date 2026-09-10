@@ -1,3 +1,5 @@
+import { deriveGiantAtmosphere, type GiantAtmosphereState, type GiantCloudPalette } from './giantAtmosphere';
+import { advectedStormLongitude } from './giantWeather';
 import { EARTH_RADIUS } from '../../core/physics/constants';
 import { seedFromHex } from '../../core/rng/hash';
 import { Rng } from '../../core/rng/rng';
@@ -37,6 +39,9 @@ export interface StormSlot {
 }
 
 export interface ActiveStorm {
+  /** Stable incarnation identity, independent of the packed live-list index. */
+  textureSeed: number;
+  opacity: number;
   kind: 'oval' | 'spot' | 'eruption';
   latRad: number;
   lonRad: number;
@@ -71,6 +76,7 @@ export interface PolarRegime {
 }
 
 export interface Circulation {
+  atmosphere: GiantAtmosphereState;
   regime: 'banded' | 'locked';
   /** Zonal-mean wind sampled pole to pole, m/s prograde. */
   uProfileMs: Float32Array;
@@ -119,6 +125,8 @@ export function deriveCirculation(
 ): Circulation {
   const rng = new Rng(seedFromHex(physical.seedHex)).fork('circulation');
   const { rotation, interior, climate, bulk } = physical;
+  const atmosphere = physical.appearance.banding?.atmosphere
+    ?? deriveGiantAtmosphere(climate, interior, physical.atmosphere, bulk, rotation);
 
   const radiusM = bulk.radiusEarth * EARTH_RADIUS;
   const omega = (2 * Math.PI) / (Math.max(rotation.periodHours, 1) * 3600);
@@ -130,14 +138,14 @@ export function deriveCirculation(
   // Cold quiet interiors wash the deck out; vigorous ones sharpen it.
   const contrast = Math.min(1, 0.15 + 0.85 * Math.min(1, convectiveMs / 18));
 
-  const uProfileMs = spinUpJets(rng.fork('spin-up'), radiusM, omega, convectiveMs, climate);
-  const palette = chemistryPalette(rng.fork('chromophores'), climate.equilibriumK);
+  const uProfileMs = spinUpJets(rng.fork('spin-up'), radiusM, omega, convectiveMs, atmosphere.temperatureK);
+  const palette = chemistryPalette(rng.fork('chromophores'), atmosphere.palette);
   const { bands, rawCount } = extractBands(rng.fork('bands'), uProfileMs, radiusM, palette, contrast);
   const { storms, spotIndex } = buildStormCatalog(
     rng.fork('storms'),
     bands,
     convectiveMs,
-    climate.equilibriumK,
+    atmosphere.temperatureK,
     orbitalPeriodDays,
   );
 
@@ -158,7 +166,8 @@ export function deriveCirculation(
     field > 0.5 ? Math.min(1, (field / 8) ** 0.6) * rng.range(0.5, 1) : 0;
 
   return {
-    regime: rotation.locked ? 'locked' : 'banded',
+    atmosphere,
+    regime: rotation.locked && rotation.lockTarget !== 'planet' ? 'locked' : 'banded',
     uProfileMs,
     bands,
     storms,
@@ -171,8 +180,8 @@ export function deriveCirculation(
     auroraStrength,
     auroraTiltRad: rng.range(0.05, 0.22),
     auroraAzimuthRad: rng.range(0, 2 * Math.PI),
-    thermalGlowK: climate.equilibriumK > 700 ? climate.equilibriumK : 0,
-    hotspotOffsetRad: rotation.locked ? rng.range(0.15, 0.7) : 0,
+    thermalGlowK: atmosphere.temperatureK > 700 ? atmosphere.temperatureK : 0,
+    hotspotOffsetRad: atmosphere.hotspotOffsetRad,
     // Turbulent decorrelation: vigorous decks reshuffle in days.
     churnPerDay: 0.05 + 0.35 * Math.min(1, convectiveMs / 20),
   };
@@ -199,7 +208,7 @@ function spinUpJets(
   radiusM: number,
   omega: number,
   convectiveMs: number,
-  climate: Characterization['climate'],
+  temperatureK: number,
 ): Float32Array {
   const q = new Float64Array(LAT_SAMPLES);
   const area = new Float64Array(LAT_SAMPLES);
@@ -270,7 +279,7 @@ function spinUpJets(
   // envelopes, retrograde on cold methane worlds — the solar system's
   // own split.
   const equatorialMs =
-    (climate.equilibriumK < 90 ? -1 : 1) * (15 + 4.5 * convectiveMs) * rng.range(0.7, 1.3);
+    (temperatureK < 90 ? -1 : 1) * (15 + 4.5 * convectiveMs) * rng.range(0.7, 1.3);
   const eqWidth = rng.range(0.16, 0.28);
   for (let i = 0; i < LAT_SAMPLES; i++) {
     const lat = profileLatRad(i);
@@ -432,55 +441,11 @@ function derivePolarRegime(
   };
 }
 
-interface Palette {
-  zone: Rgb;
-  belt: Rgb;
-  stormFresh: Rgb;
-  stormAged: Rgb;
-  hood: Rgb;
-}
+type Palette = GiantCloudPalette;
 
-/** Cloud chemistry sets the family; a per-planet chromophore draw sets
- *  the identity — the disclosed aesthetic degree of freedom. */
-function chemistryPalette(rng: Rng, equilibriumK: number): Palette {
-  let base: Palette;
-  if (equilibriumK > 900) {
-    // Alkali-darkened decks, thermally lit from below.
-    base = {
-      zone: [0.14, 0.11, 0.09],
-      belt: [0.24, 0.16, 0.11],
-      stormFresh: [0.36, 0.28, 0.2],
-      stormAged: [0.3, 0.19, 0.12],
-      hood: [0.1, 0.08, 0.07],
-    };
-  } else if (equilibriumK < 90) {
-    // Methane absorption strips the red.
-    base = {
-      zone: [0.4, 0.63, 0.76],
-      belt: [0.3, 0.53, 0.7],
-      stormFresh: [0.88, 0.92, 0.96],
-      stormAged: [0.16, 0.28, 0.45],
-      hood: [0.34, 0.55, 0.68],
-    };
-  } else if (equilibriumK < 250) {
-    // Ammonia decks with tholin-stained belts.
-    base = {
-      zone: [0.8, 0.73, 0.6],
-      belt: [0.52, 0.38, 0.25],
-      stormFresh: [0.92, 0.9, 0.85],
-      stormAged: [0.75, 0.4, 0.26],
-      hood: [0.55, 0.5, 0.42],
-    };
-  } else {
-    // Water-cloud regime: bright low-contrast decks.
-    base = {
-      zone: [0.75, 0.78, 0.83],
-      belt: [0.56, 0.61, 0.68],
-      stormFresh: [0.92, 0.92, 0.94],
-      stormAged: [0.72, 0.66, 0.6],
-      hood: [0.6, 0.64, 0.7],
-    };
-  }
+/** Chemistry is shared with characterization. Chromophore tint is the
+ * explicitly seeded aesthetic variation within that physical family. */
+function chemistryPalette(rng: Rng, base: Palette): Palette {
   const warm = rng.range(-0.06, 0.09);
   const lightness = rng.range(0.85, 1.12);
   const tint = ([r, g, b]: Rgb): Rgb => [
@@ -701,7 +666,7 @@ function hash01(x: number): number {
 export function activeStorms(circulation: Circulation, tDays: number): ActiveStorm[] {
   const out: ActiveStorm[] = [];
   for (const slot of circulation.storms) {
-    const local = tDays - slot.phaseDays + slot.periodDays * 4096;
+    const local = tDays - slot.phaseDays;
     const cycle = Math.floor(local / slot.periodDays);
     const ageDays = local - cycle * slot.periodDays;
     if (ageDays > slot.lifeDays) continue;
@@ -712,7 +677,9 @@ export function activeStorms(circulation: Circulation, tDays: number): ActiveSto
     const span = band.latEndRad - band.latStartRad;
     const lat =
       band.latStartRad + span * (0.3 + 0.4 * h1) + Math.sin(tDays * 0.011) * slot.wobbleRad;
-    const lon = h2 * 2 * Math.PI + slot.driftRadPerDay * tDays;
+    const lon = advectedStormLongitude(h2 * 2 * Math.PI, slot.driftRadPerDay, ageDays);
+    const textureSeed = hash01(slot.seed + cycle * 7919 + 2) * 64;
+    const opacity = smooth01(ageDays / (slot.lifeDays * .06)) * (1 - smooth01((ageDays / slot.lifeDays - .85) / .15));
     const age01 = Math.min(1, ageDays / Math.max(slot.lifeDays, 1));
 
     if (slot.kind === 'spot') {
@@ -724,17 +691,17 @@ export function activeStorms(circulation: Circulation, tDays: number): ActiveSto
       const size = slot.sizeRad * grow * shrink;
       if (size < 0.012) continue;
       const redden = Math.min(1, age01 * 8) * (1 - 0.7 * smooth01((age01 - 0.85) / 0.15));
-      out.push({ kind: 'spot', latRad: lat, lonRad: lon, sizeRad: size, age01: redden });
+      out.push({ textureSeed, opacity, kind: 'spot', latRad: lat, lonRad: lon, sizeRad: size, age01: redden });
     } else if (slot.kind === 'eruption') {
       // A fresh white head that spreads down its band until the jet
       // has smeared it planet-wide, then dissipates.
-      out.push({ kind: 'eruption', latRad: lat, lonRad: lon, sizeRad: slot.sizeRad, age01 });
+      out.push({ textureSeed, opacity, kind: 'eruption', latRad: lat, lonRad: lon, sizeRad: slot.sizeRad, age01 });
     } else {
       // Grow fast, fade slow.
       const envelope = Math.min(1, ageDays / (slot.lifeDays * 0.15)) * (1 - age01 ** 3);
       if (envelope <= 0.02) continue;
       out.push({
-        kind: 'oval',
+        textureSeed, opacity, kind: 'oval',
         latRad: lat,
         lonRad: lon,
         sizeRad: slot.sizeRad * (0.55 + 0.45 * envelope),

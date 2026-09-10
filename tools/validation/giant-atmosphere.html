@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giant atmosphere validation</title>
+<style>body{background:#101319;color:#e2e8f0;font:14px system-ui;margin:24px}button,select,input{padding:8px;margin:4px}canvas{max-width:100%;height:auto}pre{white-space:pre-wrap}.gallery{display:flex;gap:12px;flex-wrap:wrap}.gallery img{width:300px;height:225px}.gallery p{font-size:12px}h1{font-size:22px}</style>
+<h1>Giant atmosphere validation</h1>
+<p>Production cloud shaders, HDR render pipeline, bloom and ACES output. Equal white illumination isolates the atmosphere.</p>
+<div><button id="run">Run GPU checks</button><button id="prepare">Prepare focus shaders</button><button id="measure">Measure rendering</button><select id="body" aria-label="Giant"></select><select id="view" aria-label="View"><option>Equator</option><option>Pole</option><option>Terminator</option><option>Close</option><option>Thermal</option></select><label>Time (days) <input id="time" type="number" value="100" step="0.01"></label><button id="draw">Render view</button><button id="layers">Toggle upper clouds</button></div>
+<div id="viewport"></div><pre id="summary"></pre><div class="gallery" id="gallery"></div><pre id="results">Ready</pre>
+<script type="module" src="./giant-atmosphere.ts"></script></html>

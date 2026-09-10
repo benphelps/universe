@@ -5,6 +5,7 @@ import {
   ShaderMaterial,
   SphereGeometry,
   Vector4,
+  Vector3,
 } from 'three';
 import type { Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
@@ -38,7 +39,7 @@ varying vec3 vWorldPos;
 
 uniform vec3 uLightDir;
 uniform vec3 uSeedOffset;
-uniform float uTimeDays;
+uniform vec3 uAuroraChurn;
 uniform vec4 uAurora;                   // strength, tiltRad, azimuthRad, ovalColat
 uniform float uLayerFade;
 
@@ -61,15 +62,15 @@ void main() {
   float glow = 0.2 * exp(-pow((mColat - uAurora.w) / 0.068, 2.0));
   float rays = 0.4
     + 0.6 * pow(0.5 + 0.5 * snoise(vec3(cos(mLon), sin(mLon), mColat * 4.0) * 11.0
-        + uSeedOffset + vec3(0.0, 0.0, uTimeDays * 1.7)), 2.0);
+        + uSeedOffset + uAuroraChurn), 2.0);
   rays *= 0.55 + 0.45 * snoise(vec3(cos(mLon), sin(mLon), 2.6) * 33.0
-    - uSeedOffset.yzx + vec3(uTimeDays * 2.3, 0.0, 0.0));
+    - uSeedOffset.yzx + uAuroraChurn.yzx * 1.35);
   float footprint = length(fwidth(p));
   float microGate = 1.0 - smoothstep(0.00015, 0.0012, footprint);
   if (microGate > 0.01) {
     rays *= 1.0 + 0.5 * microGate
       * snoise(vec3(cos(mLon), sin(mLon), mColat * 9.0) * 90.0 + uSeedOffset.zxy
-          + vec3(0.0, uTimeDays * 3.1, 0.0));
+          + uAuroraChurn.zxy * 1.82);
   }
   vec3 normal = normalize(vWorldNormal);
   float ndotl = dot(normal, uLightDir);
@@ -118,7 +119,7 @@ export function createAuroraShells(
         ...airViewUniforms(),
         uLightDir: { value: [0, 0, 1] },
         uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
-        uTimeDays: { value: 0 },
+        uAuroraChurn: { value: new Vector3() },
         uAurora: {
           value: new Vector4(
             circulation.auroraStrength,

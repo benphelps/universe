@@ -63,6 +63,7 @@ export function characterizePlanet(
     rawEquilibriumK,
     rotation.periodHours,
     ironCoreFraction,
+    star.ageGyr,
   );
   let interior = computeInterior(
     rng.fork('interior'),

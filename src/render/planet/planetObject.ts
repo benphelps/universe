@@ -1,6 +1,10 @@
+import { updateGiantWeather } from './giantWeather';
+import { giantChurnOffset } from '../../universe/planet/giantWeather';
 import { deckSizeForView, deckWindowDays } from './deckQuality';
 import {
   Group,
+  Matrix3,
+  Matrix4,
   Mesh,
   Quaternion,
   ShaderMaterial,
@@ -209,6 +213,7 @@ export class PlanetObject {
       if (uniforms.uLightColor) uniforms.uLightColor.value.setRGB(...lightColor);
       if (uniforms.uSurfaceExposure) uniforms.uSurfaceExposure.value = view?.exposure ?? 1;
       if (uniforms.uTimeDays) uniforms.uTimeDays.value = foldShaderTime(simTimeDays);
+      if (uniforms.uAuroraChurn) uniforms.uAuroraChurn.value.set(...giantChurnOffset(simTimeDays, 1.7));
       applySecondSun(material, second);
     }
     if (this.circulation) this.updateAtmosphere(simTimeDays, lightDirWorld, renderer, view);
@@ -271,6 +276,14 @@ export class PlanetObject {
       .applyQuaternion(new Quaternion().setFromAxisAngle(UP, circulation.hotspotOffsetRad))
       .normalize();
     (uniforms.uHotspotDirObj.value as Vector3).copy(hotspot);
+    (uniforms.uWorldToBody.value as Matrix3).setFromMatrix4(this.body.matrixWorld).invert();
+    updateGiantWeather(uniforms, circulation, simTimeDays);
+    // Locked cloud geography is baked in a canonical stellar frame. Rotate the
+    // lookup each frame, so cached endpoints do not retain an old sun direction.
+    if (circulation.regime === 'locked') {
+      const frame = new Quaternion().setFromUnitVectors(lightObj, new Vector3(0, 0, 1));
+      (uniforms.uDeckFrame.value as Matrix3).setFromMatrix4(new Matrix4().makeRotationFromQuaternion(frame));
+    }
 
     if (!renderer || !this.baker || this.preparing) return;
     const rate = view?.daysPerSecond ?? 0;
@@ -288,29 +301,25 @@ export class PlanetObject {
     // Stretch the crossfade window to a bounded real-time cadence when
     // fast-forward outruns the physical cloud evolution interval.
     const interval = deckWindowDays(this.bakeIntervalDays, rate, this.bakeStagger);
-    if (!this.baked || simTimeDays < this.bakedTA - interval) {
-      // First frame, or time ran backwards past the window: bake both.
-      this.bakedTA = simTimeDays;
-      this.bakedTB = simTimeDays + interval;
-      this.baker.bake(renderer, this.deckA, this.bakedTA, lightObj);
-      this.baker.bake(renderer, this.deckB, this.bakedTB, lightObj);
-      this.baked = true;
-    } else if (simTimeDays >= this.bakedTB) {
-      if (simTimeDays >= this.bakedTB + interval) {
-        // Time leapt past the window: restart around the present.
-        this.bakedTA = simTimeDays;
-        this.bakedTB = simTimeDays + interval;
-        this.baker.bake(renderer, this.deckA, this.bakedTA, lightObj);
-        this.baker.bake(renderer, this.deckB, this.bakedTB, lightObj);
+    const start = Math.floor(simTimeDays / interval) * interval;
+    const end = start + interval;
+    const bakeLight = circulation.regime === 'locked' ? new Vector3(0, 0, 1) : lightObj;
+    // Canonical intervals make fresh loads, forward play and reverse play agree.
+    // Reuse a shared endpoint in either direction; a seek bakes both endpoints.
+    if (!this.baked || start !== this.bakedTA || end !== this.bakedTB) {
+      if (this.baked && Math.abs(start - this.bakedTB) < interval * 1e-8) {
+        [this.deckA, this.deckB] = [this.deckB, this.deckA];
+        this.baker.bake(renderer, this.deckB, end, bakeLight);
+      } else if (this.baked && Math.abs(end - this.bakedTA) < interval * 1e-8) {
+        [this.deckA, this.deckB] = [this.deckB, this.deckA];
+        this.baker.bake(renderer, this.deckA, start, bakeLight);
       } else {
-        // Roll: the future bake becomes the present, bake a new future.
-        const swap = this.deckA;
-        this.deckA = this.deckB;
-        this.deckB = swap;
-        this.bakedTA = this.bakedTB;
-        this.bakedTB = this.bakedTA + interval;
-        this.baker.bake(renderer, this.deckB, this.bakedTB, lightObj);
+        this.baker.bake(renderer, this.deckA, start, bakeLight);
+        this.baker.bake(renderer, this.deckB, end, bakeLight);
       }
+      this.bakedTA = start;
+      this.bakedTB = end;
+      this.baked = true;
     }
     uniforms.uDeckA.value = this.deckA.texture;
     uniforms.uDeckB.value = this.deckB.texture;

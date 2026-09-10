@@ -1,3 +1,4 @@
+import { giantContraction } from './giantEvolution';
 import { EARTH_MASS, EARTH_RADIUS, G } from '../../core/physics/constants';
 import type { Rng } from '../../core/rng/rng';
 import type { PlanetClass } from '../system/types';
@@ -16,11 +17,16 @@ export function computeBulk(
   equilibriumK: number,
   rotationPeriodHours: number,
   ironCoreFraction: number,
+  ageGyr = 4.6,
 ): PlanetBulk {
   let radiusEarth: number;
   switch (planetClass) {
     case 'gas-giant': {
-      radiusEarth = massEarth >= 150 ? 11.2 * (massEarth / 318) ** 0.06 : 11.2 * (massEarth / 318) ** 0.13;
+      // Join the low-mass envelope and degenerate branches smoothly. The
+      // previous exponent switch jumped by 5.4% at 150 Earth masses.
+      const transition = Math.max(0, Math.min(1, (massEarth - 100) / 120));
+      const weight = transition * transition * (3 - 2 * transition);
+      radiusEarth = 11.2 * (massEarth / 318) ** (.13 + (.06 - .13) * weight);
       if (equilibriumK > 1000) {
         radiusEarth *= Math.min(1.4, 1 + 0.4 * ((equilibriumK - 1000) / 1000));
       }
@@ -40,6 +46,10 @@ export function computeBulk(
       const ironFactor = 1 - 0.35 * (ironCoreFraction - 0.33);
       radiusEarth = massEarth ** 0.27 * ironFactor * rng.range(0.97, 1.03);
     }
+  }
+
+  if (planetClass === 'gas-giant' || planetClass === 'ice-giant') {
+    radiusEarth *= giantContraction(ageGyr);
   }
 
   const massKg = massEarth * EARTH_MASS;

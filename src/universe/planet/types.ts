@@ -1,3 +1,4 @@
+import type { GiantAtmosphereState } from './giantAtmosphere';
 import type { SurfaceTemperatureField } from './surfaceClimate';
 import type { PlanetForcing } from './illumination';
 import type { WaterReservoir } from './waterInventory';
@@ -15,6 +16,8 @@ export interface PlanetBulk {
 export type GeologicalRegime = 'dead' | 'stagnant-lid' | 'active-tectonics' | 'volcanic' | 'magma' | 'gas';
 
 export interface PlanetInterior {
+  /** Fraction of the reference cooling luminosity escaping the envelope. */
+  coolingEfficiency?: number;
   ironCoreFraction: number;
   /** Total internal heat flux at the surface, W/m² (Earth ≈ 0.09). */
   heatFluxWm2: number;
@@ -102,6 +105,8 @@ export interface PlanetClimate {
 }
 
 export interface GiantBanding {
+  /** Shared cloud column and thermal state; absent in legacy fixtures. */
+  atmosphere?: GiantAtmosphereState;
   bandCount: number;
   /** Zone (light) / belt (dark) / storm accent colors, linear sRGB. */
   zoneColor: [number, number, number];

@@ -1,3 +1,4 @@
+import { giantCoolingFlux } from './giantEvolution';
 import type { Rng } from '../../core/rng/rng';
 import type { PlanetClass } from '../system/types';
 import type { GeologicalRegime, PlanetBulk, PlanetInterior, PlanetRotation } from './types';
@@ -35,13 +36,20 @@ export function computeInterior(
     30,
     (1e-5 * eccentricity ** 2 * bulk.radiusEarth ** 3) / aAu ** 6 / areaRel,
   );
-  const primordial = gas ? 0.3 * bulk.massEarth ** 0.5 : 0;
+  // Layered ice-rich envelopes can suppress the escaping cooling flux.
+  // Sample in its own stream so adding the model does not reshuffle dynamos.
+  const coolingRng = rng.fork('cooling');
+  const coolingEfficiency = planetClass === 'gas-giant' ? coolingRng.range(.85, 1.15)
+    : 10 ** coolingRng.range(-1, .05);
+  const primordial = gas ? giantCoolingFlux(planetClass, bulk.massEarth, bulk.radiusEarth,
+    ageGyr, coolingEfficiency) : 0;
   const heatFluxWm2 = radiogenic + tidal + primordial + extraHeatFluxWm2;
 
   const regime = geologicalRegime(rng, planetClass, bulk, heatFluxWm2);
 
   return {
     ironCoreFraction,
+    ...(gas ? { coolingEfficiency } : {}),
     heatFluxWm2,
     regime,
     magneticFieldRelEarth: magneticField(rng, planetClass, bulk, rotation, heatFluxWm2, ironCoreFraction),
@@ -71,9 +79,11 @@ function magneticField(
   ironCoreFraction: number,
 ): number {
   const spinFactor = Math.sqrt(24 / Math.max(rotation.periodHours, 1));
-  if (planetClass === 'gas-giant') return rng.range(8, 20) * spinFactor;
+  if (planetClass === 'gas-giant') return rng.range(8, 20) * spinFactor
+    * Math.min(4, Math.cbrt(Math.max(heatFluxWm2, 0) / 5.4));
   if (planetClass === 'ice-giant' || planetClass === 'mini-neptune') {
-    return rng.range(0.3, 1.5) * spinFactor;
+    return rng.range(0.3, 1.5) * spinFactor
+      * Math.min(4, Math.cbrt(Math.max(heatFluxWm2, 0) / .43));
   }
   // Rocky dynamo: dies with the heat flux that drives core convection.
   const convection = Math.max(0, heatFluxWm2 - 0.03) * bulk.massEarth;

@@ -1,4 +1,7 @@
-import { Color, ShaderMaterial, Vector3 } from 'three';
+import { GIANT_CLOUD_TRANSPORT_GLSL } from './giantCloudTransport';
+import { giantThermalLookup, GIANT_THERMAL_SAMPLES } from './giantThermal';
+import { GIANT_WEATHER_GLSL, giantWeatherUniforms } from './giantWeather';
+import { Color, Matrix3, ShaderMaterial, Vector3 } from 'three';
 import { blackbodySurfaceEmission } from '../lighting/thermalEmission';
 import { type Circulation } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
@@ -46,9 +49,7 @@ uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 ${SECOND_SUN_GLSL}
 uniform vec3 uSeedOffset;
-uniform float uTimeDays;
 uniform float uContrast;
-uniform float uChurnPerDay;
 uniform vec2 uPolarCaps;                // north/south cap boundary latitude
 uniform float uCloudReliefKm;
 uniform float uRegime;                  // 0 banded, 1 locked
@@ -56,11 +57,53 @@ uniform vec3 uHotspotDirObj;
 uniform vec3 uThermalColor;
 uniform float uThermalStrength;
 uniform float uSurfaceExposure;
+uniform sampler2D uThermalProfile;
+uniform bool uHasThermalProfile;
+uniform mat3 uWorldToBody;
+uniform mat3 uDeckFrame;
+uniform vec3 uUpperCloud; // altitude/radius, optical depth, characteristic frequency
+uniform vec3 uUpperColor;
 
 ${SIMPLEX_NOISE_GLSL}
+${GIANT_WEATHER_GLSL}
 ${SHADOW_GLSL}
 ${SURFACE_LIGHT_GLSL}
 ${AIR_VIEW_GLSL}
+${GIANT_CLOUD_TRANSPORT_GLSL}
+
+// Intersection with a thin upper condensate sheet in the body's unit sphere.
+// The two radii inherit the same oblate transform. This gives view parallax
+// and displaced cloud shadows without another geometry or cubemap allocation.
+vec3 upperCloudPoint(vec3 p, vec3 direction) {
+  float mu = dot(p, direction);
+  float h = uUpperCloud.x;
+  float distance = -mu + sqrt(max(0.0, mu * mu + h * (2.0 + h)));
+  return normalize(p + direction * distance);
+}
+float cloudDetail(vec3 p, float frequency, float windScale) {
+  float detail;
+  if (uRegime > 0.5) {
+    p = uDeckFrame * p;
+    float c = cos(uLockedPhase), s = sin(uLockedPhase);
+    vec3 q = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
+    detail = snoise(q * frequency + uSeedOffset + uChurnOffset);
+  } else {
+    detail = weatherDetail(p, uSeedOffset, frequency, windScale);
+  }
+  return detail;
+}
+float upperCloudDepth(vec3 p) {
+  // Condensate occupies patches with clear windows between them. Mapping all
+  // signed noise to opacity put a bright cellular veil over every belt/zone.
+  float footprint = length(fwidth(p)) * uUpperCloud.z;
+  float gate = 1.0 - smoothstep(0.25, 0.8, footprint);
+  float broad = cloudDetail(p, uUpperCloud.z * 0.25, 1.08);
+  float detail = cloudDetail(p, uUpperCloud.z, 1.08);
+  float coverage = smoothstep(0.05, 0.55, 0.65 * broad + 0.35 * detail);
+  // Unresolved patches approach their mean coverage, not 50% coverage from
+  // feeding zero into a symmetric noise-to-opacity threshold.
+  return uUpperCloud.y * mix(0.12, coverage, gate);
+}
 
 void main() {
   vec3 p = normalize(vObjPos);
@@ -68,7 +111,8 @@ void main() {
   // the whole sphere (no pole singularity), hardware-antialiased at
   // every distance. Two bakes at nearby sim times crossfade, so the
   // weather moves between them.
-  vec4 deck = mix(textureCube(uDeckA, p), textureCube(uDeckB, p), uDeckMix);
+  vec3 deckPoint = uDeckFrame * p;
+  vec4 deck = mix(textureCube(uDeckA, deckPoint), textureCube(uDeckB, deckPoint), uDeckMix);
   vec3 surface = deck.rgb;
   float cloudH = deck.a / ${HEIGHT_SCALE.toFixed(2)};
 
@@ -80,8 +124,7 @@ void main() {
     float lat = asin(clamp(p.y, -1.0, 1.0));
     float capEdge = p.y >= 0.0 ? uPolarCaps.x : uPolarCaps.y;
     float zonalMicro = 1.0 - smoothstep(capEdge - 0.18, capEdge + 0.04, abs(lat));
-    float micro = fbm(vec3(p.x, p.y * 2.5, p.z) * 30.0 + uSeedOffset
-      + vec3(0.0, 0.0, uTimeDays * uChurnPerDay));
+    float micro = cloudDetail(p, 120.0, 1.0);
     // Small-scale albedo structure exists at every latitude. Only its
     // vertical relief fades into the shallow polar deck; fading the color
     // octave created a visibly low-resolution annulus around each cap.
@@ -116,15 +159,42 @@ void main() {
   // through the same column: the limb darkens as the slant lengthens,
   // and the column's own scattering veils the limb blue and rims the
   // lit edge — what the painted haze and rim once stood in for.
-  vec3 light = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow, diffuseShadow(shadow));
-  if (lit2) {
-    light += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, diffuseShadow(shadow2));
-  }
-  // Effective radiating temperature is a blackbody photosphere proxy,
-  // not a solved cloud-level temperature. No invented night-side boost.
-  vec3 color = surface * light + (vec3(1.0) - surface)
-    * uThermalColor * uThermalStrength * uSurfaceExposure;
+  vec3 light1 = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow, diffuseShadow(shadow));
+  vec3 light2 = lit2 ? surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, diffuseShadow(shadow2)) : vec3(0.0);
   float xv = airmass(dot(normal, viewDir));
+  vec3 reflected = surface * (light1 + light2);
+  float upperTransmission = 1.0;
+  if (uUpperCloud.y > 0.0) {
+    vec3 viewObj = normalize(uWorldToBody * viewDir);
+    vec3 sunObj = normalize(uWorldToBody * uLightDir);
+    float viewDepth = upperCloudDepth(upperCloudPoint(p, viewObj));
+    float sunDepth = upperCloudDepth(upperCloudPoint(p, sunObj));
+    float localDepth = upperCloudDepth(p);
+    upperTransmission = exp(-viewDepth * upperCloudAirmass(dot(p, viewObj), uUpperCloud.x));
+    vec3 upperLight = surfaceLight(uOpticalDepth, uLightDir, uLightColor, normal, normal, shadow, diffuseShadow(shadow));
+    vec3 direct1 = surfaceLight(uOpticalDepth, uLightDir, uLightColor, bumped, normal, shadow, 0.0);
+    vec3 lowerLight = lightThroughUpperCloud(light1, direct1, sunDepth,
+      upperCloudAirmass(dot(p, sunObj), uUpperCloud.x), localDepth);
+    if (lit2) {
+      vec3 sunObj2 = normalize(uWorldToBody * uLight2Dir);
+      float sunDepth2 = upperCloudDepth(upperCloudPoint(p, sunObj2));
+      vec3 direct2 = surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, bumped, normal, shadow2, 0.0);
+      lowerLight += lightThroughUpperCloud(light2, direct2, sunDepth2,
+        upperCloudAirmass(dot(p, sunObj2), uUpperCloud.x), localDepth);
+      upperLight += surfaceLight(uOpticalDepth, uLight2Dir, uLight2Color, normal, normal, shadow2, diffuseShadow(shadow2));
+    }
+    reflected = surface * lowerLight * upperTransmission
+      + uUpperColor * upperLight * (1.0 - upperTransmission);
+  }
+  vec3 thermal = uThermalColor * uThermalStrength;
+  if (uHasThermalProfile) {
+    float x = clamp(dot(p, uHotspotDirObj) * 0.5 + 0.5, 0.0, 1.0);
+    float texelX = (0.5 + x * ${GIANT_THERMAL_SAMPLES - 1}.0) / ${GIANT_THERMAL_SAMPLES}.0;
+    thermal *= texture2D(uThermalProfile, vec2(texelX, 0.5)).rgb;
+  }
+  // The thermal field is the effective photosphere, already including clouds;
+  // do not absorb it again in the visible condensate sheet above the deep deck.
+  vec3 color = reflected + thermal * uSurfaceExposure;
   color = color * airColumnThrough(vec3(0.0), uOpticalDepth, xv)
     + uLightColor * airColumnScatter(vec3(0.0), uOpticalDepth, xv, airmass(ndotl), -dot(viewDir, uLightDir))
       * twilight(ndotl) * shadow;
@@ -147,7 +217,9 @@ export function createGiantMaterial(
   const emission = blackbodySurfaceEmission(physical.climate.surfaceMeanK);
   const radiusKm = physical.bulk.radiusEarth * 6371;
   const { atmosphere, bulk } = physical;
-  return new ShaderMaterial({
+  const thermalProfile = circulation.atmosphere.temperatureDipole4 > 0
+    ? giantThermalLookup(circulation.atmosphere) : null;
+  const material = new ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     uniforms: {
@@ -166,22 +238,30 @@ export function createGiantMaterial(
       uLightColor: { value: new Color(1, 1, 1) },
       ...secondSunUniforms(),
       uSeedOffset: { value: planetSeedOffset(physical.seedHex) },
-      uTimeDays: { value: 0 },
+      ...giantWeatherUniforms(circulation),
       uContrast: { value: circulation.contrast },
-      uChurnPerDay: { value: circulation.churnPerDay },
       uPolarCaps: {
         value: [circulation.polar.north.capStartRad, circulation.polar.south.capStartRad],
       },
-      uCloudReliefKm: { value: physical.bulk.radiusEarth * 6371 * 0.008 },
+      uCloudReliefKm: { value: circulation.atmosphere.reliefKm },
+      uWorldToBody: { value: new Matrix3() },
+      uDeckFrame: { value: new Matrix3() },
+      uUpperCloud: { value: new Vector3(circulation.atmosphere.upperAltitudeKm / radiusKm,
+        physical.appearance.banding ? circulation.atmosphere.upperOpticalDepth : 0, 22) },
+      uUpperColor: { value: new Color(...circulation.atmosphere.palette.stormFresh) },
+      uThermalProfile: { value: thermalProfile?.texture ?? null },
+      uHasThermalProfile: { value: thermalProfile !== null },
       uRegime: { value: circulation.regime === 'locked' ? 1 : 0 },
       uHotspotDirObj: { value: new Vector3(0, 0, 1) },
       uThermalColor: {
-        value: emission.color,
+        value: thermalProfile ? [1, 1, 1] : emission.color,
       },
       uSurfaceExposure: { value: 1 },
       uThermalStrength: {
-        value: emission.strength,
+        value: thermalProfile?.strength ?? emission.strength,
       },
     },
   });
+  if (thermalProfile) material.addEventListener('dispose', () => thermalProfile.texture.dispose());
+  return material;
 }

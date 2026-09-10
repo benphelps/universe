@@ -20,7 +20,7 @@ import {
 } from '../../universe/planet/circulation';
 import type { Characterization } from '../../universe/planet/types';
 import { SIMPLEX_NOISE_GLSL } from '../glsl/simplexNoise';
-import { foldShaderTime } from '../shaderTime';
+import { updateGiantWeather } from './giantWeather';
 import { createPatternUniforms, HEIGHT_SCALE, PATTERN_GLSL } from './giantPattern';
 import { beginLoadingWork, endLoadingWork } from '../../app/loadingWorkAudit';
 
@@ -123,13 +123,17 @@ export class DeckBaker {
   ): void {
     const started = beginLoadingWork();
     const uniforms = this.material.uniforms;
-    uniforms.uTimeDays.value = foldShaderTime(timeDays);
+    updateGiantWeather(uniforms, this.circulation, timeDays);
     (uniforms.uLightDirObj.value as Vector3).copy(lightDirObj);
+    (uniforms.uHotspotDirObj.value as Vector3).copy(lightDirObj)
+      .applyAxisAngle(new Vector3(0, 1, 0), this.circulation.hotspotOffsetRad);
     const storms = activeStorms(this.circulation, timeDays);
     const slots = uniforms.uStorms.value as Vector4[];
     for (let i = 0; i < MAX_ACTIVE_STORMS; i++) {
       const storm = storms[i];
       if (storm) {
+        (uniforms.uStormIdentity.value as Float32Array)[i * 2] = storm.textureSeed;
+        (uniforms.uStormIdentity.value as Float32Array)[i * 2 + 1] = storm.opacity;
         slots[i].set(
           storm.latRad,
           storm.lonRad,
